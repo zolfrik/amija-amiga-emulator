@@ -1,0 +1,694 @@
+===============================================================================
+
+                  /\                _  ___
+                 /  \   _ __ ___   (_)|_  |__ _
+                / /\ \ | '_ ` _ \  | |  | |/ _` |
+               / ____ \| | | | | | | |  | | (_| |
+              /_/    \_\_| |_| |_| |_|\___/\__,_|
+
+                     A m i J a   -   U s e r   M a n u a l
+                  A cycle-exact Amiga 500 emulator in Java
+
+===============================================================================
+
+
+CONTENTS
+--------
+
+    1.  About AmiJa
+    2.  Getting started
+        2.1   Files and folders
+        2.2   Keyboard and mouse at a glance
+    3.  The F12 popup
+        3.1   How to read this chapter
+        3.2   System
+        3.3   Floppy drives
+        3.4   Hard disks
+        3.5   WHDLoad
+        3.6   Audio / Video
+        3.7   Sub-dialogs ("..." buttons)
+        3.8   The button bar
+    4.  Properties available only in amiga.properties
+        4.1   File-browser memory
+        4.2   Diagnostic overlays
+        4.3   Blitter
+        4.4   WHDLoad parameters (WHDLoad.prefs)
+    5.  Alphabetical property index
+    License
+
+
+===============================================================================
+ 1.  ABOUT AMIJA
+===============================================================================
+
+  AmiJa is an Amiga 500 emulator written entirely in Java. It reproduces the
+  machine at the cycle level: the CPU, the custom chips (Agnus, Denise, Paula),
+  the two CIAs and the floppy drives all advance on the same 7.09 MHz master
+  clock as the real hardware, so DMA arbitration, blitter timing, copper waits
+  and disk bitstreams behave the way they do on an A500.
+
+  What you get:
+
+    *  OCS and ECS chipsets, PAL and NTSC video
+    *  Chip / Slow / Fast RAM configurations, up to four floppy drives
+    *  ADF, IPF (copy-protected originals) and ZIP disk sets
+    *  Hard disk images (.hdf) through a Zorro II AutoConfig controller
+    *  WHDLoad archives (.lha) started automatically, with no manual install
+    *  Software or OpenGL rendering, with RetroArch (.glslp) CRT shaders
+    *  Save states, screenshots, real joysticks, floppy drive sounds
+
+  Everything is driven from one configuration file, amiga.properties, which can
+  be edited by hand or - more comfortably - from the popup that opens with F12
+  while the emulator is running. This manual describes both.
+
+
+===============================================================================
+ 2.  GETTING STARTED
+===============================================================================
+
+  AmiJa needs a Kickstart ROM image: it is not supplied with the emulator. Put
+  your .rom file somewhere on disk, start AmiJa, and if no valid Kickstart is
+  configured the F12 popup opens by itself so you can point at it. Set the ROM,
+  press Restart, and the machine boots.
+
+  ---------------------------------------------------------------------------
+  2.1   FILES AND FOLDERS
+  ---------------------------------------------------------------------------
+
+  Everything is resolved relative to the working directory - the folder AmiJa
+  is started from.
+
+    amiga.properties     the configuration file. Searched in the working
+                         directory first, then on the classpath; if it is
+                         missing altogether a default one is created.
+    shaders/             RetroArch shader presets (*.glslp) offered in the
+                         Shader drop-down.
+    screenshots/         PNG files written by "Take Screenshot".
+    savestate/           state1.a5s (the single save-state slot) and
+                         state1.png (a thumbnail of the saved screen).
+    whdload-saves/       persistent WHDSaves: volume for WHDLoad games.
+
+  ---------------------------------------------------------------------------
+  2.2   KEYBOARD AND MOUSE AT A GLANCE
+  ---------------------------------------------------------------------------
+
+    F12                     opens the configuration popup and pauses the
+                            machine. (Because F12 is taken, the Amiga HELP key
+                            lives on Home - see below.)
+    Left / Right Alt        the two Amiga keys. Windows keys work as well.
+    Ctrl + Amiga + Amiga    the Amiga hard reset, exactly as on real hardware:
+                            hold all three, the machine reboots when you let go.
+    Page Up / Page Down     left / right Amiga Alt (these give @ # [ ] { } on
+                            the Italian keymap).
+    Home                    the Amiga HELP key.
+
+    Left mouse button       clicking in the window captures the mouse: the host
+                            pointer disappears and drives the Amiga pointer
+                            without ever hitting the edge of the screen.
+    Middle mouse button     releases the capture (losing window focus releases
+                            it too).
+    Right mouse button      the Amiga right button.
+
+    Drag and drop           dropping a disk image onto the window inserts it.
+                            The window is divided into four quadrants, one per
+                            drive: drop on the top-left for DF0, top-right for
+                            DF1, and so on. The path is remembered in the
+                            configuration, so the popup shows it afterwards.
+
+
+===============================================================================
+ 3.  THE F12 POPUP
+===============================================================================
+
+  Pressing F12 pauses emulation, releases the mouse and opens the configuration
+  window. It is organised in five sections - System, Floppy drives, Hard disks,
+  WHDLoad, Audio / Video - followed by a bar of action buttons.
+
+  ---------------------------------------------------------------------------
+  3.1   HOW TO READ THIS CHAPTER
+  ---------------------------------------------------------------------------
+
+  Every control is listed with the amiga.properties key it writes, the values it
+  accepts, and when the change becomes effective:
+
+    LIVE       applied immediately when you press OK, machine keeps running.
+    RESTART    needs the emulated machine to be rebuilt. You do not have to do
+               it by hand: pressing OK after changing one of these settings
+               performs the cold restart for you (the alternative is to press
+               the Restart button).
+    RELAUNCH   needs the whole application to restart. AmiJa relaunches itself
+               automatically; only the integer scaling factor is in this class.
+    BOOT       read when the machine is built, so it applies at the next
+               Restart (or at the next launch).
+
+  Two keys - ESC cancels the popup, ENTER confirms it. Note that the file
+  browsers behind the "..." buttons save the directory you last visited
+  immediately, even if you then press Cancel.
+
+  ---------------------------------------------------------------------------
+  3.2   SYSTEM
+  ---------------------------------------------------------------------------
+
+  +-------------------------------------------------------------------------+
+  |  Kickstart (.rom):                                        kickstart.path |
+  +-------------------------------------------------------------------------+
+     Absolute path of the Kickstart ROM image mapped at $FC0000-$FFFFFF. A
+     256 KB image is expected (Kickstart 1.3 rev 34.5 is the reference; 2.0/3.1
+     images work for hard-disk and WHDLoad setups). The "..." button opens a
+     browser filtered on *.rom.
+     Values . . . . . absolute path      Applies . . . BOOT
+
+  +-------------------------------------------------------------------------+
+  |  Chip RAM:                                                   chipram.kb  |
+  +-------------------------------------------------------------------------+
+     Memory shared by CPU and custom chips, from $000000 upwards. 512 KB is the
+     stock A500; 1 MB or 2 MB is what most WHDLoad titles ask for.
+     Values . . . . . 256 / 512 / 1024 / 2048 (KB)
+     Applies . . . . . BOOT
+
+  +-------------------------------------------------------------------------+
+  |  Slow RAM:                                                   slowram.kb  |
+  +-------------------------------------------------------------------------+
+     The classic "trapdoor" expansion at $C00000, seen by the system as slow
+     Fast RAM. 512 KB gives you the familiar 1 MB A500.
+     Values . . . . . 0 / 512 / 1024 / 1536 / 1792 (KB), 0 = none
+     Applies . . . . . BOOT
+
+  +-------------------------------------------------------------------------+
+  |  Fast RAM:                                                   fastram.kb  |
+  +-------------------------------------------------------------------------+
+     True Fast RAM on a Zorro II AutoConfig board - no chip-bus contention, so
+     the CPU runs at full speed there. Required by many hard-disk and WHDLoad
+     installations.
+     Values . . . . . 0 / 512 / 1024 / 2048 / 4096 / 8192 (KB), 0 = none
+     Applies . . . . . BOOT
+
+  +-------------------------------------------------------------------------+
+  |  Language:                                                  ui.language  |
+  +-------------------------------------------------------------------------+
+     Language of the emulator's own interface (menus, dialogs, messages). It
+     has no effect on the emulated Amiga, whose keymap and language come from
+     the Kickstart and from Workbench.
+     Values . . . . . English -> en, Italiano -> it
+     Applies . . . . . BOOT
+
+  +-------------------------------------------------------------------------+
+  |  Video mode:                                                 video.mode  |
+  +-------------------------------------------------------------------------+
+     Television standard of the emulated machine: PAL (50 Hz, 312 lines) or
+     NTSC (60 Hz, 262 lines). It sets the colour clock, the number of raster
+     lines per frame and the Agnus ID the Kickstart reads.
+     Values . . . . . PAL / NTSC        Applies . . . RESTART (automatic on OK)
+
+  +-------------------------------------------------------------------------+
+  |  Chipset:                                                       chipset  |
+  +-------------------------------------------------------------------------+
+     Custom chip generation. OCS is the original A500; ECS adds the enhanced
+     Agnus/Denise and their extra registers (BEAMCON0, DIWHIGH, BPLCON3,
+     productivity modes) and is what ECS-only titles expect.
+     Values . . . . . OCS / ECS         Applies . . . RESTART (automatic on OK)
+
+  +-------------------------------------------------------------------------+
+  |  Port 0:                                          input.port0.device     |
+  |  Port 1:                                          input.port1.device     |
+  +-------------------------------------------------------------------------+
+     What is plugged into each of the two game ports. Port 0 is the mouse port
+     (JOY0DAT), Port 1 the joystick port (JOY1DAT) - a game that wants a
+     joystick almost always wants it on Port 1.
+
+       Mouse . . . . . . . . the host mouse                  -> mouse
+       Joystick (real) . . . a physical joystick or gamepad,
+                             read through GLFW               -> joystick-real
+       Joystick (keyboard) . a joystick emulated on the host
+                             keyboard                        -> joystick-keyboard
+       Empty . . . . . . . . nothing connected               -> none
+
+     Choosing "Joystick (keyboard)" makes a "..." button appear next to the
+     drop-down, which opens the key mapping for that port (see 3.7.1). Both
+     ports can use the keyboard at the same time, because each one has its own
+     set of keys.
+     Applies . . . . . LIVE
+
+  ---------------------------------------------------------------------------
+  3.3   FLOPPY DRIVES
+  ---------------------------------------------------------------------------
+
+  One row per drive, DF0 to DF3. Each row has four controls: the connection
+  checkbox, the disk path, and three small buttons - browse, write protect and
+  eject. The path field and the buttons are greyed out while the drive is not
+  connected.
+
+  +-------------------------------------------------------------------------+
+  |  [x] DFn connected                                 drive.dfN.enabled     |
+  +-------------------------------------------------------------------------+
+     Whether the drive physically exists. A disconnected drive reports no ID
+     to the system and holds no disk. DF0 and DF1 are connected by default.
+     Values . . . . . true / false      Applies . . . LIVE
+
+  +-------------------------------------------------------------------------+
+  |  <path>                          "..."               drive.dfN.disk     |
+  +-------------------------------------------------------------------------+
+     Absolute path of the image inserted in the drive; empty means no disk.
+     Accepted formats:
+
+       .adf   plain sector image, the common case
+       .ipf   flux-level image of an original disk, including copy protection
+              (Rob Northen Copylock, variable density, long tracks, ...)
+       .zip   a compressed disk image; if the archive contains several disks
+              it is treated as a set - the first one goes into DF0 and the
+              others fill the free connected drives automatically, addressed
+              as <archive>.zip!<n>. Disks from a ZIP are always write
+              protected.
+
+     Applies . . . . . LIVE. Replacing a disk in a running machine ejects the
+     old one, waits about a second and a half so the Kickstart notices the
+     change, and then inserts the new one - exactly like swapping disks for
+     real. The browser remembers its directory in chooser.floppy.lastDirectory.
+
+  +-------------------------------------------------------------------------+
+  |  padlock button                                    drive.dfN.readonly    |
+  +-------------------------------------------------------------------------+
+     Write protection. Closed padlock = the disk is mounted read-only and the
+     emulated machine sees the write-protect tab closed; open padlock = writes
+     go back into the image file. Keep it closed for anything you care about.
+     Values . . . . . true / false      Applies . . . LIVE
+
+  +-------------------------------------------------------------------------+
+  |  eject button                                                           |
+  +-------------------------------------------------------------------------+
+     Clears the path field. The disk is actually ejected when you press OK.
+
+  ---------------------------------------------------------------------------
+  3.4   HARD DISKS
+  ---------------------------------------------------------------------------
+
+  Two units, master and slave, mounted through a Zorro II AutoConfig controller
+  whose boot ROM carries the filesystem (OFS/FFS). This is how games installed
+  on an .hdf image are booted.
+
+  +-------------------------------------------------------------------------+
+  |  [x] Master (.hdf)                                  hd.master.enabled    |
+  |  [x] Slave  (.hdf)                                  hd.slave.enabled     |
+  +-------------------------------------------------------------------------+
+     Whether the unit is present.
+     Values . . . . . true / false      Applies . . . BOOT
+
+  +-------------------------------------------------------------------------+
+  |  <path>                          "..."              hd.master.disk       |
+  |                                                     hd.slave.disk        |
+  +-------------------------------------------------------------------------+
+     Absolute path of the .hdf image; empty means no disk. The browser
+     remembers its directory in chooser.hdf.lastDirectory.
+     Applies . . . . . BOOT
+
+  +-------------------------------------------------------------------------+
+  |  padlock button                                     hd.master.readonly   |
+  |                                                     hd.slave.readonly    |
+  +-------------------------------------------------------------------------+
+     Mount the image read-only. Unlike floppies, hard disks default to
+     writable - saved games and preferences need it.
+     Values . . . . . true / false      Applies . . . BOOT
+
+  ---------------------------------------------------------------------------
+  3.5   WHDLOAD
+  ---------------------------------------------------------------------------
+
+  +-------------------------------------------------------------------------+
+  |  [x] Auto-run WHDLoad archive (.lha)                 whdload.enabled     |
+  |  <path>                          "..."               whdload.file        |
+  +-------------------------------------------------------------------------+
+     Point AmiJa at a WHDLoad archive and it does the rest: the .lha/.lzh is
+     extracted, packed on the fly into a bootable FFS hard disk together with
+     the WHDLoad system, and started - no installation, no Workbench setup.
+     This is the same approach as the WHDLoad support in RetroArch/PUAE.
+
+     Saved games are kept outside the throw-away disk, in whdload-saves/, so
+     they survive across sessions. The WHDLoad preferences themselves
+     (SplashDelay, ButtonWait, NoFilter and friends) are not in this popup;
+     they live in the whdload.prefs.* section of amiga.properties - see 4.4.
+
+     A word on requirements: most WHDLoad titles want more memory than a stock
+     A500. If a game refuses to start, raise Chip RAM to 1 MB and give it a few
+     megabytes of Fast RAM.
+
+     Values . . . . . true / false, absolute path to .lha or .lzh
+     Applies . . . . . BOOT
+     The browser remembers its directory in chooser.whdload.lastDirectory.
+
+  ---------------------------------------------------------------------------
+  3.6   AUDIO / VIDEO
+  ---------------------------------------------------------------------------
+
+  +-------------------------------------------------------------------------+
+  |  Rendering:                                             video.renderer   |
+  +-------------------------------------------------------------------------+
+     How the emulated framebuffer reaches the screen. Software uses Java2D and
+     is the default; OpenGL presents the frame through the GPU inside the same
+     window and is what makes shaders available. On this hardware the software
+     path is at least as fast, so pick OpenGL when you want a CRT look rather
+     than for speed.
+     Values . . . . . Software -> software, OpenGL -> opengl
+     Applies . . . . . RESTART (automatic on OK)
+
+  +-------------------------------------------------------------------------+
+  |  Shader:                                                  video.shader   |
+  +-------------------------------------------------------------------------+
+     RetroArch shader preset applied to the picture - scanlines, aperture
+     grille, curvature, and so on. The drop-down lists the *.glslp files found
+     in the shaders/ folder, plus "None" for a clean passthrough. Available
+     only with the OpenGL renderer.
+
+     The "..." button next to it opens the shader's own parameters (see 3.7.2).
+     It is enabled only for the shader that is currently applied, so that what
+     you tweak is what you see.
+     Values . . . . . preset name without extension, or none
+     Applies . . . . . LIVE
+
+  +-------------------------------------------------------------------------+
+  |  Window mode:                                         video.windowMode   |
+  +-------------------------------------------------------------------------+
+     Windowed . . . . . . . . . . normal resizable window     -> windowed
+     Fullscreen . . . . . . . . . exclusive full screen       -> fullscreen
+     Borderless windowed  . . . . a window without decoration
+                                  covering the whole screen   -> borderless-windowed
+     Applies . . . . . RESTART (automatic on OK)
+
+  +-------------------------------------------------------------------------+
+  |  Monitor:                                                video.monitor   |
+  +-------------------------------------------------------------------------+
+     Which screen the emulator opens on: 0 is the primary one, 1, 2, ... the
+     other connected monitors. A configured index that no longer exists falls
+     back to the primary screen, and stays selectable so it is not lost when
+     you unplug a monitor.
+     Values . . . . . 0, 1, 2, ...      Applies . . . RESTART (automatic on OK)
+
+  +-------------------------------------------------------------------------+
+  |  Integer scaling:                                video.integerScaling    |
+  +-------------------------------------------------------------------------+
+     Whole-number magnification of the picture and of the interface: 1 is the
+     native size, 2 doubles it, 3 triples it. Integer factors keep pixels
+     square and identical, which is why there is no 1.5 here.
+
+     This one is special: with the software renderer the factor is handed to
+     Java2D, which fixes it once when the application starts. Changing it makes
+     AmiJa relaunch itself. With OpenGL the GPU does the magnification instead.
+     Values . . . . . 1, 2, 3, ...      Applies . . . RELAUNCH
+
+  +-------------------------------------------------------------------------+
+  |  [x] Enable overscan                            video.overscan.enabled   |
+  +-------------------------------------------------------------------------+
+     Show the whole video area the Amiga generates, borders included, instead
+     of cropping to the standard active area. Some games draw right into the
+     overscan region; others leave it empty. Window size follows:
+
+       overscan on    PAL 724x576     NTSC 724x480
+       overscan off   PAL 640x512     NTSC 640x400
+
+     Values . . . . . true / false      Applies . . . RESTART (automatic on OK)
+
+  +-------------------------------------------------------------------------+
+  |  [x] Show power/drive LED panel                        leds.visible      |
+  +-------------------------------------------------------------------------+
+     The strip of LEDs under the picture: power (which on the Amiga also
+     signals the audio filter state), the four floppy drives and the hard
+     disks, each lighting up on access just like the real machine.
+     Values . . . . . true / false      Applies . . . BOOT
+
+  +-------------------------------------------------------------------------+
+  |  Floppy sound volume (0 = mute):               floppy.sound.volume       |
+  +-------------------------------------------------------------------------+
+     Volume of the mechanical drive sounds - the seek clicks, the motor, the
+     insertion clunk. 0 is silence, 1 is the quietest audible level, and each
+     step adds about 6 dB up to 10. It does not affect the Amiga's own audio.
+     Values . . . . . 0 to 10           Applies . . . LIVE
+
+  ---------------------------------------------------------------------------
+  3.7   SUB-DIALOGS ("..." BUTTONS)
+  ---------------------------------------------------------------------------
+
+  3.7.1   KEYBOARD JOYSTICK KEYS
+  ..........................................................................
+
+     Opened by the "..." next to a port set to "Joystick (keyboard)". One row
+     per function - Up, Down, Right, Left, Fire: click the button showing the
+     current key, then press the key you want. ESC cancels the capture, which
+     is why ESC itself cannot be assigned.
+
+     A key can only serve one function, on either port, so the two joysticks
+     never fight over the same key; if you pick one that is taken, the dialog
+     tells you which function and which port already owns it. "Reset to
+     defaults" restores that port's original keys.
+
+       Port 0 defaults    W A S D + right Ctrl
+       Port 1 defaults    arrow keys + left Ctrl
+
+     Properties . . . input.port0.joystick.up
+                      input.port0.joystick.down
+                      input.port0.joystick.right
+                      input.port0.joystick.left
+                      input.port0.joystick.fire
+                      input.port1.joystick.up   ... and the same five for port 1
+
+     A value is the name of the java.awt.event.KeyEvent VK_ constant without
+     the prefix - W, UP, SPACE, NUMPAD5 - and for keys that exist twice on the
+     keyboard the position is appended: CONTROL:LEFT, CONTROL:RIGHT,
+     SHIFT:LEFT, and so on.
+     Applies . . . . . LIVE
+
+  3.7.2   SHADER PARAMETERS
+  ..........................................................................
+
+     Opened by the "..." next to the Shader drop-down. Every "#pragma
+     parameter" the preset declares - curvature, scanline weight, mask
+     strength, brightness - gets a slider. Moving it changes the picture
+     immediately, so you can dial the look in while watching it.
+
+     On close the values are written next to the preset as <preset>.params, so
+     they are still there next time. A preset that declares no parameters
+     simply says so.
+
+  ---------------------------------------------------------------------------
+  3.8   THE BUTTON BAR
+  ---------------------------------------------------------------------------
+
+     Take Screenshot   Saves the game window - not the popup - as
+                       screenshots/screenshot_<date>_<time>.png. Works with
+                       both renderers.
+
+     Save State        Writes the entire machine to the single slot,
+                       savestate/state1.a5s, plus a thumbnail in state1.png.
+                       Saving again overwrites both.
+
+     Load State        Restores that slot over the running machine. A state
+                       saved with a different configuration is refused with an
+                       explanation rather than loaded half-way.
+
+     Soft Reset        Saves the configuration and resets the CPU, leaving
+                       memory contents alone - the equivalent of the reset
+                       vector, not of a power cycle.
+
+     Restart           Saves the configuration and rebuilds the whole machine
+                       from scratch, as if you had turned it off and on again.
+                       This is how ROM, RAM, chipset, hard disk and WHDLoad
+                       changes are applied.
+
+     Quit              Closes the emulator. Anything not confirmed with OK is
+                       discarded.
+
+     Cancel  (ESC)     Closes the popup and resumes emulation, discarding your
+                       edits.
+
+     OK      (ENTER)   Saves amiga.properties and applies everything: input and
+                       floppy changes take effect immediately, and if you
+                       touched a setting that needs a rebuilt machine or a new
+                       window, the restart is performed for you.
+
+
+===============================================================================
+ 4.  PROPERTIES AVAILABLE ONLY IN amiga.properties
+===============================================================================
+
+  These settings have no control in the F12 popup - edit amiga.properties with
+  a text editor while the emulator is closed, or the next save will overwrite
+  your changes. Values in Windows paths keep their backslashes escaped
+  (C:\\Amiga\\...) as in any Java properties file.
+
+  ---------------------------------------------------------------------------
+  4.1   FILE-BROWSER MEMORY
+  ---------------------------------------------------------------------------
+
+     chooser.floppy.lastDirectory     last folder used by the disk browser
+     chooser.rom.lastDirectory        ... by the Kickstart browser
+     chooser.hdf.lastDirectory        ... by the hard disk browser
+     chooser.whdload.lastDirectory    ... by the WHDLoad browser
+
+     Housekeeping, maintained by AmiJa itself: each "..." browser reopens where
+     you left it. They are written as soon as you pick a file, even if you then
+     cancel the popup. Setting them by hand simply decides where the browsers
+     start; an empty value means "no preference".
+     Values . . . . . absolute path or empty
+
+  ---------------------------------------------------------------------------
+  4.2   DIAGNOSTIC OVERLAYS
+  ---------------------------------------------------------------------------
+
+     overlay.fps.enabled
+        Real frames per second in the bottom-left corner - the emulator's own
+        speed, so you can tell whether it is keeping up with real time.
+        Values . . . . . true / false (default false)      Applies . . . BOOT
+
+     overlay.framecounter.enabled
+        Emulated frame counter at the bottom centre. It counts Amiga frames
+        regardless of how fast the emulator is running, which makes it a stable
+        reference when you want to note down when something happens.
+        Values . . . . . true / false (default false)      Applies . . . BOOT
+
+     Both are off by default and cost nothing when off.
+
+  ---------------------------------------------------------------------------
+  4.3   BLITTER
+  ---------------------------------------------------------------------------
+
+     blitter.immediate
+        When true, the blitter finishes every operation the instant BLTSIZE is
+        written: no bus cycles are consumed and BBUSY is never seen high. This
+        is deliberately not cycle-exact - it is a speed switch for games that
+        sit in a loop polling the blitter, and it can break anything that
+        relies on blitter timing. Leave it false unless you have a reason.
+        Values . . . . . true / false (default false)      Applies . . . BOOT
+
+  ---------------------------------------------------------------------------
+  4.4   WHDLOAD PARAMETERS (WHDLoad.prefs)
+  ---------------------------------------------------------------------------
+
+  This section generates the S:WHDLoad.prefs file of the hard disk AmiJa builds
+  for a WHDLoad archive. Do not edit that generated file - it is rewritten on
+  every launch; change these properties instead. Command-line arguments and the
+  slave's ToolTypes still take precedence over anything set here.
+
+  Two kinds of entry. A flag is true/false: true emits the corresponding
+  WHDLoad keyword, false omits it. A value is written as Keyword=value, and an
+  empty value is left out entirely, letting WHDLoad use its own default.
+
+    Property                        Default     What it does
+    ----------------------------------------------------------------------
+    whdload.prefs.buttonWait        false       Wait for a button press before
+                                                starting (false = go straight in)
+    whdload.prefs.configDelay       0           Time allowed to pick options in
+                                                the splash window (1/50 s)
+    whdload.prefs.splashDelay       250         How long the splash window stays
+                                                up (1/50 s; 250 = 5 seconds).
+                                                Set 0 to skip it
+    whdload.prefs.readDelay         0           Delay after a disk read (1/50 s)
+    whdload.prefs.writeDelay        0           Delay after a disk write (1/50 s)
+    whdload.prefs.coreDumpPath      T:          Where coredumps are written
+    whdload.prefs.savePath          WHDSaves:   Base directory for saved games
+                                                (the persistent volume)
+    whdload.prefs.noNetwork         true        Do not connect to the internet
+    whdload.prefs.noWriteCache      false*      Disable the disk write cache
+    whdload.prefs.noWriteInfo       false       Do not write .info files next to
+                                                saved games
+    whdload.prefs.chipNoCache       false       Make Chip memory non-cacheable
+    whdload.prefs.fullChip          false       Save and restore the whole Chip
+                                                memory
+    whdload.prefs.noFlushMem        false       Do not free memory before loading
+    whdload.prefs.noMemReverse      false       Do not allocate memory in reverse
+                                                order
+    whdload.prefs.preload           false       Buffer many data files up front
+                                                at startup
+    whdload.prefs.logBuffer         (empty)     Size of the logging buffer, e.g.
+                                                $40000
+    whdload.prefs.ntsc              false       Force NTSC
+    whdload.prefs.pal               false       Force PAL
+    whdload.prefs.noFilter          false       Disable the Amiga audio filter
+    whdload.prefs.noAutoVec         false       Ignore unwanted autovector
+                                                interrupts
+    whdload.prefs.mmu               false       Use the MMU (68030 and above)
+    whdload.prefs.quitKey           (empty)     Quit key, as a rawkey code
+                                                (e.g. $5a)
+    whdload.prefs.restartKey        (empty)     Restart key, rawkey code
+    whdload.prefs.freezeKey         (empty)     Freeze key, rawkey code
+    whdload.prefs.debugKey          (empty)     Debug key, rawkey code
+    whdload.prefs.expert            false       Enable expert mode
+    whdload.prefs.executeStartup    (empty)     Command run before the game, e.g.
+                                                Execute S:WHDLoad-Startup
+    whdload.prefs.executeCleanup    (empty)     Command run after the game
+
+    (*) noWriteCache ships as true in the bundled amiga.properties, which is
+        the safer setting; the built-in default is false.
+
+    All of them apply at BOOT - the prefs file is generated while the WHDLoad
+    hard disk is being built.
+
+
+===============================================================================
+ 5.  ALPHABETICAL PROPERTY INDEX
+===============================================================================
+
+  Key                            Where                        Applies
+  ---------------------------------------------------------------------------
+  blitter.immediate              file only (4.3)              BOOT
+  chipram.kb                     System (3.2)                 BOOT
+  chipset                        System (3.2)                 RESTART
+  chooser.floppy.lastDirectory   file only (4.1)              -
+  chooser.hdf.lastDirectory      file only (4.1)              -
+  chooser.rom.lastDirectory      file only (4.1)              -
+  chooser.whdload.lastDirectory  file only (4.1)              -
+  drive.df0..3.disk              Floppy drives (3.3)          LIVE
+  drive.df0..3.enabled           Floppy drives (3.3)          LIVE
+  drive.df0..3.readonly          Floppy drives (3.3)          LIVE
+  fastram.kb                     System (3.2)                 BOOT
+  floppy.sound.volume            Audio / Video (3.6)          LIVE
+  hd.master.disk                 Hard disks (3.4)             BOOT
+  hd.master.enabled              Hard disks (3.4)             BOOT
+  hd.master.readonly             Hard disks (3.4)             BOOT
+  hd.slave.disk                  Hard disks (3.4)             BOOT
+  hd.slave.enabled               Hard disks (3.4)             BOOT
+  hd.slave.readonly              Hard disks (3.4)             BOOT
+  input.port0.device             System (3.2)                 LIVE
+  input.port0.joystick.*         Joystick keys (3.7.1)        LIVE
+  input.port1.device             System (3.2)                 LIVE
+  input.port1.joystick.*         Joystick keys (3.7.1)        LIVE
+  kickstart.path                 System (3.2)                 BOOT
+  leds.visible                   Audio / Video (3.6)          BOOT
+  overlay.fps.enabled            file only (4.2)              BOOT
+  overlay.framecounter.enabled   file only (4.2)              BOOT
+  slowram.kb                     System (3.2)                 BOOT
+  ui.language                    System (3.2)                 BOOT
+  video.integerScaling           Audio / Video (3.6)          RELAUNCH
+  video.mode                     System (3.2)                 RESTART
+  video.monitor                  Audio / Video (3.6)          RESTART
+  video.overscan.enabled         Audio / Video (3.6)          RESTART
+  video.renderer                 Audio / Video (3.6)          RESTART
+  video.shader                   Audio / Video (3.6)          LIVE
+  video.windowMode               Audio / Video (3.6)          RESTART
+  whdload.enabled                WHDLoad (3.5)                BOOT
+  whdload.file                   WHDLoad (3.5)                BOOT
+  whdload.prefs.*                file only (4.4)              BOOT
+
+
+===============================================================================
+
+
+LICENSE
+-------
+
+    AmiJa is free software, licensed under the GNU General Public License,
+    version 3 or (at your option) any later version. The full text is in the
+    file LICENSE. You may use, study, modify and redistribute it; any
+    distributed derivative work must in turn be released under the same
+    license, with its source code.
+
+    Third-party components bundled with the emulator - LWJGL, the RetroArch
+    shader packs in shaders/ and blurs/, and the virtualhd.device boot ROM -
+    keep their own licenses. THIRD-PARTY-NOTICES.md records each of them,
+    and explains why Kickstart ROMs, disk images, WHDLoad system files and
+    the WinUAE drive sounds are NOT included and must be supplied by you.
+
+    AmiJa is an independent reimplementation. It is not affiliated with, nor
+    endorsed by, Commodore, Amiga Corporation, Cloanto or Hyperion.
+
+
+===============================================================================
+            AmiJa 1.0.0  -  io.github.zolfrik:amija  -  Amiga 500 in Java
+===============================================================================

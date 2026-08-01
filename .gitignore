@@ -1,0 +1,46 @@
+# --- Build output -------------------------------------------------------
+target/
+*.class
+
+# Generato dal filtering di Maven a ogni build (versione + timestamp).
+src/main/resources/version.properties
+
+# --- Materiale NON ridistribuibile, fornito dall'utente -------------------
+# Vedi THIRD-PARTY-NOTICES.md §4. Queste cartelle esistono nel repository
+# solo come segnaposto con dentro un readme.txt: il contenuto reale non deve
+# MAI essere committato.
+floppysounds/*
+!floppysounds/readme.txt
+whdload/*
+!whdload/readme.txt
+
+# ROM Kickstart, immagini disco, archivi WHDLoad — mai nel repository.
+*.rom
+*.adf
+*.ipf
+*.hdf
+*.lha
+
+# --- Dati di runtime ------------------------------------------------------
+# Tutti creati dall'emulatore al primo avvio, nessuno va versionato.
+amiga.properties
+savestate/
+whdload-cache/
+whdload-saves/
+screenshots/
+dumps/
+*.log
+
+# --- Ambiente di sviluppo -------------------------------------------------
+nbactions.xml
+nb-configuration.xml
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# --- Crash della JVM ------------------------------------------------------
+hs_err_pid*
+replay_pid*

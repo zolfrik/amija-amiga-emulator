@@ -1,0 +1,516 @@
+/*
+ * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * Copyright (C) 2026 zolfrik
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+package io.github.zolfrik.amija.common;
+
+import io.github.zolfrik.amija.custom.AbstractAgnus;
+import io.github.zolfrik.amija.custom.AbstractDenise;
+import io.github.zolfrik.amija.display.AmigaDisplay;
+import io.github.zolfrik.amija.display.FrameInfo;
+
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferInt;
+import java.io.File;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Objects;
+
+/**
+ * Rappresenta l'intero raster PAL dell'Amiga, overscan incluso.
+ * Nessun crop né elaborazione: ogni pixel raw prodotto da Denise viene scritto
+ * direttamente nel framebuffer. La logica di viewport appartiene ad AmigaDisplay.
+ */
+public final class VirtualCRT {
+
+    /** Larghezza del raster raw PAL (4 * 228 pixel per riga, incluso blanking). */
+    public static final int RAW_WIDTH = AbstractDenise.RAW_LINE_PIXELS;  // 912
+
+    /** Numero di righe del raster raw PAL (0–311). */
+    public static final int RAW_HEIGHT = 312;
+
+    private final AbstractAgnus agnus;
+    private final AbstractDenise denise;
+    private final AmigaDisplay display;
+
+    // Doppio buffer per il presenter asincrono: l'emulazione scrive in frameBuffer,
+    // il thread di rendering legge renderBuffer. A frame completo i due si scambiano.
+    // Così la composizione costosa (line-doubling, allocazione canvas, scaling) NON
+    // gira più sul thread del MasterClock (~13% del tempo recuperato all'emulazione).
+    private int[] frameBuffer;
+    private int[] renderBuffer;
+
+    private final Object renderLock = new Object();
+    private volatile boolean renderRunning;
+    private boolean renderBusy;
+    private final FrameInfo frameInfo = new FrameInfo();
+    private final FrameInfo asyncFrameInfo = new FrameInfo();
+    private FrameInfo pendingInfo;
+    private Thread renderThread;
+
+    // STEP 11 (PERFORMANCE_REPORT_FINAL): beamX/beamY (overlay di debug del pennello)
+    // venivano ricalcolati ad ogni tick (~7M/s) con una divisione intera, ma i getter
+    // getBeamX/getBeamY non sono usati né in produzione né nei test. Il calcolo è stato
+    // reso lazy (vedi getBeamX/getBeamY): si esegue solo quando effettivamente richiesto.
+    private int lastHpos;
+    private int lastVpos;
+    private int lastFrameCount;
+
+    // ── Bordo-destro deep-HBLANK (vAmiga Beam::pixel, Beam.cpp:244) ──────────────
+    // L'ultimo CCK visibile della texture di regressione (col 836-839 = beam cck 0..3 in
+    // HBLANK profondo) è mappato da vAmiga sul lato DESTRO della riga PRECEDENTE: col
+    // 836-839 della riga V = COLOR00 al beam cck 0 della riga V+1 (border a inizio riga).
+    // Il nostro modello per-riga clampa l'HBLANK profondo a sinistra, quindi col 836
+    // restava col colore di fine-riga → classe C bordo-destro (stop3/4, CHK4/6, DIVS1,
+    // TRAPV5, RTR1, ASL1). Il valore dipende dalla riga SEGUENTE, quindi è campionato a
+    // cck 0 di V+1 e memorizzato per-riga; la correzione è applicata SOLO nello screenshot
+    // di regressione (saveRegressionScreenshot), NON nel framebuffer live: vAmiga blanka la
+    // colonna nel display live e la wrappa solo in RegressionTester::dumpTexture, perciò il
+    // display dei giochi resta invariato (niente banda nera del vecchio FIX #15).
+    // 4*(227 - HBLANK_MIN) = 4*(227-18) = 836.
+    private static final int RIGHT_HBLANK_WRAP_COL = 4 * (227 - 0x12); // 836
+    private int wrapPendingRow = -1;                          // riga V, campiona a cck 0 di V+1
+    private final int[] borderCck0Rgb = new int[RAW_HEIGHT];  // COLOR00 al beam cck 0 di ogni riga
+    private int frameHiresLines;
+    private int frameLoresLines;
+    private int frameInterlacedLines;
+
+    // Estensione verticale REALE della finestra di display nel frame: prima/ultima
+    // scanline che cade dentro la DIW viva (campionata riga per riga). Serve a centrare
+    // l'immagine sulla porzione davvero mostrata invece che sul valore della DIW
+    // campionato a fine frame: le schermate con split DIW pilotato dal Copper (es. Wings
+    // of Fury: pannello strumenti sotto la plancia) cambiano DIWSTRT/DIWSTOP più volte
+    // per frame, perciò il valore finale è una banda minuscola e non rappresentativa.
+    // -1 = nessuna riga dentro la DIW nel frame.
+    private int frameFirstDiwLine = -1;
+    private int frameLastDiwLine  = -1;
+
+    // Estensione verticale delle righe EFFETTIVAMENTE DISEGNATE dai bitplane nel
+    // frame (output bitplane presente, cioè non bordo verticale). È l'analogo di
+    // WinUAE/SAE thisframe_first/last_drawn_line (playfield.js finish_playfield_line):
+    // l'inquadratura verticale si centra su questa estensione, non sulla finestra
+    // DIW. Decisivo quando un gioco apre la DIW su tutto l'overscan ma disegna solo
+    // una sotto-regione (It Came From The Desert: DIW [5,320) ma box [72,255]):
+    // centrare sulla DIW ammasserebbe l'overscan grigio in basso e spingerebbe il
+    // box in alto; centrare sull'estensione disegnata lo mantiene inquadrato come
+    // su SAE/WinUAE. -1 = nessuna riga disegnata nel frame.
+    private int frameFirstDrawnLine = -1;
+    private int frameLastDrawnLine  = -1;
+
+    // Diagnostica: tempo speso nel rendering (sul thread del MasterClock), una riga/sec.
+    private long renderNanos;
+    private int  renderFrames;
+    private long renderLogStartNs = System.nanoTime();
+
+    public VirtualCRT(AbstractAgnus agnus, AbstractDenise denise, AmigaDisplay display) {
+        this.agnus = Objects.requireNonNull(agnus, "agnus");
+        this.denise = Objects.requireNonNull(denise, "denise");
+        this.display = Objects.requireNonNull(display, "display");
+        this.frameBuffer = new int[RAW_WIDTH * RAW_HEIGHT];
+        this.renderBuffer = new int[RAW_WIDTH * RAW_HEIGHT];
+        reset();
+        startRenderThread();
+    }
+
+    // Rendering SINCRONO di default (composizione sul thread di emulazione): garantisce
+    // il determinismo bit-identico dell'emulazione. La variante ASINCRONA (composizione
+    // su un thread separato, ~qualche % di tempo CPU recuperato sul thread di emulazione)
+    // introduce un non-determinismo intermittente e sensibile alla tempistica: pur non
+    // condividendo stato logico con l'emulazione, la sua esecuzione concorrente perturba
+    // l'esecuzione cycle-exact (artefatto JVM/scheduling). Per un emulatore cycle-exact
+    // il determinismo vale più dell'headroom (l'emulazione è comunque limitata a 50fps),
+    // quindi async è solo opt-in via -Damiga.asyncrender=true.
+    private static final boolean ASYNC_RENDER = Boolean.getBoolean("amiga.asyncrender");
+
+    private void startRenderThread() {
+        if (!ASYNC_RENDER) return; // rendering sincrono di default
+        renderRunning = true;
+        renderThread = new Thread(this::renderLoop, "amiga-frame-render");
+        renderThread.setDaemon(true);
+        renderThread.start();
+    }
+
+    /** Ferma il thread di rendering (opzionale; è comunque daemon). */
+    public void stop() {
+        synchronized (renderLock) {
+            renderRunning = false;
+            renderLock.notifyAll();
+        }
+    }
+
+    private void renderLoop() {
+        while (true) {
+            int[] buf;
+            FrameInfo info;
+            synchronized (renderLock) {
+                while (renderRunning && !renderBusy) {
+                    try {
+                        renderLock.wait();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                if (!renderRunning) return;
+                buf = renderBuffer;
+                info = pendingInfo;
+            }
+
+            // Composizione + paint fuori dal lock e fuori dal thread di emulazione.
+            long t0 = System.nanoTime();
+            display.renderFrame(buf, RAW_WIDTH, RAW_HEIGHT, info);
+            renderNanos += System.nanoTime() - t0;
+            logRenderStats();
+
+            synchronized (renderLock) {
+                renderBusy = false;
+                renderLock.notifyAll();
+            }
+        }
+    }
+
+    public void reset() {
+        Arrays.fill(frameBuffer, 0);
+        lastHpos = agnus.getHpos();
+        lastVpos = agnus.getVpos();
+        lastFrameCount = agnus.getFrameCount();
+        frameHiresLines = 0;
+        frameLoresLines = 0;
+        frameInterlacedLines = 0;
+        frameFirstDiwLine = -1;
+        frameLastDiwLine  = -1;
+        frameFirstDrawnLine = -1;
+        frameLastDrawnLine  = -1;
+    }
+
+    public void tick() {
+        int hpos = agnus.getHpos();
+        int vpos = agnus.getVpos();
+        int frameCount = agnus.getFrameCount();
+
+        if (hpos < lastHpos) {
+            completeScanline(lastVpos);
+            // La riga appena completata (lastVpos) prende il border-destro dal COLOR00 al
+            // beam cck 0 della riga CORRENTE (deep-HBLANK wrap): campionato al tick a cck 0
+            // sotto, quando l'eventuale write a cck 0 è già stato applicato al COLOR00 live.
+            wrapPendingRow = lastVpos;
+        }
+        if (frameCount != lastFrameCount) {
+            // Non attraversare il confine di frame (riga 311 userebbe la cck-0 del frame
+            // nuovo; comunque non croppata). Scarta il campione cross-frame.
+            wrapPendingRow = -1;
+            presentFrame();
+        } else if (wrapPendingRow >= 0 && hpos >= 2) {
+            // cck 0 della riga corrente completato: il COLOR00 live è il border a inizio
+            // riga = colore dell'ultimo CCK visibile (col 836) della riga precedente.
+            if (wrapPendingRow < RAW_HEIGHT) {
+                borderCck0Rgb[wrapPendingRow] = denise.getLiveColor0Rgb();
+            }
+            wrapPendingRow = -1;
+        }
+
+        lastHpos = hpos;
+        lastVpos = vpos;
+        lastFrameCount = frameCount;
+    }
+
+
+    private static final boolean DEBUG_RENDER_LOG = false; // diagnostica [RENDER] (off di default)
+
+    private void logRenderStats() {
+        if (!DEBUG_RENDER_LOG) return;
+        renderFrames++;
+        long now = System.nanoTime();
+        long elapsed = now - renderLogStartNs;
+        if (elapsed >= 1_000_000_000L) {
+            double renderMsPerSec = renderNanos / 1_000_000.0;
+            double pct = 100.0 * renderNanos / elapsed;
+            double msPerFrame = renderFrames > 0 ? renderMsPerSec / renderFrames : 0;
+            System.out.printf("[RENDER] %.1f ms/s (%.1f%% del tempo) frames=%d (%.2f ms/frame)%n",
+                    renderMsPerSec, pct, renderFrames, msPerFrame);
+            renderNanos = 0;
+            renderFrames = 0;
+            renderLogStartNs = now;
+        }
+    }
+
+    private void completeScanline(int vpos) {
+        denise.hsyncHandler(vpos);
+
+        if (vpos < 0 || vpos >= RAW_HEIGHT) {
+            return;
+        }
+
+        // RAW_WIDTH == Denise.HPIXELS == rgbLine.length, quindi la copia in blocco
+        // è esattamente equivalente al loop per-pixel su getRawPixelColor(x), ma
+        // evita ~912 chiamate al getter (con bound-check) per ogni scanline.
+        System.arraycopy(denise.getRgbLine(), 0, frameBuffer, vpos * RAW_WIDTH, RAW_WIDTH);
+
+        if (!agnus.inVBlankArea(vpos) && vpos >= agnus.getDiwVStart() && vpos < agnus.getDiwVStop()) {
+            int lineBplcon0 = denise.getLastRenderedBplcon0();
+            if ((lineBplcon0 & 0x8000) != 0) frameHiresLines++;
+            else                             frameLoresLines++;
+            if ((lineBplcon0 & 0x0004) != 0) frameInterlacedLines++;
+
+            // Estensione verticale REALE della finestra di display nel frame: union di
+            // tutte le righe che cadono dentro la DIW viva (campionata riga per riga,
+            // non solo a fine frame). Indipendente dal valore finale della DIW, quindi
+            // corretto anche con split DIW pilotato dal Copper (Wings of Fury): senza
+            // questo, buildFrameInfo userebbe l'ultima banda residua e centrerebbe male.
+            // Il test di appartenenza alla DIW include anche le righe di bordo verticale
+            // dentro la finestra (lo sfondo che riempie lo schermo, es. schermo Workbench
+            // con DIW aperta 29..312 ma bitplane attivi solo al centro), così l'immagine
+            // resta inquadrata come sull'hardware invece di seguire solo il contenuto.
+            if (frameFirstDiwLine < 0) frameFirstDiwLine = vpos;
+            frameLastDiwLine = vpos;
+
+            // Estensione delle righe con output bitplane (non bordo verticale):
+            // l'inquadratura verticale si centra su questa (come WinUAE/SAE), non
+            // sulla DIW. denise.hsyncHandler(vpos) è già stato chiamato sopra, quindi
+            // isLastLineVBorder() riflette la riga vpos appena renderizzata.
+            if (!denise.isLastLineVBorder()) {
+                if (frameFirstDrawnLine < 0) frameFirstDrawnLine = vpos;
+                frameLastDrawnLine = vpos;
+            }
+        }
+    }
+
+    // RETE DI SICUREZZA: il frame-skip (lastCompletedFrameHadLateBitplaneDma) serve
+    // solo a NASCONDERE un singolo frame transitorio (es. mano insert-disk del KS).
+    // Un frame "parziale" è per definizione un evento isolato; un gioco che marca
+    // OGNI frame (es. uno split-screen mal classificato) NON deve mai congelare il
+    // display. Perciò non saltiamo MAI più di 1 frame consecutivo: al massimo si
+    // nasconde un singolo frame, mai una sequenza. Questo rende impossibile il blocco
+    // del display da frame-skip a prescindere dall'euristica in Agnus.
+    private int consecutiveSkips = 0;
+
+    private void presentFrame() {
+        if (agnus.lastCompletedFrameHadLateBitplaneDma() && consecutiveSkips < 1) {
+            consecutiveSkips++;
+            resetFrameModeCounters();
+            return;
+        }
+        consecutiveSkips = 0;
+        buildFrameInfo(frameInfo);
+        if (!ASYNC_RENDER) {
+            // Default: composizione sincrona sul thread di emulazione (deterministica).
+            display.renderFrame(frameBuffer, RAW_WIDTH, RAW_HEIGHT, frameInfo);
+            resetFrameModeCounters();
+            return;
+        }
+        synchronized (renderLock) {
+            if (!renderBusy) {
+                // Scambia il frame appena completato col buffer del renderer e
+                // sveglialo. L'emulazione prosegue subito sull'altro buffer.
+                int[] tmp = renderBuffer;
+                renderBuffer = frameBuffer;
+                frameBuffer = tmp;
+                asyncFrameInfo.copyFrom(frameInfo);
+                pendingInfo = asyncFrameInfo;
+                renderBusy = true;
+                renderLock.notifyAll();
+            }
+            // Se il renderer è ancora occupato col frame precedente, scartiamo
+            // questo (frame skip): l'emulazione non si blocca mai.
+        }
+        resetFrameModeCounters();
+    }
+
+    private void buildFrameInfo(FrameInfo out) {
+        int bplcon0 = denise.getBplcon0();
+        boolean hires      = chooseFrameHires(frameHiresLines, frameLoresLines, bplcon0);
+        boolean interlaced = frameInterlacedLines > 0 ? frameInterlacedLines >= (frameHiresLines + frameLoresLines + 1) / 2
+                                                      : (bplcon0 & 0x0004) != 0;
+        // field 0 → righe pari (0,2,4,…), field 1 → righe dispari (1,3,5,…)
+        boolean evenField  = agnus.getLastCompletedFrameField() == 0;
+
+        // Finestra orizzontale: deriva dalla DIW, ma CLAMPATA alla finestra video PAL
+        // standard. Su hardware reale il monitor mostra una regione raster FISSA; la DIW
+        // si limita a blankare i bitplane al suo interno. AmigaDisplay però centra il
+        // crop sul centro dell'area visibile: con una DIW estrema/asimmetrica (es. il 2°
+        // cracktro di Persian Gulf Inferno usa DIWSTRT con H=$05, hstart pixel negativo)
+        // il centro DIW si sposta e trascina il contenuto (posizionato dal DDF) fuori
+        // finestra a destra. Il clamp riporta l'inquadratura a quella standard: le
+        // schermate normali (DIW dentro i limiti) restano IDENTICHE, mentre quelle con
+        // DIW oltre i bordi vengono inquadrate come sull'hardware.
+        // STD_LEFT/RIGHT = pixel rgbLine della DIW PAL canonica (DIWSTRT H=$81,
+        // DIWSTOP H=$1C1): (H - 2*HBLANK_MIN)*2 con HBLANK_MIN=$12 → 186 e 826.
+        final int STD_LEFT = 186, STD_RIGHT = 826;
+        int visStart = Math.max(denise.getDiwHStartPixel(), STD_LEFT);
+        int visStop  = Math.min(denise.getDiwHStopPixel(),  STD_RIGHT);
+        int visibleX      = visStart;
+        int visibleWidth  = Math.max(0, visStop - visStart);
+
+        // Verticale: centra sull'estensione delle righe EFFETTIVAMENTE DISEGNATE dai
+        // bitplane nel frame (output bitplane presente), come WinUAE/SAE
+        // (thisframe_first/last_drawn_line). NON sulla finestra DIW: un gioco può
+        // aprire la DIW su tutto l'overscan (It Came From The Desert: DIW [5,320)) ma
+        // disegnare solo una sotto-regione (box [72,255]); centrare sulla DIW
+        // ammasserebbe l'overscan grigio in basso e spingerebbe il contenuto in alto.
+        // Centrare sull'estensione disegnata mantiene il contenuto inquadrato come su
+        // SAE/WinUAE. Fallback: union delle righe dentro la DIW (gestisce gli split DIW
+        // pilotati dal Copper, es. Wings of Fury), poi la DIW campionata a fine frame.
+        int visibleY, visibleHeight;
+        if (frameFirstDrawnLine >= 0) {
+            visibleY      = frameFirstDrawnLine;
+            visibleHeight = frameLastDrawnLine - frameFirstDrawnLine + 1;
+        } else if (frameFirstDiwLine >= 0) {
+            visibleY      = frameFirstDiwLine;
+            visibleHeight = frameLastDiwLine - frameFirstDiwLine + 1;
+        } else {
+            visibleY      = agnus.getDiwVStart();
+            visibleHeight = agnus.getDiwVStop() - visibleY;
+        }
+
+        out.set(hires, interlaced, evenField, visibleX, visibleY, visibleWidth, visibleHeight);
+        out.setFrameCount(agnus.getFrameCount());
+    }
+
+    static boolean chooseFrameHires(int hiresLines, int loresLines, int currentBplcon0) {
+        if (hiresLines > 0) {
+            return true;
+        }
+        if (loresLines > 0) {
+            return false;
+        }
+        return (currentBplcon0 & 0x8000) != 0;
+    }
+
+    private void resetFrameModeCounters() {
+        frameHiresLines = 0;
+        frameLoresLines = 0;
+        frameInterlacedLines = 0;
+        frameFirstDiwLine = -1;
+        frameLastDiwLine  = -1;
+        frameFirstDrawnLine = -1;
+        frameLastDrawnLine  = -1;
+    }
+
+    public int[] getFrameBuffer() {
+        return frameBuffer;
+    }
+
+    /**
+     * Salva il framebuffer raw PAL prodotto da Denise, senza crop, scaling, line doubling
+     * o overlay applicati da AmigaDisplay.
+     */
+    public void saveRawScreenshot(File file) throws IOException {
+        Objects.requireNonNull(file, "file");
+        File dir = file.getParentFile();
+        if (dir != null && !dir.exists()) {
+            dir.mkdirs();
+        }
+
+        int[] snapshot = Arrays.copyOf(frameBuffer, frameBuffer.length);
+        BufferedImage raw = new BufferedImage(RAW_WIDTH, RAW_HEIGHT, BufferedImage.TYPE_INT_RGB);
+        int[] dst = ((DataBufferInt) raw.getRaster().getDataBuffer()).getData();
+        System.arraycopy(snapshot, 0, dst, 0, snapshot.length);
+        ImageIO.write(raw, "png", file);
+    }
+
+    // =========================================================================
+    // Crop "regression" allineato a vAmiga (suite vAmigaTS)
+    // =========================================================================
+    //
+    // vAmiga (RegressionTester::dumpTexture) ritaglia dalla texture stabile una
+    // finestra fissa e la confronta con l'immagine di riferimento .tiff:
+    //
+    //   Texel *ptr = stablePtr - 4*HBLANK_MIN;          // HBLANK_MIN = 0x12
+    //   for (y = Y1; y < Y2; y++)
+    //     for (x = X1; x < X2; x++)
+    //       pixel = ptr[y*HPIXELS + x];                 // HPIXELS = 912
+    //
+    //   X1 = 4*0x31 = 196   X2 = HPIXELS = 912          → larghezza 716
+    //   Y1 = VBLANK_MAX+1 = 26   Y2 = VPIXELS-2 = 311   → altezza   285
+    //
+    // La colonna di texture effettivamente letta è (x - 4*HBLANK_MIN) = x - 72,
+    // cioè 4*hpos - 72. Il NOSTRO line-buffer (AbstractDenise) ha esattamente lo
+    // stesso indice: rgbLine[i] corrisponde a hpos = HBLANK_MIN + i/4, quindi
+    // i = 4*hpos - 4*HBLANK_MIN = 4*hpos - 72. Le due indicizzazioni coincidono,
+    // perciò il ritaglio è diretto sul frameBuffer raw (912x312):
+    //
+    //   colonne [124, 840)  (X1 - 4*HBLANK_MIN = 124, larghezza 716)
+    //   righe   [26, 311)   (Y1 = 26, altezza 285)
+    //
+    // La riga (vpos) coincide tra i due emulatori (entrambi contano da 0 in alto).
+
+    /** Colonna iniziale del crop regression: X1(196) - 4*HBLANK_MIN(72). */
+    public static final int REGRESSION_CROP_X = 124;
+    /** Riga iniziale del crop regression: VBLANK_MAX(25) + 1. */
+    public static final int REGRESSION_CROP_Y = 26;
+    /** Larghezza del crop regression: X2(912) - X1(196). */
+    public static final int REGRESSION_CROP_W = 716;
+    /** Altezza del crop regression: (VPIXELS-2 = 311) - Y1(26). */
+    public static final int REGRESSION_CROP_H = 285;
+
+    /**
+     * Salva uno screenshot ritagliato esattamente come il dump di regressione di
+     * vAmiga (716x285), così da poterlo confrontare pixel-per-pixel con le immagini
+     * di riferimento della suite vAmigaTS. A differenza di {@link #saveRawScreenshot},
+     * non include il blanking né l'overscan esterno alla finestra di confronto.
+     */
+    public void saveRegressionScreenshot(File file) throws IOException {
+        Objects.requireNonNull(file, "file");
+        File dir = file.getParentFile();
+        if (dir != null && !dir.exists()) {
+            dir.mkdirs();
+        }
+
+        int[] snapshot = Arrays.copyOf(frameBuffer, frameBuffer.length);
+        BufferedImage cropped = new BufferedImage(
+                REGRESSION_CROP_W, REGRESSION_CROP_H, BufferedImage.TYPE_INT_RGB);
+        int[] dst = ((DataBufferInt) cropped.getRaster().getDataBuffer()).getData();
+        int wrapCropCol = RIGHT_HBLANK_WRAP_COL - REGRESSION_CROP_X; // 836-124 = 712
+        for (int row = 0; row < REGRESSION_CROP_H; row++) {
+            int srcY = REGRESSION_CROP_Y + row;
+            System.arraycopy(snapshot, srcY * RAW_WIDTH + REGRESSION_CROP_X,
+                    dst, row * REGRESSION_CROP_W, REGRESSION_CROP_W);
+            // Bordo-destro deep-HBLANK wrap (vAmiga dumpTexture): l'ultimo CCK visibile
+            // (col 836-839 = beam cck 0) mostra il COLOR00 al confine di riga, campionato
+            // a cck 0 della riga successiva. Applicato SOLO qui (non nel framebuffer live).
+            if (wrapCropCol >= 0 && wrapCropCol + 4 <= REGRESSION_CROP_W
+                    && srcY >= 0 && srcY < RAW_HEIGHT) {
+                int rgb = borderCck0Rgb[srcY];
+                int di  = row * REGRESSION_CROP_W + wrapCropCol;
+                dst[di] = rgb; dst[di + 1] = rgb; dst[di + 2] = rgb; dst[di + 3] = rgb;
+            }
+        }
+        ImageIO.write(cropped, "png", file);
+    }
+
+    // STEP 11: calcolo lazy della posizione del pennello (solo su richiesta, p.es.
+    // overlay di debug), invece che ad ogni tick. Stessa formula di prima.
+    public int getBeamX() {
+        return Math.min(RAW_WIDTH - 1,
+                Math.max(0, agnus.getHpos() * RAW_WIDTH / Math.max(1, agnus.getMaxHpos())));
+    }
+
+    public int getBeamY() {
+        return Math.min(RAW_HEIGHT - 1, Math.max(0, agnus.getVpos()));
+    }
+
+    public int getPixel(int x, int y) {
+        if (x < 0 || x >= RAW_WIDTH || y < 0 || y >= RAW_HEIGHT) {
+            return 0;
+        }
+        return frameBuffer[y * RAW_WIDTH + x];
+    }
+}
+

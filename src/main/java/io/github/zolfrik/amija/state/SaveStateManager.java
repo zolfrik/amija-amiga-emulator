@@ -1,0 +1,279 @@
+/*
+ * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * Copyright (C) 2026 zolfrik
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+package io.github.zolfrik.amija.state;
+
+import io.github.zolfrik.amija.config.AmigaConfig;
+import io.github.zolfrik.amija.cpu.Motorola68000;
+import io.github.zolfrik.amija.custom.AbstractAgnus;
+import io.github.zolfrik.amija.custom.FastRam;
+import io.github.zolfrik.amija.input.GamePort;
+import io.github.zolfrik.amija.memory.RAM;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
+
+/**
+ * Salvataggio e ripristino dell'intero stato della macchina A500 su un singolo file
+ * (uno slot). Formato binario custom compresso (gzip), <b>non</b> serializzazione Java:
+ * lo stato è raccolto dal {@link ReflectiveState} sui componenti reali della macchina.
+ *
+ * <p>Header: magic {@code A500SAVE}, versione formato, e un <b>fingerprint</b> della
+ * configurazione (chipset, dimensioni RAM, modo video, Kickstart, dischi montati). Al
+ * caricamento un fingerprint diverso viene rifiutato con {@link IncompatibleStateException}.
+ *
+ * <p>Lo snapshot va preso/applicato a <b>macchina in pausa</b> (come quando il popup F12
+ * è aperto). Sia in salvataggio sia in caricamento la macchina viene prima portata a un
+ * <b>confine pulito</b> (inizio frame + confine d'istruzione della CPU), così la coda-bus
+ * del 68000 e i recorder per-scanline di Denise — grafi transitori non serializzati — sono
+ * vuoti e non c'è nulla da perdere.
+ */
+public final class SaveStateManager {
+
+    private static final byte[] MAGIC = "A500SAVE".getBytes(StandardCharsets.US_ASCII);
+    private static final int VERSION = 1;
+
+    /** Nome file dello slot unico, dentro la cartella {@code savestate/}. */
+    public static final String SLOT_FILE = "savestate/state1.a5s";
+
+    /**
+     * Screenshot che accompagna lo slot unico: nome fisso (nessuna componente variabile),
+     * così ogni salvataggio sovrascrive l'immagine precedente.
+     */
+    public static final String SLOT_SCREENSHOT = "savestate/state1.png";
+
+    private SaveStateManager() {}
+
+    /** Rifiuto di uno slot incompatibile con la macchina/versione correnti. */
+    public static final class IncompatibleStateException extends IOException {
+        public IncompatibleStateException(String message) { super(message); }
+    }
+
+    // =========================================================================
+    // Salvataggio
+    // =========================================================================
+
+    public static void save(File file, Motorola68000 cpu, AbstractAgnus agnus,
+            GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
+        advanceToBoundary(agnus, cpu);
+        List<Object> roots = buildRoots(cpu, agnus, port1, port2);
+
+        File dir = file.getParentFile();
+        if (dir != null) dir.mkdirs();
+        try (DataOutputStream out = new DataOutputStream(new GZIPOutputStream(
+                new BufferedOutputStream(new FileOutputStream(file))))) {
+            out.write(MAGIC);
+            out.writeInt(VERSION);
+            out.writeUTF(fingerprint(cfg));
+            out.writeInt(roots.size());
+            for (Object r : roots) {
+                out.writeUTF(r.getClass().getName());
+                ReflectiveState.write(out, r);
+            }
+        }
+    }
+
+    // =========================================================================
+    // Caricamento
+    // =========================================================================
+
+    public static void load(File file, Motorola68000 cpu, AbstractAgnus agnus,
+            GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
+        // Porta la macchina CORRENTE a un confine pulito: così la coda-bus del 68000
+        // (oggetto transitorio non presente nello slot) è vuota prima di sovrascrivere i
+        // registri, evitando che operazioni bus in sospeso corrompano il resume.
+        advanceToBoundary(agnus, cpu);
+
+        try (DataInputStream in = new DataInputStream(new GZIPInputStream(
+                new BufferedInputStream(new FileInputStream(file))))) {
+            byte[] magic = new byte[MAGIC.length];
+            in.readFully(magic);
+            if (!Arrays.equals(magic, MAGIC)) {
+                throw new IncompatibleStateException("File save state non riconosciuto.");
+            }
+            int ver = in.readInt();
+            if (ver != VERSION) {
+                throw new IncompatibleStateException(
+                        "Versione dello slot (" + ver + ") incompatibile (attesa " + VERSION + ").");
+            }
+            String fp = in.readUTF();
+            if (!fp.equals(fingerprint(cfg))) {
+                throw new IncompatibleStateException(
+                        "La configurazione della macchina è diversa da quella salvata nello slot.");
+            }
+            List<Object> roots = buildRoots(cpu, agnus, port1, port2);
+            int n = in.readInt();
+            if (n != roots.size()) {
+                throw new IncompatibleStateException("Struttura dello slot incompatibile.");
+            }
+            for (int i = 0; i < n; i++) {
+                String cls = in.readUTF();
+                Object r = roots.get(i);
+                if (!cls.equals(r.getClass().getName())) {
+                    throw new IncompatibleStateException(
+                            "Componente #" + i + " diverso nello slot (" + cls + ").");
+                }
+                ReflectiveState.read(in, r);
+            }
+        }
+    }
+
+    // =========================================================================
+    // Costruzione della lista dei root (identica in save e load)
+    // =========================================================================
+
+    private static List<Object> buildRoots(Motorola68000 cpu, AbstractAgnus agnus,
+            GamePort port1, GamePort port2) {
+        List<Object> roots = new ArrayList<>();
+        add(roots, cpu);
+        add(roots, agnus);
+        add(roots, field(agnus, "gary"));   // decoder indirizzi: flip-flop OVL, reset/halt…
+        add(roots, field(agnus, "copper"));
+        add(roots, field(agnus, "blitter"));
+        add(roots, field(agnus, "denise"));
+
+        Object paula = field(agnus, "paula");
+        add(roots, paula);
+        // Canali audio di Paula: inner class con stato DMA vivo (periodo, puntatore,
+        // contatori) che persiste tra i frame → ognuno è un root a sé.
+        Object channels = field(paula, "audioChannels");
+        if (channels instanceof Object[]) {
+            for (Object ch : (Object[]) channels) add(roots, ch);
+        }
+
+        addCia(roots, field(agnus, "ciaA"));
+        addCia(roots, field(agnus, "ciaB"));
+        add(roots, field(agnus, "keyboard"));
+        add(roots, field(agnus, "batteryClock"));
+        add(roots, port1);
+        add(roots, port2);
+
+        add(roots, field(agnus, "chipRAM"));
+        add(roots, field(agnus, "slowRAM")); // può essere null (nessuna Slow RAM)
+        Object fast = field(agnus, "fastRam");
+        if (fast instanceof FastRam) {
+            RAM fr = ((FastRam) fast).ram();
+            add(roots, fr); // null se nessuna Fast RAM
+        }
+
+        add(roots, agnus.getDf0());
+        add(roots, agnus.getDf1());
+        add(roots, agnus.getDf2());
+        add(roots, agnus.getDf3());
+        return roots;
+    }
+
+    /** Aggiunge un root non-null (i componenti opzionali assenti vengono saltati). */
+    private static void add(List<Object> roots, Object o) {
+        if (o != null) roots.add(o);
+    }
+
+    /**
+     * Aggiunge una CIA e il suo {@code CIAPinSet}, inclusi i 5 pin (flag/tod/cnt/sp/irq):
+     * i loro livelli di segnale (linea IRQ verso Paula, handshake tastiera, ingressi disk
+     * /RDY-/TK0-/WPRO-/CHNG, OVL, LED) sono stato persistente in oggetti annidati che il
+     * walker, fermandosi alle primitive, non cattura da solo.
+     */
+    private static void addCia(List<Object> roots, Object cia) {
+        if (cia == null) return;
+        add(roots, cia);
+        Object pins = field(cia, "pinSet");
+        if (pins == null) return;
+        add(roots, pins);
+        for (String p : new String[] { "flagPin", "todPin", "cntPin", "spPin", "irqPin" }) {
+            add(roots, field(pins, p));
+        }
+    }
+
+    // =========================================================================
+    // Confine pulito
+    // =========================================================================
+
+    /**
+     * Fa avanzare la macchina (a passi di color-clock) fino all'inizio del frame con la
+     * CPU a un confine d'istruzione. Meno di un frame di tempo emulato. Va chiamato a
+     * macchina in pausa (nessun altro thread tocca Agnus).
+     */
+    private static void advanceToBoundary(AbstractAgnus agnus, Motorola68000 cpu) {
+        final int GUARD = 8_000_000; // ampio margine: un intero frame è ~70k color-clock
+        for (int i = 0; i < GUARD; i++) {
+            if (agnus.getVpos() == 0 && cpu.isAtInstructionBoundary()) return;
+            agnus.risingEdge();
+            agnus.fallingEdge();
+        }
+    }
+
+    // =========================================================================
+    // Fingerprint di compatibilità
+    // =========================================================================
+
+    private static String fingerprint(AmigaConfig c) {
+        StringBuilder b = new StringBuilder(128);
+        b.append("v").append(VERSION).append(';');
+        b.append("chipset=").append(c.chipset()).append(';');
+        b.append("chip=").append(c.chipRamKb()).append(';');
+        b.append("slow=").append(c.slowRamKb()).append(';');
+        b.append("fast=").append(c.fastRamKb()).append(';');
+        b.append("video=").append(c.videoMode()).append(';');
+        b.append("ks=").append(baseName(c.kickstartPath())).append(';');
+        for (int i = 0; i < 4; i++) {
+            b.append("df").append(i).append('=').append(baseName(c.driveDisk(i))).append(';');
+        }
+        return b.toString();
+    }
+
+    private static String baseName(String path) {
+        if (path == null || path.isBlank()) return "";
+        return new File(path.trim()).getName();
+    }
+
+    // =========================================================================
+    // Riflessione: lettura di un campo (anche privato, anche nelle superclassi)
+    // =========================================================================
+
+    private static Object field(Object owner, String name) {
+        for (Class<?> c = owner.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f.get(owner);
+            } catch (NoSuchFieldException ignored) {
+                // prova nella superclasse
+            } catch (IllegalAccessException e) {
+                throw new IllegalStateException("save state: campo inaccessibile " + name, e);
+            }
+        }
+        throw new IllegalStateException("save state: campo assente " + name
+                + " in " + owner.getClass().getName());
+    }
+}

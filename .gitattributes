@@ -1,0 +1,13 @@
+# Terminazioni di riga: LF nel repository E nella working copy, su qualunque
+# piattaforma. Senza questa regola, su Windows core.autocrlf=true riscriverebbe
+# la working copy a CRLF al primo checkout, facendo divergere i sorgenti dalla
+# loro forma canonica e sporcando i diff con righe non realmente modificate.
+* text=auto eol=lf
+
+# Binari: mai convertiti, mai diffati come testo.
+*.png binary
+*.bin binary
+*.jar binary
+*.zip binary
+*.gz  binary
+*.pdf binary

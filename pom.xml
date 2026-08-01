@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>io.github.zolfrik</groupId>
+    <artifactId>amija</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    <name>AmiJa</name>
+    <!-- Repository PUBBLICO: contiene i soli src/main (specchio del repo privato)
+         e la build di distribuzione. Niente src/test, quindi niente dipendenze di
+         test, niente surefire e niente strumenti d'analisi (Playwright/SAE, JSON):
+         quelli vivono solo nel repo privato. -->
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- release (non source/target): impone anche le API della piattaforma 26,
+             così non si compila per sbaglio contro classi assenti dal target. -->
+        <maven.compiler.release>26</maven.compiler.release>
+        <exec.mainClass>io.github.zolfrik.amija.Amija</exec.mainClass>
+        <!-- Data di build sostituita nel version.properties filtrato (vedi <resources>)
+             e letta a runtime da common/Version.java. L'indirezione via ${build.timestamp}
+             è necessaria: filtrando ${maven.build.timestamp} direttamente il resource
+             plugin lo rigenera nel formato ISO di default ignorando il format qui sotto. -->
+        <maven.build.timestamp.format>yyyy-MM-dd HH:mm</maven.build.timestamp.format>
+        <build.timestamp>${maven.build.timestamp}</build.timestamp>
+        <!-- LWJGL: backend grafico OpenGL/shader. Il rendering GL è confinato al layer
+             display (io.github.zolfrik.amija.display.render.gl): il contesto GL è
+             ospitato nella finestra Swing esistente tramite AWTGLCanvas (lwjgl3-awt),
+             così si riusano input, drag&drop e popup F12 senza toccare il core.
+             La versione lwjgl è allineata a quella contro cui lwjgl3-awt è compilato
+             (3.3.5) per evitare disallineamenti di API.
+             NOTA tastiera: il fix del doppio-shift usa la Foreign Function API
+             (WindowsKeyState), indipendente da LWJGL/GLFW. -->
+        <lwjgl.version>3.3.5</lwjgl.version>
+    </properties>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.lwjgl</groupId>
+                <artifactId>lwjgl-bom</artifactId>
+                <version>${lwjgl.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+    <!-- LWJGL è l'UNICA dipendenza esterna: il core dell'emulatore usa solo JDK +
+         Swing. -->
+    <dependencies>
+        <!-- LWJGL (core + GLFW + OpenGL) — backend grafico -->
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-glfw</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-opengl</artifactId>
+        </dependency>
+        <!-- Natives per tutte le piattaforme supportate: finiscono tutte dentro
+             AmiJa.jar, così lo stesso jar gira su Windows, Linux e macOS (x64 e
+             ARM64). LWJGL sceglie a runtime la cartella corretta dentro il jar in
+             base a os.name/os.arch, quindi le native inutilizzate sono solo peso
+             morto e non creano conflitti. Il resto del codice è già portabile:
+             WindowsKeyState (Foreign Function API) si disattiva da solo fuori da
+             Windows e le funzioni che ne dipendono degradano a no-op. -->
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl</artifactId>
+            <classifier>natives-windows</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-glfw</artifactId>
+            <classifier>natives-windows</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-opengl</artifactId>
+            <classifier>natives-windows</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl</artifactId>
+            <classifier>natives-windows-arm64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-glfw</artifactId>
+            <classifier>natives-windows-arm64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-opengl</artifactId>
+            <classifier>natives-windows-arm64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl</artifactId>
+            <classifier>natives-linux</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-glfw</artifactId>
+            <classifier>natives-linux</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-opengl</artifactId>
+            <classifier>natives-linux</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl</artifactId>
+            <classifier>natives-linux-arm64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-glfw</artifactId>
+            <classifier>natives-linux-arm64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-opengl</artifactId>
+            <classifier>natives-linux-arm64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl</artifactId>
+            <classifier>natives-macos</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-glfw</artifactId>
+            <classifier>natives-macos</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-opengl</artifactId>
+            <classifier>natives-macos</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl</artifactId>
+            <classifier>natives-macos-arm64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-glfw</artifactId>
+            <classifier>natives-macos-arm64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-opengl</artifactId>
+            <classifier>natives-macos-arm64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- JAWT bindings: richiesti da lwjgl3-awt per creare il contesto GL sul
+             canvas AWT/Swing (nessun native separato: usa la JAWT del JDK). -->
+        <dependency>
+            <groupId>org.lwjgl</groupId>
+            <artifactId>lwjgl-jawt</artifactId>
+        </dependency>
+        <!-- lwjgl3-awt: AWTGLCanvas — integra un contesto OpenGL LWJGL dentro la
+             finestra Swing esistente (path raccomandato: riuso di input/DnD/F12). -->
+        <dependency>
+            <groupId>org.lwjglx</groupId>
+            <artifactId>lwjgl3-awt</artifactId>
+            <version>0.2.3</version>
+            <exclusions>
+                <!-- Vulkan non serve: il backend è solo OpenGL. -->
+                <exclusion>
+                    <groupId>org.lwjgl</groupId>
+                    <artifactId>lwjgl-vulkan</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+    </dependencies>
+    <build>
+        <!-- Il solo version.properties viene filtrato (sostituzione di
+             ${project.version} e ${maven.build.timestamp}); tutto il resto delle
+             risorse è copiato tal quale, così i .properties di i18n e i binari
+             (icone, hdf) restano intatti. -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>version.properties</exclude>
+                </excludes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>version.properties</include>
+                </includes>
+            </resource>
+        </resources>
+        <plugins>
+            <!-- Versione fissata: senza <version> si eredita il default del Maven
+                 installato, che cambia da una release all'altra. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.15.0</version>
+            </plugin>
+            <!-- Distribuzione: un unico jar eseguibile target/AmiJa.jar che include
+                 il codice, le risorse e tutte le dipendenze (LWJGL + le natives di
+                 tutte le piattaforme), quindi lo stesso file gira ovunque. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.3</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>AmiJa</finalName>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>${exec.mainClass}</mainClass>
+                                    <manifestEntries>
+                                        <!-- LWJGL e WindowsKeyState (Foreign Function API) fanno
+                                             accesso nativo: da JDK 24 è "restricted" e senza questo
+                                             la JVM stampa un WARNING a ogni avvio (e in una release
+                                             futura lancerebbe IllegalCallerException). Equivale
+                                             all'opzione enable-native-access=ALL-UNNAMED per il jar
+                                             eseguibile; sui JDK più vecchi l'attributo è ignorato. -->
+                                        <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+                                    </manifestEntries>
+                                </transformer>
+                                <!-- Unisce i META-INF/services (usati da AWT/ImageIO e dai
+                                     provider delle librerie) invece di sovrascriverli. -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <!-- Le firme dei jar originali non valgono più
+                                             nel jar unito: vanno rimosse o la JVM rifiuta
+                                             di caricare le classi. -->
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Pacchetto di distribuzione: target/AmiJa-<versione>.zip, con dentro
+                 il jar eseguibile, i documenti e le cartelle lette dalla directory
+                 di lavoro (shaders/, blurs/ e i segnaposto floppysounds/, whdload/).
+                 Scompattandolo si ottiene una cartella pronta all'uso.
+                 Il contenuto è descritto in src/assembly/dist.xml.
+                 NB: la dichiarazione DOPO lo shade plugin non è casuale — nella
+                 stessa fase (package) i plugin girano nell'ordine del pom, e lo zip
+                 deve trovare AmiJa.jar già prodotto. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.7.1</version>
+                <executions>
+                    <execution>
+                        <id>dist-zip</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <!-- appendAssemblyId=false: senza, il file si chiamerebbe
+                                 AmiJa-<versione>-dist.zip. -->
+                            <finalName>AmiJa-${project.version}</finalName>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <descriptors>
+                                <descriptor>src/assembly/dist.xml</descriptor>
+                            </descriptors>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+    <licenses>
+        <license>
+            <name>GNU General Public License v3.0 or later</name>
+            <url>https://www.gnu.org/licenses/gpl-3.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+</project>

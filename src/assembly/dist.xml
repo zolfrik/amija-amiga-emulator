@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Descrittore dello zip di distribuzione: target/AmiJa-<versione>.zip.
+
+  Contiene tutto e solo quello che serve per eseguire l'emulatore dopo aver
+  scompattato l'archivio: il jar eseguibile (già completo di LWJGL e delle sue
+  natives), i documenti, e le cartelle lette a runtime dalla directory di lavoro.
+
+  NON contiene amiga.properties: alla prima esecuzione AmigaConfig.load() lo
+  crea da solo con i valori di default (vedi config/AmigaConfig.java). Spedirne
+  uno preconfezionato significherebbe distribuire i percorsi assoluti della
+  macchina di build. Per lo stesso motivo mancano savestate/, screenshots/,
+  whdload-cache/ e whdload-saves/: le crea l'emulatore quando servono.
+-->
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 http://maven.apache.org/xsd/assembly-2.2.0.xsd">
+    <id>dist</id>
+    <formats>
+        <format>zip</format>
+    </formats>
+    <!-- Tutto dentro una cartella AmiJa-<versione>/: scompattando non si sparpaglia
+         il contenuto nella directory corrente. -->
+    <includeBaseDirectory>true</includeBaseDirectory>
+    <baseDirectory>AmiJa-${project.version}</baseDirectory>
+
+    <files>
+        <!-- Il jar prodotto dallo shade plugin (codice + risorse + LWJGL + natives
+             per tutte e sei le piattaforme). Non è l'artifact principale del
+             progetto — quello resta amija-<versione>.jar — quindi va preso per
+             percorso, non con <dependencySets>. -->
+        <file>
+            <source>${project.build.directory}/AmiJa.jar</source>
+            <outputDirectory>.</outputDirectory>
+            <fileMode>0644</fileMode>
+        </file>
+    </files>
+
+    <fileSets>
+        <!-- Documenti: licenza, manuale, note sui componenti di terze parti. -->
+        <fileSet>
+            <directory>${project.basedir}</directory>
+            <outputDirectory>.</outputDirectory>
+            <includes>
+                <include>LICENSE</include>
+                <include>README.md</include>
+                <include>THIRD-PARTY-NOTICES.md</include>
+                <include>USER_MANUAL.txt</include>
+            </includes>
+            <fileMode>0644</fileMode>
+        </fileSet>
+
+        <!-- Pack di shader RetroArch usati dal renderer OpenGL: sono
+             ridistribuibili (GPL-2.0-or-later / MIT, vedi THIRD-PARTY-NOTICES.md)
+             e vanno letti dalla directory di lavoro, non dal jar. -->
+        <fileSet>
+            <directory>${project.basedir}/shaders</directory>
+            <outputDirectory>shaders</outputDirectory>
+            <fileMode>0644</fileMode>
+            <directoryMode>0755</directoryMode>
+        </fileSet>
+        <fileSet>
+            <directory>${project.basedir}/blurs</directory>
+            <outputDirectory>blurs</outputDirectory>
+            <fileMode>0644</fileMode>
+            <directoryMode>0755</directoryMode>
+        </fileSet>
+
+        <!-- Segnaposto per il materiale che l'utente deve procurarsi da sé: nello
+             zip finisce il solo readme.txt che spiega cosa metterci dentro.
+             L'<includes> esplicito è una rete di sicurezza: se un giorno queste
+             cartelle contenessero i file veri (come nel tree privato), lo zip
+             continuerebbe a non ridistribuirli. -->
+        <fileSet>
+            <directory>${project.basedir}/floppysounds</directory>
+            <outputDirectory>floppysounds</outputDirectory>
+            <includes>
+                <include>readme.txt</include>
+            </includes>
+            <fileMode>0644</fileMode>
+            <directoryMode>0755</directoryMode>
+        </fileSet>
+        <fileSet>
+            <directory>${project.basedir}/whdload</directory>
+            <outputDirectory>whdload</outputDirectory>
+            <includes>
+                <include>readme.txt</include>
+            </includes>
+            <fileMode>0644</fileMode>
+            <directoryMode>0755</directoryMode>
+        </fileSet>
+    </fileSets>
+</assembly>
