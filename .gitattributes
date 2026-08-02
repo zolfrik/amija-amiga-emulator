@@ -1,14 +1,33 @@
+# Questo file e' DELIBERATAMENTE IDENTICO in AmiJa-private e AmiJa-public, byte per
+# byte. Non e' un dettaglio estetico: `AmiJa-public/src/main` deve restare uno specchio
+# byte-per-byte di `AmiJa-private/src/main` (CLAUDE.md, "Rules for the public tree" §1,
+# verifica `diff -rq`), e due repository che normalizzano diversamente lo stesso file
+# producono working copy diverse a partire dallo stesso contenuto versionato. Se cambi
+# una riga qui, cambiala anche nell'altro.
+
 # Terminazioni di riga: LF nel repository E nella working copy, su qualunque
-# piattaforma. Senza questa regola, su Windows core.autocrlf=true riscriverebbe
-# la working copy a CRLF al primo checkout, facendo divergere i sorgenti dalla
-# loro forma canonica e sporcando i diff con righe non realmente modificate.
+# piattaforma. Senza `eol=lf`, su Windows core.autocrlf=true riscriverebbe la working
+# copy a CRLF al primo checkout e i due tree divergerebbero. Va accompagnato da
+# `core.autocrlf=false` nella copia locale: l'attributo da solo basterebbe, ma lasciare
+# autocrlf attivo resta una trappola.
 * text=auto eol=lf
 
-# Binari: mai convertiti, mai diffati come testo.
-*.ico binary
-*.png binary
-*.bin binary
-*.jar binary
-*.zip binary
-*.gz  binary
-*.pdf binary
+# Binari: mai convertiti, mai diffati come testo. L'elenco e' l'unione di cio' che puo'
+# comparire nei due tree. Le voci vietate nel pubblico (ROM, immagini disco) restano
+# elencate apposta: se per errore una ci finisse, che almeno non venga corrotta dalla
+# conversione di riga prima di essere tolta.
+*.png  binary
+*.ico  binary
+*.icns binary
+*.bin  binary
+*.jar  binary
+*.zip  binary
+*.gz   binary
+*.pdf  binary
+*.wav  binary
+*.dll  binary
+*.rom  binary
+*.adf  binary
+*.ipf  binary
+*.hdf  binary
+*.lha  binary
