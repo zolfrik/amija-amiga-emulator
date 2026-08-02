@@ -2,8 +2,11 @@
 target/
 *.class
 
-# Generato dal filtering di Maven a ogni build (versione + timestamp).
-src/main/resources/version.properties
+# NB: src/main/resources/version.properties NON va ignorato. E' il template con i
+# segnaposto ${project.version}/${build.timestamp}, cioe' un sorgente; il file
+# generato e' la sua copia filtrata in target/classes, gia' esclusa da target/.
+# Ignorando il template, un checkout pulito (la CI) compila senza, il jar esce
+# privo di /version.properties e Version.version() ripiega su "dev".
 
 # --- Materiale NON ridistribuibile, fornito dall'utente -------------------
 # Vedi THIRD-PARTY-NOTICES.md §4. Queste cartelle esistono nel repository
