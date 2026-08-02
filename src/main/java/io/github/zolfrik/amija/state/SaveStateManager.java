@@ -20,6 +20,7 @@
 
 package io.github.zolfrik.amija.state;
 
+import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.config.AmigaConfig;
 import io.github.zolfrik.amija.cpu.Motorola68000;
 import io.github.zolfrik.amija.custom.AbstractAgnus;
@@ -63,16 +64,30 @@ public final class SaveStateManager {
     private static final byte[] MAGIC = "A500SAVE".getBytes(StandardCharsets.US_ASCII);
     private static final int VERSION = 1;
 
-    /** Nome file dello slot unico, dentro la cartella {@code savestate/}. */
+    /**
+     * Nome file dello slot unico, dentro la cartella {@code savestate/} della home
+     * dell'applicazione. Relativo: usare {@link #slotFile()} per il file vero.
+     */
     public static final String SLOT_FILE = "savestate/state1.a5s";
 
     /**
      * Screenshot che accompagna lo slot unico: nome fisso (nessuna componente variabile),
-     * così ogni salvataggio sovrascrive l'immagine precedente.
+     * così ogni salvataggio sovrascrive l'immagine precedente. Relativo alla home:
+     * usare {@link #slotScreenshot()}.
      */
     public static final String SLOT_SCREENSHOT = "savestate/state1.png";
 
     private SaveStateManager() {}
+
+    /** Lo slot unico, risolto nella home dell'applicazione ({@link AppHome}). */
+    public static File slotFile() {
+        return AppHome.file(SLOT_FILE);
+    }
+
+    /** Lo screenshot dello slot unico, risolto nella home ({@link AppHome}). */
+    public static File slotScreenshot() {
+        return AppHome.file(SLOT_SCREENSHOT);
+    }
 
     /** Rifiuto di uno slot incompatibile con la macchina/versione correnti. */
     public static final class IncompatibleStateException extends IOException {

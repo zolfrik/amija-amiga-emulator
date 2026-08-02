@@ -5,6 +5,7 @@
 * text=auto eol=lf
 
 # Binari: mai convertiti, mai diffati come testo.
+*.ico binary
 *.png binary
 *.bin binary
 *.jar binary

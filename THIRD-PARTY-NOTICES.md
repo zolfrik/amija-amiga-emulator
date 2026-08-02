@@ -1,9 +1,10 @@
 # Third-party notices
 
 AmiJa is distributed under the **GNU General Public License v3.0 or later**
-(see [LICENSE](LICENSE)). The components listed below are third-party work,
-either redistributed in this repository or fetched on request: each one keeps
-its own licence. This document records them, it does not change their terms.
+(see [LICENSE](LICENSE)). The components listed below are third-party work —
+redistributed in this repository, bundled into the released archives, or fetched
+on request: each one keeps its own licence. This document records them, it does
+not change their terms.
 
 ---
 
@@ -115,7 +116,7 @@ left out — the ones AmiJa would be allowed to ship are optional anyway.
 To spare the user a file hunt, AmiJa includes a download assistant (package
 `io.github.zolfrik.amija.assets`) that, **only when the user explicitly asks**,
 fetches the packages below from their official sites and unpacks them into the
-right folders of the working directory.
+right folders of AmiJa's home directory.
 
 > AmiJa redistributes nothing. The file travels from the rights holder's server
 > to the user's disk; the copy is made by the user, exactly as if they had
@@ -149,3 +150,40 @@ Rules every entry in the manifest must respect:
    folder so the user can do by hand what the assistant could not.
 6. **Never Kickstart ROMs or disk images.** No automation may procure them: they
    stay the user's responsibility (§4).
+
+---
+
+## 6. Bundled Java runtime — the native distributions
+
+The per-system archives (`AmiJa-<version>-windows-x64.zip`,
+`…-linux-x64.tar.gz`, `…-linux-arm64.tar.gz`, `…-macos-arm64.tar.gz`) carry a
+Java runtime inside them, in `runtime/` — that is the whole point of those
+archives: the user installs no JDK. The plain `AmiJa.jar` and
+`AmiJa-<version>.zip` do **not** contain one and this section does not apply to
+them.
+
+| Component | Version | Licence | Origin |
+|---|---|---|---|
+| OpenJDK runtime image (built with `jlink`) | Java 26 | GPL-2.0 **with the Classpath Exception** | [Eclipse Temurin](https://adoptium.net/), installed on the build runner by `actions/setup-java` |
+
+The runtime is not a repackaging: `jlink` assembles it from the modules of that
+same OpenJDK build, keeping only what AmiJa uses —
+`java.base`, `java.desktop`, `java.net.http`, `jdk.unsupported`, `jdk.crypto.ec`
+and `jdk.zipfs`.
+
+**Why this is allowed.** OpenJDK is GPL-2.0 *with the Classpath Exception*. The
+exception is what makes the combination lawful: it lets independent code link
+against the runtime and be distributed under its own terms, so shipping a
+GPL-3.0-or-later application next to a GPL-2.0+CPE runtime does not force either
+licence onto the other. Each half keeps its own, and both are free software.
+
+**What must be preserved.** `jlink` copies the licence texts of every included
+module into `runtime/legal/` (~200 KB, 56 files). Those files are the notices
+this section refers to: **they must stay inside every archive.** Do not prune
+them to save space — with them the requirement is met, without them the
+distribution is not compliant. The packaging scripts in `packaging/` never touch
+that folder; nothing else should either.
+
+Adoptium publishes no Temurin build for Windows on ARM64, hence the absence of a
+`windows-arm64` archive (see the matrix comment in
+`.github/workflows/release.yml`).

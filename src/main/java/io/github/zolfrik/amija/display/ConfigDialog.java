@@ -20,6 +20,7 @@
 
 package io.github.zolfrik.amija.display;
 
+import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.common.Chipset;
 import io.github.zolfrik.amija.common.VideoMode;
 import io.github.zolfrik.amija.common.Version;
@@ -417,7 +418,7 @@ public final class ConfigDialog {
         shaderParamsBtn.addActionListener(e -> {
             Object sel = shaderCombo.getSelectedItem();
             if (sel == null || "none".equals(sel)) return;
-            java.nio.file.Path glslp = java.nio.file.Paths.get("shaders", sel + ".glslp");
+            java.nio.file.Path glslp = AppHome.resolve("shaders", sel + ".glslp");
             if (java.nio.file.Files.isRegularFile(glslp)) {
                 ShaderParamsDialog.show(dialog, glslp, shaderParamUpdater);
             }
@@ -912,13 +913,13 @@ public final class ConfigDialog {
 
     /**
      * Elenca i preset shader disponibili: {@code "none"} seguito dai nomi (senza
-     * estensione) dei {@code .glslp} nella cartella {@code shaders} della working dir,
-     * in ordine alfabetico case-insensitive.
+     * estensione) dei {@code .glslp} nella cartella {@code shaders} della home
+     * dell'applicazione, in ordine alfabetico case-insensitive.
      */
     private static String[] scanShaderNames() {
         java.util.List<String> names = new java.util.ArrayList<>();
         names.add("none");
-        File dir = new File("shaders");
+        File dir = AppHome.file("shaders");
         File[] files = dir.listFiles((d, n) -> n.toLowerCase().endsWith(".glslp"));
         if (files != null) {
             java.util.Arrays.sort(files,

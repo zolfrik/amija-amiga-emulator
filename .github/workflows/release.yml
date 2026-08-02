@@ -1,0 +1,255 @@
+# Costruisce e pubblica una release di AmiJa.
+#
+# Produce, in un colpo solo:
+#   - AmiJa.jar                            il jar eseguibile (serve un JDK 26 installato)
+#   - AmiJa-<ver>.zip                      lo zip portatile senza runtime Java
+#   - AmiJa-<ver>-<os>-<arch>.{zip,tar.gz} le distribuzioni native, con dentro il
+#                                          runtime Java: si scompatta e si lancia
+#
+# jpackage NON cross-compila: ogni target ha bisogno del suo runner.
+#
+# Le action di terze parti sono PINNATE PER SHA (non per tag): un tag e' mutabile e
+# ripuntarlo altrove e' il modo classico di compromettere una catena di build.
+# Il commento accanto dice a quale versione corrisponde lo SHA.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Per provare la pipeline senza creare un tag: la release finale viene saltata,
+  # ma gli archivi restano scaricabili dagli artifact della run.
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Quali distribuzioni native costruire"
+        type: choice
+        default: solo-windows
+        options:
+          - solo-windows
+          - tutte
+
+# Di default sola lettura; il permesso di scrittura e' dato al solo job che pubblica.
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: '26'
+  JAVA_DISTRIBUTION: 'temurin'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Jar eseguibile + zip senza runtime: gli artefatti "storici", invariati.
+  # ---------------------------------------------------------------------------
+  jar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      # Il nome degli archivi viene da <version> del pom: se il tag dice un'altra
+      # cosa, la release conterrebbe file che non corrispondono al tag. Meglio
+      # fermarsi qui che accorgersene a pubblicazione fatta.
+      - name: Il tag deve corrispondere alla versione del pom
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          POM_VERSION="$(mvn -B -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "pom=$POM_VERSION tag=$TAG_VERSION"
+          if [ "$POM_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Il tag $GITHUB_REF_NAME non corrisponde alla versione del pom ($POM_VERSION)."
+            exit 1
+          fi
+
+      - name: Build
+        run: mvn -B clean package
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jar
+          path: |
+            target/AmiJa.jar
+            target/AmiJa-*.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Quali target costruire. Su tag: sempre tutti. A mano (workflow_dispatch): quelli
+  # scelti nella tendina, che per default sono il solo Windows — su un repository
+  # PRIVATO i runner macOS e ARM64 non hanno le stesse condizioni di uno pubblico,
+  # e per una prova della pipeline il solo Windows basta.
+  #
+  # windows-arm64 non compare da nessuna parte: al 2026-08-02 non esiste alcun JDK 26
+  # per Windows/aarch64 — ne' Temurin (che quella piattaforma non la copre per nessuna
+  # versione) ne' Zulu (si ferma alla 25). Senza JDK 26 per quel target non si puo' ne'
+  # compilare (maven.compiler.release=26) ne' fare jlink dei jmod giusti. Nel frattempo
+  # Windows on ARM esegue in emulazione l'archivio windows-x64, ed e' quello che il
+  # README consiglia. Il giorno in cui il JDK arriva, si aggiunge alla lista "tutte":
+  #   {"target":"windows-arm64","os":"windows-11-arm"}
+  # ---------------------------------------------------------------------------
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        run: |
+          # inputs.targets e' vuoto quando il workflow parte da un tag: in quel caso
+          # si cade nel ramo "tutte", che e' il comportamento voluto per una release.
+          if [ "${{ inputs.targets }}" = "solo-windows" ]; then
+            MATRIX='[{"target":"windows-x64","os":"windows-latest"}]'
+          else
+            MATRIX='[{"target":"windows-x64","os":"windows-latest"},{"target":"linux-x64","os":"ubuntu-latest"},{"target":"linux-arm64","os":"ubuntu-24.04-arm"},{"target":"macos-arm64","os":"macos-latest"}]'
+          fi
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Target da costruire: $MATRIX"
+
+  # ---------------------------------------------------------------------------
+  # Distribuzioni native (app-image portatile + runtime Java incluso).
+  # ---------------------------------------------------------------------------
+  image:
+    needs: plan
+    strategy:
+      # Un target che non compila non deve impedire agli altri di produrre il loro
+      # archivio: si vede subito quali reggono e quali no.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      # Il JRE bundled porta la JVM, non le librerie di sistema: senza queste
+      # l'AWT non parte. Sono le stesse che il README elenca come prerequisito
+      # Linux. xvfb serve solo allo smoke test (i runner non hanno uno schermo).
+      - name: Librerie X11/audio + Xvfb (solo Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libxext6 libxrender1 libxtst6 libxi6 libxrandr2 libgl1
+          # Su Ubuntu 24.04 il pacchetto ALSA si chiama libasound2t64; prima si
+          # chiamava libasound2. Si prova il nuovo e si ripiega sul vecchio.
+          sudo apt-get install -y --no-install-recommends libasound2t64 \
+            || sudo apt-get install -y --no-install-recommends libasound2
+
+      # Lo smoke test (dentro lo script) e' la prova che la home non dipende dalla
+      # working directory: lancia l'immagine da una cartella TERZA e pretende che
+      # amiga.properties nasca accanto al launcher. Vedi §5.1 del piano.
+      # shell: powershell (Windows PowerShell 5.1) e non pwsh — e' quello contro cui
+      # build-image.ps1 e' stato provato in locale. Lo script non usa nulla di
+      # esclusivo dell'uno o dell'altro, ma non c'e' motivo di correre il rischio.
+      - name: Build image (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./packaging/build-image.ps1 -SmokeTest
+
+      - name: Build image (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x packaging/build-image.sh
+          xvfb-run -a ./packaging/build-image.sh --smoke-test
+
+      - name: Build image (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          chmod +x packaging/build-image.sh
+          ./packaging/build-image.sh --smoke-test
+
+      # Lo script stampa la riga [HOME] dell'applicazione dentro target/smoke.log.
+      # Su macOS e' l'unico modo di sapere a quanti ".." corrisponde $ROOTDIR
+      # dentro il bundle .app: va letta al primo giro e confrontata con la
+      # cartella che contiene AmiJa.app.
+      - name: Home risolta dall'applicazione
+        if: runner.os != 'Windows'
+        run: grep -F '[HOME]' target/smoke.log || echo "(nessuna riga [HOME])"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            target/dist/*.zip
+            target/dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Pubblicazione: solo su tag, e in DRAFT — le note vanno riviste a mano prima
+  # di rendere la release visibile.
+  # ---------------------------------------------------------------------------
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [jar, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: staging
+
+      - name: Raccogli gli archivi e calcola gli SHA-256
+        run: |
+          mkdir -p dist
+          # Gli artifact arrivano in una sottocartella per job: si appiattisce.
+          find staging -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.jar' \) \
+            -exec mv -t dist {} +
+          cd dist
+          # "AmiJa*" e non "*": cosi' il file delle impronte non finisce fra le
+          # impronte, senza dover ragionare sull'ordine fra glob e redirezione.
+          sha256sum AmiJa* > SHA256SUMS
+          ls -lh
+          cat SHA256SUMS
+
+      # gh e' preinstallata sui runner: una dipendenza esterna in meno rispetto a
+      # un'action di terze parti per fare la stessa cosa.
+      - name: Crea la release (draft)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="$(cat <<'NOTES'
+          ## Quale file scaricare
+
+          | Sistema | File |
+          |---|---|
+          | Windows (x64, e ARM in emulazione) | `AmiJa-<ver>-windows-x64.zip` |
+          | Linux x64 | `AmiJa-<ver>-linux-x64.tar.gz` |
+          | Linux ARM64 | `AmiJa-<ver>-linux-arm64.tar.gz` |
+          | macOS (Apple Silicon) | `AmiJa-<ver>-macos-arm64.tar.gz` |
+
+          Questi archivi **contengono gia' il runtime Java**: si scompattano e si lanciano,
+          non serve installare nulla. Estrarli in una cartella **scrivibile** — AmiJa salva
+          configurazione, savestate e screenshot accanto a se'.
+
+          Per chi ha gia' un JDK 26: `AmiJa-<ver>.zip` (senza runtime) oppure il solo
+          `AmiJa.jar`.
+
+          macOS: al primo avvio Gatekeeper blocca l'app perche' non e' firmata. Sbloccarla con
+          `xattr -dr com.apple.quarantine AmiJa.app`.
+
+          `SHA256SUMS` contiene le impronte di tutti i file.
+          NOTES
+          )"
+
+          # Creare un tag dalla pagina "Releases" di GitHub crea ANCHE la release:
+          # in quel caso "gh release create" fallirebbe a build gia' fatta, dopo una
+          # ventina di minuti di lavoro. Se la release c'e' gia' le si caricano
+          # dentro i file invece di rifiutarsi di procedere.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "La release $GITHUB_REF_NAME esiste gia': carico i file dentro quella."
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --draft \
+              --title "AmiJa $GITHUB_REF_NAME" \
+              --notes "$NOTES" \
+              dist/*
+          fi

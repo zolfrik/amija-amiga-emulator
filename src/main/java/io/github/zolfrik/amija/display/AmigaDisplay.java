@@ -20,6 +20,7 @@
 
 package io.github.zolfrik.amija.display;
 
+import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.custom.FloppyDrive;
 import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.display.render.gl.GlDisplaySurface;
@@ -1124,7 +1125,7 @@ public class AmigaDisplay {
 
     private void saveDump() {
         try {
-            File dir = new File("screenshots");
+            File dir = AppHome.file("screenshots");
             if (!dir.exists()) {
                 dir.mkdirs();
             }

@@ -20,10 +20,10 @@
 
 package io.github.zolfrik.amija.assets;
 
+import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.config.AmigaConfig;
 
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.List;
 import java.util.Locale;
 
@@ -47,9 +47,9 @@ import java.util.Locale;
 public final class AssetCatalog {
 
     /** Radice delle risorse WHDLoad, la stessa che legge {@code WhdLoadManager}. */
-    private static final Path WHDLOAD_FILES = Paths.get("whdload", "WHDLoad_files");
+    private static final Path WHDLOAD_FILES = AppHome.resolve("whdload", "WHDLoad_files");
     /** Cartella dei campioni audio del drive, la stessa che legge {@code FloppySound}. */
-    private static final Path FLOPPY_SOUNDS = Paths.get("floppysounds");
+    private static final Path FLOPPY_SOUNDS = AppHome.resolve("floppysounds");
 
     private AssetCatalog() {}
 

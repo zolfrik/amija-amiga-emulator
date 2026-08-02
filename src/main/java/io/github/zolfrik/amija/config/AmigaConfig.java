@@ -20,6 +20,7 @@
 
 package io.github.zolfrik.amija.config;
 
+import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.common.Chipset;
 import io.github.zolfrik.amija.common.VideoMode;
 import io.github.zolfrik.amija.display.AmigaWindowMode;
@@ -33,7 +34,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Properties;
 
 /**
@@ -41,10 +41,11 @@ import java.util.Properties;
  *
  * <p>Strategia di ricerca del file (in ordine):
  * <ol>
- *   <li>{@code ./amiga.properties} nella directory di lavoro corrente;</li>
+ *   <li>{@code amiga.properties} nella home dell'applicazione ({@link AppHome}, che
+ *       di norma è la directory di lavoro);</li>
  *   <li>{@code /amiga.properties} sul classpath (es. {@code src/main/resources});</li>
- *   <li>se non esiste in nessuno dei due posti, viene <b>creato</b> nella directory
- *       corrente con i valori di default e usato.</li>
+ *   <li>se non esiste in nessuno dei due posti, viene <b>creato</b> nella home con i
+ *       valori di default e usato.</li>
  * </ol>
  *
  * <p>Proprietà gestite:
@@ -173,16 +174,16 @@ public final class AmigaConfig {
      * memoria.
      */
     public static AmigaConfig load() {
-        // 1. File nella directory di lavoro corrente.
-        Path cwdFile = Paths.get(FILE_NAME);
-        if (Files.isRegularFile(cwdFile)) {
-            try (InputStream in = Files.newInputStream(cwdFile)) {
+        // 1. File nella home dell'applicazione (di norma la directory di lavoro).
+        Path homeFile = AppHome.resolve(FILE_NAME);
+        if (Files.isRegularFile(homeFile)) {
+            try (InputStream in = Files.newInputStream(homeFile)) {
                 Properties p = new Properties();
                 p.load(in);
-                System.out.println("[CONFIG] Loaded " + cwdFile.toAbsolutePath());
+                System.out.println("[CONFIG] Loaded " + homeFile.toAbsolutePath());
                 return new AmigaConfig(p);
             } catch (IOException e) {
-                System.err.println("[CONFIG] Failed to read " + cwdFile + ": " + e.getMessage());
+                System.err.println("[CONFIG] Failed to read " + homeFile + ": " + e.getMessage());
             }
         }
 
@@ -198,13 +199,13 @@ public final class AmigaConfig {
             System.err.println("[CONFIG] Failed to read from classpath: " + e.getMessage());
         }
 
-        // 3. Nessun file: crea quello di default nella directory corrente.
+        // 3. Nessun file: crea quello di default nella home.
         Properties defaults = defaultProperties();
-        try (OutputStream out = Files.newOutputStream(cwdFile)) {
+        try (OutputStream out = Files.newOutputStream(homeFile)) {
             defaults.store(out, "AmiJa configuration - Java Amiga emulator");
-            System.out.println("[CONFIG] Created default file " + cwdFile.toAbsolutePath());
+            System.out.println("[CONFIG] Created default file " + homeFile.toAbsolutePath());
         } catch (IOException e) {
-            System.err.println("[CONFIG] Failed to create " + cwdFile + ": " + e.getMessage());
+            System.err.println("[CONFIG] Failed to create " + homeFile + ": " + e.getMessage());
         }
         return new AmigaConfig(defaults);
     }
@@ -713,12 +714,12 @@ public final class AmigaConfig {
     // =========================================================================
 
     /**
-     * Scrive la configurazione corrente in {@code ./amiga.properties} (directory di
-     * lavoro), così da avere precedenza sull'eventuale copia nel classpath al
+     * Scrive la configurazione corrente in {@code amiga.properties} nella home
+     * ({@link AppHome}), così da avere precedenza sull'eventuale copia nel classpath al
      * successivo avvio. Il file viene riscritto in forma ordinata e commentata.
      */
     public void save() throws IOException {
-        Path target = Paths.get(FILE_NAME);
+        Path target = AppHome.resolve(FILE_NAME);
         StringBuilder sb = new StringBuilder();
         sb.append("# Amija configuration - Java Amiga emulator\n");
         sb.append("# Automatically generated file; editable by hand or from the popup (F12).\n\n");

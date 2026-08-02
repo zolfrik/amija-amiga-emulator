@@ -20,6 +20,8 @@
 
 package io.github.zolfrik.amija.custom.audio;
 
+import io.github.zolfrik.amija.common.AppHome;
+
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
@@ -30,7 +32,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -64,13 +65,13 @@ public final class FloppySound {
     private static final String VARIANT = "A500";
 
     /**
-     * Cartella dei campioni WAV, relativa alla working dir (la stessa in cui si trova
-     * {@code amiga.properties}). I file NON sono dentro il jar: sono materiale di
-     * terze parti che il progetto non può ridistribuire (vedi THIRD-PARTY-NOTICES.md),
+     * Cartella dei campioni WAV, relativa alla home dell'applicazione (la stessa in cui
+     * si trova {@code amiga.properties}). I file NON sono dentro il jar: sono materiale
+     * di terze parti che il progetto non può ridistribuire (vedi THIRD-PARTY-NOTICES.md),
      * quindi vanno forniti dall'utente. Se la cartella manca o è vuota la feature
      * resta semplicemente inerte, come con {@code floppy.sound.volume=0}.
      */
-    private static final Path SAMPLE_DIR = Paths.get("floppysounds");
+    private static final Path SAMPLE_DIR = AppHome.resolve("floppysounds");
 
     // I campioni vengono normalizzati a PCM signed 16-bit mono little-endian,
     // MANTENENDO la frequenza di campionamento NATIVA del file (i WAV WinUAE hanno

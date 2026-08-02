@@ -22,6 +22,7 @@ package io.github.zolfrik.amija;
 
 import io.github.zolfrik.amija.config.AmigaConfig;
 import io.github.zolfrik.amija.display.AmigaWindowMode;
+import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.common.BusRequest;
 import io.github.zolfrik.amija.common.Chipset;
 import io.github.zolfrik.amija.common.BusResponse;
@@ -603,9 +604,16 @@ public class Amija {
         try {
             String javaBin = System.getProperty("java.home")
                     + File.separator + "bin" + File.separator + "java";
+            // La home va RIPASSATA esplicitamente: qui si rilancia "java -cp ...", non il
+            // launcher nativo, quindi le --java-options impostate da jpackage (fra cui
+            // -Damija.home=$ROOTDIR) andrebbero perse e il nuovo processo ripiegherebbe
+            // sulla cartella del jar, che dentro un'app-image e' <root>/app.
             // inheritIO: il nuovo processo riusa console/stdio correnti. La working dir
             // viene ereditata, quindi amiga.properties (gia' salvata) e' la stessa.
-            new ProcessBuilder(javaBin, "-cp", System.getProperty("java.class.path"),
+            new ProcessBuilder(javaBin,
+                    "-D" + AppHome.PROPERTY + "=" + AppHome.home(),
+                    "--enable-native-access=ALL-UNNAMED",
+                    "-cp", System.getProperty("java.class.path"),
                     Amija.class.getName())
                     .inheritIO()
                     .start();
@@ -655,7 +663,7 @@ public class Amija {
         if (name == null) return null;
         String n = name.trim();
         if (n.isEmpty() || n.equalsIgnoreCase("none")) return null;
-        java.nio.file.Path p = java.nio.file.Paths.get("shaders", n + ".glslp");
+        java.nio.file.Path p = AppHome.resolve("shaders", n + ".glslp");
         return java.nio.file.Files.isRegularFile(p) ? p : null;
     }
 
@@ -667,7 +675,7 @@ public class Amija {
     private File takeScreenshotFile() {
         if (display == null) return null;
         try {
-            File dir = new File("screenshots");
+            File dir = AppHome.file("screenshots");
             String ts = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
             File file = new File(dir, "screenshot_" + ts + ".png");
             display.saveScreenshot(file);
@@ -696,7 +704,7 @@ public class Amija {
             return Messages.t("savestate.save.fail", Messages.t("savestate.nomachine"));
         }
         try {
-            File file = new File(SaveStateManager.SLOT_FILE);
+            File file = SaveStateManager.slotFile();
             SaveStateManager.save(file, cpu, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] salvato " + file.getAbsolutePath());
             saveStateScreenshot();
@@ -715,7 +723,7 @@ public class Amija {
     private void saveStateScreenshot() {
         if (display == null) return;
         try {
-            File shot = new File(SaveStateManager.SLOT_SCREENSHOT);
+            File shot = SaveStateManager.slotScreenshot();
             display.saveScreenshot(shot);
             System.out.println("[STATE] screenshot " + shot.getAbsolutePath());
         } catch (Exception e) {
@@ -732,7 +740,7 @@ public class Amija {
         if (cpu == null || agnus == null) {
             return Messages.t("savestate.load.fail", Messages.t("savestate.nomachine"));
         }
-        File file = new File(SaveStateManager.SLOT_FILE);
+        File file = SaveStateManager.slotFile();
         if (!file.isFile()) {
             return Messages.t("savestate.load.none");
         }

@@ -20,6 +20,8 @@
 
 package io.github.zolfrik.amija.whdload;
 
+import io.github.zolfrik.amija.common.AppHome;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -60,8 +62,8 @@ import java.util.zip.CRC32;
 public final class WhdLoadManager {
 
     /**
-     * Cartella delle risorse WHDLoad, relativa alla working dir (la stessa in cui si
-     * trova {@code amiga.properties}); dentro ci va la sottocartella
+     * Cartella delle risorse WHDLoad, relativa alla home dell'applicazione (la stessa
+     * in cui si trova {@code amiga.properties}); dentro ci va la sottocartella
      * {@code WHDLoad_files}. Il contenuto NON è nel jar e non è ridistribuibile
      * (WHDLoad è freeware di Bert Jahn, le librerie sono AmigaOS: vedi
      * THIRD-PARTY-NOTICES.md), quindi va installato dall'utente. Se manca,
@@ -126,11 +128,12 @@ public final class WhdLoadManager {
     private String prefsContent;
 
     public WhdLoadManager() {
-        this(Paths.get(DEFAULT_RESOURCE_DIR), Paths.get(DEFAULT_CACHE_DIR), Paths.get(DEFAULT_SAVES_DIR));
+        this(AppHome.resolve(DEFAULT_RESOURCE_DIR), AppHome.resolve(DEFAULT_CACHE_DIR),
+                AppHome.resolve(DEFAULT_SAVES_DIR));
     }
 
     public WhdLoadManager(Path resourceDir, Path cacheDir) {
-        this(resourceDir, cacheDir, Paths.get(DEFAULT_SAVES_DIR));
+        this(resourceDir, cacheDir, AppHome.resolve(DEFAULT_SAVES_DIR));
     }
 
     public WhdLoadManager(Path resourceDir, Path cacheDir, Path savesDir) {

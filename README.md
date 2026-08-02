@@ -34,11 +34,49 @@ screen.
 - audio, real joysticks (via GLFW), mouse, and full keyboard mapping
 - software renderer or an OpenGL backend with RetroArch CRT shaders
 
+## Download
+
+Every release ships a **self-contained archive per system**. It already contains
+the Java runtime, so there is nothing to install: unpack it and start it.
+
+| System | File | How you start it |
+|---|---|---|
+| Windows x64 | `AmiJa-<version>-windows-x64.zip` | double-click `AmiJa.exe` |
+| Linux x64 | `AmiJa-<version>-linux-x64.tar.gz` | run `bin/AmiJa` |
+| Linux ARM64 | `AmiJa-<version>-linux-arm64.tar.gz` | run `bin/AmiJa` |
+| macOS (Apple Silicon) | `AmiJa-<version>-macos-arm64.tar.gz` | open `AmiJa.app` |
+
+> **Unpack into a folder you can write to.** AmiJa is portable by design: it keeps
+> `amiga.properties`, `savestate/`, `screenshots/` and the WHDLoad caches *next to
+> itself*, not in a system-wide application-data directory. Dropping the app into
+> `C:\Program Files`, `/opt` or `/Applications` leaves it unable to save anything.
+> Your home directory, or anywhere else you own, is fine.
+
+If you already have a JDK 26, `AmiJa-<version>.zip` (no runtime, much smaller) and
+the bare `AmiJa.jar` are published alongside — see [Requirements](#requirements).
+
+**Windows on ARM.** There is no ARM64 archive: no JDK 26 exists for that platform
+yet. Use the x64 one — Windows runs it under emulation, at some cost in speed.
+
+**Linux.** The bundled runtime brings the JVM, not the system libraries it draws
+on. On a normal desktop these are already installed; on a bare-bones or container
+system, install the equivalents of `libx11-6`, `libxext6`, `libxrender1`,
+`libxtst6`, `libxi6`, `libxrandr2`, `libgl1` and `libasound2`.
+
+**macOS.** The app is not signed with an Apple Developer ID — that is a paid
+program, and this project does not have one. Gatekeeper therefore refuses the
+first launch, usually with *"AmiJa is damaged and can't be opened"*. Clear the
+quarantine flag once, and it will start normally from then on:
+
+```bash
+xattr -dr com.apple.quarantine AmiJa.app
+```
+
 ## Requirements
 
-A **JDK 26** or newer. That is all: LWJGL is the only external dependency and it
-ships inside the jar, natives included, for Windows, Linux and macOS (x64 and
-ARM64).
+To run the **jar** (rather than one of the archives above) you need a **JDK 26**
+or newer. That is all: LWJGL is the only external dependency and it ships inside
+the jar, natives included, for Windows, Linux and macOS (x64 and ARM64).
 
 And a reasonably fast CPU. Accuracy is not free: AmiJa simulates every one of
 the 7.09 million bus cycles a second, one at a time, rather than taking the
@@ -57,8 +95,14 @@ java -jar AmiJa.jar
 
 The only class with a `main()` is `io.github.zolfrik.amija.Amija`. Configuration
 — Kickstart ROM, attached floppies, video mode, renderer, input devices — is read
-from `amiga.properties` in the working directory, and can be changed at runtime
-through the popup you reach with **F12**.
+from `amiga.properties`, and can be changed at runtime through the popup you reach
+with **F12**.
+
+That file, and everything else AmiJa reads or writes at runtime, lives in what the
+emulator calls its **home**: the folder holding the jar or the native launcher. If
+you run it some other way — from an IDE, from `mvn exec` — there is no such folder
+to speak of, and the current working directory is used instead, exactly as it
+always was.
 
 On a first start no Kickstart ROM is configured, so the machine has nothing to
 boot: AmiJa opens that popup by itself — point *Kickstart (.rom)* at your own ROM
@@ -78,10 +122,26 @@ produces two things:
 - `target/AmiJa.jar` — a single executable jar with the code, the resources and
   all the dependencies inside;
 - `target/AmiJa-<version>.zip` — the ready-to-run package: that jar, the
-  documents, and the folders AmiJa reads from its working directory
+  documents, and the folders AmiJa reads from its home
   (`shaders/`, `blurs/`, and the `floppysounds/` and `whdload/` placeholders).
   Unzip it anywhere and run the jar inside; `amiga.properties` is created on the
   first start.
+
+To build one of the self-contained archives from the [Download](#download)
+section instead — launcher, bundled Java runtime and all — run the packaging
+script for your system:
+
+```bash
+packaging/build-image.sh                      # Linux, macOS
+powershell -File packaging\build-image.ps1    # Windows
+```
+
+It runs `mvn package`, trims a runtime with `jlink`, builds a native app-image
+with `jpackage`, and leaves the archive in `target/dist/`. `jpackage` cannot
+cross-compile, so each archive has to be built on the system it targets; that is
+what `.github/workflows/release.yml` does, one runner per target. Pass
+`--smoke-test` (`-SmokeTest` on Windows) to have the script launch the finished
+image from an unrelated directory and check that it still finds its own files.
 
 There is no `src/test/` here: the test suite depends on material that cannot be
 redistributed, so it stays in a private repository. `mvn package` therefore has
@@ -91,7 +151,7 @@ nothing to skip.
 
 Some third-party material cannot be redistributed with AmiJa, so it is not in
 this repository. Each item is optional: when it is missing, the corresponding
-feature simply stays off — no errors. Put it in the working directory, next to
+feature simply stays off — no errors. Put it in AmiJa's home folder, next to
 `amiga.properties`:
 
 | Path | What goes in it | Feature |
