@@ -25,9 +25,9 @@ on:
       targets:
         description: "Quali distribuzioni native costruire"
         type: choice
-        default: solo-windows
+        default: windows-linux-x64
         options:
-          - solo-windows
+          - windows-linux-x64
           - tutte
 
 # Di default sola lettura; il permesso di scrittura e' dato al solo job che pubblica.
@@ -79,9 +79,11 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Quali target costruire. Su tag: sempre tutti. A mano (workflow_dispatch): quelli
-  # scelti nella tendina, che per default sono il solo Windows — su un repository
-  # PRIVATO i runner macOS e ARM64 non hanno le stesse condizioni di uno pubblico,
-  # e per una prova della pipeline il solo Windows basta.
+  # scelti nella tendina, che per default sono Windows x64 + Linux x64 — su un
+  # repository PRIVATO i runner macOS e ARM64 non hanno le stesse condizioni di uno
+  # pubblico (sono i piu' cari a minuto), mentre ubuntu-latest e' il piu' economico
+  # che ci sia: aggiungerlo alla prova della pipeline costa pochissimo e in cambio
+  # copre l'altro ramo degli script di packaging (build-image.sh, non solo il .ps1).
   #
   # windows-arm64 non compare da nessuna parte: al 2026-08-02 non esiste alcun JDK 26
   # per Windows/aarch64 — ne' Temurin (che quella piattaforma non la copre per nessuna
@@ -100,8 +102,8 @@ jobs:
         run: |
           # inputs.targets e' vuoto quando il workflow parte da un tag: in quel caso
           # si cade nel ramo "tutte", che e' il comportamento voluto per una release.
-          if [ "${{ inputs.targets }}" = "solo-windows" ]; then
-            MATRIX='[{"target":"windows-x64","os":"windows-latest"}]'
+          if [ "${{ inputs.targets }}" = "windows-linux-x64" ]; then
+            MATRIX='[{"target":"windows-x64","os":"windows-latest"},{"target":"linux-x64","os":"ubuntu-latest"}]'
           else
             MATRIX='[{"target":"windows-x64","os":"windows-latest"},{"target":"linux-x64","os":"ubuntu-latest"},{"target":"linux-arm64","os":"ubuntu-24.04-arm"},{"target":"macos-arm64","os":"macos-latest"}]'
           fi
