@@ -234,6 +234,11 @@ jobs:
           Per chi ha gia' un JDK 26: `AmiJa-<ver>.zip` (senza runtime) oppure il solo
           `AmiJa.jar`.
 
+          Windows: al primo avvio SmartScreen mostra «PC protetto da Windows» perche'
+          l'eseguibile non e' firmato. *Ulteriori informazioni* → *Esegui comunque*, oppure
+          sblocca lo **zip** prima di scompattarlo (tasto destro → *Proprieta'* → *Annulla
+          blocco*, o `Unblock-File` da PowerShell): cosi' il marchio non passa ai file estratti.
+
           macOS: al primo avvio Gatekeeper blocca l'app perche' non e' firmata. Sbloccarla con
           `xattr -dr com.apple.quarantine AmiJa.app`.
 

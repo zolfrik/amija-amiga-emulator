@@ -58,6 +58,25 @@ the bare `AmiJa.jar` are published alongside — see [Requirements](#requirement
 **Windows on ARM.** There is no ARM64 archive: no JDK 26 exists for that platform
 yet. Use the x64 one — Windows runs it under emulation, at some cost in speed.
 
+**Windows.** `AmiJa.exe` is not signed — a code-signing certificate is a paid,
+per-year subscription, and this project does not have one. Windows tags every file
+that came from the internet with the *mark of the web*, and on an unsigned program
+that tag makes Microsoft Defender SmartScreen open a blue *"Windows protected your
+PC — SmartScreen prevented an unrecognised app from starting"* panel instead of
+launching it. Nothing is wrong with the download; there is simply no signature to
+vouch for it. Either way past it is a one-off:
+
+- click **More info**, then **Run anyway**; or
+- clear the mark on the **zip** *before* unpacking, which stops it being inherited
+  by the extracted files: right-click the `.zip` → *Properties* → tick **Unblock**.
+  In PowerShell it is one line:
+
+  ```powershell
+  Unblock-File AmiJa-<version>-windows-x64.zip
+  ```
+
+  Already unpacked? `Get-ChildItem -Recurse <folder> | Unblock-File` clears them all.
+
 **Linux.** The bundled runtime brings the JVM, not the system libraries it draws
 on. On a normal desktop these are already installed; on a bare-bones or container
 system, install the equivalents of `libx11-6`, `libxext6`, `libxrender1`,
