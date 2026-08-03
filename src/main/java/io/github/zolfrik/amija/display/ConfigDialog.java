@@ -984,7 +984,8 @@ public final class ConfigDialog {
 
     private static void browse(JDialog parent, AmigaConfig config, BrowseKind kind,
             JTextField target, String desc, String... extensions) {
-        JFileChooser fc = new JFileChooser();
+        // Istanza condivisa e con elenco cartelle veloce: vedi FastFileChooser.
+        JFileChooser fc = FastFileChooser.acquire();
         fc.setDialogTitle(desc);
 
         String lastDir = switch (kind) {
@@ -1019,6 +1020,9 @@ public final class ConfigDialog {
         if (extensions.length > 0) {
             fc.setFileFilter(new FileNameExtensionFilter(desc, extensions));
         }
+        // L'istanza è riusata: senza rilettura mostrerebbe l'elenco del giro precedente,
+        // che nel frattempo può essere cambiato sul disco.
+        fc.rescanCurrentDirectory();
         if (fc.showOpenDialog(parent) == JFileChooser.APPROVE_OPTION) {
             File selected = fc.getSelectedFile();
             target.setText(selected.getAbsolutePath());
