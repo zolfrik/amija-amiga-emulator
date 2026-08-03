@@ -20,6 +20,8 @@
 
 package io.github.zolfrik.amija.display;
 
+import io.github.zolfrik.amija.assets.AssetCatalog;
+import io.github.zolfrik.amija.assets.AssetPackage;
 import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.common.Chipset;
 import io.github.zolfrik.amija.common.VideoMode;
@@ -153,41 +155,40 @@ public final class ConfigDialog {
         JComboBox<Integer> fastCombo = kbCombo(FAST_RAM_OPTIONS, config.fastRamKb());
         addRow(system, 3, Messages.t("label.fastram"), fastCombo, null);
 
-        JComboBox<String> langCombo = new JComboBox<>(new String[]{ "English", "Italiano" });
-        langCombo.setSelectedIndex("it".equalsIgnoreCase(config.language()) ? 1 : 0);
-        langCombo.setMaximumSize(new Dimension(160, 26));
-        addRow(system, 4, Messages.t("label.language"), langCombo, null);
-
         // Modalita' video PAL/NTSC: il cambio richiede il riavvio dell'emulatore
         // (gestito da Amija: un OK con modalita' diversa forza un cold restart).
         JComboBox<VideoMode> videoModeCombo = new JComboBox<>(VideoMode.values());
         videoModeCombo.setSelectedItem(config.videoMode());
         videoModeCombo.setMaximumSize(new Dimension(160, 26));
-        addRow(system, 5, Messages.t("label.videomode"), videoModeCombo, null);
+        addRow(system, 4, Messages.t("label.videomode"), videoModeCombo, null);
 
         // Chipset OCS/ECS: come la modalita' video, il cambio richiede un cold restart.
         JComboBox<Chipset> chipsetCombo = new JComboBox<>(Chipset.values());
         chipsetCombo.setSelectedItem(config.chipset());
         chipsetCombo.setMaximumSize(new Dimension(160, 26));
-        addRow(system, 6, "Chipset", chipsetCombo, null);
+        addRow(system, 5, "Chipset", chipsetCombo, null);
 
+        // -------------------------------------------------------------------
+        // Sezione: Game ports
+        // -------------------------------------------------------------------
         // Periferica collegata a ciascuna game port (mouse / joystick reale / joystick
         // da tastiera / vuota). Applicata a caldo: nessun riavvio richiesto.
         // Con "Joystick (via tastiera)" compare accanto alla tendina il pulsante "..."
         // che apre la configurazione dei tasti di quella porta. Le due mappe sono
         // modificate in copia e scritte nella configurazione solo alla conferma.
+        JPanel ports = section(Messages.t("section.gameports"));
         JoystickKeyMap[] joyKeyMaps = { config.joystickKeyMap(0), config.joystickKeyMap(1) };
 
-        // Il pulsante va nella colonna di coda della sezione, la stessa del "..." del
-        // Kickstart: resta quindi allineato a quello e la tendina mantiene la propria
-        // larghezza sia che il pulsante ci sia sia che non ci sia.
+        // Il pulsante va nella colonna di coda della sezione, la stessa in cui le altre
+        // sezioni mettono il loro "...": resta quindi allineato a quelli e la tendina
+        // mantiene la propria larghezza sia che il pulsante ci sia sia che non ci sia.
         JComboBox<PortDevice> port0Combo = deviceCombo(config.portDevice(0));
         JButton port0Keys = joystickKeysButton();
-        addRow(system, 7, Messages.t("label.port0"), port0Combo, port0Keys);
+        addRow(ports, 0, Messages.t("label.port0"), port0Combo, port0Keys);
 
         JComboBox<PortDevice> port1Combo = deviceCombo(config.portDevice(1));
         JButton port1Keys = joystickKeysButton();
-        addRow(system, 8, Messages.t("label.port1"), port1Combo, port1Keys);
+        addRow(ports, 1, Messages.t("label.port1"), port1Combo, port1Keys);
 
         port0Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 0, joyKeyMaps));
         port1Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 1, joyKeyMaps));
@@ -349,11 +350,19 @@ public final class ConfigDialog {
         // Sezione: file opzionali di terze parti (assistente di download).
         // Materiale che AmiJa non può ridistribuire e che l'utente può farsi
         // scaricare dai siti ufficiali. Vedi THIRD-PARTY-NOTICES.md §5.
+        //
+        // Se sono già installati tutti, la sezione non ha più nulla da proporre:
+        // si omette del tutto (assets == null) invece di offrire un assistente che
+        // mostrerebbe solo "Già installato". Lo stato è letto a ogni apertura del
+        // popup, quindi la sezione sparisce da sé dopo un download riuscito.
         // -------------------------------------------------------------------
-        JPanel assets = section(Messages.t("section.assets"));
-        JButton assetsOpen = button(Messages.t("assets.open"), false);
-        assetsOpen.addActionListener(e -> AssetDownloadDialog.show(dialog, config));
-        addRow(assets, 0, Messages.t("assets.label"), null, assetsOpen);
+        JPanel assets = null;
+        if (!AssetCatalog.packages(config).stream().allMatch(AssetPackage::installed)) {
+            assets = section(Messages.t("section.assets"));
+            JButton assetsOpen = button(Messages.t("assets.open"), false);
+            assetsOpen.addActionListener(e -> AssetDownloadDialog.show(dialog, config));
+            addRow(assets, 0, Messages.t("assets.label"), null, assetsOpen);
+        }
 
         // -------------------------------------------------------------------
         // Sezione: Audio / Video
@@ -486,6 +495,18 @@ public final class ConfigDialog {
         addRow(av, 7, Messages.t("label.sound"), soundWrap, null);
 
         // -------------------------------------------------------------------
+        // Sezione: GUI — l'aspetto del popup e delle finestre di AmiJa, non della
+        // macchina emulata. Per ora la sola lingua; le prossime voci di interfaccia
+        // vanno qui invece che in "Sistema".
+        // -------------------------------------------------------------------
+        JPanel gui = section(Messages.t("section.gui"));
+
+        JComboBox<String> langCombo = new JComboBox<>(new String[]{ "English", "Italiano" });
+        langCombo.setSelectedIndex("it".equalsIgnoreCase(config.language()) ? 1 : 0);
+        langCombo.setMaximumSize(new Dimension(160, 26));
+        addRow(gui, 0, Messages.t("label.language"), langCombo, null);
+
+        // -------------------------------------------------------------------
         // Contenuto scorrevole
         // -------------------------------------------------------------------
         JPanel content = new JPanel();
@@ -502,9 +523,15 @@ public final class ConfigDialog {
         content.add(Box.createVerticalStrut(12));
         content.add(whd);
         content.add(Box.createVerticalStrut(12));
-        content.add(assets);
+        content.add(ports);
         content.add(Box.createVerticalStrut(12));
         content.add(av);
+        content.add(Box.createVerticalStrut(12));
+        content.add(gui);
+        if (assets != null) {
+            content.add(Box.createVerticalStrut(12));
+            content.add(assets);
+        }
         content.add(Box.createVerticalGlue());
 
         JScrollPane scroll = new JScrollPane(content,
