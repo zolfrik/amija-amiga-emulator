@@ -59,6 +59,7 @@ import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.GamePort;
 import io.github.zolfrik.amija.input.GlfwJoystickService;
 import io.github.zolfrik.amija.input.PortDevice;
+import io.github.zolfrik.amija.memory.KickstartImage;
 import io.github.zolfrik.amija.memory.RAM;
 import io.github.zolfrik.amija.memory.ROM;
 import io.github.zolfrik.amija.state.SaveStateManager;
@@ -817,8 +818,12 @@ public class Amija {
             gary.setChipRamSize(config.chipRamKb() * 1024);
             RAM slowRam = config.slowRamKb() > 0 ? new RAM(config.slowRamKb() * 1024) : null;
 
-            byte[] romData = Files.readAllBytes(Paths.get(kickstartPath));
-            ROM kickstart = new ROM(romData);
+            // L'immagine viene normalizzata (header scartati, code troncate, overdump
+            // collassati) prima di finire nel socket: Gary mappa per maschere di bit e
+            // pretende una potenza di due. Vedi KickstartImage.
+            KickstartImage romImage = KickstartImage.load(Paths.get(kickstartPath));
+            System.out.println("[ROM] " + romImage.describe());
+            ROM kickstart = new ROM(romImage.data());
 
             // 2. CPU e bus.
             cpu = new Motorola68000(new BusRequest(), new BusResponse());
@@ -1110,7 +1115,14 @@ public class Amija {
     // Validazione / utilità
     // =========================================================================
 
-    /** Verifica che il Kickstart configurato esista; in caso negativo avvisa l'utente. */
+    /**
+     * Verifica che il Kickstart configurato esista e sia utilizzabile su un A500; in
+     * caso negativo avvisa l'utente dicendo cosa c'è che non va. Il controllo va oltre
+     * l'esistenza del file perché la collezione tipica di ROM è piena di immagini che
+     * non sono Kickstart da socket (extended ROM del CDTV, immagini per ReKick,
+     * cartucce freezer): senza questo messaggio l'unico sintomo sarebbe uno schermo
+     * nero. Vedi {@link KickstartImage}.
+     */
     private boolean validateRom(AmigaConfig cfg) {
         String path = cfg.kickstartPath();
         if (path.isEmpty()) {
@@ -1119,6 +1131,27 @@ public class Amija {
         }
         if (!new File(path).isFile()) {
             error(Messages.t("error.rom.notfound", path));
+            return false;
+        }
+        try {
+            KickstartImage image = KickstartImage.load(Paths.get(path));
+            switch (image.compatibility()) {
+                case EXTENDED_ROM:
+                    error(Messages.t("error.rom.extended", path));
+                    return false;
+                case RELOCATED:
+                    error(Messages.t("error.rom.relocated", path,
+                            String.format("$%06X", image.resetPc())));
+                    return false;
+                case NOT_A_KICKSTART:
+                    error(Messages.t("error.rom.invalid", path,
+                            image.incompatibilityReason()));
+                    return false;
+                default:
+                    break;
+            }
+        } catch (IOException e) {
+            error(Messages.t("error.rom.invalid", path, String.valueOf(e.getMessage())));
             return false;
         }
         return true;

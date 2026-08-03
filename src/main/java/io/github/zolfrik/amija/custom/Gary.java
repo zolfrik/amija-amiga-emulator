@@ -450,7 +450,12 @@ public final class Gary {
     /** Base address della ROM (dipende da romSize). */
     private int romBase = 0xFC0000; // 256 KB → $FC0000–$FFFFFF
 
-    /** true se la Slow RAM (trapdoor da 512 KB) è presente nel sistema. */
+    /**
+     * true se la Slow RAM (trapdoor) è presente nel sistema. Quanta ne è installata lo
+     * dice {@code physicalSize} della sua Region: delimita la parte bassa della finestra
+     * {@code $C00000–$D7FFFF}, e sopra quella soglia rispondono i registri custom (vedi
+     * {@link #route}). È così che il Kickstart capisce dove finisce la trapdoor.
+     */
     private boolean slowRamPresent = true;
 
     // -------------------------------------------------------------------------
@@ -651,16 +656,41 @@ public final class Gary {
     }
 
     /**
+     * Byte di Slow RAM installati sulla trapdoor. Oltre questa soglia la finestra
+     * {@code $C00000–$D7FFFF} espone i registri custom, che è il modo in cui il
+     * Kickstart ne misura la dimensione.
+     */
+    public void setSlowRamSize(int sizeBytes) {
+        int size = Math.max(0, sizeBytes);
+        for (Region r : regions) {
+            if (r.target == Target.SLOW_RAM) r.physicalSize = size;
+        }
+    }
+
+    /**
      * Imposta la dimensione della ROM Kickstart e aggiorna automaticamente
-     * il base address. Valori validi: 262144 (256 KB) o 524288 (512 KB).
+     * il base address.
+     *
+     * <p>L'unico vincolo è che la dimensione sia una potenza di due non superiore ai
+     * 512 KB della finestra {@code $F80000–$FFFFFF}: il mirroring hardware è una
+     * maschera di bit sull'indirizzo ({@code addr & (romSize-1)}), e su una dimensione
+     * non-potenza-di-due non esisterebbe. La ROM occupa sempre la coda dello spazio di
+     * indirizzamento e viene replicata all'indietro fino a riempire la finestra —
+     * 256 KB a {@code $FC0000} con mirror a {@code $F80000}, 512 KB a {@code $F80000},
+     * 64 KB a {@code $FF0000} con tre mirror, e così via.
+     *
+     * <p>Le immagini vengono portate a questa forma da
+     * {@link io.github.zolfrik.amija.memory.KickstartImage}, che scarta header, code
+     * appese e metà duplicate dei dump.
      */
     public void setRomSize(int size) {
-        if (size != 256 * 1024 && size != 512 * 1024) {
+        if (size <= 0 || (size & (size - 1)) != 0 || size > 512 * 1024) {
             throw new IllegalArgumentException(
-                "Dimensione ROM non valida: " + size + " (valori ammessi: 256K, 512K)");
+                "Dimensione ROM non valida: " + size
+                + " (serve una potenza di due fino a 512K)");
         }
         this.romSize = size;
-        // 256 KB → base $FC0000; 512 KB → base $F80000
+        // La ROM è ancorata alla fine dello spazio: 256 KB → $FC0000, 512 KB → $F80000.
         this.romBase = 0x1000000 - size;
         for (Region r : regions) {
             if (r.target == Target.KICKSTART_ROM) {
@@ -894,12 +924,27 @@ public final class Gary {
         // ── 5. Decodifica normale per regione registrata ──────────────────────
         Region hit = findRegionByAddress(addr);
 
-        // ── 6. Slow RAM absent: $C00000–$D7FFFF ───────────────────────────────
-        // In some models/configurations, if Slow RAM is not present, this area
-        // might mirror custom registers or return open bus.
-        // Existing tests expect OPEN_BUS when slowRamPresent is false.
-        if (hit != null && hit.target == Target.SLOW_RAM && !slowRamPresent) {
-            return out.fillOpenBus(addr);
+        // ── 6. Finestra Slow RAM $C00000–$D7FFFF ──────────────────────────────
+        // Dove la trapdoor non arriva rispondono i REGISTRI CUSTOM. Non è una
+        // stranezza: Gary decodifica l'intero $C00000–$DFFFFF come chip-select dei
+        // custom, e la RAM lenta si limita a coprirne la parte bassa, per quanta ne
+        // è installata. Oracolo WinUAE (memory.cpp): `map_banks(&custom_bank, 0xC0,
+        // 0xE0-0xC0)` e solo dopo `map_banks(&bogomem_bank, 0xC0, size)`.
+        //
+        // È il meccanismo con cui il Kickstart misura la Slow RAM: sale a passi di
+        // 256 KB e a ogni passo prova a scrivere INTENA e rileggere INTENAR nel
+        // mirror (p.es. $CBF09A/$CBF01C). Se i custom rispondono, lì la RAM non c'è.
+        // Trattando l'intera finestra come Slow RAM il probe non vedeva mai i custom
+        // e il Kickstart 1.2 concludeva di avere RAM fino a $DBFFFF: ci metteva lo
+        // stack supervisore e moriva con lo schermo giallo al primo uso.
+        if (hit != null && hit.target == Target.SLOW_RAM) {
+            int slowOffset = addr - hit.start;
+            if (slowRamPresent && slowOffset < hit.physicalSize) {
+                return applyRules(hit, addr, type, uds, lds, slowOffset, out);
+            }
+            Region custom = findFirstRegionByTarget(Target.CUSTOM_REGS);
+            if (custom == null) return out.fillOpenBus(addr);
+            return applyRules(custom, addr, type, uds, lds, addr & 0xFFFF, out);
         }
 
         // ── 7. Open bus per tutto il resto ────────────────────────────────────
@@ -909,9 +954,6 @@ public final class Gary {
 
         // Calcolo indirizzo relativo ed eventuale wrap-around (mirroring)
         int effectiveAddr = addr - hit.start;
-        if (hit.target == Target.SLOW_RAM) {
-            return applyRules(hit, addr, type, uds, lds, effectiveAddr, out);
-        }
         if (hit.physicalSize > 0) {
             if ((hit.physicalSize & (hit.physicalSize - 1)) == 0) {
                 effectiveAddr &= (hit.physicalSize - 1);

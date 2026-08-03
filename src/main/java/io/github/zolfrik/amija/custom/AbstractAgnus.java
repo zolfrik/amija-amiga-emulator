@@ -1521,6 +1521,7 @@ public abstract class AbstractAgnus {
         if (gary != null) {
             if (rom != null)  gary.setRomSize(rom.size());
             gary.setSlowRamPresent(slowRAM != null);
+            gary.setSlowRamSize(slowRAM != null ? slowRAM.size() : 0);
         }
 
         this.df0 = new FloppyDrive("DF0", FloppyDrive.DriveType.DD_INT);
@@ -3205,9 +3206,51 @@ public abstract class AbstractAgnus {
      * custom tramite route.effectiveAddress (che per CUSTOM_REGS è il registro
      * canonico).
      */
-    /** Ultimo valore (word) pilotato sul bus dati, restituito dalle letture open-bus
-     *  (bus "flottante") per emulare il comportamento del 68000/Gary reale. */
+    /** Ultimo valore (word) pilotato sul bus dati. Alimenta la riletura dei registri
+     *  custom write-only ({@link #faultyCustomRead}) e i fetch DMA. */
     private int openBusLatch = 0xFFFF;
+
+    /**
+     * Valore che la CPU legge da un indirizzo dove non risponde nessun dispositivo.
+     *
+     * <p>Oracolo WinUAE {@code dummy_get_safe} (memory.cpp): su 68000/68010 il valore
+     * <em>non</em> è l'ultimo dato transitato sul bus, ma
+     * <ul>
+     *   <li><b>0</b> se il codice che accede sta girando <b>da ROM</b>;</li>
+     *   <li>altrimenti {@code regs.irc}, cioè la word già nella coda di prefetch
+     *       (byte invertiti se l'indirizzo è dispari).</li>
+     * </ul>
+     *
+     * <p>La distinzione conta e non è un dettaglio: prima restituivamo
+     * {@link #openBusLatch}, che dopo una scrittura contiene <em>il dato appena
+     * scritto</em>. Un test di memoria "scrivi e rileggi" — esattamente quello con cui
+     * il Kickstart dimensiona la RAM — riusciva quindi su indirizzi dove non c'è
+     * nulla, e il Kickstart 1.2 concludeva che la Slow RAM arrivasse fino a $DBFFFF,
+     * ci piazzava lo stack supervisore ($DBFFF2) e moriva con lo schermo giallo appena
+     * lo usava. Con la regola di WinUAE il dimensionamento gira da ROM, legge 0, e la
+     * RAM fantasma sparisce.
+     *
+     * <p>Il ramo "da RAM" resta non-zero, che è ciò a cui si appoggiano i programmi che
+     * usano lo spazio non mappato come scratch (p.es. Hollywood Poker Pro scrive $FFFF
+     * a $219E5E e ne testa la riletura per decidere se caricare la directory).
+     */
+    private int floatingBusRead(int addr) {
+        if (isExecutingFromRom()) return 0;
+        int v = cpu.getIRC() & 0xFFFF;
+        return ((addr & 1) != 0) ? (((v << 8) | (v >>> 8)) & 0xFFFF) : v;
+    }
+
+    /**
+     * true se il PC corrente sta dentro una ROM: la finestra del socket Kickstart, il
+     * suo mirror a $E00000, oppure la Chip RAM mentre l'overlay è attivo (subito dopo
+     * il reset, prima che il Kickstart abbassi OVL).
+     */
+    private boolean isExecutingFromRom() {
+        int pc = cpu.getOpcodeAddress() & 0xFFFFFF;
+        if (pc >= 0xF80000) return true;
+        if (pc >= 0xE00000 && pc < 0xE80000) return true;
+        return pc < 0x080000 && gary.isRomOverlayEnabled();
+    }
     private int readBusData(Gary.Route route, int addr) {
         int eff = route.effectiveAddress;
         int alignedEff = eff & ~1;
@@ -3220,9 +3263,11 @@ public abstract class AbstractAgnus {
             case CUSTOM_REGS ->
                 readCustomRegister(eff);   // usa eff, non addr grezzo
             case SLOW_RAM ->
-                (slowRAM != null && alignedEff < slowRAM.size()) ? slowRAM.readWord(alignedEff) : openBusLatch;
+                (slowRAM != null && alignedEff < slowRAM.size())
+                        ? slowRAM.readWord(alignedEff) : floatingBusRead(addr);
             case FAST_RAM ->
-                (fastRam != null && alignedEff < fastRam.sizeBytes()) ? fastRam.ram().readWord(alignedEff) : openBusLatch;
+                (fastRam != null && alignedEff < fastRam.sizeBytes())
+                        ? fastRam.ram().readWord(alignedEff) : floatingBusRead(addr);
             case AUTOCONFIG -> {
                 // Spazio AutoConfig: nibble di configurazione sui bit alti del bus
                 // (D15-D12). La CPU legge sempre su indirizzo pari (UDS): il dato va
@@ -3238,18 +3283,13 @@ public abstract class AbstractAgnus {
                 // byte (UDS/LDS) per gli accessi byte. Senza l'allineamento le
                 // letture byte su indirizzo dispari restituirebbero il byte sbagliato.
                 HdController hd = hdControllerAt(addr);
-                yield (hd != null) ? hd.peekWord((addr & 0xFFFF) & ~1) : openBusLatch;
+                yield (hd != null) ? hd.peekWord((addr & 0xFFFF) & ~1) : floatingBusRead(addr);
             }
             case RTC ->
                 readRtcBusData(route, addr);
             default ->
-                // Open bus: il bus dati "flotta" e restituisce l'ultimo valore pilotato
-                // (prefetch/accesso precedente), come fa il 68000 reale e SAE
-                // (dummy_get_safe -> regs.db). Alcuni giochi usano spazio espansione
-                // non mappato come scratch e si affidano al rilettura non-zero: es.
-                // Holliwood Poker Pro scrive $FFFF a $219E5E e poi lo testa per decidere
-                // se caricare la directory. Con open-bus=0 il caricamento veniva saltato.
-                openBusLatch;
+                // Open bus: nessun dispositivo pilota il bus dati. Vedi floatingBusRead().
+                floatingBusRead(addr);
         };
 
         // Latch del valore sul bus dati per la prossima lettura open-bus.
@@ -4310,17 +4350,20 @@ public abstract class AbstractAgnus {
      */
     public int peekChipWord(int addr) {
         addr &= 0xFFFFFF;
-        // Chip RAM ($000000-$07FFFF)
-        if (chipRAM != null && addr >= 0 && addr + 1 < 0x80000) {
+        // Chip RAM, per quanta ne è installata ($000000 in su).
+        if (chipRAM != null && addr >= 0 && addr + 1 < chipRAM.size()) {
             return chipRAM.readWord(addr) & 0xFFFF;
         }
         // Slow RAM ($C00000-$C7FFFF, 512 KB) — molti giochi vi caricano il codice.
         if (slowRAM != null && addr >= 0xC00000 && addr + 1 < 0xC80000) {
             return slowRAM.readWord(addr - 0xC00000) & 0xFFFF;
         }
-        // Kickstart ROM ($FC0000-$FFFFFF, 256 KB) — per disassemblare codice ROM.
-        if (rom != null && addr >= 0xFC0000 && addr + 1 <= 0xFFFFFF) {
-            return rom.readWord(addr - 0xFC0000) & 0xFFFF;
+        // Kickstart ROM, finestra del socket $F80000-$FFFFFF — per disassemblare codice
+        // ROM. L'offset si ricava mascherando, come fa Gary: una ROM da 256 KB si
+        // specchia due volte nella finestra, una da 512 KB la riempie tutta. Sottrarre
+        // una base fissa funzionerebbe solo per una delle due.
+        if (rom != null && addr >= 0xF80000) {
+            return rom.readWord(addr & (rom.size() - 1)) & 0xFFFF;
         }
         return 0;
     }
