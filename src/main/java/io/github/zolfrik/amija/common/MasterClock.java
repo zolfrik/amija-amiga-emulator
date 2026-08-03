@@ -38,6 +38,19 @@ public final class MasterClock {
     private volatile boolean running = false;
     private volatile boolean paused = false;
     private Thread clockThread;
+    private volatile java.util.function.Consumer<Throwable> failureHandler;
+
+    /**
+     * Registra chi avvisare se il thread di emulazione muore per un'eccezione non
+     * gestita. Senza qualcuno in ascolto quel guasto è muto: il thread termina, nessun
+     * frame raggiunge più il display e la finestra resta nera e apparentemente viva
+     * (l'EDT non c'entra nulla ed è ancora reattivo), con i LED power/drive spariti
+     * perché disegnati dentro il frame emulato. Il gestore viene invocato sul thread
+     * morente: se deve toccare la UI, deve rimbalzare da sé sull'EDT.
+     */
+    public void setFailureHandler(java.util.function.Consumer<Throwable> handler) {
+        this.failureHandler = handler;
+    }
 
     /**
      * Crea un nuovo MasterClock.
@@ -77,6 +90,20 @@ public final class MasterClock {
         // non serve metterlo sopra l'emulazione (provato: deprioritizzare l'emulazione la
         // fa scendere sotto real-time su macchina carica → underrun).
         clockThread.setPriority(Thread.MAX_PRIORITY);
+        // Il gestore di default stamperebbe lo stack trace su stderr, che in una app
+        // lanciata col doppio clic non legge nessuno: l'utente vedrebbe solo lo schermo
+        // fermarsi per sempre. Qui lo stato viene messo a "non in esecuzione" (così
+        // resumeOrStart può ritentare un boot) e il guasto viene propagato a chi si è
+        // registrato con setFailureHandler.
+        clockThread.setUncaughtExceptionHandler((t, e) -> {
+            running = false;
+            System.err.println("[CLOCK] Emulazione interrotta da un errore non gestito:");
+            e.printStackTrace();
+            java.util.function.Consumer<Throwable> handler = failureHandler;
+            if (handler != null) {
+                handler.accept(e);
+            }
+        });
         clockThread.start();
     }
 

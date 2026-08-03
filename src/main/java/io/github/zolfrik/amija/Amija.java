@@ -939,6 +939,11 @@ public class Amija {
 
             // 4. Master clock + reset + avvio.
             clock = new MasterClock(agnus, videoMode, virtualCRT);
+            // Se il thread di emulazione muore per un'eccezione, senza questo aggancio
+            // il display si limiterebbe a congelarsi (o a restare nero, se il guasto
+            // arriva prima del primo frame) senza dire una parola.
+            clock.setFailureHandler(t -> SwingUtilities.invokeLater(
+                    () -> error(Messages.t("error.boot", describeFailure(t)))));
             cpu.reset(); // il reset asserta RESET: Agnus resetta a cascata CIA e floppy.
             clock.start();
 
@@ -947,7 +952,31 @@ public class Amija {
             }
         } catch (IOException e) {
             error(Messages.t("error.boot", e.getMessage()));
+        } catch (RuntimeException | LinkageError e) {
+            // Qualunque altro guasto durante il boot. Senza questo ramo l'eccezione
+            // risalirebbe al chiamante: quando bootMachine() parte da openConfig() quel
+            // chiamante e' l'EDT, dove AWT si limita a stampare su stderr e prosegue.
+            // La finestra resta viva e reattiva (F12 continua ad aprire il popup) ma
+            // clock.start() non e' mai stato raggiunto, quindi non arriva alcun frame:
+            // schermo nero permanente, senza nemmeno i LED power/drive — che sono
+            // disegnati DENTRO il frame emulato e spariscono con esso. Il sintomo e'
+            // indistinguibile da un guasto video, e in una app lanciata col doppio clic
+            // lo stack trace su stderr non lo vede nessuno. Meglio dirlo a schermo.
+            e.printStackTrace();
+            error(Messages.t("error.boot", describeFailure(e)));
         }
+    }
+
+    /**
+     * Descrizione compatta di un guasto per il messaggio a video: tipo dell'eccezione
+     * (spesso l'unica informazione presente, p.es. per una NullPointerException) seguito
+     * dal messaggio, quando c'è. Lo stack trace completo resta su stderr.
+     */
+    private static String describeFailure(Throwable t) {
+        String msg = t.getMessage();
+        return msg == null || msg.isBlank()
+                ? t.getClass().getName()
+                : t.getClass().getSimpleName() + ": " + msg;
     }
 
     /**
