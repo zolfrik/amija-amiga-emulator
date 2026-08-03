@@ -31,6 +31,7 @@ import io.github.zolfrik.amija.common.MOS8520;
 import io.github.zolfrik.amija.common.MasterClock;
 import io.github.zolfrik.amija.common.VirtualCRT;
 import io.github.zolfrik.amija.common.VideoMode;
+import io.github.zolfrik.amija.common.WindowsDpiAwareness;
 import io.github.zolfrik.amija.cpu.Motorola68000;
 import io.github.zolfrik.amija.custom.AbstractAgnus;
 import io.github.zolfrik.amija.custom.OcsAgnus;
@@ -123,6 +124,13 @@ public class Amija {
             new java.util.ArrayList<>();
 
     public static void main(String[] args) {
+        // PRIMA di ogni altra cosa (in particolare prima che AWT si inizializzi):
+        // dichiara il processo per-monitor DPI aware. Il launcher nativo di jpackage
+        // non ha manifest e partirebbe DPI-unaware, facendo fotografare ad AWT i font
+        // di sistema a 96 DPI; alla prima JFileChooser quelle desktop property vengono
+        // rilette alla DPI reale e i font dell'intero Look and Feel si ingrandiscono.
+        // Sotto java.exe (manifest dpiAware=true/PM) e' un no-op.
+        WindowsDpiAwareness.ensurePerMonitorAware();
         // L'integer scaling video e' demandato a Java2D tramite sun.java2d.uiScale:
         // il valore viene da video.integerScaling in amiga.properties e va impostato
         // QUI, prima che il toolkit AWT/Swing si inizializzi (la prima init avviene in
