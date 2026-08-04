@@ -16,6 +16,16 @@
              così non si compila per sbaglio contro classi assenti dal target. -->
         <maven.compiler.release>26</maven.compiler.release>
         <exec.mainClass>io.github.zolfrik.amija.Amija</exec.mainClass>
+        <!-- src/test qui NON contiene test: contiene la toolchain che genera
+             src/main/resources/rom/amija.rom (l'assemblatore 68000 e i builder).
+             Sta nel repo perché la GPL vuole distribuita anche la sorgente
+             corrispondente al binario, assemblatore compreso; non deve però
+             entrare nella distribuzione. Saltando del tutto la compilazione dei
+             test non finisce in target/classes, e quindi nemmeno nel jar shaded,
+             che impacchetta solo quello e le dipendenze.
+             Per rigenerare la ROM: mvn -Dmaven.test.skip=false test-compile,
+             poi eseguire io.github.zolfrik.amija.romgen.RomBuilder. -->
+        <maven.test.skip>true</maven.test.skip>
         <!-- Data di build sostituita nel version.properties filtrato (vedi <resources>)
              e letta a runtime da common/Version.java. L'indirezione via ${build.timestamp}
              è necessaria: filtrando ${maven.build.timestamp} direttamente il resource

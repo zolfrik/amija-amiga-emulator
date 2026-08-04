@@ -47,6 +47,7 @@ import io.github.zolfrik.amija.custom.DiskImage;
 import io.github.zolfrik.amija.custom.FastRam;
 import io.github.zolfrik.amija.custom.FloppyDrive;
 import io.github.zolfrik.amija.custom.HdController;
+import io.github.zolfrik.amija.memory.BuiltinRom;
 import io.github.zolfrik.amija.memory.HardFile;
 import io.github.zolfrik.amija.whdload.WhdLoadManager;
 import io.github.zolfrik.amija.custom.audio.FloppySound;
@@ -94,6 +95,9 @@ public class Amija {
     // Modalita' video corrente (PAL/NTSC): letta da config a ogni avvio a freddo
     // (bootMachine). Il cambio nel popup F12 ha effetto solo dopo un cold restart.
     private VideoMode videoMode = VideoMode.PAL;
+    // La spiegazione sul Kickstart mancante si dà una volta sola per avvio: se l'utente
+    // chiude il popup senza impostarlo, alla seconda volta basta ricordargli cosa manca.
+    private boolean welcomeShown;
 
     // --- Stato persistente tra i riavvii (finestra/display + configurazione) ---
     private AmigaConfig config;
@@ -264,6 +268,14 @@ public class Amija {
         Chipset oldChipset = config.chipset();
         RendererType oldRenderer = config.renderer();
         String oldShader = config.shader();
+        // Parametri della macchina che hanno effetto solo alla costruzione: se cambiano
+        // il riavvio a freddo lo fa l'emulatore da sé. Serve soprattutto alla modalità
+        // Auto, dove a cambiarli non è l'utente ma la spunta di un hard disk o di
+        // WHDLoad: pretendere che sia lui a premere "Riavvia" sarebbe un tranello.
+        String oldKickstart = config.kickstartPath();
+        int oldChipRam = config.chipRamKb();
+        int oldSlowRam = config.slowRamKb();
+        int oldFastRam = config.fastRamKb();
 
         ConfigDialog.Result result = ConfigDialog.show(frame, config,
                 this::takeScreenshotFile, this::updateShaderParam,
@@ -271,17 +283,22 @@ public class Amija {
         boolean displayRecreated = false;
         switch (result) {
             case OK -> {
-                // OK applica a caldo input/floppy; le impostazioni display richiedono
-                // invece la ricreazione della finestra, quindi un cold restart.
+                // OK applica a caldo input/floppy; le impostazioni display e quelle
+                // della macchina richiedono la ricreazione di finestra e componenti,
+                // quindi un cold restart.
                 saveConfig();
                 applyRuntimeInputConfig();
-                boolean displayChanged =
+                boolean needsColdRestart =
                         displayConfigChanged(oldOverscan, oldIntegerScaling, oldWindowMode,
                                 oldMonitorIndex)
                         || oldVideoMode != config.videoMode()
                         || oldChipset != config.chipset()
-                        || oldRenderer != config.renderer();
-                if (displayChanged) {
+                        || oldRenderer != config.renderer()
+                        || !oldKickstart.equals(config.kickstartPath())
+                        || oldChipRam != config.chipRamKb()
+                        || oldSlowRam != config.slowRamKb()
+                        || oldFastRam != config.fastRamKb();
+                if (needsColdRestart) {
                     // Il cambio di renderer può cambiare l'uiScale effettiva (GPU=1 vs
                     // software=integerScaling): in tal caso rilancio la JVM per
                     // reimpostarla (il toolkit la fissa una sola volta all'avvio),
@@ -357,7 +374,13 @@ public class Amija {
         if (agnus == null) return;
         // Prima del diff: propaga agli altri drive i dischi dello zip multi-disco
         // eventualmente inserito in DF0 (o rimuove quelli dello zip precedente).
-        syncZipDiskSet(oldDisks[0]);
+        //
+        // In modalità Auto la ridistribuzione va forzata (oldDf0 = null). Lì la lista dei
+        // supporti è ricostruita da capo a ogni conferma, quindi i dischi estratti dallo
+        // zip non ci sono più e non esiste uno stato "l'utente ha espulso il disco 2 a
+        // mano" da rispettare: senza la forzatura, uno zip multi-disco lasciato com'era
+        // perderebbe tutti i dischi tranne il primo.
+        syncZipDiskSet(config.autoEnabled() ? null : oldDisks[0]);
         final FloppyDrive[] dfs = {
                 agnus.getDf0(), agnus.getDf1(), agnus.getDf2(), agnus.getDf3() };
         final String[] newDisks = new String[4];
@@ -821,9 +844,20 @@ public class Amija {
             // L'immagine viene normalizzata (header scartati, code troncate, overdump
             // collassati) prima di finire nel socket: Gary mappa per maschere di bit e
             // pretende una potenza di due. Vedi KickstartImage.
-            KickstartImage romImage = KickstartImage.load(Paths.get(kickstartPath));
-            System.out.println("[ROM] " + romImage.describe());
-            ROM kickstart = new ROM(romImage.data());
+            // Senza un Kickstart utilizzabile si monta la ROM AmiJa inclusa nel jar:
+            // e' firmware originale di questo progetto, quindi ridistribuibile, e
+            // permette di avviare i giochi su floppy senza possedere una ROM
+            // Commodore. Vedi BuiltinRom per cosa NON copre.
+            ROM kickstart;
+            if (usingBuiltinRom(kickstartPath)) {
+                byte[] builtin = BuiltinRom.load();
+                System.out.println("[ROM] ROM AmiJa integrata (" + builtin.length + " byte)");
+                kickstart = new ROM(builtin);
+            } else {
+                KickstartImage romImage = KickstartImage.load(Paths.get(kickstartPath));
+                System.out.println("[ROM] " + romImage.describe());
+                kickstart = new ROM(romImage.data());
+            }
 
             // 2. CPU e bus.
             cpu = new Motorola68000(new BusRequest(), new BusResponse());
@@ -1123,10 +1157,47 @@ public class Amija {
      * cartucce freezer): senza questo messaggio l'unico sintomo sarebbe uno schermo
      * nero. Vedi {@link KickstartImage}.
      */
+    /**
+     * Vero se si deve montare la ROM AmiJa invece di un Kickstart: quando non
+     * ne e' stato scelto nessuno, o quando il file indicato non c'e' piu'.
+     */
+    private static boolean usingBuiltinRom(String kickstartPath) {
+        if (!BuiltinRom.isAvailable()) return false;
+        return kickstartPath.isEmpty() || !new File(kickstartPath).isFile();
+    }
+
     private boolean validateRom(AmigaConfig cfg) {
         String path = cfg.kickstartPath();
+
+        // Nessun Kickstart, o file sparito: si parte lo stesso con la ROM
+        // integrata. Si avvisa una volta sola, perche' non e' un errore ma una
+        // scelta di ripiego che l'utente deve sapere di star usando.
+        if ((path.isEmpty() || !new File(path).isFile()) && BuiltinRom.isAvailable()) {
+            if (!welcomeShown) {
+                welcomeShown = true;
+                info(Messages.t("welcome.title"), Messages.t("welcome.builtinrom"));
+            }
+            System.out.println("[CONFIG] nessun Kickstart utilizzabile: uso la ROM AmiJa integrata");
+            return true;
+        }
+
         if (path.isEmpty()) {
-            error(Messages.t("error.rom.missing", AmigaConfig.FILE_NAME));
+            // Nessun Kickstart impostato: quasi sempre è il primo avvio in assoluto.
+            // Un errore che dice "imposta kickstart.path" non aiuta chi non sa nemmeno
+            // cos'è un Kickstart né perché l'emulatore non ne abbia uno: la prima volta
+            // si spiega la situazione per intero, poi basta ricordare cosa manca.
+            if (!welcomeShown) {
+                welcomeShown = true;
+                info(Messages.t("welcome.title"), Messages.t("welcome.rom"));
+            } else if (cfg.autoEnabled()) {
+                // Con la modalità Auto il percorso non viene da 'kickstart.path' ma da
+                // una delle due caselle del popup: dire quale manca è l'unica cosa utile.
+                error(Messages.t("error.rom.missing.auto",
+                        Messages.t(cfg.autoProfile().expanded()
+                                ? "label.kickstart31" : "label.kickstart13").replace(":", "")));
+            } else {
+                error(Messages.t("error.rom.missing", AmigaConfig.FILE_NAME));
+            }
             return false;
         }
         if (!new File(path).isFile()) {
@@ -1161,6 +1232,20 @@ public class Amija {
         System.err.println("[CONFIG] " + message.replace('\n', ' '));
         if (frame != null) {
             JOptionPane.showMessageDialog(frame, message, Messages.t("error.title"), JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    /**
+     * Messaggio informativo a schermo. A differenza di {@link #error} il testo passa per
+     * l'HTML, che manda a capo da sé entro una larghezza fissa: questi messaggi sono
+     * discorsivi e in un JLabel resterebbero su un'unica riga larga quanto lo schermo.
+     */
+    private void info(String title, String message) {
+        System.out.println("[CONFIG] " + message.replace('\n', ' '));
+        if (frame != null) {
+            String html = "<html><body style='width: 420px'>"
+                    + message.replace("\n", "<br>") + "</body></html>";
+            JOptionPane.showMessageDialog(frame, html, title, JOptionPane.INFORMATION_MESSAGE);
         }
     }
 }

@@ -123,9 +123,15 @@ you run it some other way — from an IDE, from `mvn exec` — there is no such 
 to speak of, and the current working directory is used instead, exactly as it
 always was.
 
-On a first start no Kickstart ROM is configured, so the machine has nothing to
-boot: AmiJa opens that popup by itself — point *Kickstart (.rom)* at your own ROM
-image and press OK. See [User-supplied files](#user-supplied-files) below.
+On a first start no Kickstart ROM is configured, so AmiJa boots its own: a small
+firmware written for this project, which ships with the emulator because it
+contains no Commodore code at all. It starts floppy games whose boot block loads
+the game by itself, which is a good part of the classic library.
+
+It is not a full Kickstart — it has no AmigaDOS. Disks that hand over to
+`dos.library`, hard-disk installs and WHDLoad all still need a real Kickstart:
+press **F12** and point *Kickstart (.rom)* at your own ROM image. See
+[User-supplied files](#user-supplied-files) below.
 
 The full guide to every setting and every key is in
 [USER_MANUAL.txt](USER_MANUAL.txt).
@@ -175,7 +181,7 @@ feature simply stays off — no errors. Put it in AmiJa's home folder, next to
 
 | Path | What goes in it | Feature |
 |---|---|---|
-| *(configured)* `kickstart.path` | a Kickstart ROM image, 256 KB | booting at all |
+| *(configured)* `kickstart.path` | a Kickstart ROM image, 256 KB | AmigaDOS disks, hard disks, WHDLoad — floppy games with a self-loading boot block run on the built-in ROM |
 | *(configured)* `drive.dfN.disk` | `.adf` / `.ipf` disk images | floppies |
 | `floppysounds/` | `drive_click_A500.wav`, `drive_spin_A500.wav`, `drive_startup_A500.wav`, `drive_snatch_A500.wav` — e.g. from a WinUAE installation | drive sounds |
 | `whdload/WHDLoad_files/` | the WHDLoad loader (`C/`, `S/`) from <https://www.whdload.de/>, plus the `.RTB` relocation tables in `Devs/Kickstarts/` for installs that emulate a different Kickstart | running `.lha` WHDLoad archives |

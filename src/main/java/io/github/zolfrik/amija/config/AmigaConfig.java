@@ -50,6 +50,9 @@ import java.util.Properties;
  *
  * <p>Proprietà gestite:
  * <ul>
+ *   <li>{@code auto.enabled} – modalità automatica (default {@code true}): Kickstart,
+ *       memorie, chipset e modalità video sono dedotti dal supporto attivo
+ *       ({@code auto.*}) invece che scelti a mano;</li>
  *   <li>{@code kickstart.path} – percorso assoluto del file ROM Kickstart;</li>
  *   <li>{@code chipram.kb} / {@code slowram.kb} – quantità di Chip/Slow RAM in KB;</li>
  *   <li>{@code drive.df0..df3.enabled} – se il drive è collegato;</li>
@@ -66,6 +69,9 @@ public final class AmigaConfig {
     public static final String FILE_NAME = "amiga.properties";
 
     // Chiavi delle proprietà.
+    private static final String K_AUTO_EN     = "auto.enabled";
+    private static final String K_AUTO_KS13   = "auto.kickstart13.path";
+    private static final String K_AUTO_KS31   = "auto.kickstart31.path";
     private static final String K_KICKSTART   = "kickstart.path";
     private static final String K_CHIPRAM_KB  = "chipram.kb";
     private static final String K_SLOWRAM_KB  = "slowram.kb";
@@ -78,6 +84,7 @@ public final class AmigaConfig {
     private static final String K_HD_RO       = "hd.%s.readonly";
     private static final String K_WHDLOAD_EN   = "whdload.enabled";
     private static final String K_WHDLOAD_FILE = "whdload.file";
+    private static final String K_LAST_MEDIA_DIR  = "chooser.media.lastDirectory";
     private static final String K_LAST_FLOPPY_DIR = "chooser.floppy.lastDirectory";
     private static final String K_LAST_ROM_DIR    = "chooser.rom.lastDirectory";
     private static final String K_LAST_HDF_DIR    = "chooser.hdf.lastDirectory";
@@ -158,6 +165,48 @@ public final class AmigaConfig {
         new WhdPref("whdload.prefs.executeCleanup", "ExecuteCleanup", WhdPrefType.VALUE, "",          null),
     };
 
+    // =========================================================================
+    // Modalità automatica (auto.*)
+    // =========================================================================
+
+    /**
+     * Profilo hardware della modalità Auto: prefisso delle chiavi in
+     * {@code amiga.properties} e valori di default se l'utente non li ha ridefiniti.
+     * Ce ne sono due, scelti in base al supporto attivo (vedi {@link #autoProfile}).
+     */
+    private record AutoDefaults(String prefix, int chipRamKb, int slowRamKb, int fastRamKb,
+            Chipset chipset) {
+
+        int chipRamKb(AmigaConfig c) { return c.getInt(prefix + "chipram.kb", chipRamKb); }
+
+        int slowRamKb(AmigaConfig c) { return c.getInt(prefix + "slowram.kb", slowRamKb); }
+
+        int fastRamKb(AmigaConfig c) { return c.getInt(prefix + "fastram.kb", fastRamKb); }
+
+        Chipset chipset(AmigaConfig c) {
+            return parseChipset(c.props.getProperty(prefix + "chipset"), chipset);
+        }
+    }
+
+    /** Solo floppy: la configurazione dell'A500 base che quasi tutti i giochi si aspettano. */
+    private static final AutoDefaults AUTO_FLOPPY =
+            new AutoDefaults("auto.floppy.", 512, 512, 0, Chipset.OCS);
+
+    /** Hard disk o WHDLoad attivo: la macchina espansa che quel software richiede. */
+    private static final AutoDefaults AUTO_EXPANDED =
+            new AutoDefaults("auto.hd.", 1024, 512, 8192, Chipset.ECS);
+
+    private static final AutoDefaults[] AUTO_PROFILES = { AUTO_FLOPPY, AUTO_EXPANDED };
+
+    /**
+     * Impostazioni di sistema dedotte dalla modalità Auto: quello che la macchina
+     * userà davvero al prossimo avvio senza che l'utente debba scegliere nulla.
+     *
+     * @param expanded {@code true} se è attivo un hard disk o WHDLoad (profilo espanso)
+     */
+    public record AutoProfile(String kickstartPath, boolean expanded, int chipRamKb,
+            int slowRamKb, int fastRamKb, Chipset chipset, VideoMode videoMode) { }
+
     private final Properties props;
 
     private AmigaConfig(Properties props) {
@@ -213,6 +262,16 @@ public final class AmigaConfig {
     /** Proprietà di default usate alla prima esecuzione (file mancante). */
     private static Properties defaultProperties() {
         Properties p = new Properties();
+        // Modalità automatica: attiva di default (è la ragione per cui esiste).
+        p.setProperty(K_AUTO_EN, "true");
+        p.setProperty(K_AUTO_KS13, "");                 // da impostare a cura dell'utente
+        p.setProperty(K_AUTO_KS31, "");
+        for (AutoDefaults d : AUTO_PROFILES) {
+            p.setProperty(d.prefix() + "chipram.kb", Integer.toString(d.chipRamKb()));
+            p.setProperty(d.prefix() + "slowram.kb", Integer.toString(d.slowRamKb()));
+            p.setProperty(d.prefix() + "fastram.kb", Integer.toString(d.fastRamKb()));
+            p.setProperty(d.prefix() + "chipset", d.chipset().name());
+        }
         p.setProperty(K_KICKSTART, "");                 // da impostare a cura dell'utente
         p.setProperty(K_CHIPRAM_KB, "512");
         p.setProperty(K_SLOWRAM_KB, "512");
@@ -236,6 +295,7 @@ public final class AmigaConfig {
         // WHDLoad: assente di default.
         p.setProperty(K_WHDLOAD_EN, "false");
         p.setProperty(K_WHDLOAD_FILE, "");
+        p.setProperty(K_LAST_MEDIA_DIR, "");
         p.setProperty(K_LAST_FLOPPY_DIR, "");
         p.setProperty(K_LAST_ROM_DIR, "");
         p.setProperty(K_LAST_HDF_DIR, "");
@@ -274,22 +334,146 @@ public final class AmigaConfig {
     }
 
     // =========================================================================
+    // Modalità automatica: deduzione del profilo di sistema
+    // =========================================================================
+
+    /**
+     * {@code true} (default) se la macchina si configura da sé: Kickstart, memorie,
+     * chipset e modalità video sono dedotti dal supporto attivo invece che scelti a
+     * mano. Nel popup F12 è la casella <b>"Expert mode"</b>, che vale l'opposto: spenta
+     * (il default) la macchina si configura da sé, accesa valgono le impostazioni
+     * salvate dall'utente e tutto si comporta come prima che questa modalità esistesse.
+     */
+    public boolean autoEnabled() {
+        return getBool(K_AUTO_EN, true);
+    }
+
+    /** Kickstart 1.3 della modalità Auto (profilo solo floppy); vuoto se non impostato. */
+    public String autoKickstart13() {
+        return props.getProperty(K_AUTO_KS13, "").trim();
+    }
+
+    /** Kickstart 3.1 della modalità Auto (profilo hard disk/WHDLoad); vuoto se non impostato. */
+    public String autoKickstart31() {
+        return props.getProperty(K_AUTO_KS31, "").trim();
+    }
+
+    /**
+     * {@code true} se è attivo almeno un hard disk o l'avvio WHDLoad, cioè se la
+     * modalità Auto deve usare il profilo espanso. "Attivo" vuol dire spuntato
+     * <i>e</i> con un file indicato: un'unità spuntata ma vuota non monta nulla.
+     */
+    public boolean expandedMediaActive() {
+        for (int unit = 0; unit < HD_UNITS.length; unit++) {
+            if (hdEnabled(unit) && hdDisk(unit) != null) return true;
+        }
+        return whdloadEnabled() && whdloadFile() != null;
+    }
+
+    /**
+     * Tutti i file effettivamente in uso: i dischi dei drive collegati, gli hard disk
+     * montati e l'archivio WHDLoad. È l'insieme su cui la modalità Auto cerca gli
+     * indizi di regione (vedi {@link #impliesNtsc}).
+     */
+    public java.util.List<String> activeMediaFiles() {
+        java.util.List<String> files = new java.util.ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            if (driveEnabled(i) && driveDisk(i) != null) files.add(driveDisk(i));
+        }
+        for (int unit = 0; unit < HD_UNITS.length; unit++) {
+            if (hdEnabled(unit) && hdDisk(unit) != null) files.add(hdDisk(unit));
+        }
+        if (whdloadEnabled() && whdloadFile() != null) files.add(whdloadFile());
+        return files;
+    }
+
+    /**
+     * {@code true} se uno dei file attivi si dichiara NTSC nel proprio <b>nome</b>:
+     * la stringa {@code NTSC} oppure {@code (USA)}, senza distinzione fra maiuscole e
+     * minuscole. Sono le due convenzioni con cui le raccolte di immagini (TOSEC,
+     * No-Intro, WHDLoad) marcano le versioni a 60 Hz, che su una macchina PAL girano
+     * troppo lente o con il quadro tagliato.
+     *
+     * <p>Si guarda al solo nome del file, non all'intero percorso: una cartella
+     * chiamata p.es. {@code USA} o {@code NTSC dumps} non deve trascinare in NTSC
+     * tutto quello che contiene.
+     */
+    public static boolean impliesNtsc(java.util.List<String> files) {
+        for (String f : files) {
+            if (f == null) continue;
+            String name = fileName(f).toUpperCase(java.util.Locale.ROOT);
+            if (name.contains("NTSC") || name.contains("(USA)")) return true;
+        }
+        return false;
+    }
+
+    /** Ultimo segmento di un percorso, qualunque separatore usi (o l'intera stringa). */
+    private static String fileName(String path) {
+        int cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        return cut < 0 ? path : path.substring(cut + 1);
+    }
+
+    /**
+     * Impostazioni di sistema dedotte dalla modalità Auto per il supporto descritto dai
+     * parametri; {@link #autoProfile()} è la stessa cosa applicata allo stato corrente.
+     *
+     * <p>Il profilo è uno dei due: solo floppy (A500 base, Kickstart 1.3) oppure hard
+     * disk/WHDLoad (macchina espansa, Kickstart 3.1). Ogni valore viene da
+     * {@code amiga.properties} ({@code auto.floppy.*} / {@code auto.hd.*}), così chi
+     * vuole può cambiarlo a mano senza rinunciare all'automatismo.
+     *
+     * @param expanded    è attivo un hard disk o WHDLoad
+     * @param activeFiles file in uso, per la deduzione PAL/NTSC
+     */
+    private AutoProfile autoProfile(boolean expanded, java.util.List<String> activeFiles) {
+        AutoDefaults d = expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
+        return new AutoProfile(autoKickstartPath(expanded), expanded,
+                d.chipRamKb(this), d.slowRamKb(this), d.fastRamKb(this), d.chipset(this),
+                impliesNtsc(activeFiles) ? VideoMode.NTSC : VideoMode.PAL);
+    }
+
+    /** Impostazioni dedotte dalla modalità Auto per il supporto attualmente configurato. */
+    public AutoProfile autoProfile() {
+        return autoProfile(expandedMediaActive(), activeMediaFiles());
+    }
+
+    /**
+     * ROM scelta dalla modalità Auto: il Kickstart 3.1 per il profilo espanso, l'1.3
+     * per il solo floppy. Se la casella del profilo è vuota si ripiega sull'altra e
+     * infine sul Kickstart impostato a mano — così chi arriva da una configurazione
+     * precedente (dove esisteva solo {@code kickstart.path}) parte comunque.
+     */
+    private String autoKickstartPath(boolean expanded) {
+        String preferred = expanded ? autoKickstart31() : autoKickstart13();
+        String other = expanded ? autoKickstart13() : autoKickstart31();
+        if (!preferred.isEmpty()) return preferred;
+        if (!other.isEmpty()) return other;
+        return storedKickstartPath();
+    }
+
+    // =========================================================================
     // Getter tipizzati (con fallback ai default se la chiave manca/è invalida)
+    //
+    // Con la modalità Auto attiva i parametri di sistema non sono più quelli salvati
+    // ma quelli dedotti dal supporto: i getter qui sotto restituiscono il valore
+    // EFFETTIVO, cioè quello con cui la macchina viene costruita. I valori scelti a
+    // mano restano intatti nel file (getter stored*) e tornano in vigore appena Auto
+    // viene spento.
     // =========================================================================
 
     /** Percorso assoluto del Kickstart, o stringa vuota se non configurato. */
     public String kickstartPath() {
-        return props.getProperty(K_KICKSTART, "").trim();
+        return autoEnabled() ? autoProfile().kickstartPath() : storedKickstartPath();
     }
 
     /** Chip RAM in KB (default 512). */
     public int chipRamKb() {
-        return getInt(K_CHIPRAM_KB, 512);
+        return autoEnabled() ? autoProfile().chipRamKb() : storedChipRamKb();
     }
 
     /** Slow RAM in KB (default 512); 0 = nessuna Slow RAM. */
     public int slowRamKb() {
-        return getInt(K_SLOWRAM_KB, 512);
+        return autoEnabled() ? autoProfile().slowRamKb() : storedSlowRamKb();
     }
 
     /**
@@ -298,6 +482,26 @@ public final class AmigaConfig {
      * 512 KB a 8 MB). Serve per i giochi via hard disk e WHDLoad.
      */
     public int fastRamKb() {
+        return autoEnabled() ? autoProfile().fastRamKb() : storedFastRamKb();
+    }
+
+    /** Kickstart scelto a mano (chiave {@code kickstart.path}), ignorato da Auto. */
+    public String storedKickstartPath() {
+        return props.getProperty(K_KICKSTART, "").trim();
+    }
+
+    /** Chip RAM scelta a mano, ignorata da Auto. */
+    public int storedChipRamKb() {
+        return getInt(K_CHIPRAM_KB, 512);
+    }
+
+    /** Slow RAM scelta a mano, ignorata da Auto. */
+    public int storedSlowRamKb() {
+        return getInt(K_SLOWRAM_KB, 512);
+    }
+
+    /** Fast RAM scelta a mano, ignorata da Auto. */
+    public int storedFastRamKb() {
         return getInt(K_FASTRAM_KB, 0);
     }
 
@@ -410,6 +614,17 @@ public final class AmigaConfig {
         return props.getProperty(K_LAST_FLOPPY_DIR, "").trim();
     }
 
+    /**
+     * Ultima cartella usata dal browser unico della modalità Auto, che accetta ogni
+     * tipo di supporto. Ha una memoria propria perché mescola floppy, hard disk e
+     * archivi WHDLoad; finché è vuota ripiega su quella dei floppy, così chi arriva da
+     * una configurazione precedente non riparte dal nulla.
+     */
+    public String lastMediaDirectory() {
+        String v = props.getProperty(K_LAST_MEDIA_DIR, "").trim();
+        return v.isEmpty() ? lastFloppyDirectory() : v;
+    }
+
     /** Ultima cartella usata dal browser ROM, o stringa vuota se non configurata. */
     public String lastRomDirectory() {
         return props.getProperty(K_LAST_ROM_DIR, "").trim();
@@ -486,6 +701,11 @@ public final class AmigaConfig {
      * effetto solo a macchina riavviata (cold restart).
      */
     public VideoMode videoMode() {
+        return autoEnabled() ? autoProfile().videoMode() : storedVideoMode();
+    }
+
+    /** Modalità video scelta a mano (chiave {@code video.mode}), ignorata da Auto. */
+    public VideoMode storedVideoMode() {
         String v = props.getProperty(K_VIDEO_MODE, VideoMode.PAL.name()).trim();
         try {
             return VideoMode.valueOf(v.toUpperCase());
@@ -503,12 +723,22 @@ public final class AmigaConfig {
      * richiede ECS (validato in fase di boot).
      */
     public Chipset chipset() {
-        String v = props.getProperty(K_CHIPSET, Chipset.OCS.name()).trim();
+        return autoEnabled() ? autoProfile().chipset() : storedChipset();
+    }
+
+    /** Chipset scelto a mano (chiave {@code chipset}), ignorato da Auto. */
+    public Chipset storedChipset() {
+        return parseChipset(props.getProperty(K_CHIPSET), Chipset.OCS);
+    }
+
+    /** Converte il valore testuale di un chipset; {@code def} se manca o non è valido. */
+    private static Chipset parseChipset(String value, Chipset def) {
+        if (value == null || value.trim().isEmpty()) return def;
         try {
-            return Chipset.valueOf(v.toUpperCase());
+            return Chipset.valueOf(value.trim().toUpperCase());
         } catch (IllegalArgumentException e) {
-            System.err.println("[CONFIG] Invalid chipset '" + v + "', using OCS");
-            return Chipset.OCS;
+            System.err.println("[CONFIG] Invalid chipset '" + value.trim() + "', using " + def);
+            return def;
         }
     }
 
@@ -582,6 +812,18 @@ public final class AmigaConfig {
     // Setter (usati dal popup di configurazione prima di {@link #save()})
     // =========================================================================
 
+    public void setAutoEnabled(boolean enabled) {
+        props.setProperty(K_AUTO_EN, Boolean.toString(enabled));
+    }
+
+    public void setAutoKickstart13(String path) {
+        props.setProperty(K_AUTO_KS13, path == null ? "" : path.trim());
+    }
+
+    public void setAutoKickstart31(String path) {
+        props.setProperty(K_AUTO_KS31, path == null ? "" : path.trim());
+    }
+
     public void setKickstartPath(String path) {
         props.setProperty(K_KICKSTART, path == null ? "" : path.trim());
     }
@@ -640,6 +882,10 @@ public final class AmigaConfig {
 
     public void setLastFloppyDirectory(String path) {
         props.setProperty(K_LAST_FLOPPY_DIR, path == null ? "" : path.trim());
+    }
+
+    public void setLastMediaDirectory(String path) {
+        props.setProperty(K_LAST_MEDIA_DIR, path == null ? "" : path.trim());
     }
 
     public void setLastRomDirectory(String path) {
@@ -724,14 +970,42 @@ public final class AmigaConfig {
         sb.append("# Amija configuration - Java Amiga emulator\n");
         sb.append("# Automatically generated file; editable by hand or from the popup (F12).\n\n");
 
-        sb.append("# ABSOLUTE path of the Kickstart ROM file.\n");
-        line(sb, K_KICKSTART, kickstartPath());
+        sb.append("# Automatic configuration. Beware the polarity: true (the default) is the\n");
+        sb.append("# \"Expert mode\" box UNTICKED in the F12 popup, false is ticked. Left to\n");
+        sb.append("# itself, AmiJa works the machine out from the files you load and the\n");
+        sb.append("# System section disappears from the popup:\n");
+        sb.append("#  - Kickstart: the 1.3 below for plain floppy games, the 3.1 as soon as a\n");
+        sb.append("#    hard disk or WHDLoad is in use;\n");
+        sb.append("#  - memory and chipset: the auto.floppy.* profile, or auto.hd.* when a hard\n");
+        sb.append("#    disk or WHDLoad is in use. Both are editable right below;\n");
+        sb.append("#  - video mode: PAL, unless the name of an active file (floppy, hard disk or\n");
+        sb.append("#    WHDLoad archive) contains \"NTSC\" or \"(USA)\", in any case.\n");
+        sb.append("# The hand-picked settings further down are left untouched and come back into\n");
+        sb.append("# force the moment this is set to false.\n");
+        line(sb, K_AUTO_EN, Boolean.toString(autoEnabled()));
 
-        sb.append("\n# Memory sizes in KB.\n");
-        line(sb, K_CHIPRAM_KB, Integer.toString(chipRamKb()));
-        line(sb, K_SLOWRAM_KB, Integer.toString(slowRamKb()));
+        sb.append("\n# ABSOLUTE path of the two Kickstart ROMs used by the automatic configuration.\n");
+        line(sb, K_AUTO_KS13, autoKickstart13());
+        line(sb, K_AUTO_KS31, autoKickstart31());
+
+        sb.append("\n# The two hardware profiles of the automatic configuration: auto.floppy.* is\n");
+        sb.append("# used when only floppies are in play, auto.hd.* when a hard disk or WHDLoad is.\n");
+        sb.append("# Same units and values as the hand-picked settings below.\n");
+        for (AutoDefaults d : AUTO_PROFILES) {
+            line(sb, d.prefix() + "chipram.kb", Integer.toString(d.chipRamKb(this)));
+            line(sb, d.prefix() + "slowram.kb", Integer.toString(d.slowRamKb(this)));
+            line(sb, d.prefix() + "fastram.kb", Integer.toString(d.fastRamKb(this)));
+            line(sb, d.prefix() + "chipset", d.chipset(this).name());
+        }
+
+        sb.append("\n# ABSOLUTE path of the Kickstart ROM file (automatic configuration off).\n");
+        line(sb, K_KICKSTART, storedKickstartPath());
+
+        sb.append("\n# Memory sizes in KB (automatic configuration off).\n");
+        line(sb, K_CHIPRAM_KB, Integer.toString(storedChipRamKb()));
+        line(sb, K_SLOWRAM_KB, Integer.toString(storedSlowRamKb()));
         sb.append("# Fast RAM (Zorro II AutoConfig expansion): 0=none, then 512/1024/2048/4096/8192.\n");
-        line(sb, K_FASTRAM_KB, Integer.toString(fastRamKb()));
+        line(sb, K_FASTRAM_KB, Integer.toString(storedFastRamKb()));
 
         sb.append("\n# Connected drives (DF0..DF3).\n");
         for (int i = 0; i < 4; i++) {
@@ -774,7 +1048,10 @@ public final class AmigaConfig {
         String whd = props.getProperty(K_WHDLOAD_FILE, "").trim();
         line(sb, K_WHDLOAD_FILE, whd);
 
-        sb.append("\n# Last directories used by the file browsers of the F12 popup.\n");
+        sb.append("\n# Last directories used by the file browsers of the F12 popup. The \"media\"\n");
+        sb.append("# one belongs to the single browser of the automatic configuration, which\n");
+        sb.append("# takes every kind of file; empty = start from the floppy one.\n");
+        line(sb, K_LAST_MEDIA_DIR, props.getProperty(K_LAST_MEDIA_DIR, "").trim());
         line(sb, K_LAST_FLOPPY_DIR, lastFloppyDirectory());
         line(sb, K_LAST_ROM_DIR, lastRomDirectory());
         line(sb, K_LAST_HDF_DIR, lastHdfDirectory());
@@ -818,13 +1095,15 @@ public final class AmigaConfig {
         line(sb, K_LANGUAGE, language());
 
         sb.append("\n# Video mode: PAL (default, 50 Hz, 312 lines) or NTSC (60 Hz, 262 lines).\n");
-        sb.append("# The change takes effect only after restarting the emulator (cold restart).\n");
-        line(sb, K_VIDEO_MODE, videoMode().name());
+        sb.append("# Automatic configuration off. The change takes effect only after restarting\n");
+        sb.append("# the emulator (cold restart).\n");
+        line(sb, K_VIDEO_MODE, storedVideoMode().name());
 
         sb.append("\n# Custom chipset: OCS (default) or ECS. Selects the Agnus/Denise variant\n");
         sb.append("# and enables the ECS-only registers. Chip RAM > 512 KB requires ECS.\n");
-        sb.append("# The change takes effect only after restarting the emulator (cold restart).\n");
-        line(sb, K_CHIPSET, chipset().name());
+        sb.append("# Automatic configuration off. The change takes effect only after restarting\n");
+        sb.append("# the emulator (cold restart).\n");
+        line(sb, K_CHIPSET, storedChipset().name());
 
         sb.append("\n# Video/UI integer scaling: 1 = native size, 2 = double, 3 = triple, ...\n");
         line(sb, K_INTEGER_SCALING, Integer.toString(integerScaling()));

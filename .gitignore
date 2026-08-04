@@ -19,6 +19,11 @@ whdload/*
 
 # ROM Kickstart, immagini disco, archivi WHDLoad — mai nel repository.
 *.rom
+# Unica eccezione: la ROM di avvio AmiJa. Non è un Kickstart, è firmware
+# scritto per questo progetto (sorgente in rom/), quindi ridistribuibile.
+# L'eccezione è per il singolo file e non allenta la regola sopra, che serve
+# a impedire che una ROM Commodore finisca qui per sbaglio.
+!src/main/resources/rom/amija.rom
 *.adf
 *.ipf
 *.hdf
@@ -47,3 +52,8 @@ nb-configuration.xml
 # --- Crash della JVM ------------------------------------------------------
 hs_err_pid*
 replay_pid*
+
+# Intermedi generati da romgen/RomBuilder: la ROM impaginata va in
+# src/main/resources/rom/, questi due sono solo passaggi della build.
+rom/splash.bin
+rom/font.bin

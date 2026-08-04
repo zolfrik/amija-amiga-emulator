@@ -56,6 +56,7 @@ import javax.swing.JToggleButton;
 import javax.swing.KeyStroke;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.SpinnerNumberModel;
+import javax.swing.ToolTipManager;
 import javax.swing.border.TitledBorder;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.BorderLayout;
@@ -95,11 +96,23 @@ public final class ConfigDialog {
     /** Esito della finestra: l'azione che il chiamante deve eseguire. */
     public enum Result { CANCEL, OK, RESTART, SOFT_RESET, QUIT }
 
+    /**
+     * Quanto resta a schermo un tooltip prima di sparire da solo: il doppio dei 4 s con
+     * cui parte Swing. Qui i tooltip non sono etichette da riconoscere ma spiegazioni da
+     * leggere, e quattro secondi non bastano per una frase intera.
+     *
+     * <p>È un valore assoluto e non "il default moltiplicato per due" di proposito:
+     * {@link ToolTipManager} è un singleton di JVM, e raddoppiare il valore corrente a
+     * ogni apertura del popup lo farebbe crescere senza fine.
+     */
+    private static final int TOOLTIP_DISMISS_MS = 8000;
+
     private static final Dimension DRIVE_TOOL_BUTTON_SIZE = new Dimension(34, 26);
     private static final Icon LOCK_CLOSED_ICON = new LockIcon(true);
     private static final Icon LOCK_OPEN_ICON = new LockIcon(false);
 
-    private enum BrowseKind { FLOPPY, ROM, HDF, WHDLOAD }
+    /** Sorgenti di file del popup; ognuna ricorda la propria ultima cartella. */
+    private enum BrowseKind { FLOPPY, ROM, HDF, WHDLOAD, MEDIA }
 
     // Valori sensati/possibili per le tendine della memoria (in KB).
     private static final Integer[] CHIP_RAM_OPTIONS = { 256, 512, 1024, 2048 };
@@ -131,6 +144,11 @@ public final class ConfigDialog {
             java.util.function.Supplier<String> onLoadState) {
         final Result[] result = { Result.CANCEL };
 
+        // Prima di costruire qualsiasi cosa: i tooltip di questo popup vanno letti, non
+        // solo intravisti. Il ToolTipManager è condiviso da tutta la JVM, quindi vale
+        // anche per le finestre figlie (tasti joystick, parametri shader, download).
+        ToolTipManager.sharedInstance().setDismissDelay(TOOLTIP_DISMISS_MS);
+
         String title = Messages.t("dialog.title") + " - " + Version.version();
         JDialog dialog = new JDialog(parent, title, true);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
@@ -140,33 +158,77 @@ public final class ConfigDialog {
         // -------------------------------------------------------------------
         JPanel system = section(Messages.t("section.system"));
 
-        JTextField kickField = textField(config.kickstartPath());
+        // "Expert mode" (prima voce, spento di default): decide quanto popup l'utente si
+        // trova davanti. Spento, la macchina si configura da sé in base al supporto
+        // scelto — restano il Kickstart, sdoppiato nelle due ROM fra cui l'automatismo
+        // sceglie, e la lista unica dei drive; acceso, compare tutto e decide l'utente.
+        // Il cablaggio è più in basso (syncAuto), dopo le sezioni da cui dipende.
+        JCheckBox expertCheck = check(Messages.t("label.expert"), !config.autoEnabled());
+        tip("label.expert", expertCheck);
+        addRow(system, 0, expertCheck, null, null);
+        java.util.function.BooleanSupplier simpleMode = () -> !expertCheck.isSelected();
+
+        // Kickstart scelto a mano: visibile solo in Expert.
+        JLabel kickLabel = label(Messages.t("label.kickstart"));
+        JTextField kickField = textField(config.storedKickstartPath());
         JButton kickBrowse = browseButton();
         kickBrowse.addActionListener(e -> browse(dialog, config, BrowseKind.ROM, kickField,
                 Messages.t("chooser.rom"), "rom"));
-        addRow(system, 0, Messages.t("label.kickstart"), kickField, kickBrowse);
+        tip("label.kickstart", kickLabel, kickField);
+        addRow(system, 1, kickLabel, kickField, kickBrowse);
 
+        // Le due ROM fra cui sceglie la configurazione automatica: visibili solo con
+        // Expert spento, cioè quando quella scelta la fa l'emulatore. Hanno una voce
+        // propria in amiga.properties ma condividono con il campo qui sopra l'ultima
+        // cartella visitata (BrowseKind.ROM): i Kickstart stanno tutti insieme.
+        //
+        // Se nessuna delle due è impostata siamo davanti a una configurazione più vecchia
+        // della modalità Auto: la prima parte allora dal Kickstart scelto a mano, che è
+        // quello con cui la macchina sta già girando. Senza, all'utente sembrerebbe di
+        // aver perso la propria ROM.
+        JLabel ks13Label = label(Messages.t("label.kickstart13"));
+        JTextField ks13Field = textField(
+                config.autoKickstart13().isEmpty() && config.autoKickstart31().isEmpty()
+                        ? config.storedKickstartPath() : config.autoKickstart13());
+        JButton ks13Browse = browseButton();
+        ks13Browse.addActionListener(e -> browse(dialog, config, BrowseKind.ROM, ks13Field,
+                Messages.t("chooser.rom"), "rom"));
+        tip("label.kickstart13", ks13Label, ks13Field);
+        addRow(system, 2, ks13Label, ks13Field, ks13Browse);
+
+        JLabel ks31Label = label(Messages.t("label.kickstart31"));
+        JTextField ks31Field = textField(config.autoKickstart31());
+        JButton ks31Browse = browseButton();
+        ks31Browse.addActionListener(e -> browse(dialog, config, BrowseKind.ROM, ks31Field,
+                Messages.t("chooser.rom"), "rom"));
+        tip("label.kickstart31", ks31Label, ks31Field);
+        addRow(system, 3, ks31Label, ks31Field, ks31Browse);
+
+        // Le cinque voci qui sotto descrivono l'hardware della macchina. Con Expert
+        // spento le decide l'emulatore e le righe spariscono del tutto: chi non conosce
+        // l'Amiga non ha modo di scegliere fra OCS ed ECS, e vedersele davanti in sola
+        // lettura non lo aiuta. Riappaiono, modificabili, appena Expert si accende.
         JComboBox<Integer> chipCombo = kbCombo(CHIP_RAM_OPTIONS, config.chipRamKb());
-        addRow(system, 1, Messages.t("label.chipram"), chipCombo, null);
+        JLabel chipLabel = addRow(system, 4, "label.chipram", chipCombo, null);
 
         JComboBox<Integer> slowCombo = kbCombo(SLOW_RAM_OPTIONS, config.slowRamKb());
-        addRow(system, 2, Messages.t("label.slowram"), slowCombo, null);
+        JLabel slowLabel = addRow(system, 5, "label.slowram", slowCombo, null);
 
         JComboBox<Integer> fastCombo = kbCombo(FAST_RAM_OPTIONS, config.fastRamKb());
-        addRow(system, 3, Messages.t("label.fastram"), fastCombo, null);
+        JLabel fastLabel = addRow(system, 6, "label.fastram", fastCombo, null);
 
         // Modalita' video PAL/NTSC: il cambio richiede il riavvio dell'emulatore
         // (gestito da Amija: un OK con modalita' diversa forza un cold restart).
         JComboBox<VideoMode> videoModeCombo = new JComboBox<>(VideoMode.values());
         videoModeCombo.setSelectedItem(config.videoMode());
         videoModeCombo.setMaximumSize(new Dimension(160, 26));
-        addRow(system, 4, Messages.t("label.videomode"), videoModeCombo, null);
+        JLabel videoLabel = addRow(system, 7, "label.videomode", videoModeCombo, null);
 
         // Chipset OCS/ECS: come la modalita' video, il cambio richiede un cold restart.
         JComboBox<Chipset> chipsetCombo = new JComboBox<>(Chipset.values());
         chipsetCombo.setSelectedItem(config.chipset());
         chipsetCombo.setMaximumSize(new Dimension(160, 26));
-        addRow(system, 5, "Chipset", chipsetCombo, null);
+        JLabel chipsetLabel = addRow(system, 8, "label.chipset", chipsetCombo, null);
 
         // -------------------------------------------------------------------
         // Sezione: Game ports
@@ -184,11 +246,11 @@ public final class ConfigDialog {
         // mantiene la propria larghezza sia che il pulsante ci sia sia che non ci sia.
         JComboBox<PortDevice> port0Combo = deviceCombo(config.portDevice(0));
         JButton port0Keys = joystickKeysButton();
-        addRow(ports, 0, Messages.t("label.port0"), port0Combo, port0Keys);
+        addRow(ports, 0, "label.port0", port0Combo, port0Keys);
 
         JComboBox<PortDevice> port1Combo = deviceCombo(config.portDevice(1));
         JButton port1Keys = joystickKeysButton();
-        addRow(ports, 1, Messages.t("label.port1"), port1Combo, port1Keys);
+        addRow(ports, 1, "label.port1", port1Combo, port1Keys);
 
         port0Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 0, joyKeyMaps));
         port1Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 1, joyKeyMaps));
@@ -211,6 +273,10 @@ public final class ConfigDialog {
         JCheckBox[] driveEnabled = new JCheckBox[4];
         JTextField[] driveDisk   = new JTextField[4];
         JToggleButton[] driveReadOnly = new JToggleButton[4];
+        // Le funzioni che riallineano i controlli di una riga al suo stato. Servono anche
+        // dall'esterno: quando la lista unica della modalità Auto riversa qui i propri
+        // supporti, setSelected/setText non emettono eventi e nessuno le richiamerebbe.
+        java.util.List<Runnable> classicSyncs = new java.util.ArrayList<>();
         for (int i = 0; i < 4; i++) {
             final int idx = i;
             JCheckBox enabled = check(Messages.t("drive.connected", i), config.driveEnabled(i));
@@ -241,6 +307,7 @@ public final class ConfigDialog {
                 sync.run();
             });
             enabled.addActionListener(e -> sync.run());
+            classicSyncs.add(sync);
             sync.run();
 
             // "..." e "Eject" affiancati nella colonna di coda (eject a destra).
@@ -253,6 +320,7 @@ public final class ConfigDialog {
             driveEnabled[idx] = enabled;
             driveDisk[idx] = disk;
             driveReadOnly[idx] = diskReadOnly;
+            tip("drive.connected", enabled, disk);
             addRow(drives, i, enabled, disk, trailing);
         }
 
@@ -288,6 +356,7 @@ public final class ConfigDialog {
                 sync.run();
             });
             enabled.addActionListener(e -> sync.run());
+            classicSyncs.add(sync);
             sync.run();
 
             JPanel trailing = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
@@ -299,6 +368,7 @@ public final class ConfigDialog {
             hdEnabled[i] = enabled;
             hdDisk[i] = disk;
             hdReadOnly[i] = diskReadOnly;
+            tip("hd." + AmigaConfig.HD_UNITS[i], enabled, disk);
             addRow(hds, i, enabled, disk, trailing);
         }
 
@@ -338,13 +408,110 @@ public final class ConfigDialog {
             whdSync.run();
         });
         whdEnabled.addActionListener(e -> whdSync.run());
+        classicSyncs.add(whdSync);
         whdSync.run();
 
         JPanel whdTrailing = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
         whdTrailing.setOpaque(false);
         whdTrailing.add(whdBrowse);
         whdTrailing.add(whdEject);
+        tip("whdload.enabled", whdEnabled, whdFile);
         addRow(whd, 0, whdEnabled, whdFile, whdTrailing);
+
+        // -------------------------------------------------------------------
+        // Sezione: Drives — la lista unica della modalità Auto, che prende il posto
+        // delle tre sezioni qui sopra. Vedi DriveList.
+        // -------------------------------------------------------------------
+        JPanel media = section(Messages.t("section.media"));
+        DriveList driveList = new DriveList(dialog, config, media);
+        driveList.seed(MediaState.fromConfig(config));
+
+        // I supporti come li vedono le tre sezioni classiche, e come rimetterceli.
+        // Sono le due direzioni dello scambio con la lista unica.
+        java.util.function.Supplier<MediaState> classicMedia = () -> {
+            MediaState s = new MediaState();
+            for (int i = 0; i < 4; i++) {
+                s.floppyDisk[i] = driveDisk[i].getText();
+                s.floppyConnected[i] = driveEnabled[i].isSelected();
+                s.floppyReadOnly[i] = driveReadOnly[i].isSelected();
+            }
+            for (int u = 0; u < hdEnabled.length; u++) {
+                s.hdDisk[u] = hdDisk[u].getText();
+                s.hdConnected[u] = hdEnabled[u].isSelected();
+                s.hdReadOnly[u] = hdReadOnly[u].isSelected();
+            }
+            s.whdloadEnabled = whdEnabled.isSelected();
+            s.whdloadFile = whdFile.getText();
+            return s;
+        };
+        java.util.function.Consumer<MediaState> applyToClassic = s -> {
+            for (int i = 0; i < 4; i++) {
+                driveDisk[i].setText(s.floppyDisk[i] == null ? "" : s.floppyDisk[i]);
+                driveDisk[i].setCaretPosition(0);
+                driveEnabled[i].setSelected(s.floppyConnected[i]);
+                driveReadOnly[i].setSelected(s.floppyReadOnly[i]);
+            }
+            for (int u = 0; u < hdEnabled.length; u++) {
+                hdDisk[u].setText(s.hdDisk[u] == null ? "" : s.hdDisk[u]);
+                hdDisk[u].setCaretPosition(0);
+                hdEnabled[u].setSelected(s.hdConnected[u]);
+                hdReadOnly[u].setSelected(s.hdReadOnly[u]);
+            }
+            whdEnabled.setSelected(s.whdloadEnabled);
+            whdFile.setText(s.whdloadFile == null ? "" : s.whdloadFile);
+            whdFile.setCaretPosition(0);
+            // setSelected/setText non emettono eventi: i controlli di riga vanno
+            // riallineati a mano, o resterebbero abilitati come prima.
+            classicSyncs.forEach(Runnable::run);
+        };
+
+        // -------------------------------------------------------------------
+        // Cablaggio di "Expert mode" (prima voce della sezione Sistema).
+        //
+        // Sta qui, e non lassù, perché deve conoscere entrambe le viste dei supporti:
+        // le tre sezioni classiche e la lista unica. Accendere o spegnere Expert scambia
+        // le viste passandosi quello che l'utente ha scelto, così un gioco appena messo
+        // nella lista non sparisce cambiando idea sulla modalità.
+        // -------------------------------------------------------------------
+        Runnable syncAuto = () -> {
+            boolean simple = simpleMode.getAsBoolean();
+            setRowVisible(!simple, kickLabel, kickField, kickBrowse);
+            setRowVisible(simple, ks13Label, ks13Field, ks13Browse);
+            setRowVisible(simple, ks31Label, ks31Field, ks31Browse);
+            // Fuori da Expert l'hardware lo decide l'emulatore: le righe non servono.
+            setRowVisible(!simple, chipLabel, chipCombo);
+            setRowVisible(!simple, slowLabel, slowCombo);
+            setRowVisible(!simple, fastLabel, fastCombo);
+            setRowVisible(!simple, videoLabel, videoModeCombo);
+            setRowVisible(!simple, chipsetLabel, chipsetCombo);
+            // Una lista sola invece delle tre sezioni per tipo di supporto.
+            media.setVisible(simple);
+            drives.setVisible(!simple);
+            hds.setVisible(!simple);
+            whd.setVisible(!simple);
+            Container box = media.getParent();
+            if (box != null) {
+                box.revalidate();
+                box.repaint();
+            }
+        };
+
+        expertCheck.addActionListener(e -> {
+            if (simpleMode.getAsBoolean()) {
+                driveList.seed(classicMedia.get());
+            } else {
+                // Accendendo Expert tornano in vigore le impostazioni di sistema scelte
+                // a mano, rimaste intatte nel file per tutto il tempo in cui la macchina
+                // si configurava da sé; i supporti invece sono quelli della lista.
+                applyToClassic.accept(driveList.toMediaState());
+                selectKb(chipCombo, config.storedChipRamKb());
+                selectKb(slowCombo, config.storedSlowRamKb());
+                selectKb(fastCombo, config.storedFastRamKb());
+                videoModeCombo.setSelectedItem(config.storedVideoMode());
+                chipsetCombo.setSelectedItem(config.storedChipset());
+            }
+            syncAuto.run();
+        });
 
         // -------------------------------------------------------------------
         // Sezione: file opzionali di terze parti (assistente di download).
@@ -361,7 +528,8 @@ public final class ConfigDialog {
             assets = section(Messages.t("section.assets"));
             JButton assetsOpen = button(Messages.t("assets.open"), false);
             assetsOpen.addActionListener(e -> AssetDownloadDialog.show(dialog, config));
-            addRow(assets, 0, Messages.t("assets.label"), null, assetsOpen);
+            addRow(assets, 0, "assets.label", null, assetsOpen);
+            tip("assets.label", assetsOpen);
         }
 
         // -------------------------------------------------------------------
@@ -384,7 +552,7 @@ public final class ConfigDialog {
                 return this;
             }
         });
-        addRow(av, 0, Messages.t("label.renderer"), rendererCombo, null);
+        addRow(av, 0, "label.renderer", rendererCombo, null);
 
         // Shader RetroArch: popolato coi .glslp nella cartella "shaders" (+ "Nessuno").
         // Modificabile solo col renderer OpenGL.
@@ -440,7 +608,7 @@ public final class ConfigDialog {
         shaderRow.setOpaque(false);
         shaderRow.add(shaderCombo, BorderLayout.CENTER);
         shaderRow.add(shaderParamsBtn, BorderLayout.EAST);
-        addRow(av, 1, Messages.t("label.shader"), shaderRow, null);
+        addRow(av, 1, "label.shader", shaderRow, null);
 
         JComboBox<AmigaWindowMode> windowModeCombo = new JComboBox<>(AmigaWindowMode.values());
         windowModeCombo.setSelectedItem(config.windowMode());
@@ -456,7 +624,7 @@ public final class ConfigDialog {
                 return this;
             }
         });
-        addRow(av, 2, Messages.t("label.windowMode"), windowModeCombo, null);
+        addRow(av, 2, "label.windowMode", windowModeCombo, null);
 
         // Monitor su cui aprire l'emulatore: indici 0..n-1 dei monitor collegati
         // (0 = principale). Il valore configurato resta selezionabile anche se il
@@ -470,7 +638,7 @@ public final class ConfigDialog {
                 new JComboBox<>(monitorItems.toArray(new Integer[0]));
         monitorCombo.setSelectedItem(selectedMonitor);
         monitorCombo.setMaximumSize(new Dimension(220, 26));
-        addRow(av, 3, Messages.t("label.monitor"), monitorCombo, null);
+        addRow(av, 3, "label.monitor", monitorCombo, null);
 
         JSpinner scalingSpinner = new JSpinner(
                 new SpinnerNumberModel(config.integerScaling(), 1, null, 1));
@@ -478,12 +646,14 @@ public final class ConfigDialog {
         JPanel scalingWrap = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
         scalingWrap.setOpaque(false);
         scalingWrap.add(scalingSpinner);
-        addRow(av, 4, Messages.t("label.integerScaling"), scalingWrap, null);
+        addRow(av, 4, "label.integerScaling", scalingWrap, null);
 
         JCheckBox overscanCheck = check(Messages.t("label.overscan"), config.overscanEnabled());
+        tip("label.overscan", overscanCheck);
         addRow(av, 5, overscanCheck, null, null);
 
         JCheckBox ledCheck = check(Messages.t("label.leds"), config.ledsVisible());
+        tip("label.leds", ledCheck);
         addRow(av, 6, ledCheck, null, null);
 
         JSpinner soundSpinner = new JSpinner(
@@ -492,7 +662,7 @@ public final class ConfigDialog {
         JPanel soundWrap = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
         soundWrap.setOpaque(false);
         soundWrap.add(soundSpinner);
-        addRow(av, 7, Messages.t("label.sound"), soundWrap, null);
+        addRow(av, 7, "label.sound", soundWrap, null);
 
         // -------------------------------------------------------------------
         // Sezione: GUI — l'aspetto del popup e delle finestre di AmiJa, non della
@@ -504,7 +674,7 @@ public final class ConfigDialog {
         JComboBox<String> langCombo = new JComboBox<>(new String[]{ "English", "Italiano" });
         langCombo.setSelectedIndex("it".equalsIgnoreCase(config.language()) ? 1 : 0);
         langCombo.setMaximumSize(new Dimension(160, 26));
-        addRow(gui, 0, Messages.t("label.language"), langCombo, null);
+        addRow(gui, 0, "label.language", langCombo, null);
 
         // -------------------------------------------------------------------
         // Contenuto scorrevole
@@ -516,23 +686,21 @@ public final class ConfigDialog {
         content.add(header());
         content.add(Box.createVerticalStrut(10));
         content.add(system);
-        content.add(Box.createVerticalStrut(12));
+        content.add(media);       // modalità Auto: sostituisce le tre sezioni qui sotto
         content.add(drives);
-        content.add(Box.createVerticalStrut(12));
         content.add(hds);
-        content.add(Box.createVerticalStrut(12));
         content.add(whd);
-        content.add(Box.createVerticalStrut(12));
         content.add(ports);
-        content.add(Box.createVerticalStrut(12));
         content.add(av);
-        content.add(Box.createVerticalStrut(12));
         content.add(gui);
         if (assets != null) {
-            content.add(Box.createVerticalStrut(12));
             content.add(assets);
         }
         content.add(Box.createVerticalGlue());
+
+        // Solo ora che le sezioni sono dentro al contenitore: la prima passata decide
+        // quali si vedono, ed è lei a rendere il popup coerente con la modalità corrente.
+        syncAuto.run();
 
         JScrollPane scroll = new JScrollPane(content,
                 ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
@@ -555,6 +723,18 @@ public final class ConfigDialog {
         JButton quit      = button(Messages.t("button.quit"), false);
         JButton cancel    = button(Messages.t("button.cancel"), false);
         JButton ok        = button(Messages.t("button.ok"), true);
+
+        // Anche i pulsanti si spiegano: fra "Soft Reset" e "Riavvia" la differenza non
+        // si indovina, e chi apre il popup per la prima volta merita di saperla prima
+        // di premere.
+        tip("button.screenshot", screenshot);
+        tip("button.savestate", saveState);
+        tip("button.loadstate", loadState);
+        tip("button.softreset", softReset);
+        tip("button.restart", restart);
+        tip("button.quit", quit);
+        tip("button.cancel", cancel);
+        tip("button.ok", ok);
 
         // "Take Screenshot": salva la finestra di gioco (non il popup) in screenshots/.
         // Funziona sia in software (composizione Java2D) sia in OpenGL (glReadPixels).
@@ -587,22 +767,23 @@ public final class ConfigDialog {
         });
 
         Runnable applyConfig = () -> {
-            config.setKickstartPath(kickField.getText());
-            config.setChipRamKb((Integer) chipCombo.getSelectedItem());
-            config.setSlowRamKb((Integer) slowCombo.getSelectedItem());
-            config.setFastRamKb((Integer) fastCombo.getSelectedItem());
-            for (int i = 0; i < 4; i++) {
-                config.setDriveEnabled(i, driveEnabled[i].isSelected());
-                config.setDriveDisk(i, driveDisk[i].getText());
-                config.setDriveReadOnly(i, driveReadOnly[i].isSelected() || isZipPath(driveDisk[i].getText()));
+            config.setAutoEnabled(simpleMode.getAsBoolean());
+            config.setAutoKickstart13(ks13Field.getText());
+            config.setAutoKickstart31(ks31Field.getText());
+            // Con Expert spento i parametri di sistema sono dedotti, non scelti: quelli
+            // salvati NON vengono toccati, così accendere Expert restituisce all'utente
+            // esattamente la macchina che aveva configurato a mano.
+            if (!simpleMode.getAsBoolean()) {
+                config.setKickstartPath(kickField.getText());
+                config.setChipRamKb((Integer) chipCombo.getSelectedItem());
+                config.setSlowRamKb((Integer) slowCombo.getSelectedItem());
+                config.setFastRamKb((Integer) fastCombo.getSelectedItem());
+                config.setVideoMode((VideoMode) videoModeCombo.getSelectedItem());
+                config.setChipset((Chipset) chipsetCombo.getSelectedItem());
             }
-            for (int i = 0; i < hdEnabled.length; i++) {
-                config.setHdEnabled(i, hdEnabled[i].isSelected());
-                config.setHdDisk(i, hdDisk[i].getText());
-                config.setHdReadOnly(i, hdReadOnly[i].isSelected());
-            }
-            config.setWhdloadEnabled(whdEnabled.isSelected());
-            config.setWhdloadFile(whdFile.getText());
+            // I supporti vengono dalla vista che l'utente ha davanti: la lista unica con
+            // Expert spento, le tre sezioni per tipo con Expert acceso.
+            (simpleMode.getAsBoolean() ? driveList.toMediaState() : classicMedia.get()).toConfig(config);
             config.setFloppySoundVolume((Integer) soundSpinner.getValue());
             config.setLedsVisible(ledCheck.isSelected());
             config.setOverscanEnabled(overscanCheck.isSelected());
@@ -615,8 +796,6 @@ public final class ConfigDialog {
             config.setJoystickKeyMap(0, joyKeyMaps[0]);
             config.setJoystickKeyMap(1, joyKeyMaps[1]);
             config.setLanguage(langCombo.getSelectedIndex() == 1 ? "it" : "en");
-            config.setVideoMode((VideoMode) videoModeCombo.getSelectedItem());
-            config.setChipset((Chipset) chipsetCombo.getSelectedItem());
             config.setIntegerScaling((Integer) scalingSpinner.getValue());
         };
 
@@ -755,16 +934,106 @@ public final class ConfigDialog {
                 BorderFactory.createLineBorder(new Color(0x45, 0x49, 0x50)), title);
         tb.setTitleColor(ACCENT);
         tb.setTitleFont(p.getFont().deriveFont(Font.BOLD, 13f));
-        p.setBorder(BorderFactory.createCompoundBorder(tb,
-                BorderFactory.createEmptyBorder(8, 10, 10, 10)));
+        // Lo spazio fra una sezione e la successiva è un margine della sezione, non uno
+        // strut nel BoxLayout: così una sezione nascosta si porta via anche il proprio
+        // spazio, invece di lasciare un buco (la modalità Auto nasconde tre sezioni).
+        p.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createEmptyBorder(0, 0, 12, 0),
+                BorderFactory.createCompoundBorder(tb,
+                        BorderFactory.createEmptyBorder(8, 10, 10, 10))));
         return p;
     }
 
-    /** Aggiunge una riga con etichetta testuale, campo centrale e (opzionale) browse. */
-    private static void addRow(JPanel panel, int row, String label, JComponent field, JComponent trailing) {
-        JLabel l = new JLabel(label);
-        l.setForeground(FG);
+    /**
+     * Aggiunge una riga la cui etichetta viene dalla chiave {@code labelKey} del bundle,
+     * col tooltip preso da {@code <labelKey>.tip} (vedi {@link #tip}). Il tooltip non
+     * viene messo sui pulsanti di coda, che hanno già il proprio.
+     */
+    private static JLabel addRow(JPanel panel, int row, String labelKey, JComponent field, JComponent trailing) {
+        JLabel l = label(Messages.t(labelKey));
+        tip(labelKey, l, field);
         addRow(panel, row, l, field, trailing);
+        return l;
+    }
+
+    /**
+     * Applica a tutta la riga il tooltip di {@code baseKey}, cioè la voce
+     * {@code <baseKey>.tip} del bundle: la convenzione con cui ogni opzione del popup
+     * spiega sé stessa. Se la voce non c'è non succede niente.
+     *
+     * <p><b>Regola:</b> ogni opzione del popup deve avere il proprio {@code .tip}, e
+     * quel testo va aggiornato insieme alla funzionalità che descrive. Un tooltip che
+     * mente è peggio di un tooltip che manca.
+     */
+    private static void tip(String baseKey, JComponent... components) {
+        String text = Messages.tOrNull(baseKey + ".tip");
+        if (text == null) return;
+        // L'HTML manda a capo da sé: senza, la spiegazione resterebbe su una riga sola
+        // larga quanto lo schermo.
+        String html = "<html><body style='width: 260px'>" + text + "</body></html>";
+        for (JComponent c : components) {
+            applyTip(c, html);
+        }
+    }
+
+    /**
+     * Assegna il tooltip al componente e a tutti i figli che non ne hanno già uno. La
+     * discesa serve ai controlli composti: su un JPanel che avvolge tendina e pulsante,
+     * o su uno JSpinner (che è un pannello col suo campo di testo), il tooltip del
+     * contenitore non comparirebbe mai, perché a ricevere il mouse è il figlio.
+     */
+    private static void applyTip(Component c, String html) {
+        if (!(c instanceof JComponent jc)) return;
+        if (jc.getToolTipText() == null) jc.setToolTipText(html);
+        for (Component child : jc.getComponents()) {
+            applyTip(child, html);
+        }
+    }
+
+    /** Etichetta di riga nello stile del popup. */
+    private static JLabel label(String text) {
+        JLabel l = new JLabel(text);
+        l.setForeground(FG);
+        return l;
+    }
+
+    /**
+     * Mostra o nasconde un'intera riga di una sezione. Con GridBagLayout la riga
+     * scompare del tutto (altezza zero) quando tutti i suoi componenti sono invisibili,
+     * quindi non resta il buco: è così che la sezione Sistema scambia il Kickstart
+     * unico con i due della modalità Auto.
+     */
+    private static void setRowVisible(boolean visible, JComponent... components) {
+        boolean changed = false;
+        for (JComponent c : components) {
+            if (c != null && c.isVisible() != visible) {
+                c.setVisible(visible);
+                changed = true;
+            }
+        }
+        if (changed && components.length > 0 && components[0] != null) {
+            Container parent = components[0].getParent();
+            if (parent != null) {
+                parent.revalidate();
+                parent.repaint();
+            }
+        }
+    }
+
+    /**
+     * Seleziona un valore in una tendina di memoria, aggiungendolo in coda se non è
+     * fra le opzioni previste: i profili della modalità Auto vengono da
+     * {@code amiga.properties} e l'utente può averci messo una taglia inconsueta.
+     */
+    private static void selectKb(JComboBox<Integer> combo, int value) {
+        for (int i = 0; i < combo.getItemCount(); i++) {
+            if (combo.getItemAt(i) == value) {
+                combo.setSelectedIndex(i);
+                return;
+            }
+        }
+        combo.addItem(value);
+        combo.setSelectedItem(value);
     }
 
     /** Aggiunge una riga con componente iniziale (es. checkbox), campo e browse. */
@@ -959,6 +1228,360 @@ public final class ConfigDialog {
         return names.toArray(new String[0]);
     }
 
+    // =========================================================================
+    // Supporti: modello condiviso fra le due viste
+    // =========================================================================
+
+    /**
+     * I supporti scelti dall'utente, nella forma esatta in cui finiscono in
+     * {@code amiga.properties}. È la moneta di scambio fra le due viste del popup — le
+     * tre sezioni classiche (Floppy/Hard disk/WHDLoad) e la lista unica della modalità
+     * Auto — così passare dall'una all'altra non perde quello che si è appena scelto.
+     */
+    private static final class MediaState {
+
+        final String[] floppyDisk = new String[4];
+        final boolean[] floppyConnected = new boolean[4];
+        final boolean[] floppyReadOnly = new boolean[4];
+        final String[] hdDisk = new String[AmigaConfig.HD_UNITS.length];
+        final boolean[] hdConnected = new boolean[AmigaConfig.HD_UNITS.length];
+        final boolean[] hdReadOnly = new boolean[AmigaConfig.HD_UNITS.length];
+        boolean whdloadEnabled;
+        String whdloadFile = "";
+
+        static MediaState fromConfig(AmigaConfig c) {
+            MediaState s = new MediaState();
+            for (int i = 0; i < 4; i++) {
+                s.floppyDisk[i] = c.driveDisk(i);
+                s.floppyConnected[i] = c.driveEnabled(i);
+                s.floppyReadOnly[i] = c.driveReadOnly(i);
+            }
+            for (int u = 0; u < s.hdDisk.length; u++) {
+                s.hdDisk[u] = c.hdDisk(u);
+                s.hdConnected[u] = c.hdEnabled(u);
+                s.hdReadOnly[u] = c.hdReadOnly(u);
+            }
+            s.whdloadEnabled = c.whdloadEnabled();
+            s.whdloadFile = c.whdloadFile() == null ? "" : c.whdloadFile();
+            return s;
+        }
+
+        void toConfig(AmigaConfig c) {
+            for (int i = 0; i < 4; i++) {
+                c.setDriveEnabled(i, floppyConnected[i]);
+                c.setDriveDisk(i, text(floppyDisk[i]));
+                c.setDriveReadOnly(i, floppyReadOnly[i] || isZipPath(text(floppyDisk[i])));
+            }
+            for (int u = 0; u < hdDisk.length; u++) {
+                c.setHdEnabled(u, hdConnected[u]);
+                c.setHdDisk(u, text(hdDisk[u]));
+                c.setHdReadOnly(u, hdReadOnly[u]);
+            }
+            c.setWhdloadEnabled(whdloadEnabled);
+            c.setWhdloadFile(text(whdloadFile));
+        }
+
+        private static String text(String s) {
+            return s == null ? "" : s.trim();
+        }
+    }
+
+    // =========================================================================
+    // Lista unica dei supporti (modalità Auto)
+    // =========================================================================
+
+    /**
+     * La sezione "Drives" della modalità Auto: una sola lista in cui l'utente mette i
+     * propri file senza doversi chiedere in quale sezione vadano. Si parte da una voce
+     * vuota; scelto un file, la voce prende il nome del posto in cui il file è finito
+     * (DF0, hard drive master, WHDLoad) e sotto ne compare un'altra, finché c'è ancora
+     * spazio per qualcosa.
+     *
+     * <p>Il tipo si deduce dall'estensione, e le regole della macchina vera fanno il
+     * resto: quattro floppy al massimo, due hard disk, un solo WHDLoad — e hard disk e
+     * WHDLoad non convivono, perché sarebbero entrambi il volume di avvio. Quello che
+     * non è più aggiungibile sparisce dal filtro del browser, quindi la lista non può
+     * arrivare in uno stato che la macchina non saprebbe montare.
+     */
+    private static final class DriveList {
+
+        /** Tipo di supporto, riconosciuto dall'estensione del file. */
+        private enum Kind {
+            FLOPPY(4, "adf", "ipf", "zip"),
+            HARDDISK(AmigaConfig.HD_UNITS.length, "hdf"),
+            WHDLOAD(1, "lha", "lzh");
+
+            final int max;
+            final String[] extensions;
+
+            Kind(int max, String... extensions) {
+                this.max = max;
+                this.extensions = extensions;
+            }
+
+            static Kind of(String path) {
+                String name = path.toLowerCase(java.util.Locale.ROOT);
+                // Uno zip multi-disco è indirizzato come <zip>!<n>: conta l'archivio.
+                int cut = name.indexOf(io.github.zolfrik.amija.custom.DiskImage.ZIP_ENTRY_SEPARATOR);
+                if (cut > 0) name = name.substring(0, cut);
+                for (Kind k : values()) {
+                    for (String ext : k.extensions) {
+                        if (name.endsWith("." + ext)) return k;
+                    }
+                }
+                return null;
+            }
+        }
+
+        /** Un file scelto dall'utente: il suo tipo e come va montato. */
+        private static final class Item {
+            final Kind kind;
+            final String path;
+            boolean readOnly;
+
+            Item(Kind kind, String path, boolean readOnly) {
+                this.kind = kind;
+                this.path = path;
+                this.readOnly = readOnly;
+            }
+        }
+
+        private final JDialog owner;
+        private final AmigaConfig config;
+        private final JPanel panel;
+        private final java.util.List<Item> items = new java.util.ArrayList<>();
+
+        DriveList(JDialog owner, AmigaConfig config, JPanel panel) {
+            this.owner = owner;
+            this.config = config;
+            this.panel = panel;
+        }
+
+        /**
+         * Ricostruisce la lista dai supporti configurati. I dischi che AmiJa ha estratto
+         * da uno zip multi-disco in DF0 non diventano voci a sé: la voce è l'archivio, e
+         * i dischi che contiene tornano al loro posto da soli al prossimo avvio.
+         */
+        void seed(MediaState state) {
+            items.clear();
+            String df0 = MediaState.text(state.floppyDisk[0]);
+            for (int i = 0; i < 4; i++) {
+                String path = MediaState.text(state.floppyDisk[i]);
+                if (path.isEmpty() || !state.floppyConnected[i]) continue;
+                if (i > 0 && isZipEntryOf(path, df0)) continue;
+                add(path, state.floppyReadOnly[i]);
+            }
+            for (int u = 0; u < state.hdDisk.length; u++) {
+                String path = MediaState.text(state.hdDisk[u]);
+                if (!path.isEmpty() && state.hdConnected[u]) add(path, state.hdReadOnly[u]);
+            }
+            String whd = MediaState.text(state.whdloadFile);
+            if (state.whdloadEnabled && !whd.isEmpty()) add(whd, false);
+            rebuild();
+        }
+
+        private void add(String path, boolean readOnly) {
+            Kind kind = Kind.of(path);
+            if (kind != null) items.add(new Item(kind, path, readOnly));
+        }
+
+        /** I supporti della lista, distribuiti sui drive della macchina. */
+        MediaState toMediaState() {
+            MediaState s = new MediaState();
+            int floppies = 0;
+            int hds = 0;
+            for (Item item : items) {
+                switch (item.kind) {
+                    case FLOPPY -> {
+                        if (floppies >= 4) break;
+                        s.floppyDisk[floppies] = item.path;
+                        s.floppyReadOnly[floppies] = item.readOnly;
+                        floppies++;
+                    }
+                    case HARDDISK -> {
+                        if (hds >= s.hdDisk.length) break;
+                        s.hdDisk[hds] = item.path;
+                        s.hdConnected[hds] = true;
+                        s.hdReadOnly[hds] = item.readOnly;
+                        hds++;
+                    }
+                    case WHDLOAD -> {
+                        s.whdloadEnabled = true;
+                        s.whdloadFile = item.path;
+                    }
+                }
+            }
+            // Un drive collegato per ogni disco, e altrettanti per i dischi di un
+            // eventuale zip multi-disco in DF0 (Amija li distribuisce all'avvio, ma solo
+            // sui drive che esistono). DF0 c'è comunque: una macchina senza floppy non
+            // saprebbe cosa fare di un disco trascinato sulla finestra.
+            int connected = Math.max(1, floppies);
+            if (floppies > 0) connected = Math.max(connected, zipDiskCount(s.floppyDisk[0]));
+            for (int i = 0; i < Math.min(4, connected); i++) s.floppyConnected[i] = true;
+            return s;
+        }
+
+        /** Quanti dischi contiene l'archivio, 1 se non è uno zip multi-disco. */
+        private static int zipDiskCount(String path) {
+            if (!isZipPath(path)) return 1;
+            try {
+                return Math.max(1, io.github.zolfrik.amija.custom.DiskImage
+                        .listZipDiskEntries(io.github.zolfrik.amija.custom.DiskImage.pathOf(path)).size());
+            } catch (IOException e) {
+                return 1;
+            }
+        }
+
+        /** {@code true} se {@code disk} è un disco estratto dallo zip {@code zipPath}. */
+        private static boolean isZipEntryOf(String disk, String zipPath) {
+            return !zipPath.isEmpty() && isZipPath(zipPath)
+                    && disk.regionMatches(true, 0, zipPath, 0, zipPath.length())
+                    && disk.length() > zipPath.length()
+                    && disk.charAt(zipPath.length())
+                        == io.github.zolfrik.amija.custom.DiskImage.ZIP_ENTRY_SEPARATOR;
+        }
+
+        /**
+         * Tipi ancora aggiungibili nella riga {@code index}, ignorando quello che la riga
+         * contiene adesso (la si sta per sostituire). {@code index == items.size()} è la
+         * riga vuota in coda.
+         */
+        private java.util.EnumSet<Kind> allowed(int index) {
+            java.util.EnumSet<Kind> out = java.util.EnumSet.noneOf(Kind.class);
+            for (Kind kind : Kind.values()) {
+                if (count(kind, index) >= kind.max) continue;
+                // Hard disk e WHDLoad sono entrambi il volume di avvio: il primo che
+                // arriva esclude l'altro.
+                if (kind == Kind.HARDDISK && count(Kind.WHDLOAD, index) > 0) continue;
+                if (kind == Kind.WHDLOAD && count(Kind.HARDDISK, index) > 0) continue;
+                out.add(kind);
+            }
+            return out;
+        }
+
+        /** Quante voci di quel tipo ci sono, escludendo la riga {@code except}. */
+        private int count(Kind kind, int except) {
+            int n = 0;
+            for (int i = 0; i < items.size(); i++) {
+                if (i != except && items.get(i).kind == kind) n++;
+            }
+            return n;
+        }
+
+        /** Etichetta della riga: il posto in cui il file è finito, o "Drive n" se vuota. */
+        private String labelFor(int index) {
+            if (index >= items.size()) {
+                return Messages.t("drive.entry.generic", index + 1);
+            }
+            Item item = items.get(index);
+            int nth = 0;
+            for (int i = 0; i < index; i++) {
+                if (items.get(i).kind == item.kind) nth++;
+            }
+            return switch (item.kind) {
+                case FLOPPY -> Messages.t("drive.entry.floppy", nth);
+                case HARDDISK -> Messages.t(nth == 0 ? "drive.entry.hd.master" : "drive.entry.hd.slave");
+                case WHDLOAD -> Messages.t("drive.entry.whdload");
+            };
+        }
+
+        /** Chiave del tooltip della riga, per tipo (le etichette sono dinamiche). */
+        private String tipKeyFor(int index) {
+            if (index >= items.size()) return "drive.entry.generic";
+            return switch (items.get(index).kind) {
+                case FLOPPY -> "drive.entry.floppy";
+                case HARDDISK -> "drive.entry.hd";
+                case WHDLOAD -> "drive.entry.whdload";
+            };
+        }
+
+        void rebuild() {
+            panel.removeAll();
+            int rows = items.size() + (allowed(items.size()).isEmpty() ? 0 : 1);
+            for (int row = 0; row < rows; row++) {
+                addEntryRow(row);
+            }
+            panel.revalidate();
+            panel.repaint();
+        }
+
+        private void addEntryRow(int index) {
+            boolean filled = index < items.size();
+            JLabel label = label(labelFor(index));
+            JTextField path = textField(filled ? items.get(index).path : "");
+            // Non modificabile a mano: in questa modalità il tipo del file decide dove
+            // il file va a finire, quindi si sceglie col browser e basta.
+            path.setEditable(false);
+
+            JButton browse = browseButton();
+            browse.addActionListener(e -> browseInto(index));
+
+            JToggleButton readOnly = readOnlyButton(filled && items.get(index).readOnly);
+            // Il WHDLoad non si monta: AmiJa gli costruisce un hard disk suo, che deve
+            // poter scrivere i salvataggi.
+            readOnly.setEnabled(filled && items.get(index).kind != Kind.WHDLOAD);
+            readOnly.addItemListener(e -> {
+                if (index < items.size()) items.get(index).readOnly = readOnly.isSelected();
+            });
+
+            JButton eject = ejectButton();
+            eject.setToolTipText(Messages.t("eject.entry.tooltip"));
+            eject.setEnabled(filled);
+            eject.addActionListener(e -> {
+                if (index < items.size()) {
+                    items.remove(index);
+                    rebuild();
+                }
+            });
+
+            JPanel trailing = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+            trailing.setOpaque(false);
+            trailing.add(browse);
+            trailing.add(readOnly);
+            trailing.add(eject);
+
+            tip(tipKeyFor(index), label, path);
+            addRow(panel, index, label, path, trailing);
+        }
+
+        /** Sceglie il file della riga {@code index} e ne ricalcola tutta la lista. */
+        private void browseInto(int index) {
+            java.util.EnumSet<Kind> allowed = allowed(index);
+            if (allowed.isEmpty()) return;
+            java.util.List<String> extensions = new java.util.ArrayList<>();
+            for (Kind kind : allowed) extensions.addAll(java.util.List.of(kind.extensions));
+            StringBuilder desc = new StringBuilder(Messages.t("chooser.media")).append(" (");
+            for (int i = 0; i < extensions.size(); i++) {
+                desc.append(i == 0 ? "*." : ", *.").append(extensions.get(i));
+            }
+            desc.append(')');
+
+            String current = index < items.size() ? items.get(index).path : "";
+            File chosen = chooseFile(owner, config, BrowseKind.MEDIA, current,
+                    desc.toString(), extensions.toArray(new String[0]));
+            if (chosen == null) return;
+
+            String path = chosen.getAbsolutePath();
+            Kind kind = Kind.of(path);
+            // Il filtro del browser propone solo i tipi ammessi, ma il nome si può anche
+            // digitare: se quello che ne esce non ci sta, si dice perché.
+            if (kind == null || !allowed.contains(kind)) {
+                JOptionPane.showMessageDialog(owner,
+                        Messages.t(kind == null ? "drive.entry.unknown" : "drive.entry.rejected",
+                                chosen.getName()),
+                        Messages.t("app.title"), JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            Item item = new Item(kind, path, isZipPath(path));
+            if (index < items.size()) {
+                items.set(index, item);
+            } else {
+                items.add(item);
+            }
+            rebuild();
+        }
+    }
+
     private static final class LockIcon implements Icon {
         private final boolean closed;
 
@@ -1011,6 +1634,20 @@ public final class ConfigDialog {
 
     private static void browse(JDialog parent, AmigaConfig config, BrowseKind kind,
             JTextField target, String desc, String... extensions) {
+        File selected = chooseFile(parent, config, kind, target.getText(), desc, extensions);
+        if (selected != null) {
+            target.setText(selected.getAbsolutePath());
+            target.setCaretPosition(target.getText().length());
+        }
+    }
+
+    /**
+     * Apre il browser dei file e ritorna quello scelto, o {@code null} se l'utente
+     * annulla. Parte dall'ultima cartella usata da questo {@code kind} (o da quella del
+     * file corrente) e, a scelta avvenuta, la ricorda.
+     */
+    private static File chooseFile(JDialog parent, AmigaConfig config, BrowseKind kind,
+            String currentPath, String desc, String... extensions) {
         // Istanza condivisa e con elenco cartelle veloce: vedi FastFileChooser.
         JFileChooser fc = FastFileChooser.acquire();
         fc.setDialogTitle(desc);
@@ -1019,6 +1656,7 @@ public final class ConfigDialog {
             case ROM -> config.lastRomDirectory();
             case HDF -> config.lastHdfDirectory();
             case WHDLOAD -> config.lastWhdloadDirectory();
+            case MEDIA -> config.lastMediaDirectory();
             default  -> config.lastFloppyDirectory();
         };
         boolean usingLastDir = false;
@@ -1030,7 +1668,7 @@ public final class ConfigDialog {
             }
         }
 
-        String current = target.getText().trim();
+        String current = currentPath == null ? "" : currentPath.trim();
         File currentFile = current.isEmpty() ? null : new File(current);
         if (!usingLastDir && currentFile != null) {
             File f = currentFile;
@@ -1050,20 +1688,19 @@ public final class ConfigDialog {
         // L'istanza è riusata: senza rilettura mostrerebbe l'elenco del giro precedente,
         // che nel frattempo può essere cambiato sul disco.
         fc.rescanCurrentDirectory();
-        if (fc.showOpenDialog(parent) == JFileChooser.APPROVE_OPTION) {
-            File selected = fc.getSelectedFile();
-            target.setText(selected.getAbsolutePath());
-            target.setCaretPosition(target.getText().length());
-            File parentDir = selected.getParentFile();
-            if (parentDir != null) {
-                rememberLastDirectory(config, kind, parentDir);
-            }
+        if (fc.showOpenDialog(parent) != JFileChooser.APPROVE_OPTION) return null;
+        File selected = fc.getSelectedFile();
+        File parentDir = selected.getParentFile();
+        if (parentDir != null) {
+            rememberLastDirectory(config, kind, parentDir);
         }
+        return selected;
     }
 
     private static void rememberLastDirectory(AmigaConfig config, BrowseKind kind, File dir) {
         switch (kind) {
             case ROM -> config.setLastRomDirectory(dir.getAbsolutePath());
+            case MEDIA -> config.setLastMediaDirectory(dir.getAbsolutePath());
             case HDF -> config.setLastHdfDirectory(dir.getAbsolutePath());
             case WHDLOAD -> config.setLastWhdloadDirectory(dir.getAbsolutePath());
             default  -> config.setLastFloppyDirectory(dir.getAbsolutePath());
