@@ -851,7 +851,8 @@ public class Amija {
             ROM kickstart;
             if (usingBuiltinRom(kickstartPath)) {
                 byte[] builtin = BuiltinRom.load();
-                System.out.println("[ROM] ROM AmiJa integrata (" + builtin.length + " byte)");
+                System.out.println("[ROM] " + BuiltinRom.version() + " integrata ("
+                        + builtin.length + " byte)");
                 kickstart = new ROM(builtin);
             } else {
                 KickstartImage romImage = KickstartImage.load(Paths.get(kickstartPath));

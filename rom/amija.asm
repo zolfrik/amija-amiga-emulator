@@ -38,6 +38,12 @@ romStart:
             dc.l    $00080000               ; SSP iniziale, prima della sizing
             dc.l    reset                   ; PC di reset
 
+; Tag di versione, nella forma "$VER:" con cui l'Amiga marca i binari. Sta
+; subito dopo i vettori di reset, cioe' a $F80008, cosi' e' anche la prima cosa
+; leggibile in un dump della ROM. Il file e' generato da romgen/RomVersion: la
+; versione si cambia li', non qui.
+            include "version.i"
+
 ; -----------------------------------------------------------------------------
 ; Reset: dallo spegnimento fino al salto nel bootblock del gioco.
 ; -----------------------------------------------------------------------------

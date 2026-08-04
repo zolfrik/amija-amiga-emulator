@@ -23,6 +23,8 @@ public final class RomBuilder {
     public static final Path SOURCE = Path.of("rom/amija.asm");
     public static final Path SPLASH = Path.of("rom/splash.bin");
     public static final Path FONT = Path.of("rom/font.bin");
+    /** Include generato col tag $VER: la versione sta in {@link RomVersion}. */
+    public static final Path VERSION = Path.of("rom/version.i");
     /** L'immagine finisce nelle risorse: e' da li' che BuiltinRom la carica. */
     public static final Path DEFAULT_OUTPUT = Path.of("src/main/resources/rom/amija.rom");
 
@@ -42,6 +44,7 @@ public final class RomBuilder {
         Files.write(SPLASH, splash);
         byte[] font = FontImage.build();
         Files.write(FONT, font);
+        Files.writeString(VERSION, RomVersion.includeSource());
 
         Asm68k.Image img = Asm68k.assembleFile(SOURCE);
         if (img.org() != ROM_BASE) {
@@ -57,13 +60,14 @@ public final class RomBuilder {
         System.arraycopy(img.data(), 0, rom, 0, img.data().length);
 
         if (verbose) {
+            System.out.printf("[ROM] %s%n", RomVersion.TAG);
             System.out.printf("[ROM] codice+dati: %d byte su %d (%.1f%% usato)%n",
                     img.data().length, ROM_SIZE, 100.0 * img.data().length / ROM_SIZE);
             System.out.printf("[ROM] splash: %d byte%n", splash.length);
             Map<String, Integer> sym = img.symbols();
-            for (String k : new String[]{"reset", "showSplash", "copperList", "splashData"}) {
+            for (String k : new String[]{"reset", "romVersionTag", "showSplash", "copperList", "splashData"}) {
                 Integer v = sym.get(k);
-                if (v != null) System.out.printf("[ROM]   %-12s = $%06X%n", k, v);
+                if (v != null) System.out.printf("[ROM]   %-14s = $%06X%n", k, v);
             }
         }
         return rom;

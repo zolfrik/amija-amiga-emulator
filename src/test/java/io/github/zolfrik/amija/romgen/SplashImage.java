@@ -12,8 +12,9 @@ import java.nio.file.Path;
 
 /**
  * Genera la schermata che la ROM AmiJa mostra quando non c'e' nessun drive
- * configurato: logo su fondo bianco, "AmiJa" sotto, e piu' in piccolo
- * "press F12 for setup".
+ * configurato: logo su fondo bianco, "AmiJa ROM 1.0" sotto, e piu' in piccolo
+ * "press F12 for setup". Il numero di versione viene da {@link RomVersion},
+ * lo stesso che finisce nel tag $VER dell'immagine.
  *
  * L'immagine viene composta qui, a tempo di build, e finisce nella ROM come
  * blob planare gia' pronto: la ROM deve solo puntarci i BPLxPT.
@@ -60,8 +61,12 @@ public final class SplashImage {
     private static final String LOGO = "logo/AmiJa.png";
     private static final String LOGO_FALLBACK = "src/main/resources/icons/amija-256.png";
 
-    private static final String TITLE = "AmiJa";
+    private static final String TITLE = RomVersion.TITLE;
     private static final String HINT = "press F12 for setup";
+
+    /** Scala del titolo: "AmiJa ROM 1.0" a 4x non ci starebbe in 320 pixel. */
+    private static final int TITLE_SCALE = 3;
+    private static final int TITLE_GAP = 3;
 
     public static void main(String[] args) throws IOException {
         Path out = Path.of(args.length > 0 ? args[0] : "rom/splash.bin");
@@ -119,10 +124,11 @@ public final class SplashImage {
         }
 
         // --- testo, col font del progetto ingrandito per interi -------------
-        // Il titolo va proporzionale: a passo fisso e a 4x i vuoti fra le
+        // Il titolo va proporzionale: a passo fisso, ingrandito, i vuoti fra le
         // lettere strette diventano voragini.
-        int titleW = Font8x8.widthProportional(TITLE, 4, 4);
-        Font8x8.drawProportional(px, TITLE, (WIDTH - titleW) / 2, 168, 4, 4, 4);
+        int titleW = Font8x8.widthProportional(TITLE, TITLE_SCALE, TITLE_GAP);
+        Font8x8.drawProportional(px, TITLE, (WIDTH - titleW) / 2, 172, 4,
+                TITLE_SCALE, TITLE_GAP);
         Font8x8.draw(px, HINT, (WIDTH - Font8x8.width(HINT, 1)) / 2, 218, 5, 1);
         return px;
     }

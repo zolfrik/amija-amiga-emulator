@@ -22,6 +22,7 @@ package io.github.zolfrik.amija.memory;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 
 /**
  * La ROM di avvio AmiJa, inclusa nel jar.
@@ -40,7 +41,18 @@ public final class BuiltinRom {
     /** Percorso nel classpath dell'immagine prodotta da {@code romgen/RomBuilder}. */
     public static final String RESOURCE = "/rom/amija.rom";
 
+    /**
+     * Inizio del tag di versione incorporato nell'immagine, nella forma
+     * {@code "$VER: AmiJa ROM 1.0 (gg.mm.aaaa)"} con cui l'Amiga marca i propri
+     * binari. Lo scrive {@code romgen/RomVersion} subito dopo i vettori di reset.
+     */
+    private static final String VERSION_TAG = "$VER: ";
+
+    /** Come si chiama la ROM quando il tag non c'e' (immagine anteriore alla 1.0). */
+    private static final String UNVERSIONED = "ROM AmiJa";
+
     private static byte[] cached;
+    private static String version;
 
     private BuiltinRom() {}
 
@@ -69,5 +81,46 @@ public final class BuiltinRom {
             cached = in.readAllBytes();
         }
         return cached.clone();
+    }
+
+    /**
+     * Come si presenta la ROM inclusa, p.es. {@code "AmiJa ROM 1.0"}: il tag
+     * {@code $VER} dell'immagine, senza la data.
+     *
+     * Serve perche' chi segnala un problema possa dire con quale ROM lo ha
+     * visto: il numero e' scritto nell'immagine, non in una costante Java, per
+     * cui non puo' descrivere una ROM diversa da quella davvero montata.
+     */
+    public static synchronized String version() {
+        if (version != null) return version;
+        version = UNVERSIONED;
+        try {
+            byte[] rom = load();
+            int at = indexOf(rom, VERSION_TAG.getBytes(StandardCharsets.ISO_8859_1));
+            if (at >= 0) {
+                int start = at + VERSION_TAG.length();
+                int end = start;
+                while (end < rom.length && rom[end] != 0) end++;
+                String tag = new String(rom, start, end - start, StandardCharsets.ISO_8859_1);
+                int date = tag.indexOf(" (");
+                String name = (date > 0 ? tag.substring(0, date) : tag).trim();
+                if (!name.isEmpty()) version = name;
+            }
+        } catch (IOException e) {
+            // Immagine assente: il chiamante lo scoprira' da load(), qui basta
+            // non far fallire una riga di log.
+        }
+        return version;
+    }
+
+    private static int indexOf(byte[] haystack, byte[] needle) {
+        outer:
+        for (int i = 0; i <= haystack.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) continue outer;
+            }
+            return i;
+        }
+        return -1;
     }
 }

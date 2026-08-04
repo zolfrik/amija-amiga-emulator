@@ -54,6 +54,8 @@ hs_err_pid*
 replay_pid*
 
 # Intermedi generati da romgen/RomBuilder: la ROM impaginata va in
-# src/main/resources/rom/, questi due sono solo passaggi della build.
+# src/main/resources/rom/, questi tre sono solo passaggi della build
+# (version.i lo scrive romgen/RomVersion, che e' dove sta la versione).
 rom/splash.bin
 rom/font.bin
+rom/version.i
