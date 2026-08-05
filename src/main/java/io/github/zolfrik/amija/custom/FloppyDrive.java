@@ -905,9 +905,39 @@ public final class FloppyDrive {
         dskchange      = true;
         // Modello FDC attivo solo per gli IPF; per gli ADF è bypassato (rate fisso).
         densityModel   = (image != null) && image.getFormat() == DiskImage.Format.IPF;
-        if (diskInserted) loadCurrentTrack();
+        if (diskInserted) { loadCurrentTrack(); randomiseAngularPosition(); }
         if (floppySound != null) floppySound.onDiskChange(diskInserted);
     }
+
+    /**
+     * Posizione angolare del piatto all'inserimento: CASUALE, come WinUAE
+     * ({@code disk.cpp drive_insert}: {@code drv->mfmpos = uaerand() ... % tracklen}).
+     *
+     * <p>Il motore di un drive vero si ferma dove capita e il disco viene infilato con
+     * un orientamento qualunque: l'angolo da cui parte la prima lettura non ha alcuna
+     * relazione col pennello video. Partendo invece SEMPRE da bit 0 ogni avvio legge il
+     * disco dallo stesso angolo, quindi ogni lettura finisce allo stesso identico
+     * istante rispetto al frame — la fase non è "una delle tante", è sempre quella.
+     *
+     * <p>È esattamente ciò che rompeva Pinball Dreams da floppy: il caricamento del
+     * bootblock terminava sempre a vpos 22 e la consegna al gioco cadeva sempre a
+     * vpos 312, l'unico punto in cui la finestra cieca di ~15 istruzioni del suo
+     * takeover (INTREQ azzerato → vettore $6C installato) viene attraversata dal VBL.
+     * Il gioco prendeva quindi la VERTB nel gestore del Kickstart, con SysBase già
+     * distrutto, e finiva in Guru $00000025 a ogni singolo avvio.
+     *
+     * <p>Determinismo: i test che confrontano frame o CRC devono poter riprodurre la
+     * stessa corsa, quindi il seme è fissabile con {@code -Damiga.diskseed=<n>}.
+     */
+    private void randomiseAngularPosition() {
+        if (trackBitLen > 0) bitPointer = DISK_ANGLE_RNG.nextInt(trackBitLen);
+        resetBitClock();
+    }
+
+    private static final java.util.Random DISK_ANGLE_RNG =
+            Long.getLong("amiga.diskseed") != null
+                    ? new java.util.Random(Long.getLong("amiga.diskseed"))
+                    : new java.util.Random();
 
     /**
      * Compatibilità con codice esistente: carica un file ADF creando
@@ -1001,7 +1031,15 @@ public final class FloppyDrive {
         prevSelected         = false;
         prevStep             = false;
         lastStepDir          = false;
-        bitPointer           = 0;
+        // bitPointer NON si azzera: è la posizione angolare del piatto, che nessun
+        // segnale di reset può riavvolgere. WinUAE fa lo stesso (disk.cpp
+        // reset_drive() non tocca mfmpos).
+        //
+        // Azzerarlo qui era il vero motivo per cui la fase del floppy era INCHIODATA:
+        // il Kickstart esegue una RESET in fase di boot, quindi ogni avvio ripartiva
+        // dall'angolo 0 e ogni caricamento finiva allo stesso identico punto del
+        // frame (DSKBLK sempre a vpos 22, consegna al gioco sempre a vpos 312).
+        // Vedi randomiseAngularPosition() per il perché conta.
         resetBitClock();
         if (hadDiskImage) {
             loadCurrentTrack();

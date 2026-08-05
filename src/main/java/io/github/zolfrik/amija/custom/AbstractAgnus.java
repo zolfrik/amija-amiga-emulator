@@ -3236,7 +3236,16 @@ public abstract class AbstractAgnus {
      */
     private int floatingBusRead(int addr) {
         if (isExecutingFromRom()) return 0;
-        int v = cpu.getIRC() & 0xFFFF;
+        // Il valore è l'ultima word PRELEVATA dalla prefetch (WinUAE dummy_get_safe:
+        // `v = regs.irc`). Quando `irc` è stato consumato e la prefetch che deve
+        // riempirlo è ancora in volo, `ircValid` è false e `irc` contiene un residuo
+        // di parecchie word prima: l'ultima word realmente prelevata è allora `ird`.
+        // Senza questa guardia una CMPI/CMP con più extension word verso un indirizzo
+        // non mappato leggeva il PROPRIO operando immediato invece della word
+        // successiva. È il caso della protezione di Pinball Dreams (IPF originale),
+        // `CMPI.W #$1111,$00F00000` a $7ABC8: leggendo $1111 il confronto riusciva e
+        // il gioco eseguiva la sua routine di autodistruzione (CLR.B (A0)+ a ciclo).
+        int v = (cpu.isIRCValid() ? cpu.getIRC() : cpu.getIRD()) & 0xFFFF;
         return ((addr & 1) != 0) ? (((v << 8) | (v >>> 8)) & 0xFFFF) : v;
     }
 
