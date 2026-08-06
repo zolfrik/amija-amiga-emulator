@@ -759,6 +759,7 @@ public final class ConfigDialog {
         // -------------------------------------------------------------------
         // Barra dei pulsanti
         // -------------------------------------------------------------------
+        JButton about      = button(Messages.t("button.about"), false);
         JButton screenshot = button(Messages.t("button.screenshot"), false);
         JButton softReset = button(Messages.t("button.softreset"), false);
         JButton restart   = button(Messages.t("button.restart"), false);
@@ -769,12 +770,17 @@ public final class ConfigDialog {
         // Anche i pulsanti si spiegano: fra "Soft Reset" e "Riavvia" la differenza non
         // si indovina, e chi apre il popup per la prima volta merita di saperla prima
         // di premere.
+        tip("button.about", about);
         tip("button.screenshot", screenshot);
         tip("button.softreset", softReset);
         tip("button.restart", restart);
         tip("button.quit", quit);
         tip("button.cancel", cancel);
         tip("button.ok", ok);
+
+        // "About": logo, versione, autore e indirizzo del progetto. Non tocca niente
+        // della configurazione, quindi non ha bisogno di applicare né di chiudere.
+        about.addActionListener(e -> AboutDialog.show(dialog));
 
         // "Take Screenshot": salva la finestra di gioco (non il popup) in screenshots/.
         // Funziona sia in software (composizione Java2D) sia in OpenGL (glReadPixels).
@@ -848,6 +854,7 @@ public final class ConfigDialog {
 
         JPanel left = new JPanel();
         left.setOpaque(false);
+        left.add(about);
         left.add(screenshot);
         left.add(softReset);
         left.add(restart);
