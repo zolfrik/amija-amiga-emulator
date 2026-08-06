@@ -45,12 +45,24 @@ public final class Messages {
     private static volatile ResourceBundle bundle =
             ResourceBundle.getBundle(BASE_NAME, Locale.ENGLISH, CONTROL);
 
+    /**
+     * Lingua scelta, tenuta a parte dal bundle: quello dell'inglese è il bundle
+     * <i>root</i> e {@code getLocale()} risponderebbe {@link Locale#ROOT}, che come
+     * locale di formattazione non è l'inglese ma un neutro con date in forma ISO.
+     */
+    private static volatile Locale locale = Locale.ENGLISH;
+
     private Messages() {}
 
     /** Imposta la lingua dell'interfaccia ({@code "it"} = italiano, altrimenti inglese). */
     public static void setLanguage(String lang) {
-        Locale locale = (lang != null && lang.equalsIgnoreCase("it")) ? Locale.ITALIAN : Locale.ENGLISH;
+        locale = (lang != null && lang.equalsIgnoreCase("it")) ? Locale.ITALIAN : Locale.ENGLISH;
         bundle = ResourceBundle.getBundle(BASE_NAME, locale, CONTROL);
+    }
+
+    /** Lingua corrente dell'interfaccia, per date, numeri e ordinamenti. */
+    public static Locale locale() {
+        return locale;
     }
 
     /** Stringa localizzata per la chiave; ritorna la chiave stessa se mancante. */

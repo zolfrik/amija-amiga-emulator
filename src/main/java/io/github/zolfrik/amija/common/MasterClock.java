@@ -37,6 +37,8 @@ public final class MasterClock {
 
     private volatile boolean running = false;
     private volatile boolean paused = false;
+    /** Vero mentre il thread di clock è fermo nel ramo di pausa: vedi {@link #pauseAndWait}. */
+    private volatile boolean idle = false;
     private Thread clockThread;
     private volatile java.util.function.Consumer<Throwable> failureHandler;
 
@@ -83,6 +85,7 @@ public final class MasterClock {
         }
         running = true;
         paused = false;
+        idle = false;
         clockThread = new Thread(this::run, "MasterClock");
         // MAX_PRIORITY: l'emulazione È il produttore dei campioni audio e deve restare a
         // real-time, altrimenti il ring buffer si svuota (underrun). Il thread audio
@@ -127,6 +130,34 @@ public final class MasterClock {
      */
     public void pause() {
         paused = true;
+    }
+
+    /**
+     * Mette in pausa e <b>attende</b> che il thread di clock si sia davvero fermato.
+     *
+     * <p>{@link #pause()} da solo alza un flag e torna subito: il thread lo guarda una
+     * volta per batch (mille cicli), quindi per un attimo continua a far girare la
+     * macchina. Chi sta per leggere o sovrascrivere lo stato dei componenti — il save
+     * state — deve invece avere la certezza che nessuno stia emulando, altrimenti
+     * fotografa una macchina in movimento.
+     *
+     * @param timeoutMs quanto aspettare al massimo; scaduto, si torna comunque (la
+     *                  macchina resta in pausa)
+     * @return {@code true} se il thread si è fermato entro il tempo concesso
+     */
+    public boolean pauseAndWait(long timeoutMs) {
+        paused = true;
+        if (clockThread == null || !running) return true;
+        long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+        while (!idle && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(1);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return idle;
+            }
+        }
+        return idle;
     }
 
     /**
@@ -181,6 +212,7 @@ public final class MasterClock {
 
         while (running) {
             if (paused) {
+                idle = true; // nessuno sta emulando: vedi pauseAndWait
                 try {
                     Thread.sleep(10);
                 } catch (InterruptedException e) {
@@ -192,6 +224,7 @@ public final class MasterClock {
                 totalCycles = 0;
                 continue;
             }
+            idle = false;
 
             // Esegue un batch di cicli per ridurre l'overhead del controllo del tempo
             for (int i = 0; i < batchSize; i++) {

@@ -31,6 +31,7 @@ import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.JoystickKeyMap;
 import io.github.zolfrik.amija.input.PortDevice;
+import io.github.zolfrik.amija.state.SaveStateManager;
 import io.github.zolfrik.amija.whdload.WhdLoadManager;
 
 import javax.swing.BorderFactory;
@@ -94,7 +95,38 @@ import java.io.IOException;
 public final class ConfigDialog {
 
     /** Esito della finestra: l'azione che il chiamante deve eseguire. */
-    public enum Result { CANCEL, OK, RESTART, SOFT_RESET, QUIT }
+    public enum Result {
+        CANCEL, OK, RESTART, SOFT_RESET, QUIT,
+        /**
+         * Lo stato da caricare pretende una macchina diversa da quella accesa. Il popup
+         * si è chiuso <b>senza</b> applicare le modifiche in corso: quello che conta ora
+         * è la configurazione conservata dentro lo slot, che il chiamante ripristina
+         * prima di ricostruire la macchina e ritentare il caricamento.
+         */
+        STATE_RESTORE
+    }
+
+    /**
+     * Esito di "Load State" visto dal popup.
+     *
+     * @param message      testo da mostrare all'utente; {@code null} se non c'è ancora
+     *                     niente da dire perché l'operazione prosegue fuori di qui
+     * @param needsRestart {@code true} se il caricamento richiede di ricostruire la
+     *                     macchina: il popup si chiude con {@link Result#STATE_RESTORE}
+     *                     e il resto lo fa il chiamante
+     */
+    public record LoadStateOutcome(String message, boolean needsRestart) {
+
+        /** Operazione conclusa qui: c'è solo da riferire com'è andata. */
+        public static LoadStateOutcome done(String message) {
+            return new LoadStateOutcome(message, false);
+        }
+
+        /** Operazione da riprendere fuori dal popup, dopo aver ricostruito la macchina. */
+        public static LoadStateOutcome restart() {
+            return new LoadStateOutcome(null, true);
+        }
+    }
 
     /**
      * Quanto resta a schermo un tooltip prima di sparire da solo: il doppio dei 4 s con
@@ -136,12 +168,14 @@ public final class ConfigDialog {
      *                            salvato (o {@code null} in caso di errore).
      * @param shaderParamUpdater  callback {@code (nome, valore)} per applicare a caldo i
      *                            parametri dello shader OpenGL (popup "...").
+     * @param onSaveState         salva lo slot e ritorna il messaggio di esito.
+     * @param onLoadState         carica lo slot; vedi {@link LoadStateOutcome}.
      */
     public static Result show(JFrame parent, AmigaConfig config,
             java.util.function.Supplier<java.io.File> onScreenshot,
             java.util.function.BiConsumer<String, Float> shaderParamUpdater,
             java.util.function.Supplier<String> onSaveState,
-            java.util.function.Supplier<String> onLoadState) {
+            java.util.function.Supplier<LoadStateOutcome> onLoadState) {
         final Result[] result = { Result.CANCEL };
 
         // Prima di costruire qualsiasi cosa: i tooltip di questo popup vanno letti, non
@@ -677,6 +711,11 @@ public final class ConfigDialog {
         addRow(gui, 0, "label.language", langCombo, null);
 
         // -------------------------------------------------------------------
+        // Sezione: Stato salvato (lo slot unico, con la sua foto e la sua data)
+        // -------------------------------------------------------------------
+        JPanel state = stateSection(dialog, result, onSaveState, onLoadState);
+
+        // -------------------------------------------------------------------
         // Contenuto scorrevole
         // -------------------------------------------------------------------
         JPanel content = new JPanel();
@@ -690,6 +729,11 @@ public final class ConfigDialog {
         content.add(drives);
         content.add(hds);
         content.add(whd);
+        // Lo stato salvato viene dopo i supporti — dopo TUTTI, cioè anche dopo le tre
+        // sezioni per tipo che in Expert mode prendono il posto della lista unica: così
+        // sta sotto i dischi in entrambe le modalità. È l'unica sezione che non imposta
+        // niente ma agisce sulla macchina accesa, e segue il disco a cui appartiene.
+        content.add(state);
         content.add(ports);
         content.add(av);
         content.add(gui);
@@ -716,8 +760,6 @@ public final class ConfigDialog {
         // Barra dei pulsanti
         // -------------------------------------------------------------------
         JButton screenshot = button(Messages.t("button.screenshot"), false);
-        JButton saveState = button(Messages.t("button.savestate"), false);
-        JButton loadState = button(Messages.t("button.loadstate"), false);
         JButton softReset = button(Messages.t("button.softreset"), false);
         JButton restart   = button(Messages.t("button.restart"), false);
         JButton quit      = button(Messages.t("button.quit"), false);
@@ -728,8 +770,6 @@ public final class ConfigDialog {
         // si indovina, e chi apre il popup per la prima volta merita di saperla prima
         // di premere.
         tip("button.screenshot", screenshot);
-        tip("button.savestate", saveState);
-        tip("button.loadstate", loadState);
         tip("button.softreset", softReset);
         tip("button.restart", restart);
         tip("button.quit", quit);
@@ -748,22 +788,6 @@ public final class ConfigDialog {
                 JOptionPane.showMessageDialog(dialog, Messages.t("screenshot.failed"),
                         Messages.t("app.title"), JOptionPane.ERROR_MESSAGE);
             }
-        });
-
-        // "Save State"/"Load State": snapshot dell'intera macchina nello slot unico
-        // (savestate/state1.a5s). La macchina è in pausa mentre il popup è aperto; il
-        // callback esegue l'operazione e ritorna il messaggio di esito da mostrare.
-        saveState.addActionListener(e -> {
-            String msg = onSaveState != null ? onSaveState.get() : null;
-            JOptionPane.showMessageDialog(dialog,
-                    msg != null ? msg : Messages.t("savestate.save.fail", "?"),
-                    Messages.t("app.title"), JOptionPane.INFORMATION_MESSAGE);
-        });
-        loadState.addActionListener(e -> {
-            String msg = onLoadState != null ? onLoadState.get() : null;
-            JOptionPane.showMessageDialog(dialog,
-                    msg != null ? msg : Messages.t("savestate.load.fail", "?"),
-                    Messages.t("app.title"), JOptionPane.INFORMATION_MESSAGE);
         });
 
         Runnable applyConfig = () -> {
@@ -825,8 +849,6 @@ public final class ConfigDialog {
         JPanel left = new JPanel();
         left.setOpaque(false);
         left.add(screenshot);
-        left.add(saveState);
-        left.add(loadState);
         left.add(softReset);
         left.add(restart);
         left.add(quit);
@@ -924,6 +946,216 @@ public final class ConfigDialog {
         p.add(Box.createVerticalStrut(2));
         p.add(sub);
         return p;
+    }
+
+    // =========================================================================
+    // Sezione "Stato salvato"
+    // =========================================================================
+
+    /**
+     * La sezione dello slot di stato: a sinistra la foto della macchina com'era quando
+     * lo stato è stato preso, a destra il momento in cui è successo e i due pulsanti che
+     * lo scrivono e lo rileggono.
+     *
+     * <p>Lo slot è uno solo ({@code savestate/state1.a5s}), quindi qui non c'è una lista
+     * da sfogliare: c'è un'istantanea, e la si guarda per riconoscerla prima di
+     * sovrascriverla o di tornarci. Foto e data si rileggono dal disco a ogni
+     * salvataggio, così la sezione mostra sempre lo slot vero e non quello che c'era
+     * all'apertura del popup.
+     *
+     * <p>Il caricamento può non finire qui: se lo stato pretende una macchina diversa da
+     * quella accesa, il popup si chiude con {@link Result#STATE_RESTORE} e prosegue il
+     * chiamante (vedi {@link LoadStateOutcome}).
+     */
+    private static JPanel stateSection(JDialog dialog, Result[] result,
+            java.util.function.Supplier<String> onSaveState,
+            java.util.function.Supplier<LoadStateOutcome> onLoadState) {
+        JPanel panel = section(Messages.t("section.state"));
+
+        StatePreview preview = new StatePreview();
+        JLabel when = label("");
+        when.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        JButton save = button(Messages.t("button.savestate"), false);
+        JButton load = button(Messages.t("button.loadstate"), false);
+        tip("button.savestate", save);
+        tip("button.loadstate", load);
+
+        // Rilegge lo slot dal disco: foto, data e disponibilità del caricamento.
+        Runnable refresh = () -> {
+            File slot = SaveStateManager.slotFile();
+            boolean present = slot.isFile();
+            preview.setImage(present ? readImage(SaveStateManager.slotScreenshot()) : null);
+            preview.setEmptyText(Messages.t("state.empty.short"));
+            when.setText(present
+                    ? Messages.t("state.savedOn", formatTimestamp(slotTimestamp(slot)))
+                    : Messages.t("state.empty"));
+            load.setEnabled(present);
+        };
+        refresh.run();
+
+        save.addActionListener(e -> {
+            String msg = onSaveState != null ? onSaveState.get() : null;
+            // Prima si riallinea la sezione, poi si parla: chiudendo il messaggio
+            // l'utente trova la foto nuova, non quella di prima.
+            refresh.run();
+            message(dialog, msg != null ? msg : Messages.t("savestate.save.fail", "?"));
+        });
+        load.addActionListener(e -> {
+            LoadStateOutcome outcome = onLoadState == null ? null : onLoadState.get();
+            if (outcome == null) {
+                message(dialog, Messages.t("savestate.load.fail", "?"));
+                return;
+            }
+            if (outcome.needsRestart()) {
+                // Le modifiche in corso nel popup NON vengono applicate: la macchina che
+                // conta adesso è quella descritta dentro lo stato.
+                result[0] = Result.STATE_RESTORE;
+                dialog.dispose();
+                return;
+            }
+            if (outcome.message() != null) message(dialog, outcome.message());
+        });
+
+        JPanel buttons = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0));
+        buttons.setOpaque(false);
+        buttons.setAlignmentX(Component.LEFT_ALIGNMENT);
+        buttons.add(save);
+        buttons.add(load);
+        // Senza tetto all'altezza, un pannello a flusso si lascia stirare dal BoxLayout e
+        // il glue non lo spinge più in fondo: i pulsanti resterebbero a mezz'aria.
+        buttons.setMaximumSize(new Dimension(Integer.MAX_VALUE,
+                buttons.getPreferredSize().height));
+
+        // Colonna di destra: la data in alto, i pulsanti in basso, il vuoto in mezzo —
+        // così restano allineati ai bordi della foto qualunque sia l'altezza del testo.
+        JPanel side = new JPanel();
+        side.setOpaque(false);
+        side.setLayout(new BoxLayout(side, BoxLayout.Y_AXIS));
+        side.add(when);
+        side.add(Box.createVerticalGlue());
+        side.add(buttons);
+
+        tip("state.slot", preview, when);
+
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.gridx = 0;
+        gc.gridy = 0;
+        gc.insets = new Insets(2, 4, 2, 10);
+        gc.anchor = GridBagConstraints.NORTHWEST;
+        panel.add(preview, gc);
+
+        gc.gridx = 1;
+        gc.weightx = 1;
+        gc.fill = GridBagConstraints.BOTH;
+        gc.insets = new Insets(2, 0, 2, 4);
+        panel.add(side, gc);
+        return panel;
+    }
+
+    /** Messaggio informativo nello stile del popup (titolo dell'applicazione). */
+    private static void message(JDialog parent, String text) {
+        JOptionPane.showMessageDialog(parent, text, Messages.t("app.title"),
+                JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /**
+     * Istante in cui lo slot è stato salvato, letto dalla sua intestazione. Se lo slot
+     * non è leggibile (p.es. scritto da una versione precedente del formato) resta la
+     * data del file: sbagliare la data è meglio che non mostrare la sezione.
+     */
+    private static long slotTimestamp(File slot) {
+        try {
+            return SaveStateManager.readInfo(slot).savedAt();
+        } catch (IOException e) {
+            return slot.lastModified();
+        }
+    }
+
+    /** Data e ora nel formato della lingua scelta per l'interfaccia. */
+    private static String formatTimestamp(long millis) {
+        return java.text.DateFormat.getDateTimeInstance(
+                java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT, Messages.locale())
+                .format(new java.util.Date(millis));
+    }
+
+    /** Legge un'immagine, o {@code null} se manca o non si lascia decodificare. */
+    private static java.awt.image.BufferedImage readImage(File file) {
+        if (file == null || !file.isFile()) return null;
+        try {
+            return javax.imageio.ImageIO.read(file);
+        } catch (IOException e) {
+            System.err.println("[UI] Anteprima dello stato non leggibile ("
+                    + file.getName() + "): " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Il riquadro con la foto dello slot: l'immagine ci sta dentro intera, rimpicciolita
+     * quanto serve e centrata, senza deformarsi. Le dimensioni sono fisse anche quando
+     * non c'è nessuno stato salvato, così la sezione non cambia altezza al primo
+     * salvataggio facendo saltare tutto il popup.
+     */
+    private static final class StatePreview extends JComponent {
+
+        private static final int W = 168;
+        private static final int H = 126; // 4:3, le proporzioni dello schermo Amiga
+
+        private transient java.awt.image.BufferedImage image;
+        private String emptyText = "";
+
+        StatePreview() {
+            Dimension size = new Dimension(W, H);
+            setPreferredSize(size);
+            setMinimumSize(size);
+            setMaximumSize(size);
+            setOpaque(true);
+        }
+
+        void setImage(java.awt.image.BufferedImage image) {
+            this.image = image;
+            repaint();
+        }
+
+        void setEmptyText(String text) {
+            this.emptyText = text == null ? "" : text;
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            try {
+                int w = getWidth();
+                int h = getHeight();
+                g2.setColor(new Color(0x1C, 0x1E, 0x21));
+                g2.fillRect(0, 0, w, h);
+
+                if (image != null) {
+                    g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                            RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                    double scale = Math.min((w - 2.0) / image.getWidth(),
+                            (h - 2.0) / image.getHeight());
+                    int dw = Math.max(1, (int) Math.round(image.getWidth() * scale));
+                    int dh = Math.max(1, (int) Math.round(image.getHeight() * scale));
+                    g2.drawImage(image, (w - dw) / 2, (h - dh) / 2, dw, dh, null);
+                } else if (!emptyText.isEmpty()) {
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                            RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2.setColor(new Color(0x6E, 0x73, 0x7B));
+                    g2.setFont(getFont().deriveFont(Font.PLAIN, 11f));
+                    java.awt.FontMetrics fm = g2.getFontMetrics();
+                    g2.drawString(emptyText, (w - fm.stringWidth(emptyText)) / 2,
+                            (h + fm.getAscent() - fm.getDescent()) / 2);
+                }
+
+                g2.setColor(new Color(0x45, 0x49, 0x50));
+                g2.drawRect(0, 0, w - 1, h - 1);
+            } finally {
+                g2.dispose();
+            }
+        }
     }
 
     private static JPanel section(String title) {

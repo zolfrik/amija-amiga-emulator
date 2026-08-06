@@ -67,10 +67,10 @@ import io.github.zolfrik.amija.state.SaveStateManager;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.Properties;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import javax.swing.JFrame;
@@ -343,6 +343,16 @@ public class Amija {
                 applyRuntimeInputConfig();
                 if (cpu != null) cpu.reset();
                 resumeOrStart();
+            }
+            case STATE_RESTORE -> {
+                // "Load State" su uno stato preso con un'altra macchina: la si ricostruisce
+                // com'era e si ritenta. Il popup si è chiuso senza applicare le proprie
+                // modifiche, quindi qui non c'è nessun applyConfig da fare.
+                String msg = restoreStateAfterRebuild();
+                displayRecreated = true; // coldRestart ha già rifatto finestra e display
+                resumeOrStart();
+                JOptionPane.showMessageDialog(frame, msg, Messages.t("app.title"),
+                        JOptionPane.INFORMATION_MESSAGE);
             }
             case CANCEL -> resumeOrStart();
             case QUIT -> { System.exit(0); return; } // lo shutdown hook spegne la macchina
@@ -765,25 +775,89 @@ public class Amija {
 
     /**
      * Ripristina lo stato della macchina dallo slot unico, sovrascrivendo i componenti
-     * correnti (macchina in pausa). Invocato dal pulsante F12 "Load State". Ritorna il
-     * messaggio di esito localizzato.
+     * correnti (macchina in pausa). Invocato dal pulsante F12 "Load State".
+     *
+     * <p>Se lo stato è stato preso su una macchina diversa da quella accesa — altra
+     * memoria, altro Kickstart, altri dischi — non si dice semplicemente di no: dentro
+     * lo slot c'è anche la configurazione di allora, quindi la macchina giusta si può
+     * ricostruire. Quello però vuol dire spegnerla e riaccenderla, e non si può fare da
+     * qui: il popup è aperto ed è figlio della finestra che il riavvio distrugge. Si
+     * ritorna allora {@link ConfigDialog.LoadStateOutcome#restart()}, il popup si chiude
+     * e il seguito è in {@link #restoreStateAfterRebuild()}.
      */
-    private String loadState() {
+    private ConfigDialog.LoadStateOutcome loadState() {
         if (cpu == null || agnus == null) {
-            return Messages.t("savestate.load.fail", Messages.t("savestate.nomachine"));
+            return ConfigDialog.LoadStateOutcome.done(
+                    Messages.t("savestate.load.fail", Messages.t("savestate.nomachine")));
         }
         File file = SaveStateManager.slotFile();
         if (!file.isFile()) {
-            return Messages.t("savestate.load.none");
+            return ConfigDialog.LoadStateOutcome.done(Messages.t("savestate.load.none"));
         }
         try {
             SaveStateManager.load(file, cpu, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] caricato " + file.getAbsolutePath());
-            return Messages.t("savestate.load.ok");
+            return ConfigDialog.LoadStateOutcome.done(Messages.t("savestate.load.ok"));
+        } catch (SaveStateManager.IncompatibleStateException e) {
+            if (canRebuildMachineFor(file)) {
+                System.out.println("[STATE] macchina diversa da quella dello slot ("
+                        + e.getMessage() + "): la ricostruisco e ritento");
+                return ConfigDialog.LoadStateOutcome.restart();
+            }
+            return ConfigDialog.LoadStateOutcome.done(
+                    Messages.t("savestate.load.incompatible", e.getMessage()));
+        } catch (Exception e) {
+            System.err.println("[STATE] caricamento fallito: " + e.getMessage());
+            return ConfigDialog.LoadStateOutcome.done(
+                    Messages.t("savestate.load.fail", String.valueOf(e.getMessage())));
+        }
+    }
+
+    /**
+     * {@code true} se lo slot descrive una macchina diversa da quella accesa e quindi
+     * ricostruibile. Falso quando la configurazione salvata è già quella corrente: in
+     * quel caso il rifiuto viene da altro (formato, struttura) e riavviare non
+     * servirebbe a nulla se non a buttare via la sessione in corso.
+     */
+    private boolean canRebuildMachineFor(File slot) {
+        try {
+            return config.machineDiffers(SaveStateManager.readInfo(slot).config());
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Seconda metà di "Load State" quando lo stato pretende un'altra macchina: rimette
+     * in vigore la configurazione conservata nello slot, ricostruisce la macchina e
+     * ritenta il caricamento. Ritorna il messaggio da mostrare all'utente.
+     *
+     * <p>Le impostazioni ripristinate sono le sole che descrivono la macchina (Kickstart,
+     * memorie, chipset, modo video, supporti): lingua, finestra, monitor, renderer e
+     * shader restano quelli scelti dall'utente — vedi
+     * {@link AmigaConfig#restoreMachineSettings}.
+     */
+    private String restoreStateAfterRebuild() {
+        File file = SaveStateManager.slotFile();
+        try {
+            Properties saved = SaveStateManager.readInfo(file).config();
+            config.restoreMachineSettings(saved);
+            saveConfig();
+            System.out.println("[STATE] configurazione dello slot ripristinata, riavvio la macchina");
+            coldRestart();
+            if (cpu == null || agnus == null) {
+                return Messages.t("savestate.load.fail", Messages.t("savestate.nomachine"));
+            }
+            // La macchina è appena partita e sta emulando: va fermata davvero (non solo
+            // segnata come in pausa) prima di sovrascriverle sotto i componenti.
+            if (clock != null) clock.pauseAndWait(500);
+            SaveStateManager.load(file, cpu, agnus, gamePort1, gamePort2, config);
+            System.out.println("[STATE] caricato " + file.getAbsolutePath());
+            return Messages.t("savestate.load.reconfigured");
         } catch (SaveStateManager.IncompatibleStateException e) {
             return Messages.t("savestate.load.incompatible", e.getMessage());
         } catch (Exception e) {
-            System.err.println("[STATE] caricamento fallito: " + e.getMessage());
+            System.err.println("[STATE] caricamento dopo il riavvio fallito: " + e.getMessage());
             return Messages.t("savestate.load.fail", String.valueOf(e.getMessage()));
         }
     }

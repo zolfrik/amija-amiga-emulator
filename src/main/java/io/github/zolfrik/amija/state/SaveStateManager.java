@@ -25,11 +25,14 @@ import io.github.zolfrik.amija.config.AmigaConfig;
 import io.github.zolfrik.amija.cpu.Motorola68000;
 import io.github.zolfrik.amija.custom.AbstractAgnus;
 import io.github.zolfrik.amija.custom.FastRam;
+import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.GamePort;
 import io.github.zolfrik.amija.memory.RAM;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
@@ -41,6 +44,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Properties;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -49,9 +53,12 @@ import java.util.zip.GZIPOutputStream;
  * (uno slot). Formato binario custom compresso (gzip), <b>non</b> serializzazione Java:
  * lo stato è raccolto dal {@link ReflectiveState} sui componenti reali della macchina.
  *
- * <p>Header: magic {@code A500SAVE}, versione formato, e un <b>fingerprint</b> della
- * configurazione (chipset, dimensioni RAM, modo video, Kickstart, dischi montati). Al
- * caricamento un fingerprint diverso viene rifiutato con {@link IncompatibleStateException}.
+ * <p>Header: magic {@code A500SAVE}, versione formato, l'istante del salvataggio, un
+ * <b>fingerprint</b> della configurazione (chipset, dimensioni RAM, modo video, Kickstart,
+ * dischi montati) e una copia integrale di {@code amiga.properties}. Al caricamento un
+ * fingerprint diverso viene rifiutato con {@link IncompatibleStateException}; la copia
+ * della configurazione è lì perché il chiamante possa allora <i>ricostruire</i> la
+ * macchina giusta ({@link #readInfo}) invece di limitarsi a dire di no.
  *
  * <p>Lo snapshot va preso/applicato a <b>macchina in pausa</b> (come quando il popup F12
  * è aperto). Sia in salvataggio sia in caricamento la macchina viene prima portata a un
@@ -62,7 +69,12 @@ import java.util.zip.GZIPOutputStream;
 public final class SaveStateManager {
 
     private static final byte[] MAGIC = "A500SAVE".getBytes(StandardCharsets.US_ASCII);
-    private static final int VERSION = 1;
+    /**
+     * Versione del formato. 2: aggiunge all'header l'istante del salvataggio e la copia
+     * di {@code amiga.properties}. Gli slot di versione 1 non si caricano più — sono
+     * un'istantanea sola e la si rifà premendo di nuovo "Save State".
+     */
+    private static final int VERSION = 2;
 
     /**
      * Nome file dello slot unico, dentro la cartella {@code savestate/} della home
@@ -94,6 +106,15 @@ public final class SaveStateManager {
         public IncompatibleStateException(String message) { super(message); }
     }
 
+    /**
+     * L'intestazione di uno slot, letta senza toccare la macchina.
+     *
+     * @param savedAt istante del salvataggio (millisecondi epoch)
+     * @param config  {@code amiga.properties} com'era al salvataggio: la macchina che
+     *                questo stato pretende
+     */
+    public record SlotInfo(long savedAt, String fingerprint, Properties config) { }
+
     // =========================================================================
     // Salvataggio
     // =========================================================================
@@ -102,6 +123,7 @@ public final class SaveStateManager {
             GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
         advanceToBoundary(agnus, cpu);
         List<Object> roots = buildRoots(cpu, agnus, port1, port2);
+        byte[] configBlob = encodeConfig(cfg.snapshot());
 
         File dir = file.getParentFile();
         if (dir != null) dir.mkdirs();
@@ -109,7 +131,10 @@ public final class SaveStateManager {
                 new BufferedOutputStream(new FileOutputStream(file))))) {
             out.write(MAGIC);
             out.writeInt(VERSION);
+            out.writeLong(System.currentTimeMillis());
             out.writeUTF(fingerprint(cfg));
+            out.writeInt(configBlob.length);
+            out.write(configBlob);
             out.writeInt(roots.size());
             for (Object r : roots) {
                 out.writeUTF(r.getClass().getName());
@@ -129,38 +154,77 @@ public final class SaveStateManager {
         // registri, evitando che operazioni bus in sospeso corrompano il resume.
         advanceToBoundary(agnus, cpu);
 
-        try (DataInputStream in = new DataInputStream(new GZIPInputStream(
-                new BufferedInputStream(new FileInputStream(file))))) {
-            byte[] magic = new byte[MAGIC.length];
-            in.readFully(magic);
-            if (!Arrays.equals(magic, MAGIC)) {
-                throw new IncompatibleStateException("File save state non riconosciuto.");
-            }
-            int ver = in.readInt();
-            if (ver != VERSION) {
-                throw new IncompatibleStateException(
-                        "Versione dello slot (" + ver + ") incompatibile (attesa " + VERSION + ").");
-            }
-            String fp = in.readUTF();
-            if (!fp.equals(fingerprint(cfg))) {
-                throw new IncompatibleStateException(
-                        "La configurazione della macchina è diversa da quella salvata nello slot.");
+        try (DataInputStream in = openSlot(file)) {
+            SlotInfo info = readHeader(in);
+            if (!info.fingerprint().equals(fingerprint(cfg))) {
+                throw new IncompatibleStateException(Messages.t("savestate.err.machine"));
             }
             List<Object> roots = buildRoots(cpu, agnus, port1, port2);
             int n = in.readInt();
             if (n != roots.size()) {
-                throw new IncompatibleStateException("Struttura dello slot incompatibile.");
+                throw new IncompatibleStateException(Messages.t("savestate.err.structure"));
             }
             for (int i = 0; i < n; i++) {
                 String cls = in.readUTF();
                 Object r = roots.get(i);
                 if (!cls.equals(r.getClass().getName())) {
                     throw new IncompatibleStateException(
-                            "Componente #" + i + " diverso nello slot (" + cls + ").");
+                            Messages.t("savestate.err.component", i, cls));
                 }
                 ReflectiveState.read(in, r);
             }
         }
+    }
+
+    /**
+     * Legge la sola intestazione dello slot: quando è stato salvato e com'era fatta la
+     * macchina. Non tocca nulla — serve al popup F12 per descrivere lo slot e a chi deve
+     * ricostruire la macchina prima di ricaricarlo.
+     */
+    public static SlotInfo readInfo(File file) throws IOException {
+        try (DataInputStream in = openSlot(file)) {
+            return readHeader(in);
+        }
+    }
+
+    private static DataInputStream openSlot(File file) throws IOException {
+        return new DataInputStream(new GZIPInputStream(
+                new BufferedInputStream(new FileInputStream(file))));
+    }
+
+    /** Consuma magic, versione e intestazione, lasciando lo stream sui componenti. */
+    private static SlotInfo readHeader(DataInputStream in) throws IOException {
+        byte[] magic = new byte[MAGIC.length];
+        in.readFully(magic);
+        if (!Arrays.equals(magic, MAGIC)) {
+            throw new IncompatibleStateException(Messages.t("savestate.err.badfile"));
+        }
+        int ver = in.readInt();
+        if (ver != VERSION) {
+            throw new IncompatibleStateException(
+                    Messages.t("savestate.err.version", ver, VERSION));
+        }
+        long savedAt = in.readLong();
+        String fp = in.readUTF();
+        byte[] blob = new byte[in.readInt()];
+        in.readFully(blob);
+        return new SlotInfo(savedAt, fp, decodeConfig(blob));
+    }
+
+    // =========================================================================
+    // Configurazione dentro lo slot
+    // =========================================================================
+
+    private static byte[] encodeConfig(Properties props) throws IOException {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream(4096);
+        props.store(buf, "amiga.properties as of this save state");
+        return buf.toByteArray();
+    }
+
+    private static Properties decodeConfig(byte[] blob) throws IOException {
+        Properties p = new Properties();
+        p.load(new ByteArrayInputStream(blob));
+        return p;
     }
 
     // =========================================================================

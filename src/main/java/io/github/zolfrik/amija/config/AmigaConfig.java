@@ -1166,6 +1166,98 @@ public final class AmigaConfig {
     }
 
     // =========================================================================
+    // Fotografia della configurazione (save state)
+    // =========================================================================
+
+    /**
+     * Le chiavi che descrivono <b>la macchina</b>, cioè quelle da cui dipende com'è
+     * fatto l'Amiga acceso: modalità automatica e suoi profili, Kickstart, memorie,
+     * chipset, modalità video e supporti montati. Tutto il resto di
+     * {@code amiga.properties} (lingua, finestra, monitor, renderer, shader, volumi,
+     * ultime cartelle) descrive <i>l'emulatore</i>, non la macchina.
+     *
+     * <p>È la distinzione che serve al save state: uno slot si ricarica ricostruendo la
+     * macchina com'era, non riportando indietro le preferenze d'interfaccia dell'utente —
+     * ritrovarsi la finestra a schermo intero o l'emulatore in un'altra lingua per aver
+     * caricato una partita sarebbe un effetto collaterale, non un ripristino.
+     */
+    private static java.util.List<String> machineKeys() {
+        java.util.List<String> keys = new java.util.ArrayList<>();
+        keys.add(K_AUTO_EN);
+        keys.add(K_AUTO_KS13);
+        keys.add(K_AUTO_KS31);
+        for (AutoDefaults d : AUTO_PROFILES) {
+            keys.add(d.prefix() + "chipram.kb");
+            keys.add(d.prefix() + "slowram.kb");
+            keys.add(d.prefix() + "fastram.kb");
+            keys.add(d.prefix() + "chipset");
+        }
+        keys.add(K_KICKSTART);
+        keys.add(K_CHIPRAM_KB);
+        keys.add(K_SLOWRAM_KB);
+        keys.add(K_FASTRAM_KB);
+        keys.add(K_CHIPSET);
+        keys.add(K_VIDEO_MODE);
+        for (int i = 0; i < 4; i++) {
+            keys.add(String.format(K_DRIVE_EN, i));
+            keys.add(String.format(K_DRIVE_DISK, i));
+            keys.add(String.format(K_DRIVE_RO, i));
+        }
+        for (String unit : HD_UNITS) {
+            keys.add(String.format(K_HD_EN, unit));
+            keys.add(String.format(K_HD_DISK, unit));
+            keys.add(String.format(K_HD_RO, unit));
+        }
+        keys.add(K_WHDLOAD_EN);
+        keys.add(K_WHDLOAD_FILE);
+        return keys;
+    }
+
+    /**
+     * Copia indipendente delle proprietà correnti, cioè {@code amiga.properties} così
+     * com'è in memoria. Il save state ne conserva una dentro lo slot: è la sola
+     * descrizione della macchina che quello stato pretende.
+     */
+    public Properties snapshot() {
+        Properties copy = new Properties();
+        copy.putAll(props);
+        return copy;
+    }
+
+    /**
+     * {@code true} se {@code saved} descrive una macchina diversa da quella configurata
+     * adesso, cioè se {@link #restoreMachineSettings} avrebbe qualcosa da fare.
+     */
+    public boolean machineDiffers(Properties saved) {
+        if (saved == null) return false;
+        for (String key : machineKeys()) {
+            if (!java.util.Objects.equals(saved.getProperty(key), props.getProperty(key))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Riporta le sole chiavi di macchina (vedi {@link #machineKeys()}) ai valori di
+     * {@code saved}, lasciando intatte le preferenze d'interfaccia. Una chiave assente
+     * da {@code saved} viene <b>rimossa</b>, non lasciata com'è: significa che quella
+     * macchina girava col valore di default, e conservare quello attuale la ricostruirebbe
+     * diversa.
+     */
+    public void restoreMachineSettings(Properties saved) {
+        if (saved == null) return;
+        for (String key : machineKeys()) {
+            String want = saved.getProperty(key);
+            if (want == null) {
+                props.remove(key);
+            } else {
+                props.setProperty(key, want);
+            }
+        }
+    }
+
+    // =========================================================================
     // Helper di parsing
     // =========================================================================
 
