@@ -1652,10 +1652,19 @@ public final class ConfigDialog {
             }
             // Un drive collegato per ogni disco, e altrettanti per i dischi di un
             // eventuale zip multi-disco in DF0 (Amija li distribuisce all'avvio, ma solo
-            // sui drive che esistono). DF0 c'è comunque: una macchina senza floppy non
-            // saprebbe cosa fare di un disco trascinato sulla finestra.
-            int connected = Math.max(1, floppies);
+            // sui drive che esistono).
+            //
+            // Senza floppy nella lista i drive restano scollegati, esattamente come una
+            // macchina configurata a mano su cui non si è spuntato nessun drive: chi
+            // avvia un hard disk o un WHDLoad non ha bisogno di un lettore, e averlo lì
+            // costa solo il tempo che il Kickstart perde a interrogarlo. L'eccezione è
+            // la lista del tutto vuota: lì DF0 resta collegato perché è l'unico bersaglio
+            // possibile di un disco trascinato sulla finestra, e senza di lui il
+            // drag-and-drop non avrebbe dove atterrare (AmigaDisplay rifiuta il drop sui
+            // drive non collegati).
+            int connected = floppies;
             if (floppies > 0) connected = Math.max(connected, zipDiskCount(s.floppyDisk[0]));
+            if (items.isEmpty()) connected = 1;
             for (int i = 0; i < Math.min(4, connected); i++) s.floppyConnected[i] = true;
             return s;
         }
