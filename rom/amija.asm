@@ -58,14 +58,24 @@ reset:
             move.w  #$7FFF,DMACON(a5)
             move.w  #$7F00,ADKCON(a5)
 
+            ; ⛔ Su una porta CIA si scrive PRIMA il dato e POI la direzione.
+            ; All'accensione il registro dei dati vale $00 e i pin sono ingressi:
+            ; nell'istante in cui la DDR li fa diventare uscite, il CIA mette sui
+            ; pin quello $00. Su CIA-B porta B $00 vuol dire /SEL0-3 e /MTR tutti
+            ; bassi, cioe' "tutti i drive selezionati col motore acceso": ogni
+            ; drive aggancia il proprio latch del motore, e chi non viene piu'
+            ; selezionato (DF1-DF3, che questa ROM non tocca) se lo tiene acceso
+            ; per sempre — LED del drive fisso e piatto che gira a vuoto.
+            ; Caricare prima il dato rende la transizione della DDR innocua.
+
             ; Togli l'overlay: da qui $000000 e' chip RAM, non ROM.
             ; CIA-A PRA bit 0 = /OVL, bit 1 = LED di alimentazione.
-            move.b  #$03,CIAADDRA
             move.b  #$FC,CIAAPRA
+            move.b  #$03,CIAADDRA
 
-            ; CIA-B porta B: tutte uscite, segnali floppy a riposo.
-            move.b  #$FF,CIABDDRB
+            ; CIA-B porta B: segnali floppy a riposo, poi tutte uscite.
             move.b  #$FF,CIABPRB
+            move.b  #$FF,CIABDDRB
 
             move.l  #$00080000,a7           ; stack provvisorio in chip RAM
 
@@ -94,10 +104,24 @@ reset:
 
 noBootDisk:
             ; Nessun drive, nessun disco, o bootblock non valido: mostra la
-            ; schermata di cortesia con logo e istruzioni.
+            ; schermata di cortesia con logo e istruzioni, e poi resta in
+            ; ascolto del drive. Chi accende l'emulatore a mano vuota e infila
+            ; un disco dopo si aspetta che parta da solo, senza passare da un
+            ; reset: dallo splash in poi il firmware non e' fermo, sta
+            ; aspettando un disco.
             bsr     showSplash
-hang:
-            bra     hang
+waitForDisk:
+            bsr     waitDiskInserted        ; ritorna solo quando ce n'e' uno
+            bsr     bootFromFloppy
+            tst.l   d0
+            beq     waitForDiskAgain
+            bsr     handoff                 ; non ritorna
+waitForDiskAgain:
+            ; Disco illeggibile o senza bootblock valido: motore fermo e si
+            ; torna ad aspettare. Il prossimo tentativo lo fara' il prossimo
+            ; cambio di disco, non un ritentativo a vuoto su questo.
+            bsr     motorOff
+            bra     waitForDisk
 
 ; -----------------------------------------------------------------------------
 ; handoff - cede il controllo al bootblock.
@@ -116,6 +140,19 @@ handoff:
             move.w  #$7FFF,INTREQ(a5)
             move.w  #$7FFF,DMACON(a5)
             move.w  #$7F00,ADKCON(a5)
+
+            ; Il Copper viene riacceso qui sotto, e parte da COP1LC: se quello
+            ; puntasse ancora alla lista della schermata di cortesia — o, sul
+            ; percorso diretto, a $000000, dove c'e' la tabella dei vettori —
+            ; rileggerebbe come istruzioni roba che non lo e', e riscriverebbe i
+            ; registri video appena impostati. Una lista che finisce subito e'
+            ; lo stato minimo sensato da consegnare al gioco, che comunque
+            ; installera' la sua.
+            lea     CHIP_COPPER,a0
+            move.w  #$FFFF,(a0)+
+            move.w  #$FFFE,(a0)+
+            move.l  #CHIP_COPPER,COP1LC(a5)
+            move.w  d0,COPJMP1(a5)          ; strobe: il valore non conta
 
             move.w  #$8000|ADK_MFMPREC|ADK_FAST,ADKCON(a5)
             move.w  #$8000|DMAF_MASTER|DMAF_COPPER|DMAF_BLITTER|DMAF_DISK,DMACON(a5)
@@ -136,17 +173,17 @@ handoff:
             ; il drive per conto suo quando gli servira'.
             bsr     motorOff
 
-            ; Stato finale dei CIA.
-            move.b  #$03,CIAADDRA
+            ; Stato finale dei CIA. Dato prima della direzione, come al reset.
             move.b  #$FC,CIAAPRA
+            move.b  #$03,CIAADDRA
             move.b  #$00,CIAACRA
             move.b  #$08,CIAACRB            ; timer B in colpo singolo
             move.b  #$82,CIAAICR            ; abilita l'interruzione di timer B
 
-            move.b  #$C0,CIABDDRA
             move.b  #$FF,CIABPRA
-            move.b  #$FF,CIABDDRB
+            move.b  #$C0,CIABDDRA
             move.b  #$FF,CIABPRB
+            move.b  #$FF,CIABDDRB
             move.b  #$00,CIABCRA
             move.b  #$80,CIABCRB            ; scrittura sull'allarme del TOD
             move.b  #$84,CIABICR            ; abilita l'interruzione di FLAG

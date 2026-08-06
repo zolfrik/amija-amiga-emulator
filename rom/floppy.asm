@@ -11,6 +11,7 @@ CYLINDERS   equ 80
 TRACKS      equ CYLINDERS*2          ; cilindro*2 + faccia, come trackdisk
 TRACK_BYTES equ SECTORS*SECTOR_SIZE
 MFM_WORDS   equ $1A00                ; oltre un giro completo: garantisce 11 settori
+POLL_MS     equ 3000                 ; intervallo fra due sondaggi del drive vuoto
 
 ; =============================================================================
 ; Avvio da floppy
@@ -134,6 +135,93 @@ motorOff:
             move.b  #$FF,varPrbShadow
             clr.l   varMotorOn
             move.l  #-1,varCurSide
+            rts
+
+; =============================================================================
+; Attesa di un disco
+; =============================================================================
+
+; -----------------------------------------------------------------------------
+; waitDiskInserted - non ritorna finche' in DF0 non compare un disco.
+;
+; Il drive non ha una linea "c'e' un disco": ha /CHNG, un latch che va basso a
+; ogni inserimento o estrazione e che un impulso di STEP rialza soltanto se un
+; disco c'e' davvero (HRM: "it is reset by a STEP pulse when there is a disk in
+; the drive"). Interrogarlo vuol dire quindi far battere la testina, ed e'
+; esattamente il tic-tac che un Amiga vero fa quando lo si lascia a vuoto.
+;
+; Il motore resta fermo per tutta l'attesa: si accende solo quando c'e'
+; qualcosa da leggere.
+; -----------------------------------------------------------------------------
+waitDiskInserted:
+            movem.l d0-d1,-(sp)
+
+            ; Seleziona DF0 lasciando /MTR alto. Il motore si aggancia solo sul
+            ; fronte di discesa di /SEL mentre /MTR e' gia' basso, quindi cosi'
+            ; il piatto non parte.
+            move.b  #$F7,CIABPRB            ; /SEL0 basso, /MTR alto
+            move.b  #$F7,varPrbShadow
+            move.l  #-1,varCurSide          ; faccia da riselezionare
+            moveq   #1,d0
+            bsr     waitMs                  ; i segnali del drive si assestano
+
+            ; La testina va parcheggiata sulla traccia 0: li' i passi verso
+            ; l'esterno non muovono nulla, e il sondaggio puo' ripetersi per ore
+            ; senza spostare il braccio ne' consumare il fondo corsa.
+            bsr     seekTrack0
+
+            ; La prima misura si butta via: serve solo ad azzerare il latch, che
+            ; dopo l'accensione o un boot fallito e' quasi sempre basso. Senza,
+            ; un disco gia' dentro e non avviabile verrebbe riprovato all'infinito.
+            bsr     probeDisk
+wdiLoop:
+            ; Il sondaggio costa un colpo di testina, che si sente e si vede.
+            ; Un Amiga vero lo fa due volte al secondo ed e' il suo tic-tac piu'
+            ; noto; qui da' fastidio e basta, perche' nessuno resta sullo splash
+            ; per lavorarci. Un colpo ogni tre secondi resta abbastanza reattivo
+            ; da non far dubitare che il disco sia stato visto.
+            move.l  #POLL_MS,d0
+            bsr     waitMs
+            bsr     probeDisk
+            tst.l   d0
+            beq     wdiLoop
+
+            movem.l (sp)+,d0-d1
+            rts
+
+; -----------------------------------------------------------------------------
+; probeDisk - c'e' un disco NUOVO in DF0? Ritorna d0 <> 0 se si'.
+;
+; Due letture di /CHNG con in mezzo un impulso di STEP:
+;   alto prima                  -> nessuno ha toccato niente dall'ultima volta
+;   basso prima, basso dopo     -> qualcosa e' cambiato, ma il drive e' vuoto
+;   basso prima, alto dopo      -> c'e' un disco, ed e' arrivato adesso
+; Guardare anche il livello PRIMA dello step e' quel che fa vedere il cambio di
+; disco: dopo un'estrazione seguita da un inserimento il latch e' basso una
+; volta sola, e la sola lettura dopo lo step non distinguerebbe il disco nuovo
+; da quello di prima.
+;
+; Vuole DF0 gia' selezionato, il motore fermo e la testina sulla traccia 0.
+; -----------------------------------------------------------------------------
+probeDisk:
+            move.l  d1,-(sp)
+            moveq   #0,d1
+            btst    #CIAA_CHNG,CIAAPRA
+            bne     probeDone               ; /CHNG alto: nessuna novita'
+
+            ; Qualcosa e' cambiato: quello che resta nel buffer non vale piu'.
+            move.l  #-1,varCurTrack
+
+            move.b  varPrbShadow,d0
+            or.b    #CIAB_DIR,d0            ; verso l'esterno: a fondo corsa
+            bsr     stepPulse
+
+            btst    #CIAA_CHNG,CIAAPRA
+            beq     probeDone               ; ancora basso: il drive e' vuoto
+            moveq   #1,d1
+probeDone:
+            move.l  d1,d0
+            move.l  (sp)+,d1
             rts
 
 ; -----------------------------------------------------------------------------

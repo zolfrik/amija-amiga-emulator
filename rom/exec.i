@@ -202,16 +202,28 @@ varMotorOn      equ VARS+20             ; il motore di DF0 sta girando
 varCurSide      equ VARS+24             ; faccia selezionata, -1 = ignota
 
 ; --- disposizione della chip RAM --------------------------------------------
-; Il bootblock va dove lo mette il Kickstart 1.3. I buffer del trackdisk e i
-; bitplane della schermata di cortesia condividono la stessa area: i due
-; percorsi si escludono a vicenda, perche' lo splash parte solo dopo che il
-; tentativo di boot da floppy e' fallito e i suoi buffer sono ormai morti.
+; Il bootblock va dove lo mette il Kickstart 1.3.
 BOOT_BUFFER     equ $00001558
 CHIP_COPPER     equ $00001000
 TRACK_BUFFER    equ $00002000           ; 11*512 traccia decodificata
 MFM_BUFFER      equ $00003800           ; traccia grezza MFM
-CHIP_BPL        equ $00002000           ; 3 bitplane da 320x256
 FONT_DATA       equ $00009800           ; bitmap del font, 8 righe da 96 byte
 FONT_CHARLOC    equ $00009B00           ; 96 coppie offset/larghezza
 FONT_TEXTFONT   equ $00009C80           ; struct TextFont
 CHIP_FREE       equ $0000A000           ; primo byte di chip RAM libera
+
+; I bitplane della schermata di cortesia stanno sopra tutto il resto, e non
+; sotto CHIP_FREE come il resto delle aree di servizio.
+;
+; Prima condividevano l'indirizzo del buffer di traccia, perche' i due percorsi
+; si escludevano: lo splash appariva solo dopo un boot fallito, quando quei
+; buffer erano morti. Adesso non si escludono piu'. Con lo splash a video la ROM
+; continua a interrogare il drive, e quando qualcuno infila un disco lo legge:
+; se i bitplane stessero ancora li', ogni tentativo di caricamento riempirebbe
+; lo schermo di MFM grezzo.
+;
+; Cadere dentro la chip RAM che la lista dei blocchi liberi dichiara libera non
+; e' un problema: finche' lo splash e' a video la ROM non ha ancora ceduto il
+; controllo a nessuno e nessuno alloca, e l'handoff spegne la DMA bitplane
+; prima di far partire il gioco. $7800 byte, cioe' fino a $17800.
+CHIP_BPL        equ $00010000           ; 3 bitplane da 320x256
