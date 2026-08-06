@@ -99,6 +99,7 @@ public final class AmigaConfig {
     /** Tasto del joystick da tastiera: {@code input.port<N>.joystick.<up|down|right|left|fire>}. */
     private static final String K_JOY_KEY = "input.port%d.joystick.%s";
     private static final String K_LANGUAGE    = "ui.language";
+    private static final String K_UI_SCALE    = "ui.scale";
     private static final String K_VIDEO_MODE  = "video.mode";
     private static final String K_CHIPSET     = "chipset";
     private static final String K_INTEGER_SCALING = "video.integerScaling";
@@ -317,7 +318,11 @@ public final class AmigaConfig {
         p.setProperty(K_LANGUAGE, "en");                 // lingua di default: inglese
         p.setProperty(K_VIDEO_MODE, VideoMode.PAL.name()); // modalita' video di default: PAL
         p.setProperty(K_CHIPSET, Chipset.OCS.name());      // chipset di default: OCS
-        p.setProperty(K_INTEGER_SCALING, "1");            // nessun ridimensionamento
+        // Le DUE scale, separate e indipendenti. Vanno tenute entrambe qui: questo e' il
+        // file che l'utente si ritrova alla prima esecuzione, e una chiave assente e' una
+        // funzione che non sa di avere.
+        p.setProperty(K_INTEGER_SCALING, "1");            // finestra emulata a dimensione nativa
+        p.setProperty(K_UI_SCALE, "1");                   // interfaccia a dimensione nativa
         p.setProperty(K_OVERSCAN, "true");               // overscan abilitato di default
         p.setProperty(K_WINDOW_MODE, AmigaWindowMode.WINDOWED.configValue());
         p.setProperty(K_MONITOR, "0");                   // 0 = monitor principale
@@ -694,6 +699,30 @@ public final class AmigaConfig {
         return props.getProperty(K_LANGUAGE, "en").trim();
     }
 
+    /** Fattore di scala minimo e massimo accettati per l'interfaccia. */
+    public static final double UI_SCALE_MIN = 1.0;
+    public static final double UI_SCALE_MAX = 4.0;
+
+    /**
+     * Fattore di scala della <b>sola interfaccia</b> (popup F12, dialoghi, chooser);
+     * 1 = dimensione nativa. A differenza di {@link #integerScaling()} può essere
+     * frazionario — un artefatto nell'interfaccia non tocca la qualità dell'emulazione —
+     * e non ha alcun effetto sulla finestra emulata.
+     *
+     * <p>Non esiste una modalità "automatica": il fattore di scala del desktop non viene
+     * né letto né usato, e chi non tocca niente ottiene 1. Vedi
+     * {@code docs/gui-scaling-flatlaf-plan.md}.
+     */
+    public double uiScale() {
+        double v = getDouble(K_UI_SCALE, 1.0);
+        if (v < UI_SCALE_MIN || v > UI_SCALE_MAX) {
+            System.err.println("[CONFIG] " + K_UI_SCALE + "=" + v + " out of range ["
+                    + UI_SCALE_MIN + ".." + UI_SCALE_MAX + "], using 1.0");
+            return 1.0;
+        }
+        return v;
+    }
+
     /**
      * Modalita' video della macchina emulata: {@link VideoMode#PAL} (default) o
      * {@link VideoMode#NTSC}. Determina frequenza del Color Clock, numero di righe
@@ -742,7 +771,10 @@ public final class AmigaConfig {
         }
     }
 
-    /** Fattore di integer scaling video/UI; 1 = dimensione nativa. */
+    /**
+     * Fattore di integer scaling della <b>sola finestra emulata</b>; 1 = dimensione
+     * nativa. Non tocca l'interfaccia: lo scaling della GUI è una property a parte.
+     */
     public int integerScaling() {
         return Math.max(1, getInt(K_INTEGER_SCALING, 1));
     }
@@ -932,6 +964,27 @@ public final class AmigaConfig {
         props.setProperty(K_INTEGER_SCALING, Integer.toString(Math.max(1, scale)));
     }
 
+    /**
+     * Scrive il fattore di scala dell'interfaccia. Il valore va sul file con il punto
+     * decimale e senza zeri inutili (1, 1.25, 1.5, 2): {@code Double.toString} usa il
+     * punto a prescindere dalla lingua del sistema, mentre un {@code String.format} con
+     * la locale di default scriverebbe "1,25" su una macchina italiana — e alla
+     * rilettura {@code Double.parseDouble} lo rifiuterebbe.
+     */
+    public void setUiScale(double scale) {
+        props.setProperty(K_UI_SCALE, formatScale(
+                Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, scale))));
+    }
+
+    /** Il fattore corrente nella forma in cui va sul file ({@code 1}, {@code 1.25}, ...). */
+    public String uiScaleValue() {
+        return formatScale(uiScale());
+    }
+
+    private static String formatScale(double v) {
+        return v == Math.rint(v) ? Integer.toString((int) v) : Double.toString(v);
+    }
+
     public void setOverscanEnabled(boolean enabled) {
         props.setProperty(K_OVERSCAN, Boolean.toString(enabled));
     }
@@ -1094,6 +1147,14 @@ public final class AmigaConfig {
         sb.append("\n# User interface language: en = English, it = Italian.\n");
         line(sb, K_LANGUAGE, language());
 
+        sb.append("\n# Scale of the user interface (F12 popup, dialogs, file chooser):\n");
+        sb.append("# 1 = native size, 1.5 = half as big again, 2 = double. Unlike\n");
+        sb.append("# video.integerScaling this one may be fractional, and it does NOT\n");
+        sb.append("# touch the emulated window. Use a dot for the decimal separator.\n");
+        sb.append("# There is no \"automatic\" mode: the desktop scale factor is never read.\n");
+        sb.append("# The change takes effect only after restarting the emulator.\n");
+        line(sb, K_UI_SCALE, uiScaleValue());
+
         sb.append("\n# Video mode: PAL (default, 50 Hz, 312 lines) or NTSC (60 Hz, 262 lines).\n");
         sb.append("# Automatic configuration off. The change takes effect only after restarting\n");
         sb.append("# the emulator (cold restart).\n");
@@ -1105,7 +1166,10 @@ public final class AmigaConfig {
         sb.append("# the emulator (cold restart).\n");
         line(sb, K_CHIPSET, storedChipset().name());
 
-        sb.append("\n# Video/UI integer scaling: 1 = native size, 2 = double, 3 = triple, ...\n");
+        sb.append("\n# Integer scaling of the emulated window: 1 = native size, 2 = double,\n");
+        sb.append("# 3 = triple, ... Whole numbers only, so the Amiga pixels stay sharp.\n");
+        sb.append("# It does NOT scale the user interface (popup, dialogs): that is a\n");
+        sb.append("# separate setting.\n");
         line(sb, K_INTEGER_SCALING, Integer.toString(integerScaling()));
 
         sb.append("\n# Enable overscan: if true the whole Amiga video area is shown, if false it is\n");
@@ -1276,5 +1340,21 @@ public final class AmigaConfig {
         String v = props.getProperty(key);
         if (v == null) return def;
         return Boolean.parseBoolean(v.trim());
+    }
+
+    /**
+     * Come {@link #getInt}, ma per i fattori frazionari. Il separatore decimale e' il
+     * PUNTO, sempre: questo e' un file di configurazione, non un testo localizzato, e
+     * deve restare leggibile allo stesso modo su ogni macchina.
+     */
+    private double getDouble(String key, double def) {
+        String v = props.getProperty(key);
+        if (v == null) return def;
+        try {
+            return Double.parseDouble(v.trim());
+        } catch (NumberFormatException e) {
+            System.err.println("[CONFIG] Non-numeric value for " + key + "='" + v + "', using " + def);
+            return def;
+        }
     }
 }

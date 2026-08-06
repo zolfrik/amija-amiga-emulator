@@ -150,11 +150,19 @@ public class AmigaDisplay {
     // minfirstline = 26). Coincide con VirtualCRT.REGRESSION_CROP_Y (qui ridichiarata
     // per non accoppiare il package display a common).
     private static final int DISPLAY_TOP_LINE = 26;
+    // Taglia di COMPOSIZIONE: quella a cui Java2D compone immagine + LED + contatori,
+    // sempre pari al frame nativo. Non cresce mai con l'integer scaling — l'ingrandimento
+    // è l'ultimo blit e basta (vedi videoScale).
     private final int windowWidth;
     private final int windowHeight;
     private final AmigaWindowMode windowMode;
+    // Taglia di PRESENTAZIONE: il contenuto della finestra in pixel FISICI (frame×videoScale
+    // in windowed, lo schermo in fullscreen/borderless). Serve solo a dimensionare la
+    // finestra e il canvas GL: nessun buffer di composizione ha questa taglia.
     private final int presentationWidth;
     private final int presentationHeight;
+    /** Fattore di integer scaling della finestra emulata ({@code video.integerScaling}), ≥ 1. */
+    private final int videoScale;
     private GraphicsDevice fullScreenDevice;
     /** Monitor scelto in configurazione ({@code video.monitor}); null in headless. */
     private final GraphicsDevice screenDevice;
@@ -270,20 +278,23 @@ public class AmigaDisplay {
         this(frameWidth, frameHeight, windowMode, renderer, 1);
     }
 
-    // Integer scaling:
-    //  - SOFTWARE: gestito da Java2D via sun.java2d.uiScale (impostata da Amija). Il
-    //    display lavora alla risoluzione logica del frame; windowWidth/Height = frame.
-    //  - OPENGL: uiScale è forzata a 1 (altrimenti scalerebbe anche il canvas GL), quindi
-    //    la magnificazione la fa la GPU: la finestra viene creata a frame×glScale e lo
-    //    shader renderizza a quella risoluzione (decisivo per gli shader ad alta
-    //    risoluzione come crt-royale). In fullscreen/borderless la dimensione è lo schermo.
+    // Integer scaling: lo fa AmiJa, di un fattore INTERO, uguale per i due renderer.
+    // Java2D non scala nulla (Amija spegne sun.java2d.uiScale), così 1 pixel Java = 1
+    // pixel fisico e la finestra riceve pixel esatti.
+    //  - SOFTWARE: la finestra è creata a frame×videoScale e DisplayPanel disegna il
+    //    canvas composto ingrandito ×videoScale con NEAREST_NEIGHBOR.
+    //  - OPENGL: idem per la finestra, ma la magnificazione la fa la GPU e lo shader
+    //    renderizza a quella risoluzione (decisivo per shader ad alta risoluzione come
+    //    crt-royale).
+    // In fullscreen/borderless la finestra è grande quanto lo schermo e il frame
+    // ingrandito ci viene centrato dentro, con bordi neri.
     public AmigaDisplay(int frameWidth, int frameHeight, AmigaWindowMode windowMode,
-                        RendererType renderer, int glScale) {
-        this(frameWidth, frameHeight, windowMode, renderer, glScale, 0);
+                        RendererType renderer, int videoScale) {
+        this(frameWidth, frameHeight, windowMode, renderer, videoScale, 0);
     }
 
     public AmigaDisplay(int frameWidth, int frameHeight, AmigaWindowMode windowMode,
-                        RendererType renderer, int glScale, int monitorIndex) {
+                        RendererType renderer, int videoScale, int monitorIndex) {
         this.screenDevice = screenDeviceFor(monitorIndex);
         this.frameWidth  = frameWidth;
         this.frameHeight = frameHeight;
@@ -291,14 +302,9 @@ public class AmigaDisplay {
         this.windowHeight = frameHeight;
         this.windowMode = windowMode == null ? AmigaWindowMode.WINDOWED : windowMode;
         this.renderer = renderer == null ? RendererType.SOFTWARE : renderer;
-        int scale = Math.max(1, glScale);
-        Dimension contentSize;
-        if (this.renderer == RendererType.OPENGL
-                && this.windowMode == AmigaWindowMode.WINDOWED && scale > 1) {
-            contentSize = new Dimension(windowWidth * scale, windowHeight * scale);
-        } else {
-            contentSize = contentSizeFor(this.windowMode, windowWidth, windowHeight, screenDevice);
-        }
+        this.videoScale = Math.max(1, videoScale);
+        Dimension contentSize = contentSizeFor(this.windowMode,
+                windowWidth * this.videoScale, windowHeight * this.videoScale, screenDevice);
         this.presentationWidth = contentSize.width;
         this.presentationHeight = contentSize.height;
         this.width  = frameWidth;
@@ -341,7 +347,7 @@ public class AmigaDisplay {
             dnd = canvas;
         } else {
             // Software (o fallback se il backend GL non è disponibile): path storico.
-            lbl = new DisplayPanel();
+            lbl = new DisplayPanel(this.videoScale);
             lbl.setPreferredSize(contentSize);
             lbl.setOpaque(true);
             lbl.setBackground(Color.BLACK);
@@ -381,6 +387,14 @@ public class AmigaDisplay {
     /** Componente a cui agganciare i listener di input (canvas GL o frame software). */
     public Component getInputComponent() {
         return inputComponent;
+    }
+
+    /**
+     * Fattore di ingrandimento della finestra emulata, ≥ 1. Serve a chi lavora in pixel
+     * dello schermo e deve tornare a pixel Amiga — il mouse su tutti.
+     */
+    public int getVideoScale() {
+        return videoScale;
     }
 
     /**
@@ -443,8 +457,19 @@ public class AmigaDisplay {
         return n == out.length ? out : java.util.Arrays.copyOf(out, n);
     }
 
+    /**
+     * Il pannello su cui vive la finestra emulata nel path software. È qui — e solo qui —
+     * che avviene l'ingrandimento: il canvas composto arriva alla risoluzione del frame e
+     * viene disegnato ×{@code scale} con NEAREST_NEIGHBOR, centrato, col resto a nero.
+     * Nessun buffer intermedio cresce con lo scaling.
+     */
     private static final class DisplayPanel extends JComponent {
         private volatile BufferedImage image;
+        private final int scale;
+
+        DisplayPanel(int scale) {
+            this.scale = Math.max(1, scale);
+        }
 
         void setDisplayImage(BufferedImage image) {
             this.image = image;
@@ -453,11 +478,47 @@ public class AmigaDisplay {
 
         @Override
         protected void paintComponent(Graphics g) {
+            paintScaled(g);
+        }
+
+        /**
+         * Disegna il canvas corrente ingrandito. Estratto da {@link #paintComponent} perché
+         * lo usa anche l'active rendering dell'overlay di drag, che non passa dal repaint.
+         */
+        void paintScaled(Graphics g) {
             g.setColor(getBackground());
             g.fillRect(0, 0, getWidth(), getHeight());
             BufferedImage current = image;
-            if (current != null) {
-                g.drawImage(current, 0, 0, null);
+            if (current == null) {
+                return;
+            }
+            int dw = current.getWidth() * scale;
+            int dh = current.getHeight() * scale;
+            // Orizzontale: centrato. Se l'immagine è più larga della finestra il taglio è
+            // simmetrico, coerente con la centratura sulla DIW fatta in composizione.
+            int dx = (getWidth() - dw) / 2;
+            // Verticale: centrato finché ci sta, ancorato in ALTO quando non ci sta.
+            // Centrare un'immagine più alta della finestra taglierebbe le prime righe, e
+            // quelle non si toccano: la composizione ancora apposta il quadro alla prima
+            // riga visibile (vedi composeFrameCanvas) perché il contenuto in alto non
+            // venga mai spinto giù né tagliato. Succede per davvero: una finestra decorata
+            // non può superare lo schermo — Windows la limita e nemmeno setSize la forza —
+            // quindi PAL overscan a 2x (1152 px) su un pannello da 1080 finisce qui.
+            int dy = Math.max(0, (getHeight() - dh) / 2);
+            if (scale == 1) {
+                g.drawImage(current, dx, dy, null); // nessuna trasformazione: path storico
+                return;
+            }
+            Graphics2D g2 = (Graphics2D) g;
+            Object old = g2.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
+            // Integer scaling: nearest neighbour, altrimenti Java2D interpolerebbe e i
+            // pixel Amiga sfocherebbero — che è esattamente ciò che l'opzione evita.
+            g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+            g2.drawImage(current, dx, dy, dx + dw, dy + dh,
+                    0, 0, current.getWidth(), current.getHeight(), null);
+            if (old != null) {
+                g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, old);
             }
         }
     }
@@ -703,7 +764,6 @@ public class AmigaDisplay {
     // su quel canvas (3 frame dopo) l'EDT l'ha già disegnato.
     private BufferedImage[] livePool;
     private int livePoolIdx;
-    private BufferedImage presentationScratch;
 
     public void refresh() {
         // In OpenGL la presentazione è sulla GPU: nessuna composizione Swing qui.
@@ -713,11 +773,11 @@ public class AmigaDisplay {
         // Durante il drag l'overlay possiede il label: il render thread non deve
         // sovrascriverne l'icona con il frame live (resta congelato sotto l'overlay).
         if (frame != null && !dragOverlayActive) {
-            if (livePool == null || livePool[0].getWidth() != presentationWidth
-                                 || livePool[0].getHeight() != presentationHeight) {
+            if (livePool == null || livePool[0].getWidth() != windowWidth
+                                 || livePool[0].getHeight() != windowHeight) {
                 livePool = new BufferedImage[3];
                 for (int i = 0; i < livePool.length; i++) {
-                    livePool[i] = new BufferedImage(presentationWidth, presentationHeight,
+                    livePool[i] = new BufferedImage(windowWidth, windowHeight,
                             BufferedImage.TYPE_INT_RGB);
                 }
                 livePoolIdx = 0;
@@ -750,38 +810,18 @@ public class AmigaDisplay {
     }
 
     /**
-     * Compone l'immagine corrente, centrata sull'area DIW, dentro il canvas dato
-     * (delle dimensioni fisse del JFrame). Il canvas viene prima azzerato a nero
-     * perché può essere riusato dal pool e contenere il frame precedente.
+     * Compone l'immagine corrente, centrata sull'area DIW, dentro il canvas dato — che è
+     * sempre delle dimensioni del frame nativo, in OGNI modalità finestra. Il canvas viene
+     * prima azzerato a nero perché può essere riusato dal pool e contenere il frame
+     * precedente.
+     *
+     * <p>Qui non si ingrandisce e non si centra nella finestra: l'integer scaling e la
+     * centratura (con i bordi neri del fullscreen) sono l'ultimo blit, in
+     * {@link DisplayPanel#paintScaled}. Tenere la composizione alla risoluzione del frame
+     * è ciò che impedisce al traffico di memoria per fotogramma di crescere con lo
+     * scaling o con la risoluzione dello schermo.
      */
     private void composeFrameCanvas(BufferedImage canvas) {
-        if (canvas.getWidth() != windowWidth || canvas.getHeight() != windowHeight) {
-            if (presentationScratch == null
-                    || presentationScratch.getWidth() != windowWidth
-                    || presentationScratch.getHeight() != windowHeight) {
-                presentationScratch = new BufferedImage(windowWidth, windowHeight,
-                        BufferedImage.TYPE_INT_RGB);
-            }
-            composeWindowCanvas(presentationScratch);
-            Graphics2D g = canvas.createGraphics();
-            g.setColor(Color.BLACK);
-            g.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
-            int x = (canvas.getWidth() - windowWidth) / 2;
-            int y = (canvas.getHeight() - windowHeight) / 2;
-            g.drawImage(presentationScratch, x, y, null);
-            g.dispose();
-            return;
-        }
-        composeWindowCanvas(canvas);
-    }
-
-    private void composeWindowCanvas(BufferedImage canvas) {
-        // windowWidth/windowHeight coincidono col frame nativo: nessun ridimensionamento
-        // qui (la magnificazione integer e' a carico di sun.java2d.uiScale).
-        composeLogicalFrameCanvas(canvas);
-    }
-
-    private void composeLogicalFrameCanvas(BufferedImage canvas) {
         synchronized (imageLock) {
             Graphics2D g = canvas.createGraphics();
 
@@ -1117,7 +1157,7 @@ public class AmigaDisplay {
      * Compone un nuovo canvas (allocato) per screenshot/dump (path non hot).
      */
     private BufferedImage buildFrameCanvas() {
-        BufferedImage canvas = new BufferedImage(presentationWidth, presentationHeight,
+        BufferedImage canvas = new BufferedImage(windowWidth, windowHeight,
                 BufferedImage.TYPE_INT_RGB);
         composeFrameCanvas(canvas);
         return canvas;
@@ -1330,17 +1370,17 @@ public class AmigaDisplay {
         }
         BufferedImage fg = cache[hoverQuadrant + 1];
 
-        BufferedImage canvas = new BufferedImage(presentationWidth, presentationHeight,
+        BufferedImage canvas = new BufferedImage(windowWidth, windowHeight,
                 BufferedImage.TYPE_INT_RGB);
         Graphics2D g = canvas.createGraphics();
-        g.drawImage(bg, 0, 0, presentationWidth, presentationHeight, null);
+        g.drawImage(bg, 0, 0, windowWidth, windowHeight, null);
         g.drawImage(fg, 0, 0, null);
         g.dispose();
 
         if (glSurface != null) {
             // OpenGL: l'overlay statico viene disegnato dalla GPU a tutta finestra.
             int[] px = ((DataBufferInt) canvas.getRaster().getDataBuffer()).getData();
-            glSurface.setDragOverlay(px, presentationWidth, presentationHeight);
+            glSurface.setDragOverlay(px, windowWidth, windowHeight);
         } else {
             setOverlayIcon(canvas);
         }
@@ -1371,10 +1411,10 @@ public class AmigaDisplay {
     private void warmupDragPaintPath(BufferedImage[] cache) {
         try {
             BufferedImage grey = toGreyscale(buildFrameCanvas());
-            BufferedImage canvas = new BufferedImage(presentationWidth, presentationHeight,
+            BufferedImage canvas = new BufferedImage(windowWidth, windowHeight,
                     BufferedImage.TYPE_INT_RGB);
             Graphics2D g = canvas.createGraphics();
-            g.drawImage(grey, 0, 0, presentationWidth, presentationHeight, null);
+            g.drawImage(grey, 0, 0, windowWidth, windowHeight, null);
             g.drawImage(cache[0], 0, 0, null);
             g.dispose();
             canvas.getWidth(); // mantiene esplicito il warmup best-effort del canvas
@@ -1412,7 +1452,7 @@ public class AmigaDisplay {
 
     /** Renderizza il foreground completo (velo + griglia + 4 quadranti) per uno stato di hover. */
     private BufferedImage renderOverlayForeground(int hover) {
-        BufferedImage img = new BufferedImage(presentationWidth, presentationHeight,
+        BufferedImage img = new BufferedImage(windowWidth, windowHeight,
                 BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = img.createGraphics();
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
@@ -1420,13 +1460,13 @@ public class AmigaDisplay {
         g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
 
         g.setColor(DIM_VEIL);
-        g.fillRect(0, 0, presentationWidth, presentationHeight);
+        g.fillRect(0, 0, windowWidth, windowHeight);
 
-        int halfW = presentationWidth / 2, halfH = presentationHeight / 2;
+        int halfW = windowWidth / 2, halfH = windowHeight / 2;
         g.setColor(GRID_LINE);
         g.setStroke(new BasicStroke(1f));
-        g.drawLine(halfW, 0, halfW, presentationHeight);
-        g.drawLine(0, halfH, presentationWidth, halfH);
+        g.drawLine(halfW, 0, halfW, windowHeight);
+        g.drawLine(0, halfH, windowWidth, halfH);
 
         for (int i = 0; i < 4; i++) {
             int col = i % 2, row = i / 2;
@@ -1560,7 +1600,9 @@ public class AmigaDisplay {
         Graphics g = label.getGraphics();
         if (g != null) {
             try {
-                g.drawImage(canvas, 0, 0, null);
+                // Stesso blit di paintComponent (ingrandimento + centratura): disegnare
+                // qui a 1:1 lascerebbe scoperta la finestra con integer scaling > 1.
+                label.paintScaled(g);
             } finally {
                 g.dispose();
             }

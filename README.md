@@ -94,8 +94,9 @@ xattr -dr com.apple.quarantine AmiJa.app
 ## Requirements
 
 To run the **jar** (rather than one of the archives above) you need a **JDK 26**
-or newer. That is all: LWJGL is the only external dependency and it ships inside
-the jar, natives included, for Windows, Linux and macOS (x64 and ARM64).
+or newer. That is all: the only external dependencies are LWJGL (OpenGL backend)
+and FlatLaf (the look and feel), and both ship inside the jar, natives included,
+for Windows, Linux and macOS (x64 and ARM64).
 
 And a reasonably fast CPU. Accuracy is not free: AmiJa simulates every one of
 the 7.09 million bus cycles a second, one at a time, rather than taking the
@@ -215,8 +216,8 @@ version 3 or (at your option) any later version** — see [LICENSE](LICENSE).
 You may use, study, modify and redistribute it; any distributed derivative
 work must in turn be released under the same license, with its source code.
 
-Third-party components bundled with the emulator (LWJGL, the shader packs, the
-`virtualhd.device` boot ROM) keep their own licenses: see
+Third-party components bundled with the emulator (LWJGL, FlatLaf, the shader
+packs, the `virtualhd.device` boot ROM) keep their own licenses: see
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 AmiJa is an independent reimplementation and is not affiliated with, nor

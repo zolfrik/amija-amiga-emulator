@@ -109,7 +109,9 @@ if (-not (Test-Path $Jar)) { throw "Manca $Jar." }
 # piu' due che jdeps NON puo' vedere perche' arrivano via ServiceLoader:
 #   jdk.crypto.ec  handshake TLS ECDHE dell'assistente di download (AssetInstaller)
 #   jdk.zipfs      accesso ad archivi via FileSystems (rete di sicurezza, pochi KB)
-$Modules = 'java.base,java.desktop,java.net.http,jdk.unsupported,jdk.crypto.ec,jdk.zipfs'
+# java.logging e' entrato con FlatLaf (2026-08-06), che usa java.util.logging: senza,
+# il Look and Feel non si carica affatto. Rilanciare jdeps se cambiano le dipendenze.
+$Modules = 'java.base,java.desktop,java.logging,java.net.http,jdk.unsupported,jdk.crypto.ec,jdk.zipfs'
 $Jre = Join-Path $Root 'target\jre'
 if (Test-Path $Jre) { Remove-Item -Recurse -Force $Jre }
 Write-Host "-- jlink ($Modules)"

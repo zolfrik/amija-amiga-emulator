@@ -20,6 +20,11 @@
 
 package io.github.zolfrik.amija.display;
 
+import static io.github.zolfrik.amija.display.UiScaling.derive;
+import static io.github.zolfrik.amija.display.UiScaling.dim;
+import static io.github.zolfrik.amija.display.UiScaling.pad;
+import static io.github.zolfrik.amija.display.UiScaling.px;
+
 import io.github.zolfrik.amija.assets.AssetCatalog;
 import io.github.zolfrik.amija.assets.AssetInstaller;
 import io.github.zolfrik.amija.assets.AssetPackage;
@@ -88,7 +93,7 @@ public final class AssetDownloadDialog {
         JPanel header = new JPanel();
         header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
         header.setBackground(BG);
-        header.setBorder(BorderFactory.createEmptyBorder(12, 14, 0, 14));
+        header.setBorder(pad(12, 14, 0, 14));
         header.add(wrapped(Messages.t("assets.intro"), FG, 460));
         header.add(Box.createVerticalStrut(6));
         header.add(wrapped(Messages.t("assets.intro.legal"), DIM, 460));
@@ -98,7 +103,7 @@ public final class AssetDownloadDialog {
         JPanel list = new JPanel();
         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
         list.setBackground(BG);
-        list.setBorder(BorderFactory.createEmptyBorder(10, 14, 10, 14));
+        list.setBorder(pad(10, 14, 10, 14));
 
         Map<AssetPackage, JCheckBox> boxes = new LinkedHashMap<>();
         Map<AssetPackage, JLabel> states = new LinkedHashMap<>();
@@ -108,11 +113,11 @@ public final class AssetDownloadDialog {
             card.setBackground(PANEL_BG);
             card.setAlignmentX(Component.LEFT_ALIGNMENT);
             TitledBorder tb = BorderFactory.createTitledBorder(
-                    BorderFactory.createLineBorder(new Color(0x45, 0x49, 0x50)), pkg.displayName());
+                    BorderFactory.createLineBorder(new Color(0x45, 0x49, 0x50), px(1)), pkg.displayName());
             tb.setTitleColor(ACCENT);
-            tb.setTitleFont(card.getFont().deriveFont(Font.BOLD, 13f));
+            tb.setTitleFont(derive(card.getFont(), Font.BOLD, 13f));
             card.setBorder(BorderFactory.createCompoundBorder(tb,
-                    BorderFactory.createEmptyBorder(6, 10, 8, 10)));
+                    pad(6, 10, 8, 10)));
 
             JCheckBox box = new JCheckBox(pkg.description());
             box.setBackground(PANEL_BG);
@@ -141,14 +146,14 @@ public final class AssetDownloadDialog {
         scroll.getViewport().setBackground(BG);
         scroll.setBorder(null);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
-        scroll.setPreferredSize(new Dimension(520, 340));
+        scroll.setPreferredSize(dim(520, 340));
         dialog.add(scroll, BorderLayout.CENTER);
 
         // --- Avanzamento e comandi. -----------------------------------------
         JPanel south = new JPanel();
         south.setLayout(new BoxLayout(south, BoxLayout.Y_AXIS));
         south.setBackground(BG);
-        south.setBorder(BorderFactory.createEmptyBorder(0, 14, 12, 14));
+        south.setBorder(pad(0, 14, 12, 14));
 
         JProgressBar bar = new JProgressBar(0, 1000);
         bar.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -322,7 +327,7 @@ public final class AssetDownloadDialog {
     private static JLabel small(String text, Color color) {
         JLabel l = new JLabel(text);
         l.setForeground(color);
-        l.setFont(l.getFont().deriveFont(Font.PLAIN, 11f));
+        l.setFont(derive(l.getFont(), Font.PLAIN, 11f));
         l.setAlignmentX(Component.LEFT_ALIGNMENT);
         return l;
     }

@@ -146,7 +146,8 @@ CONTENTS
                performs the cold restart for you (the alternative is to press
                the Restart button).
     RELAUNCH   needs the whole application to restart. AmiJa relaunches itself
-               automatically; only the integer scaling factor is in this class.
+               automatically; only the interface scale is in this class,
+               because the look and feel reads it once at start-up.
     BOOT       read when the machine is built, so it applies at the next
                Restart (or at the next launch).
 
@@ -157,6 +158,10 @@ CONTENTS
   ---------------------------------------------------------------------------
   3.2   SYSTEM
   ---------------------------------------------------------------------------
+
+  The last two entries of this section - Language and Interface scale - live in
+  a box of their own at the bottom of the popup, labelled "GUI": they are the
+  settings that describe AmiJa itself rather than the machine it emulates.
 
   +-------------------------------------------------------------------------+
   |  Kickstart (.rom):                                        kickstart.path |
@@ -200,6 +205,32 @@ CONTENTS
      the Kickstart and from Workbench.
      Values . . . . . English -> en, Italiano -> it
      Applies . . . . . BOOT
+
+  +-------------------------------------------------------------------------+
+  |  Interface scale:                                              ui.scale  |
+  +-------------------------------------------------------------------------+
+     Size of AmiJa's own windows - this popup, the dialogs, the file browser.
+     1 is the native size, 1.5 makes everything half as big again, 2 doubles
+     it. Useful on a high-resolution screen, where a native-size popup can be
+     uncomfortably small.
+
+     Unlike "Integer scaling" (3.6) this one accepts fractional values: the
+     interface is not an emulated picture, so a soft edge in a dialog costs
+     nothing. Text does not blur either - the font is redrawn at the larger
+     size, not stretched.
+
+     It never touches the emulated window, which keeps the size set by the
+     integer scaling factor. The two settings are completely independent.
+
+     AmiJa reads this once, when it starts, so changing it relaunches the
+     application. It does not read the scale factor of your desktop: if you
+     want a bigger interface, ask for it here.
+
+     The popup will not grow past the screen: if the chosen scale would make it
+     taller than the desktop, it stops there and its content scrolls.
+     Values . . . . . 1, 1.25, 1.5, 1.75, 2, 2.5, 3 (shown as a percentage in
+                      the popup; any value from 1 to 4 is accepted in the file)
+     Applies . . . . . RELAUNCH
 
   +-------------------------------------------------------------------------+
   |  Video mode:                                                 video.mode  |
@@ -394,14 +425,21 @@ CONTENTS
   +-------------------------------------------------------------------------+
   |  Integer scaling:                                video.integerScaling    |
   +-------------------------------------------------------------------------+
-     Whole-number magnification of the picture and of the interface: 1 is the
-     native size, 2 doubles it, 3 triples it. Integer factors keep pixels
-     square and identical, which is why there is no 1.5 here.
+     Whole-number magnification of the emulated picture: 1 is the native size,
+     2 doubles it, 3 triples it. Integer factors keep pixels square and
+     identical, which is why there is no 1.5 here - each Amiga pixel becomes an
+     exact block of screen pixels, with no interpolation and nothing blurred.
 
-     This one is special: with the software renderer the factor is handed to
-     Java2D, which fixes it once when the application starts. Changing it makes
-     AmiJa relaunch itself. With OpenGL the GPU does the magnification instead.
-     Values . . . . . 1, 2, 3, ...      Applies . . . RELAUNCH
+     It magnifies the emulated window and nothing else. To make the popup and
+     the other AmiJa windows bigger, use "Interface scale" (3.2) instead; the
+     two are independent and either can be left at 1.
+
+     A window cannot be larger than the screen: Windows will not allow it, and
+     neither will most desktops. PAL with overscan at 2x asks for 1448x1152, so
+     on a 1920x1080 screen it does not fit and the picture ends up cropped at
+     the bottom. If that happens, either turn overscan off (640x512, so 1280x1024
+     at 2x) or go back to 1.
+     Values . . . . . 1, 2, 3, ...      Applies . . . RESTART (automatic on OK)
 
   +-------------------------------------------------------------------------+
   |  [x] Enable overscan                            video.overscan.enabled   |
@@ -664,7 +702,8 @@ CONTENTS
   overlay.framecounter.enabled   file only (4.2)              BOOT
   slowram.kb                     System (3.2)                 BOOT
   ui.language                    System (3.2)                 BOOT
-  video.integerScaling           Audio / Video (3.6)          RELAUNCH
+  ui.scale                       System (3.2)                 RELAUNCH
+  video.integerScaling           Audio / Video (3.6)          RESTART
   video.mode                     System (3.2)                 RESTART
   video.monitor                  Audio / Video (3.6)          RESTART
   video.overscan.enabled         Audio / Video (3.6)          RESTART

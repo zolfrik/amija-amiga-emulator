@@ -20,6 +20,11 @@
 
 package io.github.zolfrik.amija.display;
 
+import static io.github.zolfrik.amija.display.UiScaling.derive;
+import static io.github.zolfrik.amija.display.UiScaling.dim;
+import static io.github.zolfrik.amija.display.UiScaling.pad;
+import static io.github.zolfrik.amija.display.UiScaling.px;
+
 import io.github.zolfrik.amija.assets.AssetCatalog;
 import io.github.zolfrik.amija.assets.AssetPackage;
 import io.github.zolfrik.amija.common.AppHome;
@@ -65,6 +70,8 @@ import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
+import java.awt.GraphicsEnvironment;
+import java.awt.Rectangle;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
@@ -139,7 +146,12 @@ public final class ConfigDialog {
      */
     private static final int TOOLTIP_DISMISS_MS = 8000;
 
-    private static final Dimension DRIVE_TOOL_BUTTON_SIZE = new Dimension(34, 26);
+    // Metodo e non costante: la misura dipende dalla scala dell'interfaccia, che va letta
+    // quando il componente si costruisce, non quando la classe si carica.
+    private static Dimension driveToolButtonSize() {
+        return dim(34, 26);
+    }
+
     private static final Icon LOCK_CLOSED_ICON = new LockIcon(true);
     private static final Icon LOCK_OPEN_ICON = new LockIcon(false);
 
@@ -255,13 +267,13 @@ public final class ConfigDialog {
         // (gestito da Amija: un OK con modalita' diversa forza un cold restart).
         JComboBox<VideoMode> videoModeCombo = new JComboBox<>(VideoMode.values());
         videoModeCombo.setSelectedItem(config.videoMode());
-        videoModeCombo.setMaximumSize(new Dimension(160, 26));
+        videoModeCombo.setMaximumSize(dim(160, 26));
         JLabel videoLabel = addRow(system, 7, "label.videomode", videoModeCombo, null);
 
         // Chipset OCS/ECS: come la modalita' video, il cambio richiede un cold restart.
         JComboBox<Chipset> chipsetCombo = new JComboBox<>(Chipset.values());
         chipsetCombo.setSelectedItem(config.chipset());
-        chipsetCombo.setMaximumSize(new Dimension(160, 26));
+        chipsetCombo.setMaximumSize(dim(160, 26));
         JLabel chipsetLabel = addRow(system, 8, "label.chipset", chipsetCombo, null);
 
         // -------------------------------------------------------------------
@@ -574,7 +586,7 @@ public final class ConfigDialog {
         // Rendering (prima voce): software (Java2D) o OpenGL (LWJGL, predisposto agli shader).
         JComboBox<RendererType> rendererCombo = new JComboBox<>(RendererType.values());
         rendererCombo.setSelectedItem(config.renderer());
-        rendererCombo.setMaximumSize(new Dimension(220, 26));
+        rendererCombo.setMaximumSize(dim(220, 26));
         rendererCombo.setRenderer(new DefaultListCellRenderer() {
             @Override
             public Component getListCellRendererComponent(JList<?> list, Object value,
@@ -597,7 +609,7 @@ public final class ConfigDialog {
             if (shaderCombo.getItemAt(i).equals(curShader)) { shaderPresent = true; break; }
         }
         shaderCombo.setSelectedItem(shaderPresent ? curShader : "none");
-        shaderCombo.setMaximumSize(new Dimension(220, 26));
+        shaderCombo.setMaximumSize(dim(220, 26));
         shaderCombo.setRenderer(new DefaultListCellRenderer() {
             @Override
             public Component getListCellRendererComponent(JList<?> list, Object value,
@@ -646,7 +658,7 @@ public final class ConfigDialog {
 
         JComboBox<AmigaWindowMode> windowModeCombo = new JComboBox<>(AmigaWindowMode.values());
         windowModeCombo.setSelectedItem(config.windowMode());
-        windowModeCombo.setMaximumSize(new Dimension(220, 26));
+        windowModeCombo.setMaximumSize(dim(220, 26));
         windowModeCombo.setRenderer(new DefaultListCellRenderer() {
             @Override
             public Component getListCellRendererComponent(JList<?> list, Object value,
@@ -671,12 +683,12 @@ public final class ConfigDialog {
         JComboBox<Integer> monitorCombo =
                 new JComboBox<>(monitorItems.toArray(new Integer[0]));
         monitorCombo.setSelectedItem(selectedMonitor);
-        monitorCombo.setMaximumSize(new Dimension(220, 26));
+        monitorCombo.setMaximumSize(dim(220, 26));
         addRow(av, 3, "label.monitor", monitorCombo, null);
 
         JSpinner scalingSpinner = new JSpinner(
                 new SpinnerNumberModel(config.integerScaling(), 1, null, 1));
-        scalingSpinner.setPreferredSize(new Dimension(56, 26));
+        scalingSpinner.setPreferredSize(dim(56, 26));
         JPanel scalingWrap = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
         scalingWrap.setOpaque(false);
         scalingWrap.add(scalingSpinner);
@@ -692,7 +704,7 @@ public final class ConfigDialog {
 
         JSpinner soundSpinner = new JSpinner(
                 new SpinnerNumberModel(config.floppySoundVolume(), 0, 10, 1));
-        soundSpinner.setPreferredSize(new Dimension(56, 26));
+        soundSpinner.setPreferredSize(dim(56, 26));
         JPanel soundWrap = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
         soundWrap.setOpaque(false);
         soundWrap.add(soundSpinner);
@@ -707,8 +719,37 @@ public final class ConfigDialog {
 
         JComboBox<String> langCombo = new JComboBox<>(new String[]{ "English", "Italiano" });
         langCombo.setSelectedIndex("it".equalsIgnoreCase(config.language()) ? 1 : 0);
-        langCombo.setMaximumSize(new Dimension(160, 26));
+        langCombo.setMaximumSize(dim(160, 26));
         addRow(gui, 0, "label.language", langCombo, null);
+
+        // Scala della sola interfaccia. Frazionaria: al contrario dell'integer scaling
+        // della finestra emulata, qui un'interpolazione non toglie niente a nessuno.
+        // Mostrata in percentuale perché è la forma in cui Windows presenta la stessa
+        // idea nelle impostazioni schermo; sul file resta un numero (1, 1.25, ...).
+        // Un valore scritto a mano fuori dalla lista viene aggiunto invece che perso.
+        java.util.List<Double> scaleItems = new java.util.ArrayList<>(
+                java.util.List.of(1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0));
+        double currentUiScale = config.uiScale();
+        if (!scaleItems.contains(currentUiScale)) {
+            scaleItems.add(currentUiScale);
+            java.util.Collections.sort(scaleItems);
+        }
+        JComboBox<Double> uiScaleCombo =
+                new JComboBox<>(scaleItems.toArray(new Double[0]));
+        uiScaleCombo.setSelectedItem(currentUiScale);
+        uiScaleCombo.setMaximumSize(dim(160, 26));
+        uiScaleCombo.setRenderer(new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value,
+                    int index, boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value instanceof Double d) {
+                    setText(Math.round(d * 100) + "%");
+                }
+                return this;
+            }
+        });
+        addRow(gui, 1, "label.uiScale", uiScaleCombo, null);
 
         // -------------------------------------------------------------------
         // Sezione: Stato salvato (lo slot unico, con la sua foto e la sua data)
@@ -721,7 +762,7 @@ public final class ConfigDialog {
         JPanel content = new JPanel();
         content.setBackground(BG);
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
-        content.setBorder(BorderFactory.createEmptyBorder(14, 16, 14, 16));
+        content.setBorder(pad(14, 16, 14, 16));
         content.add(header());
         content.add(Box.createVerticalStrut(10));
         content.add(system);
@@ -754,7 +795,7 @@ public final class ConfigDialog {
         scroll.getVerticalScrollBar().setUnitIncrement(16);
         // Dimensione visibile dell'area scorrevole: se il contenuto è più alto,
         // compare la barra di scorrimento verticale.
-        scroll.setPreferredSize(new Dimension(580, 460));
+        scroll.setPreferredSize(dim(580, 460));
 
         // -------------------------------------------------------------------
         // Barra dei pulsanti
@@ -827,6 +868,7 @@ public final class ConfigDialog {
             config.setJoystickKeyMap(1, joyKeyMaps[1]);
             config.setLanguage(langCombo.getSelectedIndex() == 1 ? "it" : "en");
             config.setIntegerScaling((Integer) scalingSpinner.getValue());
+            config.setUiScale((Double) uiScaleCombo.getSelectedItem());
         };
 
         softReset.addActionListener(e -> {
@@ -850,7 +892,7 @@ public final class ConfigDialog {
 
         JPanel buttons = new JPanel(new BorderLayout());
         buttons.setBackground(PANEL_BG);
-        buttons.setBorder(BorderFactory.createEmptyBorder(10, 16, 10, 16));
+        buttons.setBorder(pad(10, 16, 10, 16));
 
         JPanel left = new JPanel();
         left.setOpaque(false);
@@ -884,12 +926,38 @@ public final class ConfigDialog {
                 JComponent.WHEN_IN_FOCUSED_WINDOW);
 
         dialog.pack();
-        dialog.setMinimumSize(new Dimension(560, 320));
+        dialog.setMinimumSize(dim(560, 320));
+        fitToScreen(dialog);
         dialog.setLocationRelativeTo(parent);
         prepareDialogFocus(dialog, ok);
         dialog.setVisible(true); // bloccante (modale)
 
         return result[0];
+    }
+
+    /**
+     * Riduce il popup a quel che ci sta sullo schermo, se dopo il {@code pack()} eccede.
+     *
+     * <p>Il contenuto è già dentro un riquadro scorrevole, quindi rimpicciolire non
+     * nasconde nulla: si scorre. Senza questo, i pulsanti in fondo — OK, Annulla, Riavvia —
+     * finiscono fuori dallo schermo e il popup diventa inutilizzabile, perché non è
+     * ridimensionabile e i pulsanti sono l'unico modo di confermare.
+     *
+     * <p>Non è un problema nuovo della scala dell'interfaccia: esisteva già, e bastava un
+     * integer scaling alto su uno schermo piccolo per incontrarlo. La scala frazionaria lo
+     * rende solo più facile da raggiungere.
+     *
+     * <p>Si usa l'<em>area di lavoro</em> e non i bordi dello schermo, così il popup non
+     * finisce sotto la barra delle applicazioni.
+     */
+    private static void fitToScreen(JDialog dialog) {
+        Rectangle usable = GraphicsEnvironment.getLocalGraphicsEnvironment()
+                .getMaximumWindowBounds();
+        int w = Math.min(dialog.getWidth(), usable.width - px(20));
+        int h = Math.min(dialog.getHeight(), usable.height - px(20));
+        if (w < dialog.getWidth() || h < dialog.getHeight()) {
+            dialog.setSize(w, h);
+        }
     }
 
     private static void prepareDialogFocus(JDialog dialog, Component initialFocus) {
@@ -941,12 +1009,12 @@ public final class ConfigDialog {
 
         JLabel title = new JLabel(Messages.t("header.title"));
         title.setForeground(FG);
-        title.setFont(title.getFont().deriveFont(Font.BOLD, 18f));
+        title.setFont(derive(title.getFont(), Font.BOLD, 18f));
         title.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         JLabel sub = new JLabel(Messages.t("header.subtitle"));
         sub.setForeground(new Color(0xA8, 0xAC, 0xB3));
-        sub.setFont(sub.getFont().deriveFont(Font.PLAIN, 11f));
+        sub.setFont(derive(sub.getFont(), Font.PLAIN, 11f));
         sub.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         p.add(title);
@@ -1048,14 +1116,14 @@ public final class ConfigDialog {
         GridBagConstraints gc = new GridBagConstraints();
         gc.gridx = 0;
         gc.gridy = 0;
-        gc.insets = new Insets(2, 4, 2, 10);
+        gc.insets = new Insets(px(2), px(4), px(2), px(10));
         gc.anchor = GridBagConstraints.NORTHWEST;
         panel.add(preview, gc);
 
         gc.gridx = 1;
         gc.weightx = 1;
         gc.fill = GridBagConstraints.BOTH;
-        gc.insets = new Insets(2, 0, 2, 4);
+        gc.insets = new Insets(px(2), px(0), px(2), px(4));
         panel.add(side, gc);
         return panel;
     }
@@ -1113,7 +1181,7 @@ public final class ConfigDialog {
         private String emptyText = "";
 
         StatePreview() {
-            Dimension size = new Dimension(W, H);
+            Dimension size = dim(W, H);
             setPreferredSize(size);
             setMinimumSize(size);
             setMaximumSize(size);
@@ -1151,7 +1219,7 @@ public final class ConfigDialog {
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
                             RenderingHints.VALUE_ANTIALIAS_ON);
                     g2.setColor(new Color(0x6E, 0x73, 0x7B));
-                    g2.setFont(getFont().deriveFont(Font.PLAIN, 11f));
+                    g2.setFont(derive(getFont(), Font.PLAIN, 11f));
                     java.awt.FontMetrics fm = g2.getFontMetrics();
                     g2.drawString(emptyText, (w - fm.stringWidth(emptyText)) / 2,
                             (h + fm.getAscent() - fm.getDescent()) / 2);
@@ -1170,16 +1238,16 @@ public final class ConfigDialog {
         p.setBackground(PANEL_BG);
         p.setAlignmentX(Component.LEFT_ALIGNMENT);
         TitledBorder tb = BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(0x45, 0x49, 0x50)), title);
+                BorderFactory.createLineBorder(new Color(0x45, 0x49, 0x50), px(1)), title);
         tb.setTitleColor(ACCENT);
-        tb.setTitleFont(p.getFont().deriveFont(Font.BOLD, 13f));
+        tb.setTitleFont(derive(p.getFont(), Font.BOLD, 13f));
         // Lo spazio fra una sezione e la successiva è un margine della sezione, non uno
         // strut nel BoxLayout: così una sezione nascosta si porta via anche il proprio
         // spazio, invece di lasciare un buco (la modalità Auto nasconde tre sezioni).
         p.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createEmptyBorder(0, 0, 12, 0),
+                pad(0, 0, 12, 0),
                 BorderFactory.createCompoundBorder(tb,
-                        BorderFactory.createEmptyBorder(8, 10, 10, 10))));
+                        pad(8, 10, 10, 10))));
         return p;
     }
 
@@ -1279,7 +1347,7 @@ public final class ConfigDialog {
     private static void addRow(JPanel panel, int row, JComponent lead, JComponent field, JComponent trailing) {
         GridBagConstraints gc = new GridBagConstraints();
         gc.gridy = row;
-        gc.insets = new Insets(4, 4, 4, 4);
+        gc.insets = new Insets(px(4), px(4), px(4), px(4));
         gc.anchor = GridBagConstraints.WEST;
 
         gc.gridx = 0;
@@ -1309,8 +1377,8 @@ public final class ConfigDialog {
         tf.setForeground(FG);
         tf.setCaretColor(FG);
         tf.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(0x45, 0x49, 0x50)),
-                BorderFactory.createEmptyBorder(3, 5, 3, 5)));
+                BorderFactory.createLineBorder(new Color(0x45, 0x49, 0x50), px(1)),
+                pad(3, 5, 3, 5)));
         return tf;
     }
 
@@ -1344,10 +1412,11 @@ public final class ConfigDialog {
     }
 
     private static void styleDriveToolButton(javax.swing.AbstractButton b) {
-        b.setMargin(new Insets(2, 4, 2, 4));
-        b.setPreferredSize(DRIVE_TOOL_BUTTON_SIZE);
-        b.setMinimumSize(DRIVE_TOOL_BUTTON_SIZE);
-        b.setMaximumSize(DRIVE_TOOL_BUTTON_SIZE);
+        b.setMargin(new Insets(px(2), px(4), px(2), px(4)));
+        Dimension size = driveToolButtonSize();
+        b.setPreferredSize(size);
+        b.setMinimumSize(size);
+        b.setMaximumSize(size);
     }
 
     private static JCheckBox check(String text, boolean selected) {
@@ -1361,7 +1430,7 @@ public final class ConfigDialog {
     private static JComboBox<PortDevice> deviceCombo(PortDevice current) {
         JComboBox<PortDevice> combo = new JComboBox<>(PortDevice.values());
         combo.setSelectedItem(current);
-        combo.setMaximumSize(new Dimension(200, 26));
+        combo.setMaximumSize(dim(200, 26));
         combo.setRenderer(new DefaultListCellRenderer() {
             @Override
             public Component getListCellRendererComponent(JList<?> list, Object value,
@@ -1400,7 +1469,7 @@ public final class ConfigDialog {
     private static JComboBox<Integer> kbCombo(Integer[] options, int current) {
         JComboBox<Integer> combo = new JComboBox<>(ensureContains(options, current));
         combo.setSelectedItem(current);
-        combo.setMaximumSize(new Dimension(160, 26));
+        combo.setMaximumSize(dim(160, 26));
         combo.setRenderer(new DefaultListCellRenderer() {
             @Override
             public Component getListCellRendererComponent(JList<?> list, Object value,

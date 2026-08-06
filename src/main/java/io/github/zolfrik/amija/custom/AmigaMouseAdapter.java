@@ -58,6 +58,19 @@ import java.awt.image.BufferedImage;
  * <p>La cattura si rilascia con il <b>tasto centrale</b> (o quando la finestra
  * perde il focus, per non intrappolare il puntatore durante un alt-tab).
  *
+ * <h3>Integer scaling: i delta host vanno divisi</h3>
+ *
+ * <p>Gli eventi AWT arrivano in pixel dello schermo, e con l'integer scaling la finestra
+ * emulata è ingrandita ×N: un pixel Amiga ne occupa N. Consegnare il delta host così
+ * com'è renderebbe il puntatore emulato N volte più veloce del mouse fisico, e la
+ * sensibilità cambierebbe cambiando lo zoom — che non è quel che l'utente chiede
+ * scegliendo uno zoom. I delta si dividono quindi per {@code videoScale}.
+ *
+ * <p>La divisione <b>tiene il resto</b> ({@link #moveScaled}). Troncando e basta, a N=3
+ * un movimento lento da 1-2 pixel per evento darebbe sempre 0 e il puntatore emulato non
+ * si muoverebbe affatto: il mouse risulterebbe rotto proprio nei movimenti di precisione.
+ * Accumulando, N eventi da 1 pixel producono il pixel Amiga che gli spetta.
+ *
  * <h3>Mappatura pulsanti (in modalità catturata)</h3>
  * <pre>
  *   Sinistro → pulsante sinistro Amiga (CIA-A bit 6, active-LOW)
@@ -92,13 +105,29 @@ public class AmigaMouseAdapter extends MouseAdapter {
     // --- Stato modalità catturata (delta rispetto al centro, coordinate schermo) ---
     private int centerX, centerY;
 
+    /** Fattore di integer scaling della finestra emulata ({@code video.integerScaling}), ≥ 1. */
+    private final int videoScale;
+    // Resto della divisione per videoScale, in pixel host non ancora consegnati alla
+    // porta. Senza, i movimenti più corti di videoScale andrebbero persi (vedi classdoc).
+    private int remainderX, remainderY;
+
     // Il click sinistro che attiva la cattura viene consumato (non inoltrato): questo
     // flag fa scartare il relativo rilascio per non generare un release spurio.
     private boolean swallowNextLeftRelease = false;
 
+    /** Adapter senza integer scaling (finestra a dimensione nativa). */
     public AmigaMouseAdapter(GamePort port, JFrame frame) {
+        this(port, frame, 1);
+    }
+
+    /**
+     * @param videoScale fattore di ingrandimento della finestra emulata; i delta host
+     *                   vengono divisi per questo prima di raggiungere la porta
+     */
+    public AmigaMouseAdapter(GamePort port, JFrame frame, int videoScale) {
         this.port = port;
         this.frame = frame;
+        this.videoScale = Math.max(1, videoScale);
 
         Robot r = null;
         try {
@@ -196,6 +225,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
     private void capture() {
         if (!enabled || robot == null || frame == null || captured) return;
         captured = true;
+        resetRemainder();
         setCursor(blankCursor);
         recenter();
     }
@@ -208,6 +238,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
         // Reset dello stato della modalità libera così il primo movimento successivo
         // non produce un delta gigante.
         lastX = lastY = Integer.MIN_VALUE;
+        resetRemainder();
     }
 
     private void setCursor(Cursor c) {
@@ -239,6 +270,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
         insideFrame = true;
         lastX = e.getX();
         lastY = e.getY();
+        resetRemainder();
     }
 
     @Override
@@ -254,6 +286,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
         insideFrame = false;
         lastX = Integer.MIN_VALUE;
         lastY = Integer.MIN_VALUE;
+        resetRemainder();
     }
 
     // -------------------------------------------------------------------------
@@ -283,12 +316,14 @@ public class AmigaMouseAdapter extends MouseAdapter {
     private void handleMoveCaptured(MouseEvent e) {
         int dx = e.getXOnScreen() - centerX;
         int dy = e.getYOnScreen() - centerY;
-        if (dx != 0 || dy != 0) {
-            port.moveMouse(dx, dy);
-            // Riporta il puntatore al centro: l'evento di ricentraggio cade esattamente
-            // sul centro (dx=dy=0) e viene quindi naturalmente ignorato.
-            recenter();
-        }
+        if (dx == 0 && dy == 0) return;
+        moveScaled(dx, dy);
+        // Riporta il puntatore al centro: l'evento di ricentraggio cade esattamente
+        // sul centro (dx=dy=0) e viene quindi naturalmente ignorato.
+        // Va fatto a ogni movimento HOST, anche quando la divisione per videoScale non
+        // ha ancora prodotto un pixel Amiga: altrimenti il puntatore si allontanerebbe
+        // dal centro fino a uscire dalla finestra, perdendo la cattura.
+        recenter();
     }
 
     /** Modalità libera: delta tra eventi consecutivi, solo se dentro al frame. */
@@ -300,13 +335,42 @@ public class AmigaMouseAdapter extends MouseAdapter {
             int dx = x - lastX;
             int dy = y - lastY;
             if (dx != 0 || dy != 0) {
-                // Con sun.java2d.uiScale i delta del mouse arrivano gia' in coordinate
-                // logiche (native), quindi nessuna conversione di scala e' necessaria.
-                port.moveMouse(dx, dy);
+                moveScaled(dx, dy);
             }
         }
         lastX = x;
         lastY = y;
+    }
+
+    /**
+     * Converte un delta in pixel host nel delta in pixel Amiga e lo consegna alla porta.
+     *
+     * <p>La divisione per {@code videoScale} tiene il resto in {@link #remainderX}/
+     * {@link #remainderY}, così nessuno spostamento va perduto: N eventi da un pixel
+     * host valgono un pixel Amiga, invece di essere troncati a zero uno per uno.
+     * La divisione intera di Java tronca verso lo zero, quindi il segno del resto segue
+     * quello del movimento e non si accumula deriva cambiando direzione.
+     */
+    private void moveScaled(int dxHost, int dyHost) {
+        if (videoScale == 1) {
+            port.moveMouse(dxHost, dyHost);   // path storico, nessun resto da tenere
+            return;
+        }
+        remainderX += dxHost;
+        remainderY += dyHost;
+        int dx = remainderX / videoScale;
+        int dy = remainderY / videoScale;
+        remainderX -= dx * videoScale;
+        remainderY -= dy * videoScale;
+        if (dx != 0 || dy != 0) {
+            port.moveMouse(dx, dy);
+        }
+    }
+
+    /** Azzera il resto accumulato: un nuovo gesto non eredita quello del precedente. */
+    private void resetRemainder() {
+        remainderX = 0;
+        remainderY = 0;
     }
 
     // -------------------------------------------------------------------------

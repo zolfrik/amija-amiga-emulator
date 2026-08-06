@@ -20,6 +20,8 @@
 
 package io.github.zolfrik.amija;
 
+import com.formdev.flatlaf.FlatDarkLaf;
+
 import io.github.zolfrik.amija.config.AmigaConfig;
 import io.github.zolfrik.amija.display.AmigaWindowMode;
 import io.github.zolfrik.amija.common.AppHome;
@@ -136,36 +138,75 @@ public class Amija {
         // rilette alla DPI reale e i font dell'intero Look and Feel si ingrandiscono.
         // Sotto java.exe (manifest dpiAware=true/PM) e' un no-op.
         WindowsDpiAwareness.ensurePerMonitorAware();
-        // L'integer scaling video e' demandato a Java2D tramite sun.java2d.uiScale:
-        // il valore viene da video.integerScaling in amiga.properties e va impostato
-        // QUI, prima che il toolkit AWT/Swing si inizializzi (la prima init avviene in
-        // applyWindowsLookAndFeel). Il cambio del valore nel popup F12 richiede quindi
-        // il riavvio dell'emulatore per avere effetto.
-        // Con renderer=opengl la magnificazione la fa la GPU: uiScale va forzata a 1,
-        // altrimenti Java2D scalerebbe anche il canvas GL (finestra sovradimensionata).
-        System.setProperty("sun.java2d.uiScale", Integer.toString(effectiveUiScale(AmigaConfig.load())));
-        applyWindowsLookAndFeel();
+        // Lo scaling HiDPI di Java2D e' spento SEMPRE, e va spento QUI, prima che il
+        // toolkit AWT/Swing si inizializzi (la prima init avviene in
+        // applyWindowsLookAndFeel): il toolkit lo fissa una volta sola all'avvio.
+        //
+        // Da qui in poi 1 pixel Java = 1 pixel fisico, e le due scale sono indipendenti:
+        //  - la finestra emulata la ingrandisce AmiJa, di un fattore INTERO
+        //    (video.integerScaling), in AmigaDisplay/DisplayPanel per il renderer software
+        //    e sulla GPU per quello OpenGL;
+        //  - l'interfaccia la ingrandisce il Look and Feel, di un fattore anche
+        //    frazionario, senza toccare la finestra emulata.
+        // Lasciando decidere Java, invece, un desktop al 150% scalerebbe TUTTO per 1,5 —
+        // finestra emulata compresa, con interpolazione: l'opposto dell'integer scaling.
+        // Le due property insieme non sono ridondanti: la prima e' quella che disattiva
+        // lo scaling di sistema, la seconda e' la cintura di sicurezza.
+        // Vedi docs/gui-scaling-flatlaf-plan.md.
+        System.setProperty("sun.java2d.uiScale.enabled", "false");
+        System.setProperty("sun.java2d.uiScale", "1");
+        applyUiScale(AmigaConfig.load());
+        applyLookAndFeel();
         new Amija().start();
     }
 
     /**
-     * Fattore {@code sun.java2d.uiScale} effettivo: {@code video.integerScaling} col
-     * renderer software, ma sempre 1 con OpenGL (lo scaling è a carico della GPU).
+     * Passa a FlatLaf il fattore di scala dell'interfaccia ({@code ui.scale}). Va fatto
+     * PRIMA di installare il Look and Feel: {@code flatlaf.uiScale} viene letta all'init
+     * di {@code UIScale}, cioe' una volta sola, e non e' modificabile a caldo — per
+     * questo il cambio nel popup F12 rilancia il processo.
+     *
+     * <p><b>La property si imposta sempre, anche quando vale 1.</b> Non e' ridondanza:
+     * con lo scaling di sistema spento (le due righe qui sopra) FlatLaf, in assenza di un
+     * valore esplicito, dedurrebbe il fattore dalla dimensione del font di sistema. Su
+     * questa macchina quel font e' 12 anche con il desktop al 150%, quindi dedurrebbe 1 e
+     * andrebbe bene per caso; ma sotto il launcher jpackage esiste uno stato noto in cui
+     * AWT rilegge i font alla DPI reale e quel 12 diventa 18 (vedi WindowsDpiAwareness),
+     * e li' la deduzione darebbe 1,5. Un valore esplicito rende il comportamento
+     * indipendente da quale font AWT abbia fotografato, e da quando.
      */
-    private static int effectiveUiScale(AmigaConfig cfg) {
-        return effectiveUiScale(cfg.renderer(), cfg.integerScaling());
+    private static void applyUiScale(AmigaConfig cfg) {
+        System.setProperty("flatlaf.uiScale", cfg.uiScaleValue());
     }
 
-    private static int effectiveUiScale(RendererType renderer, int integerScaling) {
-        return renderer == RendererType.OPENGL ? 1 : integerScaling;
-    }
-
-    /** Applica il Look and Feel nativo di Windows all'intera interfaccia Swing. */
-    private static void applyWindowsLookAndFeel() {
+    /**
+     * Installa FlatLaf (tema scuro) sull'intera interfaccia Swing.
+     *
+     * <p>Scuro perche' i dialoghi di AmiJa dipingono gia' a mano la propria palette scura
+     * (ConfigDialog, JoystickKeysDialog, AssetDownloadDialog, ShaderParamsDialog): con il
+     * Look and Feel di sistema restavano chiari solo i componenti che disegnava lui —
+     * combo, spinner, checkbox, scrollbar, tooltip, JOptionPane — dentro finestre scure.
+     *
+     * <p>Ma la ragione per cui la scelta e' FlatLaf e non un tema qualunque e' il suo
+     * <em>user scaling</em>: scala l'interfaccia di un fattore anche frazionario
+     * indipendentemente dallo scaling HiDPI di Java, che qui e' spento perche' la finestra
+     * emulata deve ricevere pixel fisici esatti. Vedi {@link #applyUiScale}.
+     *
+     * <p>Se per qualsiasi motivo non si installasse, si ripiega sul Look and Feel di
+     * sistema: l'interfaccia resta usabile, solo non scalata.
+     */
+    private static void applyLookAndFeel() {
+        try {
+            UIManager.setLookAndFeel(new FlatDarkLaf());
+            return;
+        } catch (UnsupportedLookAndFeelException e) {
+            System.err.println("[UI] FlatLaf non disponibile, ripiego sul Look and Feel "
+                    + "di sistema (l'interfaccia non sara' scalata): " + e.getMessage());
+        }
         try {
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
         } catch (ReflectiveOperationException | UnsupportedLookAndFeelException e) {
-            System.err.println("[UI] Look and Feel Windows non disponibile: " + e.getMessage());
+            System.err.println("[UI] Look and Feel di sistema non disponibile: " + e.getMessage());
         }
     }
 
@@ -262,6 +303,9 @@ public class Amija {
         }
         boolean oldOverscan = config.overscanEnabled();
         int oldIntegerScaling = config.integerScaling();
+        // Scala dell'interfaccia: e' l'unica impostazione rimasta che richiede di
+        // rilanciare il processo, perche' flatlaf.uiScale si legge all'init del LAF.
+        String oldUiScale = config.uiScaleValue();
         AmigaWindowMode oldWindowMode = config.windowMode();
         int oldMonitorIndex = config.monitorIndex();
         VideoMode oldVideoMode = config.videoMode();
@@ -287,6 +331,9 @@ public class Amija {
                 // della macchina richiedono la ricreazione di finestra e componenti,
                 // quindi un cold restart.
                 saveConfig();
+                if (!oldUiScale.equals(config.uiScaleValue())) {
+                    relaunchApplication(); // non ritorna se il rilancio riesce
+                }
                 applyRuntimeInputConfig();
                 boolean needsColdRestart =
                         displayConfigChanged(oldOverscan, oldIntegerScaling, oldWindowMode,
@@ -299,15 +346,10 @@ public class Amija {
                         || oldSlowRam != config.slowRamKb()
                         || oldFastRam != config.fastRamKb();
                 if (needsColdRestart) {
-                    // Il cambio di renderer può cambiare l'uiScale effettiva (GPU=1 vs
-                    // software=integerScaling): in tal caso rilancio la JVM per
-                    // reimpostarla (il toolkit la fissa una sola volta all'avvio),
-                    // altrimenti basta il cold restart.
-                    if (oldRenderer != config.renderer()
-                            && effectiveUiScale(oldRenderer, oldIntegerScaling)
-                                != effectiveUiScale(config.renderer(), config.integerScaling())) {
-                        relaunchApplication(); // non ritorna se il rilancio riesce
-                    }
+                    // Nessun rilancio della JVM: da quando lo scaling e' applicato da
+                    // AmigaDisplay e non da sun.java2d.uiScale, integer scaling e
+                    // renderer si applicano ricreando finestra e macchina, che resta
+                    // dentro lo stesso processo (piu' rapido).
                     coldRestart();
                     displayRecreated = true;
                 } else {
@@ -327,12 +369,12 @@ public class Amija {
             }
             case RESTART -> {
                 saveConfig();
-                // L'integer scaling e' applicato da sun.java2d.uiScale, fissata dal
-                // toolkit AWT una sola volta all'avvio: per renderlo effettivo serve
-                // un riavvio dell'intero processo, non il solo power-cycle della
-                // macchina. Se e' cambiato, rilancio la JVM; altrimenti basta il cold
-                // restart (piu' veloce, resta nello stesso processo).
-                if (oldIntegerScaling != config.integerScaling()) {
+                // La scala dell'interfaccia e' l'unica impostazione che richiede di
+                // rilanciare il processo: flatlaf.uiScale si legge all'init del Look and
+                // Feel e non e' modificabile a caldo. L'integer scaling invece lo applica
+                // AmigaDisplay alla presentazione, quindi gli basta il cold restart —
+                // stesso processo, molto piu' rapido.
+                if (!oldUiScale.equals(config.uiScaleValue())) {
                     relaunchApplication(); // non ritorna se il rilancio riesce
                 }
                 coldRestart();
@@ -636,11 +678,15 @@ public class Amija {
 
     /**
      * Riavvia l'intero processo JVM (non il solo power-cycle della macchina): rilancia
-     * un nuovo processo java con lo stesso classpath e working dir, poi esce. Serve a
-     * far rileggere {@code sun.java2d.uiScale} (impostata in {@link #main} da
-     * {@code video.integerScaling}), che il toolkit AWT fissa una sola volta all'avvio
-     * e non e' modificabile a caldo. Se il rilancio fallisce non esce: il chiamante
-     * prosegue con un cold restart della sola macchina.
+     * un nuovo processo java con lo stesso classpath e working dir, poi esce. Serve per
+     * le impostazioni che il toolkit fissa una sola volta all'avvio e che non sono
+     * modificabili a caldo. Se il rilancio fallisce non esce: il chiamante prosegue con
+     * un cold restart della sola macchina.
+     *
+     * <p>L'unico cliente e' il cambio di {@code ui.scale}: {@code flatlaf.uiScale} viene
+     * letta all'init del Look and Feel, una volta sola. L'integer scaling della finestra
+     * emulata NON passa piu' di qui — lo applica {@code AmigaDisplay} alla presentazione,
+     * e gli basta ricreare la finestra.
      */
     private void relaunchApplication() {
         try {
@@ -1002,7 +1048,11 @@ public class Amija {
             // sono impostati subito dopo da applyPortAssignments (idem per il joystick reale).
             joystickAdapter = new AmigaJoystickKeyAdapter();
             keyAdapter = new AmigaKeyAdapter(keyboard, frame);
-            mouseAdapter = new AmigaMouseAdapter(port1, frame);
+            // Il fattore di scala viene dal display, non dalla config: è quello davvero
+            // applicato alla finestra (già normalizzato a >= 1). Serve a riportare i
+            // delta del mouse, che arrivano in pixel dello schermo, a pixel Amiga.
+            mouseAdapter = new AmigaMouseAdapter(port1, frame,
+                    display != null ? display.getVideoScale() : 1);
             // I listener vanno sul componente di input (il frame in software, il canvas GL
             // heavyweight in OpenGL: i suoi eventi non risalgono al frame). Gli adapter
             // continuano a ricevere il frame per fuoco/cursore/ricentraggio del mouse.

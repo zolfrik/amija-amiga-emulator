@@ -20,6 +20,11 @@
 
 package io.github.zolfrik.amija.display;
 
+import static io.github.zolfrik.amija.display.UiScaling.derive;
+import static io.github.zolfrik.amija.display.UiScaling.dim;
+import static io.github.zolfrik.amija.display.UiScaling.pad;
+import static io.github.zolfrik.amija.display.UiScaling.px;
+
 import io.github.zolfrik.amija.common.Version;
 import io.github.zolfrik.amija.i18n.Messages;
 
@@ -122,7 +127,7 @@ public final class AboutDialog {
     private static JPanel buildBody(JDialog dialog) {
         JPanel body = new JPanel(new GridBagLayout());
         body.setBackground(BG);
-        body.setBorder(BorderFactory.createEmptyBorder(22, 26, 22, 30));
+        body.setBorder(pad(22, 26, 22, 30));
 
         GridBagConstraints gc = new GridBagConstraints();
         gc.gridy = 0;
@@ -131,12 +136,12 @@ public final class AboutDialog {
         Image logo = logoImage(LOGO_SIZE);
         if (logo != null) {
             gc.gridx = 0;
-            gc.insets = new Insets(0, 0, 0, 24);
+            gc.insets = new Insets(px(0), px(0), px(0), px(24));
             body.add(new JLabel(new ImageIcon(logo)), gc);
         }
 
         gc.gridx = 1;
-        gc.insets = new Insets(0, 0, 0, 0);
+        gc.insets = new Insets(px(0), px(0), px(0), px(0));
         gc.anchor = GridBagConstraints.WEST;
         body.add(buildTextColumn(dialog), gc);
         return body;
@@ -150,12 +155,12 @@ public final class AboutDialog {
 
         JLabel version = new JLabel(Messages.t("about.version", Version.version()));
         version.setForeground(FG);
-        version.setFont(version.getFont().deriveFont(Font.BOLD, 18f));
+        version.setFont(derive(version.getFont(), Font.BOLD, 18f));
         version.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         JLabel author = new JLabel(Messages.t("about.author"));
         author.setForeground(SUBFG);
-        author.setFont(author.getFont().deriveFont(Font.PLAIN, 13f));
+        author.setFont(derive(author.getFont(), Font.PLAIN, 13f));
         author.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         JLabel link = buildLink(dialog);
@@ -178,7 +183,7 @@ public final class AboutDialog {
         // ricavarla dal font significherebbe derivarlo con gli attributi di TextAttribute.
         JLabel link = new JLabel("<html><u>" + REPOSITORY_URL + "</u></html>");
         link.setForeground(ACCENT);
-        link.setFont(link.getFont().deriveFont(Font.PLAIN, 13f));
+        link.setFont(derive(link.getFont(), Font.PLAIN, 13f));
         link.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         link.setToolTipText(Messages.t("about.link.tip"));
         link.addMouseListener(new MouseAdapter() {
@@ -213,7 +218,7 @@ public final class AboutDialog {
         bar.setBackground(PANEL_BG);
         bar.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, BORDER),
-                BorderFactory.createEmptyBorder(12, 16, 12, 16)));
+                pad(12, 16, 12, 16)));
         bar.add(ok);
 
         dialog.getRootPane().setDefaultButton(ok);

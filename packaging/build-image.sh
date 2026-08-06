@@ -101,7 +101,9 @@ JAR="$ROOT/target/AmiJa.jar"
 # piu' due che jdeps NON puo' vedere perche' arrivano via ServiceLoader:
 #   jdk.crypto.ec  handshake TLS ECDHE dell'assistente di download (AssetInstaller)
 #   jdk.zipfs      accesso ad archivi via FileSystems (rete di sicurezza, pochi KB)
-MODULES="java.base,java.desktop,java.net.http,jdk.unsupported,jdk.crypto.ec,jdk.zipfs"
+# java.logging e' entrato con FlatLaf (2026-08-06), che usa java.util.logging: senza,
+# il Look and Feel non si carica affatto. Rilanciare jdeps se cambiano le dipendenze.
+MODULES="java.base,java.desktop,java.logging,java.net.http,jdk.unsupported,jdk.crypto.ec,jdk.zipfs"
 JRE="$ROOT/target/jre"
 rm -rf "$JRE"
 echo "-- jlink ($MODULES)"

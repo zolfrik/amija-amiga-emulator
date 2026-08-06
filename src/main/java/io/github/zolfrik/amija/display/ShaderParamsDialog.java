@@ -20,6 +20,11 @@
 
 package io.github.zolfrik.amija.display;
 
+import static io.github.zolfrik.amija.display.UiScaling.derive;
+import static io.github.zolfrik.amija.display.UiScaling.dim;
+import static io.github.zolfrik.amija.display.UiScaling.pad;
+import static io.github.zolfrik.amija.display.UiScaling.px;
+
 import io.github.zolfrik.amija.display.render.gl.ShaderParams;
 import io.github.zolfrik.amija.i18n.Messages;
 
@@ -102,7 +107,7 @@ public final class ShaderParamsDialog {
 
         JPanel content = new JPanel(new GridBagLayout());
         content.setBackground(BG);
-        content.setBorder(BorderFactory.createEmptyBorder(12, 16, 12, 16));
+        content.setBorder(pad(12, 16, 12, 16));
 
         // Un controllo (slider + valore) per parametro; l'aggiornamento delle etichette
         // viene registrato per il "Reset predefiniti".
@@ -118,7 +123,7 @@ public final class ShaderParamsDialog {
         scroll.getViewport().setBackground(BG);
         scroll.setBorder(null);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
-        scroll.setPreferredSize(new Dimension(600, 520));
+        scroll.setPreferredSize(dim(600, 520));
 
         // Intestazione.
         JPanel headerAndBody = new JPanel(new BorderLayout());
@@ -126,14 +131,14 @@ public final class ShaderParamsDialog {
         JPanel header = new JPanel();
         header.setOpaque(false);
         header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
-        header.setBorder(BorderFactory.createEmptyBorder(12, 16, 4, 16));
+        header.setBorder(pad(12, 16, 4, 16));
         JLabel title = new JLabel(glslp.getFileName().toString());
         title.setForeground(FG);
-        title.setFont(title.getFont().deriveFont(Font.BOLD, 16f));
+        title.setFont(derive(title.getFont(), Font.BOLD, 16f));
         title.setAlignmentX(Component.LEFT_ALIGNMENT);
         JLabel sub = new JLabel(Messages.t("shaderParams.subtitle"));
         sub.setForeground(SUBFG);
-        sub.setFont(sub.getFont().deriveFont(Font.PLAIN, 11f));
+        sub.setFont(derive(sub.getFont(), Font.PLAIN, 11f));
         sub.setAlignmentX(Component.LEFT_ALIGNMENT);
         header.add(title);
         header.add(Box.createVerticalStrut(2));
@@ -158,7 +163,7 @@ public final class ShaderParamsDialog {
 
         JPanel buttons = new JPanel(new BorderLayout());
         buttons.setBackground(PANEL_BG);
-        buttons.setBorder(BorderFactory.createEmptyBorder(10, 16, 10, 16));
+        buttons.setBorder(pad(10, 16, 10, 16));
         JPanel left = new JPanel();
         left.setOpaque(false);
         left.add(reset);
@@ -180,7 +185,7 @@ public final class ShaderParamsDialog {
                 JComponent.WHEN_IN_FOCUSED_WINDOW);
 
         dialog.pack();
-        dialog.setMinimumSize(new Dimension(560, 360));
+        dialog.setMinimumSize(dim(560, 360));
         dialog.setLocationRelativeTo(parent);
         dialog.setVisible(true);
     }
@@ -197,12 +202,12 @@ public final class ShaderParamsDialog {
 
         JLabel valueLabel = new JLabel();
         valueLabel.setForeground(ACCENT);
-        valueLabel.setPreferredSize(new Dimension(58, 20));
+        valueLabel.setPreferredSize(dim(58, 20));
         valueLabel.setHorizontalAlignment(JLabel.RIGHT);
 
         JSlider slider = new JSlider(0, steps, sliderPos(p, values.get(p.name()), steps));
         slider.setOpaque(false);
-        slider.setPreferredSize(new Dimension(280, 22));
+        slider.setPreferredSize(dim(280, 22));
 
         final int fSteps = steps;
         slider.addChangeListener(e -> {
@@ -218,7 +223,7 @@ public final class ShaderParamsDialog {
 
         GridBagConstraints gc = new GridBagConstraints();
         gc.gridy = row;
-        gc.insets = new Insets(3, 4, 3, 8);
+        gc.insets = new Insets(px(3), px(4), px(3), px(8));
         gc.anchor = GridBagConstraints.WEST;
         gc.gridx = 0;
         gc.weightx = 1;

@@ -41,6 +41,15 @@
              NOTA tastiera: il fix del doppio-shift usa la Foreign Function API
              (WindowsKeyState), indipendente da LWJGL/GLFW. -->
         <lwjgl.version>3.3.5</lwjgl.version>
+        <!-- FlatLaf: Look and Feel della GUI (popup F12, dialoghi, chooser). Serve per il
+             suo *user scaling*, che scala l'interfaccia di un fattore anche frazionario
+             indipendentemente dallo scaling HiDPI di Java — spento a monte, perché la
+             finestra emulata la ingrandisce AmiJa di un fattore intero suo.
+             Il jar (926 kB) porta dentro le native di tutte e sette le combinazioni
+             OS/arch, quindi copre da solo ogni target di release: nessun classifier.
+             Apache-2.0, compatibile in ingresso con GPL-3.0-or-later; motivata in
+             THIRD-PARTY-NOTICES.md. -->
+        <flatlaf.version>3.6</flatlaf.version>
     </properties>
     <dependencyManagement>
         <dependencies>
@@ -53,8 +62,9 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
-    <!-- LWJGL è l'UNICA dipendenza esterna: il core dell'emulatore usa solo JDK +
-         Swing. -->
+    <!-- Due sole dipendenze esterne, entrambe confinate al layer di presentazione:
+         LWJGL (backend OpenGL) e FlatLaf (Look and Feel della GUI). Il core
+         dell'emulatore usa solo JDK + Swing. -->
     <dependencies>
         <!-- LWJGL (core + GLFW + OpenGL) — backend grafico -->
         <dependency>
@@ -203,6 +213,12 @@
                     <artifactId>lwjgl-vulkan</artifactId>
                 </exclusion>
             </exclusions>
+        </dependency>
+        <!-- FlatLaf: vedi la nota su flatlaf.version fra le properties. -->
+        <dependency>
+            <groupId>com.formdev</groupId>
+            <artifactId>flatlaf</artifactId>
+            <version>${flatlaf.version}</version>
         </dependency>
     </dependencies>
     <build>

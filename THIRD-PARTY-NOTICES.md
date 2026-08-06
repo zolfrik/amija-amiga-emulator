@@ -10,18 +10,35 @@ not change their terms.
 
 ## 1. Java dependencies (`pom.xml`)
 
-LWJGL is the only external dependency: the emulator core uses nothing but the
-JDK and Swing.
+There are two external dependencies, both confined to the presentation layer:
+LWJGL for the OpenGL backend and FlatLaf for the look and feel. The emulator core
+uses nothing but the JDK and Swing.
 
 | Component | Version | Licence | Used for |
 |---|---|---|---|
 | LWJGL — `lwjgl`, `lwjgl-glfw`, `lwjgl-opengl`, `lwjgl-jawt` | 3.3.5 | BSD-3-Clause | OpenGL shader backend, real joysticks |
 | LWJGL natives — `natives-{windows,linux,macos}` and `-arm64` variants | 3.3.5 | BSD-3-Clause | all bundled in the jar, so it stays portable |
 | `org.lwjglx:lwjgl3-awt` | 0.2.3 | MIT | `AWTGLCanvas` (GL context inside the Swing window) |
+| `com.formdev:flatlaf` | 3.6 | Apache-2.0 | look and feel of the GUI, and its user scaling (the `ui.scale` setting) |
 
-Both licences are permissive and GPL-3.0 compatible: they ask for the copyright
-notice to be preserved, which this document and the `META-INF/` entries LWJGL
-carries inside the jar together satisfy.
+All three licences are permissive and GPL-3.0 compatible — Apache-2.0 is
+compatible in this direction only, that is, Apache-2.0 code may be combined into
+a GPLv3 work but not the reverse. They ask for the copyright notice to be
+preserved, which this document and the `META-INF/` entries carried inside the jar
+together satisfy.
+
+One detail about the shaded jar: FlatLaf and `lwjgl3-awt` both ship a
+`META-INF/LICENSE`, and `maven-shade-plugin` keeps only one of the two (it warns
+about the clash at build time). That is why **this document, not the jar, is the
+authoritative record**: the Apache-2.0 text is at
+<https://www.apache.org/licenses/LICENSE-2.0>, and FlatLaf's own copy travels with
+its source at <https://github.com/JFormDesigner/FlatLaf>.
+
+The FlatLaf jar carries native libraries of its own — `flatlaf-windows-{x86,
+x86_64,arm64}.dll`, `libflatlaf-linux-{x86_64,arm64}.so`,
+`libflatlaf-macos-{x86_64,arm64}.dylib` — under the same Apache-2.0 licence.
+Having all seven inside a single artifact is why no per-platform classifier is
+needed for it.
 
 ---
 

@@ -67,9 +67,14 @@ import javax.swing.filechooser.FileView;
  * {@code ShellFolder.sort} usa {@code compareToIgnoreCase} cablato per i file che non
  * sono ShellFolder, e il sort del modello non è sovrascrivibile senza rimpiazzare la UI
  * del chooser. Su una collezione ordinata per titolo la differenza non si vede. La barra
- * dei collegamenti (Desktop, Documenti, Questo PC, Rete) resta: la si conserva forzando
- * {@code FileChooser.useShellFolder}, che è la condizione con cui la UI di Windows decide
- * se crearla.
+ * dei collegamenti (Desktop, Documenti, Questo PC, Rete) resta — vedi la nota su
+ * {@code FileChooser.useShellFolder} in {@link #acquire()}.
+ *
+ * <p><b>Sotto FlatLaf.</b> Il guadagno non dipende dal Look and Feel: sta nel
+ * {@code walkFileTree} dello {@link Scanner}, non nella UI. Misurato il 2026-08-06 sulla
+ * stessa cartella da 28.416 file — apertura <b>364 ms col LAF di Windows, 402 ms con
+ * FlatLaf</b>, contro i 2,5 s di prima del fix. La costruzione del chooser è anzi più
+ * rapida sotto FlatLaf (621 ms contro 795), perché non interroga la shell.
  */
 final class FastFileChooser {
 
@@ -87,8 +92,13 @@ final class FastFileChooser {
         if (instance == null) {
             instance = new JFileChooser(new Scanner());
             instance.setFileView(new FlatView());
-            // La UI di Windows crea la barra dei collegamenti solo se questo è vero;
-            // di suo sarebbe falso, perché il FileSystemView non è quello di sistema.
+            // Sotto FlatLaf, il Look and Feel in uso, la barra dei collegamenti c'è
+            // comunque: questa riga non serve a guadagnarsela. Serve invece se si torna
+            // al Look and Feel di sistema (il ripiego di Amija.applyLookAndFeel), dove la
+            // UI di Windows la crea SOLO se questo è vero — di suo sarebbe falso, perché
+            // il FileSystemView non è quello di sistema. Misurato il 2026-08-06:
+            //   Windows LAF: useShellFolder=false -> barra assente, true -> presente
+            //   FlatLaf:     presente in entrambi i casi
             instance.putClientProperty("FileChooser.useShellFolder", Boolean.TRUE);
         }
         // Stato identico a quello di un chooser nuovo: il filtro corrente torna

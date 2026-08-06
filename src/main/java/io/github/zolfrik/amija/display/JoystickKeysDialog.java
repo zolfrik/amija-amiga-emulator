@@ -20,6 +20,11 @@
 
 package io.github.zolfrik.amija.display;
 
+import static io.github.zolfrik.amija.display.UiScaling.derive;
+import static io.github.zolfrik.amija.display.UiScaling.dim;
+import static io.github.zolfrik.amija.display.UiScaling.pad;
+import static io.github.zolfrik.amija.display.UiScaling.px;
+
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.JoystickAction;
 import io.github.zolfrik.amija.input.JoystickKeyMap;
@@ -79,7 +84,11 @@ public final class JoystickKeysDialog {
     private static final Color ACCENT   = new Color(0x4D, 0x9D, 0xE0);
     private static final Color BORDER   = new Color(0x45, 0x49, 0x50);
 
-    private static final Dimension KEY_BUTTON_SIZE = new Dimension(190, 30);
+    // Metodo e non costante: la misura dipende dalla scala dell'interfaccia, che va letta
+    // quando il componente si costruisce, non quando la classe si carica.
+    private static Dimension keyButtonSize() {
+        return dim(190, 30);
+    }
 
     private JoystickKeysDialog() { }
 
@@ -115,6 +124,7 @@ public final class JoystickKeysDialog {
         private KeyEventDispatcher captureDispatcher;
         /** Aspetto del pulsante prima dell'evidenziazione, da ripristinare a fine cattura. */
         private Color savedBackground;
+        private Color savedForeground;
         private Border savedBorder;
         private Font savedFont;
 
@@ -178,20 +188,20 @@ public final class JoystickKeysDialog {
             JPanel header = new JPanel();
             header.setOpaque(false);
             header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
-            header.setBorder(BorderFactory.createEmptyBorder(14, 18, 6, 18));
+            header.setBorder(pad(14, 18, 6, 18));
 
             JLabel title = new JLabel(Messages.t("joykeys.header", portIndex));
             title.setForeground(FG);
-            title.setFont(title.getFont().deriveFont(Font.BOLD, 15f));
+            title.setFont(derive(title.getFont(), Font.BOLD, 15f));
             title.setAlignmentX(Component.LEFT_ALIGNMENT);
 
             JLabel sub = new JLabel(Messages.t("joykeys.subtitle"));
             sub.setForeground(SUBFG);
-            sub.setFont(sub.getFont().deriveFont(Font.PLAIN, 11f));
+            sub.setFont(derive(sub.getFont(), Font.PLAIN, 11f));
             sub.setAlignmentX(Component.LEFT_ALIGNMENT);
 
             hint.setForeground(ACCENT);
-            hint.setFont(hint.getFont().deriveFont(Font.PLAIN, 11f));
+            hint.setFont(derive(hint.getFont(), Font.PLAIN, 11f));
             hint.setAlignmentX(Component.LEFT_ALIGNMENT);
             // Al momento del pack la riga di stato contiene il messaggio di cattura più
             // lungo: così il popup nasce già abbastanza largo da contenerli tutti e il
@@ -210,23 +220,26 @@ public final class JoystickKeysDialog {
             JPanel panel = new JPanel(new GridBagLayout());
             panel.setBackground(PANEL_BG);
             panel.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createEmptyBorder(6, 18, 12, 18),
+                    pad(6, 18, 12, 18),
                     BorderFactory.createCompoundBorder(
-                            BorderFactory.createLineBorder(BORDER),
-                            BorderFactory.createEmptyBorder(10, 12, 10, 12))));
+                            BorderFactory.createLineBorder(BORDER, px(1)),
+                            pad(10, 12, 10, 12))));
 
             int row = 0;
             for (JoystickAction action : JoystickAction.values()) {
                 JLabel label = new JLabel(Messages.t(action.messageKey()));
                 label.setForeground(FG);
 
-                // Il testo è nero: lo sfondo del pulsante lo disegna il look and feel
-                // (chiaro), quindi un colore chiaro renderebbe il tasto illeggibile.
+                // Il colore del testo lo sceglie il look and feel, perché è lui a
+                // disegnare lo sfondo del pulsante: con FlatLaf (scuro) è chiaro, col
+                // look and feel di sistema è scuro. Forzarlo nero, come si faceva quando
+                // il look and feel era per forza quello di Windows, renderebbe il tasto
+                // illeggibile sul tema scuro. Durante la cattura invece lo sfondo lo
+                // imponiamo noi, e lì serve un colore esplicito: vedi startCapture.
                 JButton keyButton = new JButton();
                 keyButton.setFocusPainted(false);
-                keyButton.setForeground(Color.BLACK);
-                keyButton.setPreferredSize(KEY_BUTTON_SIZE);
-                keyButton.setMinimumSize(KEY_BUTTON_SIZE);
+                keyButton.setPreferredSize(keyButtonSize());
+                keyButton.setMinimumSize(keyButtonSize());
                 keyButton.setToolTipText(Messages.t("joykeys.button.tooltip"));
                 keyButton.addActionListener(e -> startCapture(action));
                 keyButtons.put(action, keyButton);
@@ -234,7 +247,7 @@ public final class JoystickKeysDialog {
 
                 GridBagConstraints gc = new GridBagConstraints();
                 gc.gridy = row++;
-                gc.insets = new Insets(4, 4, 4, 4);
+                gc.insets = new Insets(px(4), px(4), px(4), px(4));
                 gc.anchor = GridBagConstraints.WEST;
                 gc.gridx = 0;
                 gc.weightx = 1;
@@ -257,7 +270,7 @@ public final class JoystickKeysDialog {
 
             JPanel bar = new JPanel(new BorderLayout());
             bar.setBackground(PANEL_BG);
-            bar.setBorder(BorderFactory.createEmptyBorder(10, 16, 10, 16));
+            bar.setBorder(pad(10, 16, 10, 16));
             JPanel left = new JPanel();
             left.setOpaque(false);
             left.add(reset);
@@ -289,11 +302,15 @@ public final class JoystickKeysDialog {
             // ogni look and feel rispetta: lo sfondo dei pulsanti alcuni lo disegnano da sé.
             JButton b = keyButtons.get(action);
             savedBackground = b.getBackground();
+            savedForeground = b.getForeground();
             savedBorder     = b.getBorder();
             savedFont       = b.getFont();
             b.setText(Messages.t("joykeys.press"));
             b.setBackground(ACCENT);
-            b.setBorder(BorderFactory.createLineBorder(ACCENT, 2));
+            // Sfondo azzurro imposto da noi: qui il testo va scritto scuro, a
+            // prescindere da quale look and feel sia in uso.
+            b.setForeground(Color.BLACK);
+            b.setBorder(BorderFactory.createLineBorder(ACCENT, px(2)));
             b.setFont(savedFont.deriveFont(Font.BOLD));
             hint.setText(Messages.t("joykeys.capturing", Messages.t(action.messageKey())));
 
@@ -327,6 +344,7 @@ public final class JoystickKeysDialog {
                 JButton b = keyButtons.get(action);
                 if (b != null) {
                     b.setBackground(savedBackground);
+                    b.setForeground(savedForeground);
                     b.setBorder(savedBorder);
                     b.setFont(savedFont);
                 }
