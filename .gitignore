@@ -9,13 +9,15 @@ target/
 # privo di /version.properties e Version.version() ripiega su "dev".
 
 # --- Materiale NON ridistribuibile, fornito dall'utente -------------------
-# Vedi THIRD-PARTY-NOTICES.md §4. Queste cartelle esistono nel repository
-# solo come segnaposto con dentro un readme.txt: il contenuto reale non deve
-# MAI essere committato.
-floppysounds/*
-!floppysounds/readme.txt
+# Vedi THIRD-PARTY-NOTICES.md §4. Questa cartella esiste nel repository solo
+# come segnaposto con dentro un readme.txt: il contenuto reale non deve MAI
+# essere committato.
 whdload/*
 !whdload/readme.txt
+
+# NB: floppysounds/ NON è più qui. Dal 2026-08-07 i campioni del drive sono
+# materiale del progetto (sintetizzati, non registrati — vedi
+# THIRD-PARTY-NOTICES.md §3 e floppysounds/readme.txt) e vanno versionati.
 
 # ROM Kickstart, immagini disco, archivi WHDLoad — mai nel repository.
 *.rom

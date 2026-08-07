@@ -66,10 +66,10 @@ public final class FloppySound {
 
     /**
      * Cartella dei campioni WAV, relativa alla home dell'applicazione (la stessa in cui
-     * si trova {@code amiga.properties}). I file NON sono dentro il jar: sono materiale
-     * di terze parti che il progetto non può ridistribuire (vedi THIRD-PARTY-NOTICES.md),
-     * quindi vanno forniti dall'utente. Se la cartella manca o è vuota la feature
-     * resta semplicemente inerte, come con {@code floppy.sound.volume=0}.
+     * si trova {@code amiga.properties}). I file stanno lì e non dentro il jar, così
+     * l'utente può sostituirli con i propri tenendo i nomi. Se la cartella manca o è
+     * vuota la feature resta semplicemente inerte, come con
+     * {@code floppy.sound.volume=0}.
      */
     private static final Path SAMPLE_DIR = AppHome.resolve("floppysounds");
 

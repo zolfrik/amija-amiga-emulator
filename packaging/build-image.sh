@@ -180,16 +180,16 @@ else
     LAUNCHER="$PKG/bin/AmiJa"
 fi
 
-echo "-- copia di shaders/, blurs/, segnaposto e documenti"
-cp -R "$ROOT/shaders" "$PKG/"
-cp -R "$ROOT/blurs"   "$PKG/"
-# Di floppysounds/ e whdload/ va SOLO il readme.txt: se un giorno contenessero i file
-# veri (materiale di terze parti non ridistribuibile) l'archivio continuerebbe a non
-# spedirli. Stessa cautela di src/assembly/dist.xml.
-for d in floppysounds whdload; do
-    mkdir -p "$PKG/$d"
-    cp "$ROOT/$d/readme.txt" "$PKG/$d/"
-done
+echo "-- copia di shaders/, blurs/, floppysounds/, segnaposto e documenti"
+cp -R "$ROOT/shaders"       "$PKG/"
+cp -R "$ROOT/blurs"         "$PKG/"
+# floppysounds/ va per intero: i campioni sono materiale del progetto.
+cp -R "$ROOT/floppysounds"  "$PKG/"
+# Di whdload/ va SOLO il readme.txt: se un giorno contenesse i file veri (materiale
+# di terze parti non ridistribuibile) l'archivio continuerebbe a non spedirli.
+# Stessa cautela di src/assembly/dist.xml.
+mkdir -p "$PKG/whdload"
+cp "$ROOT/whdload/readme.txt" "$PKG/whdload/"
 for f in LICENSE README.md THIRD-PARTY-NOTICES.md USER_MANUAL.txt; do
     cp "$ROOT/$f" "$PKG/"
 done

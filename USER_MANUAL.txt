@@ -121,13 +121,15 @@ CONTENTS
     savestate/           state1.a5s (the single save-state slot) and
                          state1.png (a thumbnail of the saved screen).
     whdload-saves/       persistent WHDSaves: volume for WHDLoad games.
+    floppysounds/        the drive samples behind the mechanical noise. Ships
+                         filled; replace them with your own if you like, or
+                         empty the folder to silence the drives.
 
-  Two more folders hold material AmiJa is not allowed to ship, so they arrive
-  empty and the features that read them stay quietly switched off until you
-  fill them. The "Optional files" section of the popup (3.11) downloads both
-  for you from their official sites:
+  One more folder holds material AmiJa is not allowed to ship, so it arrives
+  empty and the features that read it stay quietly switched off until you fill
+  it. The "Optional files" section of the popup (3.11) downloads it for you
+  from its official site:
 
-    floppysounds/        the drive samples behind the mechanical noise.
     whdload/             the WHDLoad system files, in WHDLoad_files/, plus the
                          relocation tables (.RTB) some installs need.
 
@@ -844,6 +846,8 @@ CONTENTS
      Volume of the mechanical drive sounds - the seek clicks, the motor, the
      insertion clunk. 0 is silence, 1 is the quietest audible level, and each
      step adds about 6 dB up to 10. It does not affect the Amiga's own audio.
+     The samples themselves live in floppysounds/ and can be replaced with
+     your own - see the readme.txt in that folder.
      Values . . . . . 0 to 10           Applies . . . LIVE
 
   ---------------------------------------------------------------------------
@@ -851,13 +855,11 @@ CONTENTS
   ---------------------------------------------------------------------------
 
   +-------------------------------------------------------------------------+
-  |  Drive sounds, WHDLoad, relocation tables      [ Download... ]           |
+  |  WHDLoad, relocation tables                    [ Download... ]           |
   +-------------------------------------------------------------------------+
-     Three packages AmiJa is not allowed to redistribute, and an assistant that
+     Two packages AmiJa is not allowed to redistribute, and an assistant that
      fetches them for you:
 
-       Drive sounds          the WinUAE samples behind the mechanical noise of
-                             the floppy drives, unpacked into floppysounds/
        WHDLoad               the loader itself, required before any .lha game
                              archive can be started, unpacked into whdload/
        Relocation tables     the .RTB files WHDLoad installs need when they
@@ -1206,8 +1208,8 @@ LICENSE
     Third-party components bundled with the emulator - LWJGL, the RetroArch
     shader packs in shaders/ and blurs/, and the virtualhd.device boot ROM -
     keep their own licenses. THIRD-PARTY-NOTICES.md records each of them,
-    and explains why Kickstart ROMs, disk images, WHDLoad system files and
-    the WinUAE drive sounds are NOT included and must be supplied by you.
+    and explains why Kickstart ROMs, disk images and WHDLoad system files
+    are NOT included and must be supplied by you.
 
     AmiJa is an independent reimplementation. It is not affiliated with, nor
     endorsed by, Commodore, Amiga Corporation, Cloanto or Hyperion.

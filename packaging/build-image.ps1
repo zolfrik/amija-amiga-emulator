@@ -160,16 +160,16 @@ New-Item -ItemType Directory -Path $Pkg -Force | Out-Null
 # dell'archivio: l'utente scompatta e trova subito l'eseguibile.
 Get-ChildItem (Join-Path $Stage 'AmiJa') -Force | Move-Item -Destination $Pkg
 
-Write-Host "-- copia di shaders/, blurs/, segnaposto e documenti"
-Copy-Item (Join-Path $Root 'shaders') $Pkg -Recurse
-Copy-Item (Join-Path $Root 'blurs')   $Pkg -Recurse
-# Di floppysounds/ e whdload/ va SOLO il readme.txt: se un giorno contenessero i
-# file veri (materiale di terze parti non ridistribuibile) l'archivio continuerebbe
-# a non spedirli. Stessa cautela di src/assembly/dist.xml.
-foreach ($d in @('floppysounds', 'whdload')) {
-    New-Item -ItemType Directory -Path (Join-Path $Pkg $d) | Out-Null
-    Copy-Item (Join-Path $Root "$d\readme.txt") (Join-Path $Pkg $d)
-}
+Write-Host "-- copia di shaders/, blurs/, floppysounds/, segnaposto e documenti"
+Copy-Item (Join-Path $Root 'shaders')      $Pkg -Recurse
+Copy-Item (Join-Path $Root 'blurs')        $Pkg -Recurse
+# floppysounds/ va per intero: i campioni sono materiale del progetto.
+Copy-Item (Join-Path $Root 'floppysounds') $Pkg -Recurse
+# Di whdload/ va SOLO il readme.txt: se un giorno contenesse i file veri (materiale
+# di terze parti non ridistribuibile) l'archivio continuerebbe a non spedirli.
+# Stessa cautela di src/assembly/dist.xml.
+New-Item -ItemType Directory -Path (Join-Path $Pkg 'whdload') | Out-Null
+Copy-Item (Join-Path $Root 'whdload\readme.txt') (Join-Path $Pkg 'whdload')
 foreach ($f in @('LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md', 'USER_MANUAL.txt')) {
     Copy-Item (Join-Path $Root $f) $Pkg
 }

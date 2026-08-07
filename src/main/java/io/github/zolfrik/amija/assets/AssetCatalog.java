@@ -39,17 +39,19 @@ import java.util.Locale;
  * <p><b>Mai</b> aggiungere qui ROM Kickstart o immagini disco: restano a carico
  * dell'utente e nessun automatismo può procurarle.
  *
- * <p>Gli SHA-256 sono stati verificati a mano il 2026-08-01 scaricando i tre
+ * <p>Gli SHA-256 sono stati verificati a mano il 2026-08-01 scaricando gli
  * archivi. Sono indicativi: gli URL non sono versionati (puntano sempre all'ultimo
  * rilascio), quindi un aggiornamento a monte li cambierà legittimamente — vedi
  * {@link AssetPackage#sha256()}.
+ *
+ * <p>I campioni audio del drive stavano qui fino al 2026-08-07, quando AmiJa ha
+ * cominciato a portarsi i propri: ora {@code floppysounds/} è pieno all'installazione
+ * e non c'è più niente da scaricare.
  */
 public final class AssetCatalog {
 
     /** Radice delle risorse WHDLoad, la stessa che legge {@code WhdLoadManager}. */
     private static final Path WHDLOAD_FILES = AppHome.resolve("whdload", "WHDLoad_files");
-    /** Cartella dei campioni audio del drive, la stessa che legge {@code FloppySound}. */
-    private static final Path FLOPPY_SOUNDS = AppHome.resolve("floppysounds");
 
     private AssetCatalog() {}
 
@@ -60,29 +62,7 @@ public final class AssetCatalog {
      *               (chiave {@code assets.<id>.url}); può essere {@code null}
      */
     public static List<AssetPackage> packages(AmigaConfig config) {
-        return List.of(floppySounds(config), whdload(config), whdloadRtb(config));
-    }
-
-    // -------------------------------------------------------------------------
-    // I suoni del meccanismo del drive, dal plugin "drive sounds" di WinUAE.
-    // Licenza non dichiarata: non ridistribuibili, ma scaricabili dall'utente.
-    // -------------------------------------------------------------------------
-    private static AssetPackage floppySounds(AmigaConfig config) {
-        final String prefix = "plugins/floppysounds/";
-        return new AssetPackage(
-                "floppysounds",
-                url(config, "floppysounds", "https://download.abime.net/winuae/stuff/drive_sounds.zip"),
-                "2efbe66d090c50f5b58e1248a1cab5c1886c7d203bd2f1d26d1ec382b3ffb088",
-                10_448_349L,
-                "WinUAE drive sounds plugin (Toni Wilen)",
-                AssetPackage.Format.ZIP,
-                FLOPPY_SOUNDS,
-                FLOPPY_SOUNDS.resolve("drive_click_A500.wav"),
-                List.of(prefix + "drive_click_A500.wav"),
-                entry -> {
-                    String leaf = leafUnder(entry, prefix);
-                    return (leaf != null && leaf.toLowerCase(Locale.ROOT).endsWith(".wav")) ? leaf : null;
-                });
+        return List.of(whdload(config), whdloadRtb(config));
     }
 
     // -------------------------------------------------------------------------

@@ -188,7 +188,7 @@ produces two things:
   all the dependencies inside;
 - `target/AmiJa-<version>.zip` — the ready-to-run package: that jar, the
   documents, and the folders AmiJa reads from its home
-  (`shaders/`, `blurs/`, and the `floppysounds/` and `whdload/` placeholders).
+  (`shaders/`, `blurs/`, `floppysounds/`, and the `whdload/` placeholder).
   Unzip it anywhere and run the jar inside; `amiga.properties` is created on the
   first start.
 
@@ -223,14 +223,13 @@ feature simply stays off — no errors. Put it in AmiJa's home folder, next to
 |---|---|---|
 | *(configured)* `auto.kickstart13.path`, `auto.kickstart31.path` | Kickstart ROM images, 256 KB each | AmigaDOS disks, hard disks, WHDLoad — floppy games with a self-loading boot block run on the built-in ROM |
 | *(configured)* `drive.dfN.disk` | `.adf` / `.ipf` disk images | floppies |
-| `floppysounds/` | `drive_click_A500.wav`, `drive_spin_A500.wav`, `drive_startup_A500.wav`, `drive_snatch_A500.wav` — e.g. from a WinUAE installation | drive sounds |
 | `whdload/WHDLoad_files/` | the WHDLoad loader (`C/`, `S/`) from <https://www.whdload.de/>, plus the `.RTB` relocation tables in `Devs/Kickstarts/` for installs that emulate a different Kickstart | running `.lha` WHDLoad archives |
 
-**AmiJa can fetch the last two for you.** Press **F12**, then *Optional files* →
-*Download…*: the assistant downloads the drive sounds, WHDLoad and the `.RTB`
-tables from their official sites and unpacks them where they belong. Nothing is
-ever downloaded without an explicit request, and nothing is redistributed — each
-file travels straight from its rights holder's server to your disk.
+**AmiJa can fetch the last one for you.** Press **F12**, then *Optional files* →
+*Download…*: the assistant downloads WHDLoad and the `.RTB` tables from their
+official sites and unpacks them where they belong. Nothing is ever downloaded
+without an explicit request, and nothing is redistributed — each file travels
+straight from its rights holder's server to your disk.
 
 Kickstart ROMs and disk images are the exception: no automation can procure
 those. ROMs are licensed legally through

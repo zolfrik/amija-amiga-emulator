@@ -66,20 +66,21 @@
             <directoryMode>0755</directoryMode>
         </fileSet>
 
-        <!-- Segnaposto per il materiale che l'utente deve procurarsi da sé: nello
-             zip finisce il solo readme.txt che spiega cosa metterci dentro.
-             L'<includes> esplicito è una rete di sicurezza: se un giorno queste
-             cartelle contenessero i file veri (come nel tree privato), lo zip
-             continuerebbe a non ridistribuirli. -->
+        <!-- Campioni del meccanismo del drive. Vanno per intero, senza <includes>:
+             sono materiale del progetto (sintetizzati, non registrati — vedi
+             THIRD-PARTY-NOTICES.md §3), quindi ridistribuibili come gli shader. -->
         <fileSet>
             <directory>${project.basedir}/floppysounds</directory>
             <outputDirectory>floppysounds</outputDirectory>
-            <includes>
-                <include>readme.txt</include>
-            </includes>
             <fileMode>0644</fileMode>
             <directoryMode>0755</directoryMode>
         </fileSet>
+
+        <!-- Segnaposto per il materiale che l'utente deve procurarsi da sé: nello
+             zip finisce il solo readme.txt che spiega cosa metterci dentro.
+             L'<includes> esplicito è una rete di sicurezza: se un giorno questa
+             cartella contenesse i file veri (come nel tree privato), lo zip
+             continuerebbe a non ridistribuirli. -->
         <fileSet>
             <directory>${project.basedir}/whdload</directory>
             <outputDirectory>whdload</outputDirectory>

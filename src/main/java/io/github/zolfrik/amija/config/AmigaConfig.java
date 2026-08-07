@@ -1252,10 +1252,9 @@ public final class AmigaConfig {
         line(sb, K_LAST_WHDLOAD_DIR, lastWhdloadDirectory());
 
         sb.append("\n# Floppy sound volume: 0 = no sound, 1 = minimum, then upwards. The drive\n");
-        sb.append("# samples are NOT shipped with AmiJa: put the .wav files in a floppysounds\n");
-        sb.append("# folder next to this file (drive_click_A500.wav, drive_spin_A500.wav,\n");
-        sb.append("# drive_startup_A500.wav, drive_snatch_A500.wav). Without them the emulator\n");
-        sb.append("# simply stays silent.\n");
+        sb.append("# samples live in the floppysounds folder next to this file. Replace them\n");
+        sb.append("# with your own if you prefer, keeping the names; if the folder is empty\n");
+        sb.append("# the emulator simply stays silent.\n");
         line(sb, K_SND_VOLUME, Integer.toString(floppySoundVolume()));
 
         sb.append("\n# Power/drive LED panel (true = visible, false = hidden).\n");

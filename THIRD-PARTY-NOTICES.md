@@ -111,20 +111,27 @@ the licence requires:
 The rest of `src/main/resources/` — `icons/`, `messages*.properties`,
 `version.properties` — is project material under GPL-3.0-or-later.
 
+The drive samples in `floppysounds/` are project material too, and are listed
+here only because the obvious assumption would be otherwise: they are not
+recordings of a drive but sound synthesised from a model of one, written for
+this project, and so are covered by AmiJa's own licence. `floppysounds/readme.txt`
+explains how they are made. This is a deliberate replacement for the WinUAE
+"drive sounds" plugin, which carries no declared licence and used to be listed in
+§4 as user-supplied.
+
 ---
 
 ## 4. Not included: files the user supplies
 
 Whatever cannot be redistributed is not in this repository and not under
 `src/main/resources/`, so it never reaches the jar. AmiJa reads these files from
-folders in the working directory, which exist here empty with a single
+folders in the working directory — `whdload/` exists here empty, with a single
 `readme.txt` inside; when they are missing the feature turns itself off silently.
 
 | Path | Origin | Status |
 |---|---|---|
 | Kickstart ROM *(set via `kickstart.path`)* | Commodore, © Cloanto / Amiga Corporation | user-supplied — licensed copies are sold with [Amiga Forever](https://www.amigaforever.com/) |
 | ADF / IPF / HDF disk images | game publishers, proprietary | user-supplied |
-| `floppysounds/*.wav` | WinUAE "drive sounds" plugin | no declared licence — downloadable (§5) |
 | `whdload/WHDLoad_files/C`, `S` | WHDLoad, © 1995–2026 Bert Jahn | closed-source freeware — downloadable (§5) |
 | `whdload/WHDLoad_files/Devs/Kickstarts/*.RTB` | SoftKick, © SinSoft / Pavel Troller | redistributable only as an intact archive — downloadable (§5) |
 | `whdload/WHDLoad_files/Devs/Kickstarts/kick*` | ROM dumps matching the `.RTB` tables | user-supplied, as the Kickstart above |
@@ -152,7 +159,6 @@ user's own machine for their own use.
 
 | Package | URL | Rights holder |
 |---|---|---|
-| drive sounds | `download.abime.net/winuae/stuff/drive_sounds.zip` | WinUAE plugin, no declared licence |
 | WHDLoad | `whdload.de/whdload/WHDLoad_usr.lha` | © Bert Jahn |
 | `.RTB` tables | `aminet.net/util/boot/skick346.lha` | SoftKick, © SinSoft / Pavel Troller |
 
