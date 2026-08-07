@@ -146,7 +146,7 @@ public class AmigaDisplay {
     private final int frameHeight;
 
     // Prima riga raster visibile (fine VBlank). L'immagine è ancorata in alto a
-    // questa riga, senza centratura verticale, come SAE/WinUAE (VBLANK_ENDLINE_PAL /
+    // questa riga, senza centratura verticale, come WinUAE (VBLANK_ENDLINE_PAL /
     // minfirstline = 26). Coincide con VirtualCRT.REGRESSION_CROP_Y (qui ridichiarata
     // per non accoppiare il package display a common).
     private static final int DISPLAY_TOP_LINE = 26;
@@ -844,7 +844,7 @@ public class AmigaDisplay {
             int imgX, imgY;
             FrameInfo fi = lastFrameInfo;
             // VERTICALE: nessuna centratura. L'immagine è ancorata in alto alla prima
-            // riga visibile (fine VBlank = riga 26, come SAE/WinUAE: VBLANK_ENDLINE_PAL
+            // riga visibile (fine VBlank = riga 26, come WinUAE: VBLANK_ENDLINE_PAL
             // / minfirstline). Il pennello parte da lì e scende; quel che eccede in basso
             // resta fuori (overscan), ma il contenuto in alto non viene mai spinto giù né
             // tagliato. Centrare verticalmente sulla DIW spingeva in alto i giochi che

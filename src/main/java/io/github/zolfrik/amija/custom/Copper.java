@@ -54,7 +54,7 @@ import io.github.zolfrik.amija.common.BusResponse;
  * `(cck & 1) == 0`, Fase 1). Era troppo forte: un fetch rifiutato dal BLOCKED di
  * $E0=224 slittava al pari successivo (226=refresh → 0 della riga dopo) invece di
  * ritentare a 225, rubando 2 CCK alla CPU. Root di §S2 in
- * docs/vamigats-cpu-timing-plan.md (provata con l'oracolo `[BUS]` di vAmiga).
+ * docs/vamigats-cpu-timing-plan.md.
  *
  * Mappatura stati vAmiga → nostri:
  *   COP_REQ_DMA        → REQ_DMA        (dopo restart/COPJMP/VBlank: attende slot → FETCH)
@@ -110,7 +110,7 @@ import io.github.zolfrik.amija.common.BusResponse;
  *   $000–$03F: sempre vietati (OCS: anche con CDANG; ECS: liberi con CDANG=1)
  *   $040–$07F: vietati se CDANG=0
  * Una MOVE a registro vietato ferma il Copper (DORMANT), come vAmiga
- * (`cancel<SLOT_COP>`), SAE (COP_stop) e WinUAE (copper_enabled_thisline=0).
+ * (`cancel<SLOT_COP>`) e WinUAE (copper_enabled_thisline=0).
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * PC-FOLLOWING (C7)

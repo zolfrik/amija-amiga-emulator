@@ -146,9 +146,8 @@ public final class Motorola68000 {
     // riconosceva un edge arrivato DOPO il punto POLL un'istruzione troppo presto
     // (residuo marker dei test vAmigaTS: IRQ preso 1 iterazione `bra.s` in anticipo).
     // Campiniamo polledIpl all'S0 di ogni prefetch (INSTRUCTION_FETCH) e checkInterrupts
-    // lo usa nel path NORMAL. DEFAULT ON (modello hardware corretto): rende il cycle-trace
-    // CPU bit-identico all'oracolo vAmiga sui test vAmigaTS (NOP 0.70→0.38%, tutti i marker
-    // cycle-exact); disattivabile con -Damiga.iplpoll=false. Vedi vamigats-ipl-poll-point.
+    // lo usa nel path NORMAL. È il modello hardware corretto: rende il cycle-trace CPU
+    // bit-identico sui test vAmigaTS (NOP 0.70→0.38%, tutti i marker cycle-exact).
     // Il campionamento avviene all'S0 del ciclo bus ancora (iplPollState = 0).
     // Moira campiona all'avvio (S0); WinUAE — che è l'oracolo — lo fa nella PARTE
     // DATI del ciclo: gencpu.cpp check_ipl, "IPL fetch happens when CPU is doing
@@ -753,7 +752,6 @@ public final class Motorola68000 {
 
     public void risingEdge() {
         instructionFinishedThisCycle = false;
-        instructionStartedThisCycle = false;
         if (cpuState == CpuState.HALTED) { busReq.halt = true; return; }
         if (resetSignalCyclesRemaining > 0) { resetSignalCyclesRemaining--; return; }
         if (busResp.halt && busCycleState == BusCycleState.IDLE) return;
@@ -888,7 +886,7 @@ public final class Motorola68000 {
                 // processato al loop-top SENZA costo di boundary — la SYNC(4) parte nel
                 // clock stesso in cui l'istruzione tracciata è finita. Il nostro trigger
                 // consumava questo mc E POI contava 4 idle → primo push dello stack a
-                // np2+10 sc invece di np2+8 (misurato: push cck 119/180 vs vAmiga 118/179,
+                // np2+10 sc invece di np2+8 (misurato: push cck 119/180 invece di 118/179,
                 // +1 CCK uniforme su OGNI trace-entry da istruzione). Il mc corrente conta
                 // come primo clock della SYNC(4). Solo questo call-site (boundary): i path
                 // fireStopTrace (stop2/4) e STOPPED restano invariati.
@@ -914,10 +912,6 @@ public final class Motorola68000 {
             currentOpcode = ir;
             opcodeAddress = irdAddr;
             extensionsConsumed = 0;
-            // Trace CPU-oracle (Fase A): marca l'avvio di una nuova istruzione, così
-            // AbstractAgnus può emettere una riga (v,h,cck,PC,op,wait,cause). Additivo.
-            instructionStartedThisCycle = true;
-
             currentInstruction = decodeTable[ir];
             instructionFinishedThisCycle = false;
             if (currentInstruction == null) {
@@ -1684,13 +1678,6 @@ public final class Motorola68000 {
         return instructionFinishedThisCycle;
     }
 
-    // Trace CPU-oracle (docs/agnus-cpu-trace-oracle-plan.md, Fase A): segnala che in
-    // questo risingEdge la CPU ha appena PRELEVATO/DECODIFICATO un nuovo opcode (il
-    // punto di "avvio istruzione" dell'esecuzione overlapped-prefetch). Letto da
-    // AbstractAgnus per emettere una riga di trace per-istruzione, allineata al beam.
-    // Puramente diagnostico: nessun effetto sul comportamento (CRC-neutro).
-    private boolean instructionStartedThisCycle = false;
-    public boolean didStartInstructionThisCycle() { return instructionStartedThisCycle; }
     public int getCurrentOpcode() { return currentOpcode & 0xFFFF; }
     public void setInstructionFinished(boolean v) {
         this.instructionFinishedThisCycle = v;

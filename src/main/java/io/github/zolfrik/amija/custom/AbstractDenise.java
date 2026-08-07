@@ -225,14 +225,14 @@ public abstract class AbstractDenise {
      * True quando la scanline corrente è una riga di bordo verticale, cioè non ha
      * prodotto output bitplane (vedi {@link #bpl1datWrittenThisLine}). In quest'area
      * gli sprite NON sono visibili su OCS: la riga è interamente bordo (palette[0]),
-     * come SAE/WinUAE (pfield_draw_line: gli sprite si disegnano solo con BRDSPRT/ECS).
+     * come WinUAE (pfield_draw_line: gli sprite si disegnano solo con BRDSPRT/ECS).
      */
     private boolean lineIsVBorder;
     /**
      * True se sulla scanline corrente è stato scritto BPL1DAT (cioè la riga ha
      * prodotto output bitplane). Su OCS gli sprite sono visibili solo nelle righe
      * con output bitplane; nelle righe di bordo verticale (nessun bitplane, anche
-     * se dentro la DIW) non vengono mostrati — come SAE/WinUAE (pfield_draw_line:
+     * se dentro la DIW) non vengono mostrati — come WinUAE (pfield_draw_line:
      * border = plfleft<0 → sprite disegnati solo con BRDSPRT/ECS).
      */
     private boolean bpl1datWrittenThisLine;
@@ -703,7 +703,7 @@ public abstract class AbstractDenise {
             // output bitplane. Una riga senza bitplane (bordo verticale, anche se
             // dentro la DIW — es. North & South spegne i bitplane sotto le bandiere
             // ma lascia la DIW aperta fino a riga 299) è interamente bordo: il
-            // cursore/sprite NON vi compare. Cfr. SAE/WinUAE pfield_draw_line
+            // cursore/sprite NON vi compare. Cfr. WinUAE pfield_draw_line
             // (border = plfleft<0 → sprite solo con BRDSPRT/ECS).
             lineIsVBorder = !bpl1datWrittenThisLine;
             translate();
@@ -1557,7 +1557,7 @@ public abstract class AbstractDenise {
      * True se la scanline appena renderizzata da {@link #hsyncHandler(int)} è
      * interamente bordo verticale (nessun output bitplane: {@code bpl1datWrittenThisLine}
      * era false), false se i bitplane hanno prodotto pixel. È l'analogo di
-     * WinUAE/SAE {@code thisframe_*_drawn_line} (cfr. playfield.js finish_playfield_line):
+     * WinUAE {@code thisframe_*_drawn_line} (cfr. drawing.cpp finish_playfield_line):
      * VirtualCRT lo usa per inquadrare il display sull'estensione effettivamente
      * disegnata invece che sulla finestra DIW (che può essere aperta su tutto
      * l'overscan, es. It Came From The Desert: DIW [5,320) ma box [72,255]).

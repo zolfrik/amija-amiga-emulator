@@ -475,7 +475,7 @@ public abstract class AbstractAgnus {
                 sprPt[sidx] = (sprPt[sidx] & 0x0000FFFF) | ((value << 16) & dmaPtrHiMask);
                 // SPRxPT è il puntatore DMA LIVE: una scrittura (CPU o Copper) cambia da
                 // dove il prossimo accesso DMA sprite preleva, esattamente come i bitplane
-                // (cfr. SAE SPRxPTH: spr[num].pt = ...; HW Agnus non ha un puntatore interno
+                // (HW Agnus non ha un puntatore interno
                 // separato per gli sprite). Senza questo i giochi che riposizionano gli
                 // sprite via Copper a inizio frame (es. Silkworm) prelevano dati stantii.
                 sprPtrInternal[sidx] = (sprPtrInternal[sidx] & 0x0000FFFF) | (sprPt[sidx] & dmaPtrHiMask);
@@ -842,14 +842,6 @@ public abstract class AbstractAgnus {
     // Il confronto per ordinali è equivalente al confronto per reference enum.
     private final int[] busOwners = new int[227];
 
-    /** DEBUG (confronto SAE): se true la CPU non attende mai sulla chip-RAM
-     *  (DTACK immediato) → misura il costo NOMINALE in cicli, senza contention. */
-    public static volatile boolean diagZeroChipWait = false;
-
-    /** AUDIT floppy: se true disabilita SOLO l'odd-wait `(hpos&1)` (la contention
-     *  DMA resta attiva). Serve a riprodurre lo stallo del loader con CPU alla
-     *  velocità corretta e A/B-testare i fix di timing floppy senza ricompilare. */
-    public static volatile boolean diagNoOddWait = false;
 
     /** DIAG (audit floppy 2b): logga le letture CPU di registri custom/CIA con PC e
      *  valore, per trovare quale stato di timing (raster/CIA) il loader campiona in
@@ -886,9 +878,9 @@ public abstract class AbstractAgnus {
     // pin in `Motorola68000.fallingEdge()`, quindi qui ne resta uno solo.
     private static final int INTREQ_DELAY_MC = 1;
 
-    /** DIAG (Fase B4): cattura raster-keyed degli eventi che posizionano le barre
-     *  bbusy (COLOR00 $180, INTREQ $09C, BLTSIZE $058), per diff diretto contro
-     *  l'oracolo SAE (sae_bbusy_trace.txt). hpos loggato in CCK (hpos>>1) come SAE. */
+    /** DIAG: cattura raster-keyed degli eventi che posizionano le barre bbusy
+     *  (COLOR00 $180, INTREQ $09C, BLTSIZE $058). hpos loggato in CCK (hpos>>1).
+     *  Consumato da {@code BbusyB0AnalysisTest}. */
     public static volatile boolean diagBb = false;
     public static int diagBbCap = 60000;
     public static final java.util.List<String> diagBbCol = new java.util.ArrayList<>();
@@ -1089,7 +1081,7 @@ public abstract class AbstractAgnus {
     // in CCK = pos.h. vAmiga mette TUTTA la DMA DAS su CCK DISPARI, con refresh anche a fine
     // riga (0xE2=226). La vecchia scelta 0/2/4/6 (refresh a inizio riga, pari) era un'euristica
     // per evitare una collisione con la fetch bitplane in overscan; sostituita dal modello
-    // rigoroso vAmiga (i test vAmigaTS sono il nuovo oracolo). Refresh: 1,3,5,226.
+    // rigoroso, verificato dai test vAmigaTS. Refresh: 1,3,5,226.
     private static final int SLOT_REFRESH_1 = 1;
     private static final int SLOT_REFRESH_2 = 3;
     private static final int SLOT_REFRESH_3 = 5;
@@ -1706,9 +1698,8 @@ public abstract class AbstractAgnus {
 
         // Reset della contention all'inizio di ogni CCK (hpos pari), così un DMA che
         // prende il CCK blocca la CPU per ENTRAMBI i system-clock del CCK (2 cicli,
-        // pari). Questo è il modello cycle-exact validato vs vAmiga
-        // (`executeUntilBusIsFree`, contention in unità CCK intere = `addWaitStates(2*delay)`)
-        // e WinUAE (`dma_cycle`, attesa un color-clock alla volta): la contention è a
+        // pari). Questo è il modello cycle-exact validato contro WinUAE
+        // (`dma_cycle`, attesa un color-clock alla volta): la contention è a
         // CCK pieno, non a 1 system-clock. Un reset per-master-cycle (il vecchio modello)
         // sotto-stimava la contention (1 SC) facendo flippare la fase del bus CPU e
         // pagare l'odd-wait `(hpos&1)` a ~metà accessi.
@@ -1822,7 +1813,7 @@ public abstract class AbstractAgnus {
             // perché il gioco non setta EV8 quando VSTART+altezza>255) fa un fetch
             // POS/CTL spurio prima del reset di riga 25, disallineando il puntatore
             // DMA e alternando frame puliti/corrotti (lo sprite "lampeggia" e cambia
-            // forma). Cfr. SAE do_sprites (vpos<sprite_vblank_endline → return) e
+            // forma). Cfr. WinUAE do_sprites (vpos<sprite_vblank_endline → return) e
             // vAmiga Sequencer (disable sprites se v<25 || v>=vMax).
             if (!busTakenByCustom && isSpriteDMAEnabled()
                     && vpos >= SPRITE_RESET_LINE && vpos < maxVpos
@@ -2813,7 +2804,6 @@ public abstract class AbstractAgnus {
         if (needsChipBusSync) {
             // Bloccato se: (a) il bus è preso da un DMA in questo CCK (incluso un fetch
             // bitplane), oppure (b) l'accesso non è allineato al CCK (hpos dispari).
-            // `diagZeroChipWait` bypassa per misurare il costo nominale.
             //
             // NB: in lores con ≤4 piani (≤2 in hires) il bitplane occupa solo gli slot
             // CCK dispari del fetch-unit; il 68000 prende NATURALMENTE quelli pari liberi
@@ -2830,10 +2820,8 @@ public abstract class AbstractAgnus {
             // hpos pari, vedi sopra) la fase del ciclo bus CPU si auto-mantiene allineata
             // e l'odd-wait scatta raramente — misurato 0 blocchi odd-wait nel loop
             // "firework" di IK+ (Fase F, vedi docs/cpu-chipbus-alignment-fix.md).
-            // `diagNoOddWait` lo disabilita solo per esperimenti diagnostici.
-            boolean oddWait = !diagNoOddWait && (hpos & 1) != 0;
-            boolean blocked = !diagZeroChipWait
-                    && (busTakenByCustom || oddWait);
+            boolean oddWait = (hpos & 1) != 0;
+            boolean blocked = busTakenByCustom || oddWait;
             cpuBusResp.ack = !blocked;
 
             if (diagBlockTally
@@ -3303,8 +3291,8 @@ public abstract class AbstractAgnus {
     // lettura custom in S5-S7 (`cpuAccessTransferred`), cioè ~1 CCK DOPO il punto S4 in
     // cui vAmiga campiona la posizione. Per riprodurre il VALORE `pos+5` di vAmiga al
     // nostro punto di campionamento (1 CCK più avanti) l'offset memorizzato dev'essere 4.
-    // Misurato sul test bbusy0: +5→6.58%, +4→5.92% (synccpu1 converge come SAE: il write
-    // 606 passa da cck105 a cck170, vs oracolo SAE h216). +3/+6 rompono synccpu3 (buco CCK).
+    // Misurato sul test bbusy0: +5→6.58%, +4→5.92% (synccpu1 converge: il write 606
+    // passa da cck105 a cck170). +3/+6 rompono synccpu3 (buco CCK).
     // CRC golden invariato (832316F5), NorthSouth/IkPlus/LastBattle PASS, frame period-1.
     // NB: a B7 (pre-B9/B10) +5 batteva +4; l'IACK fisso (B9) e l'interrupt-entry a 44 mc
     // (B10) hanno spostato la fase e +4 era corretto a fine speed-work.
@@ -3716,7 +3704,6 @@ public abstract class AbstractAgnus {
             // Puntatori sprite (SPRxPTH/SPRxPTL). SPRxPT è il puntatore DMA LIVE:
             // una scrittura (CPU o Copper) cambia da dove il prossimo accesso DMA
             // sprite preleva, esattamente come i bitplane qui sopra (HW Agnus non ha
-            // un puntatore interno separato per gli sprite; cfr. SAE SPRxPTH:
             // spr[num].pt = ...). Senza l'aggiornamento di sprPtrInternal i giochi
             // che riposizionano gli sprite via Copper a inizio frame (es. Silkworm)
             // prelevano dati stantii e gli sprite non compaiono.

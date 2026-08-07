@@ -535,7 +535,7 @@ public final class Gary {
         // Per gestire correttamente questo aliasing/open bus, mappiamo l'intero
         // range decodificato da Gary, e usiamo physicalSize per il wrap se necessario,
         // ma la logica in Agnus deve gestire il fatto che la RAM fisica potrebbe
-        // non coprire l'intera regione (SAE restituisce 0).
+        // non coprire l'intera regione (in quel caso la lettura torna 0).
         //
         // dtackCycles=1: la Slow RAM sull'A500 è DRAM sincrona al color clock di
         // Agnus (chip bus). A differenza della Fast RAM (asincrona, DTACK immediato),

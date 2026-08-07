@@ -113,8 +113,8 @@ public class DivuInstruction extends AbstractM68kInstruction {
                         cpu.v = true; cpu.c = false;
                         // Ordine np-LAST (hardware, confermato da WinUAE e Tom Harte):
                         // idle interni, poi la prefetch terminale in step 8. Il vecchio
-                        // ramo seamOverlap replicava Moira (np-first, tarato su vAmiga)
-                        // e contro WinUAE sfasava il marker delle bande contese (G1).
+                        // ramo seamOverlap usava l'ordine np-first e contro WinUAE
+                        // sfasava il marker delle bande contese (G1).
                         cpu.idleCycles(6);
                         setStep(cpu, 8);
                         return false;

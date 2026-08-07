@@ -111,13 +111,13 @@ public final class VirtualCRT {
 
     // Estensione verticale delle righe EFFETTIVAMENTE DISEGNATE dai bitplane nel
     // frame (output bitplane presente, cioè non bordo verticale). È l'analogo di
-    // WinUAE/SAE thisframe_first/last_drawn_line (playfield.js finish_playfield_line):
+    // WinUAE thisframe_first/last_drawn_line (drawing.cpp finish_playfield_line):
     // l'inquadratura verticale si centra su questa estensione, non sulla finestra
     // DIW. Decisivo quando un gioco apre la DIW su tutto l'overscan ma disegna solo
     // una sotto-regione (It Came From The Desert: DIW [5,320) ma box [72,255]):
     // centrare sulla DIW ammasserebbe l'overscan grigio in basso e spingerebbe il
     // box in alto; centrare sull'estensione disegnata lo mantiene inquadrato come
-    // su SAE/WinUAE. -1 = nessuna riga disegnata nel frame.
+    // su WinUAE. -1 = nessuna riga disegnata nel frame.
     private int frameFirstDrawnLine = -1;
     private int frameLastDrawnLine  = -1;
 
@@ -305,7 +305,7 @@ public final class VirtualCRT {
             frameLastDiwLine = vpos;
 
             // Estensione delle righe con output bitplane (non bordo verticale):
-            // l'inquadratura verticale si centra su questa (come WinUAE/SAE), non
+            // l'inquadratura verticale si centra su questa (come WinUAE), non
             // sulla DIW. denise.hsyncHandler(vpos) è già stato chiamato sopra, quindi
             // isLastLineVBorder() riflette la riga vpos appena renderizzata.
             if (!denise.isLastLineVBorder()) {
@@ -390,13 +390,13 @@ public final class VirtualCRT {
         int visibleWidth  = Math.max(0, visStop - visStart);
 
         // Verticale: centra sull'estensione delle righe EFFETTIVAMENTE DISEGNATE dai
-        // bitplane nel frame (output bitplane presente), come WinUAE/SAE
+        // bitplane nel frame (output bitplane presente), come WinUAE
         // (thisframe_first/last_drawn_line). NON sulla finestra DIW: un gioco può
         // aprire la DIW su tutto l'overscan (It Came From The Desert: DIW [5,320)) ma
         // disegnare solo una sotto-regione (box [72,255]); centrare sulla DIW
         // ammasserebbe l'overscan grigio in basso e spingerebbe il contenuto in alto.
         // Centrare sull'estensione disegnata mantiene il contenuto inquadrato come su
-        // SAE/WinUAE. Fallback: union delle righe dentro la DIW (gestisce gli split DIW
+        // WinUAE. Fallback: union delle righe dentro la DIW (gestisce gli split DIW
         // pilotati dal Copper, es. Wings of Fury), poi la DIW campionata a fine frame.
         int visibleY, visibleHeight;
         if (frameFirstDrawnLine >= 0) {

@@ -119,8 +119,8 @@ public class MoveToCCRInstruction extends AbstractM68kInstruction {
                     // senza un ulteriore step che attende `isBusCycleIdle`. Quello step
                     // terminale inseriva un ciclo IDLE-bubble tra l'ultimo prefetch e il
                     // dispatch dell'istruzione successiva → le istruzioni inhibit-prefetch
-                    // costavano +1 CCK vs vAmiga (confermato dall'oracolo cputrace su
-                    // MOVECCR1: la write COLOR00 seguente slittava di 1 CCK). np2 resta in
+                    // costavano +1 CCK di troppo (misurato su MOVECCR1: la write COLOR00
+                    // seguente slittava di 1 CCK). np2 resta in
                     // volo e si sovrappone al dispatch successivo (prefetch overlapped),
                     // esattamente come per le istruzioni normali. Cycle-count invariato
                     // (np2 viene comunque eseguito): i vettori JSON restano verdi.

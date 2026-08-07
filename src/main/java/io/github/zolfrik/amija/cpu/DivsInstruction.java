@@ -182,9 +182,8 @@ public class DivsInstruction extends AbstractM68kInstruction {
                         // Ordine np-LAST (idle interni, poi la prefetch terminale): è
                         // l'ordine dell'hardware, confermato da WinUAE (wait_cpu_cycle
                         // trace) e dai vettori Tom Harte (['n',N] prima della 'r' finale).
-                        // Il vecchio ramo seamOverlap replicava Moira (np-first) ed era
-                        // tarato sull'oracolo vAmiga: contro WinUAE sfasava il marker
-                        // delle bande contese (G1 DIVS1/DIVU1).
+                        // Il vecchio ramo seamOverlap usava l'ordine np-first: contro
+                        // WinUAE sfasava il marker delle bande contese (G1 DIVS1/DIVU1).
                         cpu.idleCycles(dividend < 0 ? 14 : 12);
                         setStep(cpu, 11);
                         return false;
