@@ -21,6 +21,7 @@
 package io.github.zolfrik.amija.custom;
 
 import io.github.zolfrik.amija.common.WindowsKeyState;
+import io.github.zolfrik.amija.input.AmigaKeyTarget;
 
 import java.awt.Window;
 import java.awt.event.KeyAdapter;
@@ -49,7 +50,7 @@ import javax.swing.Timer;
  */
 public class AmigaKeyAdapter extends KeyAdapter {
 
-    private final Keyboard keyboard;
+    private final AmigaKeyTarget keyboard;
 
     /** Finestra su cui l'adapter è registrato, per il gating sul focus del poller. */
     private final Window focusWindow;
@@ -231,7 +232,7 @@ public class AmigaKeyAdapter extends KeyAdapter {
         FALLBACK_KEYMAP.put('§', 0x2B);   // Shift+ù
     }
 
-    public AmigaKeyAdapter(Keyboard keyboard) {
+    public AmigaKeyAdapter(AmigaKeyTarget keyboard) {
         this(keyboard, null);
     }
 
@@ -243,7 +244,7 @@ public class AmigaKeyAdapter extends KeyAdapter {
      *                    (aggira il keyup di shift perso da Windows). Passare null
      *                    (es. nei test headless) mantiene la sola gestione AWT.
      */
-    public AmigaKeyAdapter(Keyboard keyboard, Window focusWindow) {
+    public AmigaKeyAdapter(AmigaKeyTarget keyboard, Window focusWindow) {
         this.keyboard = keyboard;
         this.focusWindow = focusWindow;
         this.shiftPollerActive = focusWindow != null && WindowsKeyState.isAvailable();

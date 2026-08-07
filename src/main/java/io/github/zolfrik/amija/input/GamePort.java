@@ -37,7 +37,7 @@ import io.github.zolfrik.amija.common.CIAPinSet;
  *
  * Riferimenti: vAmiga ControlPort.cpp, Amiga HW Ref Manual.
  */
-public class GamePort {
+public class GamePort implements GamePortControls {
 
     private final int portNumber;             // 1 = mouse port, 2 = joystick port
     private GamePortDevice device = GamePortDevice.NONE;
@@ -66,7 +66,9 @@ public class GamePort {
     }
 
     public GamePortDevice getDevice()             { return device; }
-    public void           setDevice(GamePortDevice d) { device = d; }
+
+    @Override
+    public void setDevice(GamePortDevice d) { device = d; }
 
     // -------------------------------------------------------------------------
     // Eventi mouse

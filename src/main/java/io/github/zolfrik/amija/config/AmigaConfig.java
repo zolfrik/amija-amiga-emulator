@@ -34,6 +34,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Properties;
 
 /**
@@ -113,6 +114,18 @@ public final class AmigaConfig {
     private static final String K_OVERLAY_FRAMECOUNTER = "overlay.framecounter.enabled";
     // Immediate blit (NON esposto nel popup F12): solo da file.
     private static final String K_BLITTER_IMMEDIATE = "blitter.immediate";
+
+    // Gioco a distanza (docs/remote-play-plan.md §10). Il join code NON si salva su file:
+    // e' un segreto di sessione e si rigenera a ogni avvio dell'host.
+    private static final String K_RP_PORT = "remoteplay.port";
+    private static final String K_RP_UPNP = "remoteplay.upnp";
+    private static final String K_RP_BIND = "remoteplay.bind";
+    private static final String K_RP_LAN_ONLY = "remoteplay.lan.only";
+    private static final String K_RP_GUEST_PORT = "remoteplay.guest.port";
+    private static final String K_RP_GUEST_KEYBOARD = "remoteplay.guest.keyboard";
+    private static final String K_RP_GUEST_ALLOWRESET = "remoteplay.guest.allowreset";
+    private static final String K_RP_AUDIO_MODE = "remoteplay.audio.mode";
+    private static final String K_RP_LAST_HOST = "remoteplay.last.host";
 
     // =========================================================================
     // Parametri WHDLoad (sezione whdload.prefs.* in fondo ad amiga.properties).
@@ -331,6 +344,17 @@ public final class AmigaConfig {
         p.setProperty(K_OVERLAY_FPS, "false");           // overlay FPS disattivo
         p.setProperty(K_OVERLAY_FRAMECOUNTER, "false");  // contatore fotogrammi disattivo
         p.setProperty(K_BLITTER_IMMEDIATE, "false");     // immediate blit disattivo (cycle-exact)
+        // Gioco a distanza: spento finche' l'utente non preme "Ospita" nel popup. Le chiavi
+        // ci sono comunque, perche' una chiave assente e' una funzione che non sa di avere.
+        p.setProperty(K_RP_PORT, "7788");
+        p.setProperty(K_RP_UPNP, "true");
+        p.setProperty(K_RP_BIND, "");
+        p.setProperty(K_RP_LAN_ONLY, "true");
+        p.setProperty(K_RP_GUEST_PORT, "1");             // la porta joystick all'ospite
+        p.setProperty(K_RP_GUEST_KEYBOARD, "true");
+        p.setProperty(K_RP_GUEST_ALLOWRESET, "false");
+        p.setProperty(K_RP_AUDIO_MODE, "adpcm");         // §15.5, chiusa ascoltando
+        p.setProperty(K_RP_LAST_HOST, "");
         // Parametri WHDLoad (sezione whdload.prefs.*): default come da WHDLoad.prefs storico.
         for (WhdPref pref : WHD_PREFS) {
             p.setProperty(pref.key(), pref.def());
@@ -985,6 +1009,101 @@ public final class AmigaConfig {
         return v == Math.rint(v) ? Integer.toString((int) v) : Double.toString(v);
     }
 
+    // =========================================================================
+    // Gioco a distanza (docs/remote-play-plan.md §10)
+    // =========================================================================
+
+    /** Porta TCP+UDP su cui l'host ascolta. */
+    public int remotePlayPort() {
+        int p = getInt(K_RP_PORT, 7788);
+        return p < 0 || p > 65535 ? 7788 : p;
+    }
+
+    public void setRemotePlayPort(int port) {
+        props.setProperty(K_RP_PORT, Integer.toString(port));
+    }
+
+    /** Se provare ad aprire la porta sul router con UPnP (Fase 6). */
+    public boolean remotePlayUpnp() {
+        return getBool(K_RP_UPNP, true);
+    }
+
+    public void setRemotePlayUpnp(boolean enabled) {
+        props.setProperty(K_RP_UPNP, Boolean.toString(enabled));
+    }
+
+    /** Interfaccia su cui ascoltare; vuoto = tutte. */
+    public String remotePlayBind() {
+        return props.getProperty(K_RP_BIND, "").trim();
+    }
+
+    public void setRemotePlayBind(String bind) {
+        props.setProperty(K_RP_BIND, bind == null ? "" : bind.trim());
+    }
+
+    /**
+     * Se rifiutare le connessioni che non vengono dalla rete locale.
+     *
+     * <p>Acceso di default (§8.5): una porta in ascolto su Internet la si apre <b>dopo</b>
+     * averlo deciso, non per il fatto di aver provato il gioco a distanza in casa.
+     */
+    public boolean remotePlayLanOnly() {
+        return getBool(K_RP_LAN_ONLY, true);
+    }
+
+    public void setRemotePlayLanOnly(boolean lanOnly) {
+        props.setProperty(K_RP_LAN_ONLY, Boolean.toString(lanOnly));
+    }
+
+    /** Game port pilotata dall'ospite: 0 o 1. */
+    public int remotePlayGuestPort() {
+        int p = getInt(K_RP_GUEST_PORT, 1);
+        return p == 0 ? 0 : 1;
+    }
+
+    public void setRemotePlayGuestPort(int port) {
+        props.setProperty(K_RP_GUEST_PORT, Integer.toString(port == 0 ? 0 : 1));
+    }
+
+    public boolean remotePlayGuestKeyboard() {
+        return getBool(K_RP_GUEST_KEYBOARD, true);
+    }
+
+    public void setRemotePlayGuestKeyboard(boolean shared) {
+        props.setProperty(K_RP_GUEST_KEYBOARD, Boolean.toString(shared));
+    }
+
+    /** Se l'ospite puo' resettare la macchina con CTRL+Amiga+Amiga. Spento di default. */
+    public boolean remotePlayGuestAllowReset() {
+        return getBool(K_RP_GUEST_ALLOWRESET, false);
+    }
+
+    public void setRemotePlayGuestAllowReset(boolean allow) {
+        props.setProperty(K_RP_GUEST_ALLOWRESET, Boolean.toString(allow));
+    }
+
+    /** Formato audio verso l'ospite: {@code adpcm}, {@code pcm16} o {@code off}. */
+    public String remotePlayAudioMode() {
+        String v = props.getProperty(K_RP_AUDIO_MODE, "adpcm").trim().toLowerCase(Locale.ROOT);
+        return switch (v) {
+            case "pcm16", "pcm", "off", "adpcm" -> v;
+            default -> "adpcm";
+        };
+    }
+
+    public void setRemotePlayAudioMode(String mode) {
+        props.setProperty(K_RP_AUDIO_MODE, mode == null ? "adpcm" : mode.trim());
+    }
+
+    /** Ultimo host a cui ci si e' uniti: il popup lo ripropone. */
+    public String remotePlayLastHost() {
+        return props.getProperty(K_RP_LAST_HOST, "").trim();
+    }
+
+    public void setRemotePlayLastHost(String host) {
+        props.setProperty(K_RP_LAST_HOST, host == null ? "" : host.trim());
+    }
+
     public void setOverscanEnabled(boolean enabled) {
         props.setProperty(K_OVERSCAN, Boolean.toString(enabled));
     }
@@ -1019,6 +1138,28 @@ public final class AmigaConfig {
      */
     public void save() throws IOException {
         Path target = AppHome.resolve(FILE_NAME);
+        Files.writeString(target, toPropertiesText());
+        System.out.println("[CONFIG] Saved " + target.toAbsolutePath());
+    }
+
+    /** Configurazione coi soli valori di default, senza toccare il disco. */
+    public static AmigaConfig defaults() {
+        return new AmigaConfig(defaultProperties());
+    }
+
+    /** Configurazione costruita su proprietà già lette: il rovescio di {@link #toPropertiesText}. */
+    public static AmigaConfig fromProperties(Properties props) {
+        return new AmigaConfig(props);
+    }
+
+    /**
+     * Il file di configurazione come testo, ordinato e commentato.
+     *
+     * <p>Separato dalla scrittura di proposito: così la serializzazione è una funzione pura
+     * — quel che conta, cioè che ogni chiave ci sia e col valore giusto, si verifica senza
+     * un disco di mezzo e senza dipendere da dove {@code AppHome} abbia deciso di puntare.
+     */
+    public String toPropertiesText() {
         StringBuilder sb = new StringBuilder();
         sb.append("# Amija configuration - Java Amiga emulator\n");
         sb.append("# Automatically generated file; editable by hand or from the popup (F12).\n\n");
@@ -1210,6 +1351,35 @@ public final class AmigaConfig {
         sb.append("# poll the blitter while waiting. Default false.\n");
         line(sb, K_BLITTER_IMMEDIATE, Boolean.toString(blitterImmediate()));
 
+        sb.append("\n# ========================== Remote play (two players) ========================\n");
+        sb.append("# Play together over LAN or the Internet: ONE machine emulates (the host) and\n");
+        sb.append("# sends video and audio; the other one (the guest) emulates nothing and sends\n");
+        sb.append("# back only its controls. The guest needs no Kickstart and no disk.\n");
+        sb.append("# Everything below is also editable from the F12 popup.\n");
+        sb.append("# TCP and UDP port the host listens on (the same number for both).\n");
+        line(sb, K_RP_PORT, Integer.toString(remotePlayPort()));
+        sb.append("# Ask the router to open that port automatically (UPnP). Nothing is asked\n");
+        sb.append("# while the setting below keeps the session on the local network: opening\n");
+        sb.append("# a port for connections that would then be refused makes no sense.\n");
+        line(sb, K_RP_UPNP, Boolean.toString(remotePlayUpnp()));
+        sb.append("# Network interface to listen on; empty = all of them.\n");
+        line(sb, K_RP_BIND, remotePlayBind());
+        sb.append("# Accept guests from the local network only. Turn this off knowingly: it is\n");
+        sb.append("# what keeps a listening port off the open Internet until you want it there.\n");
+        line(sb, K_RP_LAN_ONLY, Boolean.toString(remotePlayLanOnly()));
+        sb.append("# Game port driven by the guest: 0 or 1 (1 = the joystick one).\n");
+        line(sb, K_RP_GUEST_PORT, Integer.toString(remotePlayGuestPort()));
+        sb.append("# Share the keyboard with the guest.\n");
+        line(sb, K_RP_GUEST_KEYBOARD, Boolean.toString(remotePlayGuestKeyboard()));
+        sb.append("# Let the guest reset the machine with CTRL+Amiga+Amiga. It is YOUR machine:\n");
+        sb.append("# off by default.\n");
+        line(sb, K_RP_GUEST_ALLOWRESET, Boolean.toString(remotePlayGuestAllowReset()));
+        sb.append("# Audio sent to the guest: adpcm (default, a quarter of the bandwidth and\n");
+        sb.append("# indistinguishable by ear), pcm16 (bit-exact), off.\n");
+        line(sb, K_RP_AUDIO_MODE, remotePlayAudioMode());
+        sb.append("# Last host joined, so the popup can offer it again.\n");
+        line(sb, K_RP_LAST_HOST, remotePlayLastHost());
+
         sb.append("\n# ===================== WHDLoad parameters (WHDLoad.prefs) ====================\n");
         sb.append("# These values generate the S:WHDLoad.prefs file of the WHDLoad hard disk built\n");
         sb.append("# on the fly (they are not shown in the F12 popup). Flags (true/false) enable\n");
@@ -1219,9 +1389,7 @@ public final class AmigaConfig {
             if (pref.comment() != null) sb.append("# ").append(pref.comment()).append('\n');
             line(sb, pref.key(), props.getProperty(pref.key(), pref.def()).trim());
         }
-
-        Files.writeString(target, sb.toString());
-        System.out.println("[CONFIG] Saved " + target.toAbsolutePath());
+        return sb.toString();
     }
 
     /** Emette una riga {@code chiave=valore} con escaping del backslash (path Windows). */

@@ -49,10 +49,15 @@ import static org.lwjgl.glfw.GLFW.*;
  * Sono supportati sia i gamepad mappati ({@code glfwGetGamepadState}, layout
  * uniforme XInput-like) sia i joystick generici (assi/hat/pulsanti grezzi).
  *
- * <p><b>Threading verso l'emulazione:</b> il servizio scrive sulle {@link GamePort}
- * solo alla <i>variazione</i> di stato (assi/pulsanti), esattamente come fanno gli
- * adapter AWT dall'EDT. Le {@code GamePort} sono già scritte da thread host (EDT) e
- * lette dal thread di emulazione; questo servizio segue lo stesso modello.
+ * <p><b>Threading verso l'emulazione:</b> il servizio scrive sulle porte solo alla
+ * <i>variazione</i> di stato (assi/pulsanti), esattamente come fanno gli adapter AWT
+ * dall'EDT. Le {@code GamePort} sono già scritte da thread host (EDT) e lette dal
+ * thread di emulazione; questo servizio segue lo stesso modello.
+ *
+ * <p>Le porte sono {@link GamePortControls} e non {@link GamePort}: nel gioco a distanza
+ * l'ospite non ha nessuna macchina, quindi nessuna {@code GamePort} da pilotare, e il suo
+ * joystick fisico deve poter finire in un pacchetto come ci finiscono mouse e tastiera.
+ * Di quel che c'è dietro l'interfaccia questo servizio non usa niente.
  */
 public final class GlfwJoystickService {
 
@@ -71,7 +76,7 @@ public final class GlfwJoystickService {
 
     // Porte pilotate dal joystick reale, in ordine, con lo stato precedente parallelo.
     private final Object lock = new Object();
-    private GamePort[] ports = new GamePort[0];
+    private GamePortControls[] ports = new GamePortControls[0];
     private Prev[] prev = new Prev[0];
 
     private volatile boolean running = false;
@@ -92,10 +97,25 @@ public final class GlfwJoystickService {
      * Imposta le porte da pilotare col joystick reale (in ordine di preferenza).
      * Lista vuota = nessuna porta usa un joystick reale (il thread, se avviato, resta
      * inattivo). La prima chiamata con lista non vuota avvia il thread GLFW.
+     *
+     * <p>Le porte che escono dall'elenco vengono <b>rilasciate</b>. Senza, cambiare la
+     * periferica di una porta col fuoco premuto lascerebbe il fuoco premuto per sempre:
+     * quella porta non la guarda più nessuno, quindi non arriva più niente a contraddirlo.
+     *
+     * <p>Lo scambio e il rilascio stanno <b>dentro</b> il lock, che {@link #poll()} tiene per
+     * tutta la propria passata. Rilasciare fuori non basterebbe: una passata entrata un
+     * istante prima dello scambio sta per scrivere sulla porta vecchia, e se quella scrittura
+     * atterrasse <i>dopo</i> il rilascio rimetterebbe premuto il fuoco che si è appena
+     * mollato — cioè esattamente il guasto che questo rilascio esiste per evitare.
      */
-    public void setPorts(List<GamePort> newPorts) {
+    public void setPorts(List<? extends GamePortControls> newPorts) {
         synchronized (lock) {
-            ports = newPorts.toArray(new GamePort[0]);
+            for (GamePortControls p : ports) {
+                if (!newPorts.contains(p)) {
+                    apply(p, new Prev(), 0, 0, false, false, false);
+                }
+            }
+            ports = newPorts.toArray(new GamePortControls[0]);
             prev = new Prev[ports.length];
             for (int i = 0; i < prev.length; i++) prev[i] = new Prev();
         }
@@ -157,33 +177,41 @@ public final class GlfwJoystickService {
         }
     }
 
+    /**
+     * Una passata di lettura, <b>tutta sotto il lock</b>.
+     *
+     * <p>Il lock è preso da {@link #setPorts} e da qui, e basta: la contesa è fra un thread
+     * che passa ogni 8 ms e una riconfigurazione che capita quando l'utente conferma il
+     * popup, quindi non c'è niente da ottimizzare. In cambio una porta che esce dall'elenco
+     * non può ricevere una scrittura in ritardo <i>dopo</i> essere stata rilasciata, che è
+     * l'unico modo in cui il fuoco resterebbe premuto per sempre su una porta che nessuno
+     * guarda più.
+     */
     private void poll() {
-        GamePort[] snap;
-        Prev[] prevSnap;
         synchronized (lock) {
-            snap = ports;
-            prevSnap = prev;
-        }
-        if (snap.length == 0) return;
+            GamePortControls[] snap = ports;
+            Prev[] prevSnap = prev;
+            if (snap.length == 0) return;
 
-        // Assegna i joystick presenti alle porte, nell'ordine dei loro indici GLFW.
-        int jid = GLFW_JOYSTICK_1;
-        for (int i = 0; i < snap.length; i++) {
-            GamePort port = snap[i];
-            Prev p = prevSnap[i];
-            while (jid <= GLFW_JOYSTICK_LAST && !glfwJoystickPresent(jid)) jid++;
-            if (jid > GLFW_JOYSTICK_LAST) {
-                // Nessun controller per questa porta: centra e rilascia i pulsanti.
-                apply(port, p, 0, 0, false, false, false);
-                continue;
+            // Assegna i joystick presenti alle porte, nell'ordine dei loro indici GLFW.
+            int jid = GLFW_JOYSTICK_1;
+            for (int i = 0; i < snap.length; i++) {
+                GamePortControls port = snap[i];
+                Prev p = prevSnap[i];
+                while (jid <= GLFW_JOYSTICK_LAST && !glfwJoystickPresent(jid)) jid++;
+                if (jid > GLFW_JOYSTICK_LAST) {
+                    // Nessun controller per questa porta: centra e rilascia i pulsanti.
+                    apply(port, p, 0, 0, false, false, false);
+                    continue;
+                }
+                readAndApply(jid, port, p);
+                jid++;
             }
-            readAndApply(jid, port, p);
-            jid++;
         }
     }
 
     /** Legge lo stato del joystick {@code jid} e lo applica alla porta. */
-    private void readAndApply(int jid, GamePort port, Prev p) {
+    private void readAndApply(int jid, GamePortControls port, Prev p) {
         int x = 0, y = 0;
         boolean fire = false, b2 = false, b3 = false;
 
@@ -229,7 +257,7 @@ public final class GlfwJoystickService {
     }
 
     /** Invia alla porta solo i valori cambiati rispetto allo stato precedente. */
-    private static void apply(GamePort port, Prev p,
+    private static void apply(GamePortControls port, Prev p,
             int x, int y, boolean fire, boolean b2, boolean b3) {
         if (!p.valid || p.x != x || p.y != y) {
             port.setJoystickAxes(x, y);

@@ -51,6 +51,17 @@ import io.github.zolfrik.amija.custom.FloppyDrive;
 import io.github.zolfrik.amija.custom.HdController;
 import io.github.zolfrik.amija.memory.BuiltinRom;
 import io.github.zolfrik.amija.memory.HardFile;
+import io.github.zolfrik.amija.net.AudioBlockHeader;
+import io.github.zolfrik.amija.net.Handshake;
+import io.github.zolfrik.amija.net.JoinCode;
+import io.github.zolfrik.amija.net.NetImpairment;
+import io.github.zolfrik.amija.net.RemotePlayControl;
+import io.github.zolfrik.amija.net.RemotePlayGuest;
+import io.github.zolfrik.amija.net.RemotePlayHost;
+import io.github.zolfrik.amija.net.RemotePlayProtocol;
+import io.github.zolfrik.amija.net.RemotePlaySettings;
+import io.github.zolfrik.amija.net.VideoReceiver;
+import io.github.zolfrik.amija.net.upnp.PortMapper;
 import io.github.zolfrik.amija.whdload.WhdLoadManager;
 import io.github.zolfrik.amija.custom.audio.FloppySound;
 import io.github.zolfrik.amija.custom.Gary;
@@ -60,8 +71,11 @@ import io.github.zolfrik.amija.display.ConfigDialog;
 import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.GamePort;
+import io.github.zolfrik.amija.input.GamePortDevice;
 import io.github.zolfrik.amija.input.GlfwJoystickService;
 import io.github.zolfrik.amija.input.PortDevice;
+import io.github.zolfrik.amija.input.RemoteInputApplier;
+import io.github.zolfrik.amija.input.RemoteInputSender;
 import io.github.zolfrik.amija.memory.KickstartImage;
 import io.github.zolfrik.amija.memory.RAM;
 import io.github.zolfrik.amija.memory.ROM;
@@ -91,7 +105,7 @@ import javax.swing.UnsupportedLookAndFeelException;
  * l'emulazione va in pausa e il mouse host viene rilasciato; alla chiusura la
  * macchina riparte (a freddo o riprendendo) e il mouse viene ricatturato.
  */
-public class Amija {
+public class Amija implements RemotePlayControl {
 
     private static final boolean VERBOSE = false;
     // Modalita' video corrente (PAL/NTSC): letta da config a ogni avvio a freddo
@@ -115,6 +129,7 @@ public class Amija {
     private VirtualCRT virtualCRT;
     private Motorola68000 cpu;
     private AbstractAgnus agnus;
+    private Keyboard keyboard;
     private AmigaMouseAdapter mouseAdapter;
     private AmigaKeyAdapter keyAdapter;
     private AmigaJoystickKeyAdapter joystickAdapter;
@@ -123,6 +138,33 @@ public class Amija {
     private GamePort gamePort2;
     // Servizio joystick reale (GLFW): singleton, avviato pigramente solo se selezionato.
     private final GlfwJoystickService joystickService = GlfwJoystickService.getInstance();
+
+    // --- Gioco a distanza (docs/remote-play-plan.md). Uno dei due, mai entrambi:
+    // o questa macchina emula e serve un ospite, o non emula affatto e ne è l'ospite.
+    // Avvio solo da -D finché la Fase 5 non porta la sezione nel popup F12.
+    private RemotePlayHost remotePlayHost;
+    /** Apertura della porta sul router mentre si ospita (§7.1); null se non richiesta. */
+    private volatile PortMapper portMapper;
+    private Thread routerCloser;
+    private volatile RemotePlayGuest remotePlayGuest;
+    private RemotePlaySettings remotePlaySettings = RemotePlaySettings.off();
+    /** Lato ospite: raccoglie i gesti locali nel pacchetto da spedire. */
+    private RemoteInputSender remoteInputSender;
+    // --- Collegarsi a un host: la sessione si apre col popup ANCORA APERTO -------------
+    // Il collegamento vero avviene su un thread suo (l'handshake puo' metterci secondi e
+    // l'EDT non puo' aspettarlo), mentre la macchina locale resta montata: cosi' il popup
+    // puo' raccontare come sta andando e un fallimento ha ancora una finestra in cui essere
+    // detto. A smontare la macchina — che e' la parte che da dentro un dialog modale non si
+    // fa — si arriva solo se l'utente conferma con OK (applyPendingRemotePlayTransition).
+    private volatile boolean joining;
+    private String joiningAddress;
+    /** Chiusura chiesta mentre il tentativo era in volo. Protetto da {@code this}. */
+    private boolean joinCancelled;
+    /** Vero quando la macchina e' stata davvero smontata per fare l'ospite. */
+    private volatile boolean guestMode;
+    /** Ultimo esito negativo del gioco a distanza, che resta nella riga di stato. */
+    private volatile String remotePlayLastError;
+    private boolean pendingLeave;
     private final FloppySound[] floppySounds = new FloppySound[4];
     private final java.util.List<HardFile> hardFiles = new java.util.ArrayList<>();
     // Sorgenti di attività per il LED HD del display, una per unità (WHDLoad, master,
@@ -237,17 +279,839 @@ public class Amija {
         installConfigHotkey();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            shutdownRemotePlay();
+            // La porta sul router va ritirata davvero, non solo ordinata: il thread che la
+            // ritira è daemon e alla chiusura della JVM verrebbe ucciso a metà (§7.1).
+            awaitRouterPortClosed();
             shutdownMachine();
             joystickService.shutdown(); // termina GLFW (solo alla chiusura del processo)
         }, "amiga-shutdown"));
 
+        RemotePlaySettings remotePlay = readRemotePlaySettings();
+        if (remotePlay.mode() == RemotePlaySettings.Mode.GUEST) {
+            // L'ospite NON emula: niente Kickstart, niente ROM, niente MasterClock (§3).
+            // La finestra c'è già; da qui in poi la riempie la rete al posto di Denise.
+            joinRemoteHost(remotePlay);
+            return;
+        }
+
         if (validateRom(config)) {
             bootMachine();
+            startHosting(remotePlay);
         } else {
             // ROM mancante/errata al primo avvio: apri il popup così l'utente può
             // impostare il percorso del Kickstart e gli altri parametri.
             SwingUtilities.invokeLater(this::openConfig);
         }
+    }
+
+    // =========================================================================
+    // Gioco a distanza (docs/remote-play-plan.md §12, Fase 2: avvio via -D)
+    // =========================================================================
+
+    private RemotePlaySettings readRemotePlaySettings() {
+        try {
+            return RemotePlaySettings.fromSystemProperties();
+        } catch (IllegalArgumentException e) {
+            System.err.println("[NET] configurazione del gioco a distanza non valida: "
+                    + e.getMessage());
+            return RemotePlaySettings.off();
+        }
+    }
+
+    /**
+     * Apre la sessione lato host e attacca il video a {@code VirtualCRT}.
+     *
+     * <p>Un fallimento qui <b>non</b> è fatale: la macchina è già avviata e deve restare
+     * giocabile in locale. Si dice cosa è andato storto e si prosegue senza ospite.
+     */
+    private void startHosting(RemotePlaySettings settings) {
+        if (settings.mode() != RemotePlaySettings.Mode.HOST || virtualCRT == null) {
+            return;
+        }
+        try {
+            remotePlayHost = new RemotePlayHost(settings.port(), settings.bindAddress(),
+                    settings.joinCode(), VirtualCRT.RAW_WIDTH, VirtualCRT.RAW_HEIGHT,
+                    NetImpairment.fromSystemProperties(),
+                    settings.guestGamePort(), settings.guestKeyboard(),
+                    settings.audioFormat(), config.remotePlayLanOnly());
+            remotePlaySettings = settings;
+            remotePlayHost.start();
+            attachRemoteInput();
+            attachRemotePlayLed();
+            openRouterPort(remotePlayHost.port());
+            virtualCRT.setRemotePlayHost(remotePlayHost);
+        } catch (IOException e) {
+            System.err.println("[NET] impossibile ospitare sulla porta " + settings.port()
+                    + ": " + e.getMessage());
+            remotePlayHost = null;
+        }
+    }
+
+    /**
+     * Chiede al router di inoltrare la porta, se l'utente lo vuole (§7.1).
+     *
+     * <p>Non con la <b>sola rete locale</b> accesa, e non è una precauzione formale: quella
+     * spunta dice «da fuori non entra nessuno», e chi entrasse dalla porta appena aperta
+     * verrebbe rifiutato dall'host un istante dopo. Sarebbe una porta aperta sul router di
+     * casa per una connessione che non può funzionare — cioè il contrario di quel che
+     * entrambe le opzioni promettono.
+     */
+    private void openRouterPort(int port) {
+        closeRouterPort();
+        if (!config.remotePlayUpnp() || config.remotePlayLanOnly()) {
+            return;
+        }
+        portMapper = new PortMapper(port);
+        portMapper.open();
+    }
+
+    /** Ritira la mappatura. Chiamata da ogni percorso che smette di ospitare. */
+    private void closeRouterPort() {
+        PortMapper mapper = portMapper;
+        if (mapper == null) {
+            return;
+        }
+        portMapper = null;
+        // Su un thread suo: la rimozione parla col router e può metterci secondi, e chi
+        // chiude l'ascolto è quasi sempre l'EDT dentro il popup.
+        routerCloser = new Thread(mapper::close, "amija-remoteplay-upnp-close");
+        routerCloser.setDaemon(true);
+        routerCloser.start();
+    }
+
+    /**
+     * Aspetta che la mappatura sia stata ritirata davvero. <b>Solo per lo shutdown hook.</b>
+     *
+     * <p>Un thread daemon che sta parlando col router viene ucciso quando la JVM esce, e la
+     * porta resterebbe aperta: qui si concede il tempo di finire. Poco, però — se il router
+     * non risponde è preferibile un'uscita pulita a una chiusura che sembra bloccata, e la
+     * porta si chiude comunque da sé alla scadenza del lease, che è il motivo per cui una
+     * scadenza c'è.
+     */
+    private void awaitRouterPortClosed() {
+        Thread closer = routerCloser;
+        if (closer == null) {
+            return;
+        }
+        try {
+            closer.join(3000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Si collega a un host e disegna quello che arriva.
+     *
+     * <p>Il frame che arriva è il <b>raster grezzo</b> 912x312, cioè esattamente ciò che
+     * {@code AmigaDisplay.renderFrame} riceve dall'emulazione: crop, integer scaling,
+     * overscan, shader e fullscreen restano quindi scelte locali di questa macchina e
+     * funzionano senza saperne niente.
+     */
+    private void joinRemoteHost(RemotePlaySettings settings) {
+        try {
+            remotePlayGuest = RemotePlayGuest.connect(settings.address(), settings.port(),
+                    settings.joinCode(), NetImpairment.fromSystemProperties(),
+                    guestFrameSink());
+        } catch (IOException e) {
+            String message = Messages.t("msg.remoteplay.joinfailed",
+                    settings.address() + ":" + settings.port(), joinFailureCause(e));
+            remotePlayLastError = message;
+            reportRemotePlayProblem(message);
+            // Meglio la propria macchina che una finestra vuota: da lì l'utente può
+            // ritentare dal popup, che è anche dove ora si legge cosa è andato storto.
+            if (validateRom(config)) {
+                bootMachine();
+            }
+            return;
+        }
+        remotePlaySettings = settings;
+        guestMode = true;
+        installGuestInput();
+        attachRemotePlayLed();
+        startGuestWatchdog(remotePlayGuest);
+    }
+
+    /**
+     * Dove finiscono i frame che arrivano dall'host: nello <b>stesso</b>
+     * {@code renderFrame} che riceve il raster dall'emulazione.
+     *
+     * <p>È tutto quel che serve perché crop, integer scaling, overscan, shader, LED,
+     * fullscreen e screenshot funzionino sull'ospite senza che una riga di quel codice
+     * sappia della rete.
+     */
+    private VideoReceiver.FrameSink guestFrameSink() {
+        return (pixels, w, h, info, frameId) -> display.renderFrame(pixels, w, h, info);
+    }
+
+    /**
+     * Sorveglia la sessione e, se finisce da sé, lo dice all'utente.
+     *
+     * <p>Una spia che si spegne non avvisa chi sta guardando il gioco, e l'ultima immagine
+     * congelata somiglia troppo a un emulatore piantato: quando il collegamento cade deve
+     * comparire un messaggio, con il motivo. Se invece la sessione l'abbiamo chiusa noi
+     * ({@link RemotePlayGuest.EndCause#LOCAL}) non c'è niente da annunciare — l'utente ha
+     * appena premuto il pulsante che la chiude.
+     */
+    private void startGuestWatchdog(RemotePlayGuest guest) {
+        Thread watchdog = new Thread(() -> {
+            while (guest.isAlive()) {
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            if (guest.endCause() == RemotePlayGuest.EndCause.LOCAL) {
+                return;
+            }
+            SwingUtilities.invokeLater(() -> onRemoteSessionLost(guest));
+        }, "amija-remoteplay-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+    }
+
+    /** Sull'EDT: la sessione è caduta da sé. Si dice perché, e si rimette in piedi la macchina. */
+    private void onRemoteSessionLost(RemotePlayGuest guest) {
+        if (remotePlayGuest != guest) {
+            return;   // già sostituita o chiusa nel frattempo: nessun annuncio da fare
+        }
+        String message = Messages.t("msg.remoteplay.lost", lostCause(guest));
+        boolean wasGuestMode = guestMode;
+        // Va letto PRIMA di aprire il nostro messaggio, che è a sua volta modale.
+        boolean popupOpen = modalDialogShowing();
+        shutdownGuestSession();
+        remotePlayLastError = message;
+        reportRemotePlayProblem(message);
+        if (wasGuestMode && !popupOpen) {
+            // Senza macchina resterebbe una finestra morta. Col popup aperto invece non si
+            // ricostruisce niente da qui: lo fa settleRemotePlayAfterConfig alla chiusura,
+            // fuori dal dialog modale, che è la regola di tutto questo sviluppo.
+            leaveGuestMode();
+        }
+    }
+
+    /** Il motivo della caduta, nella lingua dell'utente. */
+    private String lostCause(RemotePlayGuest guest) {
+        String detail = guest.endDetail();
+        return switch (guest.endCause()) {
+            case HOST_CLOSED -> Messages.t("msg.remoteplay.lost.hostclosed");
+            case TIMEOUT -> Messages.t("msg.remoteplay.lost.timeout");
+            default -> detail == null || detail.isBlank()
+                    ? Messages.t("msg.remoteplay.lost.link")
+                    : Messages.t("msg.remoteplay.lost.error", detail);
+        };
+    }
+
+    /**
+     * Perché un collegamento non è riuscito, nella lingua dell'utente.
+     *
+     * <p>«Impossibile collegarsi» e basta manda a controllare il router anche chi ha solo
+     * sbagliato a copiare il codice. I quattro motivi di REJECT li conosce l'host e li
+     * manda apposta (§3): buttarli via qui sarebbe sprecare l'unica informazione che
+     * distingue un problema di rete da un errore di battitura.
+     */
+    private String joinFailureCause(IOException e) {
+        if (e instanceof Handshake.RejectedException rejected) {
+            return switch (rejected.reason()) {
+                case RemotePlayProtocol.REJECT_AUTH -> Messages.t("msg.remoteplay.reject.auth");
+                case RemotePlayProtocol.REJECT_BUSY -> Messages.t("msg.remoteplay.reject.busy");
+                case RemotePlayProtocol.REJECT_PROTOCOL ->
+                        Messages.t("msg.remoteplay.reject.protocol");
+                case RemotePlayProtocol.REJECT_SHUTDOWN ->
+                        Messages.t("msg.remoteplay.reject.shutdown");
+                case RemotePlayProtocol.REJECT_LAN_ONLY ->
+                        Messages.t("msg.remoteplay.reject.lanonly");
+                default -> String.valueOf(rejected.getMessage());
+            };
+        }
+        if (e instanceof java.net.UnknownHostException) {
+            return Messages.t("msg.remoteplay.cause.unknownhost");
+        }
+        if (e instanceof java.net.SocketTimeoutException) {
+            return Messages.t("msg.remoteplay.cause.timeout");
+        }
+        if (e instanceof java.net.ConnectException) {
+            return Messages.t("msg.remoteplay.cause.refused");
+        }
+        return String.valueOf(e.getMessage());
+    }
+
+    /**
+     * Mostra un guasto del gioco a distanza, da qualunque thread lo si sia scoperto.
+     *
+     * <p>La finestra a cui parentarlo non è sempre la stessa, e sbagliarla si paga caro: il
+     * popup F12 è <b>modale</b>, quindi un messaggio parentato alla finestra di gioco mentre
+     * quello è aperto verrebbe bloccato da Swing — comparirebbe e non si potrebbe chiudere.
+     * Si parenta quindi alla finestra attiva, che è il popup quando c'è e la finestra di
+     * gioco quando non c'è.
+     */
+    private void reportRemotePlayProblem(String message) {
+        System.err.println("[NET] " + message);
+        Runnable show = () -> JOptionPane.showMessageDialog(activeWindow(), message,
+                Messages.t("error.title"), JOptionPane.ERROR_MESSAGE);
+        if (SwingUtilities.isEventDispatchThread()) {
+            show.run();
+        } else {
+            SwingUtilities.invokeLater(show);
+        }
+    }
+
+    /** La finestra a cui parentare un messaggio perché non finisca bloccato da un modale. */
+    private java.awt.Window activeWindow() {
+        java.awt.Window active = java.awt.KeyboardFocusManager
+                .getCurrentKeyboardFocusManager().getActiveWindow();
+        if (active != null && active.isShowing()) {
+            return active;
+        }
+        // Applicazione in secondo piano: nessuna finestra è attiva, ma se c'è un dialog
+        // modale aperto il messaggio deve comunque appenderglisi.
+        java.awt.Window modal = modalDialog();
+        return modal != null ? modal : frame;
+    }
+
+    private boolean modalDialogShowing() {
+        return modalDialog() != null;
+    }
+
+    private java.awt.Window modalDialog() {
+        java.awt.Window found = null;
+        for (java.awt.Window w : java.awt.Window.getWindows()) {
+            if (w instanceof java.awt.Dialog d && d.isModal() && d.isShowing()) {
+                found = d;   // l'ultimo aperto è quello che blocca gli altri
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Lato ospite: aggancia gli adapter di input veri a un {@link RemoteInputSender}
+     * invece che a una macchina.
+     *
+     * <p>Sono gli <b>stessi</b> adapter che pilotano l'emulazione — quelli con dentro la
+     * traduzione dei tasti, la cattura del puntatore, la mappa del joystick da tastiera —
+     * e non si accorgono di niente: scrivono su {@code GamePortControls} e
+     * {@code AmigaKeyTarget}, e qui dietro c'è la rete al posto dei registri. Si gioca
+     * esattamente come in locale, mouse catturato compreso.
+     *
+     * <p><b>Quale porta, e cosa ci sta dentro, sono due decisioni diverse.</b> La porta la
+     * assegna l'host — è la sua macchina, e deve poter tenere per sé quella su cui gioca —
+     * ma la periferica la sceglie l'ospite, nella tendina di <i>quella</i> porta del proprio
+     * popup F12. È ciò che rende sensato il caso normale: chi si collega gioca col proprio
+     * joystick, o coi propri tasti se il joystick lo emula sulla tastiera. I tasti sono i
+     * suoi, letti dalla sua {@code amiga.properties}; quelli dell'host non c'entrano nulla e
+     * non hanno mai attraversato la rete. Il cablaggio vero sta in
+     * {@link #applyGuestPortAssignment()}, che è anche ciò che ogni conferma del popup
+     * richiama — così cambiare periferica a partita in corso funziona.
+     *
+     * <p>F12 non arriva fin qui: {@code installConfigHotkey} lo consuma prima, quindi apre
+     * il popup <b>di questa</b> macchina e non tocca quella dell'host.
+     */
+    private void installGuestInput() {
+        remoteInputSender = new RemoteInputSender();
+        attachGuestInput();
+    }
+
+    /**
+     * Aggancia gli adapter dell'ospite al componente di input corrente, <b>senza</b> toccare
+     * il {@link RemoteInputSender}.
+     *
+     * <p>Separata da {@link #installGuestInput()} per una ragione precisa: rifare il sender
+     * vuol dire riportare a zero i <b>contatori cumulativi del mouse</b>, e l'host applica la
+     * loro differenza. Siccome la generazione di sessione non cambia, l'host non ha modo di
+     * accorgersi che l'origine è cambiata e calcolerebbe un delta grande quanto tutto il
+     * movimento fatto fin lì: il puntatore sull'Amiga farebbe un salto. Quando a cambiare è
+     * solo la finestra — ed è per quello che questa esiste — i contatori devono proseguire.
+     */
+    private void attachGuestInput() {
+        remotePlayGuest.setInputSource(remoteInputSender::snapshot);
+
+        joystickAdapter = new AmigaJoystickKeyAdapter();
+        keyAdapter = new AmigaKeyAdapter(remoteInputSender, frame);
+        mouseAdapter = new AmigaMouseAdapter(remoteInputSender, frame,
+                display != null ? display.getVideoScale() : 1);
+        applyGuestPortAssignment();
+
+        if (inputComponent != null) {
+            // Stesso ordine dell'emulazione: il joystick prima, perché consuma i tasti
+            // mappati su direzioni e fuoco, che non vanno anche alla tastiera Amiga.
+            inputComponent.addKeyListener(joystickAdapter);
+            inputComponent.addKeyListener(keyAdapter);
+            inputComponent.addMouseListener(mouseAdapter);
+            inputComponent.addMouseMotionListener(mouseAdapter);
+            inputComponent.setFocusTraversalKeysEnabled(false);
+            inputComponent.requestFocusInWindow();
+        }
+    }
+
+    /**
+     * Il «riavvio a freddo» di un ospite: si rifà la finestra, e basta.
+     *
+     * <p>{@link #coldRestart()} non va bene qui, e non per poco: finisce in
+     * {@code bootMachine()}, cioè costruirebbe un'Amiga locale sotto il video che sta
+     * arrivando dall'host. Delle impostazioni che lo richiedono, a un ospite ne riguardano
+     * solo quelle della finestra — overscan, zoom, modo finestra, monitor, renderer — e per
+     * quelle serve esattamente questo: display nuovo, adapter riagganciati al componente
+     * nuovo (quello di prima è stato buttato via con la finestra), spia di rete ricollegata
+     * perché le sue sorgenti stanno sul display.
+     */
+    private void recreateGuestDisplay() {
+        // Prima di buttare la finestra: gli adapter vanno fermati, non solo dimenticati —
+        // dentro ci sono un poller di tastiera e un listener di focus.
+        detachInputAdapters();
+        recreateDisplay();
+        attachGuestInput();
+        attachRemotePlayLed();
+    }
+
+    /**
+     * Collega i controlli dell'ospite alla macchina: la game port che l'host gli ha
+     * assegnato e, se concessa, la tastiera.
+     *
+     * <p>Va rifatto a ogni riavvio a freddo, perché la game port e la tastiera di prima non
+     * esistono più. Se la macchina non c'è ancora, si stacca e basta: l'ospite continua a
+     * vedere il video senza toccare niente.
+     */
+    private void attachRemoteInput() {
+        if (remotePlayHost == null) return;
+        // Port 0 dell'utente = gamePort1 (mouse/JOY0DAT), Port 1 = gamePort2 (joystick).
+        GamePort target = remotePlaySettings.guestGamePort() == 0 ? gamePort1 : gamePort2;
+        if (target == null) {
+            remotePlayHost.setInputTarget(null);
+            return;
+        }
+        remotePlayHost.setInputTarget(new RemoteInputApplier(target,
+                remotePlaySettings.guestKeyboard() ? keyboard : null,
+                remotePlaySettings.guestAllowReset()));
+        // Quella porta ora è dell'ospite: gli adapter locali che ci puntavano vanno tolti
+        // di lì, o mouse e joystick dell'host continuerebbero a scriverci sopra.
+        applyPortAssignments();
+
+        // L'audio va derivato dal nuovo Paula: quello di prima non esiste più.
+        if (paula != null) {
+            RemotePlayHost host = remotePlayHost;
+            paula.setPcmTap(remotePlaySettings.audioFormat() == 0
+                    ? null : host::submitAudio);
+        }
+    }
+
+    // =========================================================================
+    // RemotePlayControl: quello che il popup F12 comanda (§9)
+    // =========================================================================
+
+    @Override
+    public boolean isHosting() {
+        return remotePlayHost != null;
+    }
+
+    @Override
+    public boolean hasGuest() {
+        return remotePlayHost != null && remotePlayHost.hasGuest();
+    }
+
+    @Override
+    public boolean isGuest() {
+        RemotePlayGuest guest = remotePlayGuest;
+        return guest != null && guest.isAlive();
+    }
+
+    @Override
+    public int remoteGamePort() {
+        RemotePlayGuest guest = remotePlayGuest;
+        if (guest != null) {
+            // Da ospite vale quel che ha detto l'host nel WELCOME, non la propria
+            // configurazione: quella dice a chi ospita quale porta cederebbe, che qui non
+            // c'entra. Confonderle vorrebbe dire mostrare all'utente la tendina sbagliata.
+            return guest.gamePort();
+        }
+        return hostedGuestPort();
+    }
+
+    @Override
+    public boolean isJoining() {
+        return joining;
+    }
+
+    @Override
+    public String joinCode() {
+        return remotePlayHost == null ? null : remotePlayHost.joinCode();
+    }
+
+    @Override
+    public String lanAddress() {
+        if (remotePlayHost == null) return null;
+        return localAddress() + ":" + remotePlayHost.port();
+    }
+
+    @Override
+    public String internetAddress() {
+        // Lo dice il router, non lo si indovina: un indirizzo inventato manda l'utente a
+        // cercare il problema dove non c'è. Finché UPnP non ha risposto, si tace.
+        PortMapper mapper = portMapper;
+        return mapper == null || mapper.state() != PortMapper.State.MAPPED
+                ? null : mapper.externalAddress();
+    }
+
+    /**
+     * A che punto è l'apertura della porta sul router, in una riga leggibile.
+     *
+     * <p>{@code null} quando non c'è niente da dire, cioè quando UPnP non è stato chiesto:
+     * una riga «non richiesto» sarebbe rumore in un popup che ne ha già tante.
+     */
+    @Override
+    public String routerStatus() {
+        PortMapper mapper = portMapper;
+        if (mapper == null) {
+            // Con la sola rete locale accesa la porta non si chiede apposta, e vale la pena
+            // dirlo: è la differenza fra «UPnP non ha funzionato» e «non gliel'ho chiesto».
+            return isHosting() && config.remotePlayUpnp() && config.remotePlayLanOnly()
+                    ? Messages.t("msg.remoteplay.upnp.lanonly") : null;
+        }
+        return switch (mapper.state()) {
+            case SEARCHING -> Messages.t("msg.remoteplay.upnp.searching");
+            case MAPPED -> Messages.t("msg.remoteplay.upnp.mapped", mapper.externalAddress());
+            case NO_GATEWAY -> Messages.t("msg.remoteplay.upnp.nogateway");
+            case REFUSED -> Messages.t("msg.remoteplay.upnp.refused",
+                    String.valueOf(mapper.detail()));
+            case CARRIER_NAT -> Messages.t("msg.remoteplay.upnp.cgnat",
+                    String.valueOf(mapper.externalIp()));
+            case OFF -> null;
+        };
+    }
+
+    @Override
+    public String status() {
+        if (joining) {
+            return Messages.t("msg.remoteplay.connecting", joiningAddress);
+        }
+        RemotePlayGuest guest = remotePlayGuest;
+        if (guest != null) {
+            if (!guest.isAlive()) return Messages.t("msg.remoteplay.disconnected");
+            if (guest.hostPaused()) return Messages.t("msg.remoteplay.paused");
+            var receiver = guest.receiver();
+            return Messages.t("msg.remoteplay.guestconnected",
+                    receiver.framesDelivered(), receiver.droppedIncomplete());
+        }
+        if (remotePlayHost != null) {
+            if (!remotePlayHost.hasGuest()) return Messages.t("msg.remoteplay.waiting");
+            var sender = remotePlayHost.videoSender();
+            long frames = sender == null ? 0 : sender.framesSent();
+            return Messages.t("msg.remoteplay.hostconnected",
+                    frames, remotePlayHost.framesDroppedBusy());
+        }
+        // L'esito negativo resta scritto qui anche dopo che l'utente ha chiuso il messaggio:
+        // il popup è l'unico posto in cui può rileggere perché non è andata.
+        String error = remotePlayLastError;
+        return error != null ? error : Messages.t("msg.remoteplay.off");
+    }
+
+    @Override
+    public String startHosting() {
+        if (remotePlayHost != null) return null;
+        try {
+            remotePlaySettings = new RemotePlaySettings(RemotePlaySettings.Mode.HOST, null,
+                    config.remotePlayPort(), null, config.remotePlayBind(),
+                    config.remotePlayGuestPort(), config.remotePlayGuestKeyboard(),
+                    config.remotePlayGuestAllowReset(), audioFormatFromConfig());
+            remotePlayHost = new RemotePlayHost(remotePlaySettings.port(),
+                    remotePlaySettings.bindAddress(), null,
+                    VirtualCRT.RAW_WIDTH, VirtualCRT.RAW_HEIGHT,
+                    NetImpairment.fromSystemProperties(),
+                    remotePlaySettings.guestGamePort(), remotePlaySettings.guestKeyboard(),
+                    remotePlaySettings.audioFormat(), config.remotePlayLanOnly());
+            remotePlayHost.start();
+            attachRemoteInput();
+            openRouterPort(remotePlayHost.port());
+            if (virtualCRT != null) virtualCRT.setRemotePlayHost(remotePlayHost);
+            return null;
+        } catch (IOException e) {
+            remotePlayHost = null;
+            return Messages.t("msg.remoteplay.hostfailed", config.remotePlayPort(),
+                    e.getMessage());
+        }
+    }
+
+    @Override
+    public void stopHosting() {
+        shutdownHostSession();
+    }
+
+    @Override
+    public String requestJoin(String address, String code) {
+        if (joining || isGuest()) {
+            return null;   // già in corso o già collegati: il popup si riallinea da sé
+        }
+        if (address == null || address.isBlank()) {
+            return Messages.t("msg.remoteplay.noaddress");
+        }
+        if (!JoinCode.isWellFormed(code)) {
+            return Messages.t("msg.remoteplay.badcode");
+        }
+        final String host = address.trim();
+        final String joinCode = code.trim();
+        synchronized (this) {
+            joinCancelled = false;
+        }
+        joiningAddress = host;
+        remotePlayLastError = null;
+        joining = true;
+        Thread connect = new Thread(() -> connectToHost(host, joinCode),
+                "amija-remoteplay-connect");
+        connect.setDaemon(true);
+        connect.start();
+        return null;
+    }
+
+    /**
+     * Il tentativo di collegamento, su un thread suo.
+     *
+     * <p>Fuori dall'EDT perché l'handshake può metterci secondi — connessione TCP, PBKDF2 a
+     * 120k iterazioni, e fino a dieci secondi di attesa su ogni lettura — e l'EDT è
+     * esattamente il thread che in quei secondi deve continuare a disegnare il popup e a
+     * dire «connessione in corso».
+     *
+     * <p><b>La macchina locale non viene toccata.</b> Resta montata e in pausa: se il
+     * collegamento fallisce non c'è niente da ricostruire, e se riesce il video arriva già
+     * mentre il popup è ancora aperto — che è il modo più diretto di far vedere che la cosa
+     * funziona. A smontarla si arriva solo con l'OK dell'utente.
+     */
+    private void connectToHost(String address, String joinCode) {
+        int colon = address.lastIndexOf(':');
+        String hostPart = colon > 0 ? address.substring(0, colon) : address;
+        int port = colon > 0 ? parsePortOrDefault(address.substring(colon + 1))
+                             : config.remotePlayPort();
+        RemotePlaySettings settings = new RemotePlaySettings(
+                RemotePlaySettings.Mode.GUEST, hostPart, port, joinCode,
+                config.remotePlayBind(), config.remotePlayGuestPort(),
+                config.remotePlayGuestKeyboard(), config.remotePlayGuestAllowReset(),
+                audioFormatFromConfig());
+
+        RemotePlayGuest guest = null;
+        String failure = null;
+        try {
+            guest = RemotePlayGuest.connect(hostPart, port, joinCode,
+                    NetImpairment.fromSystemProperties(), guestFrameSink());
+        } catch (IOException e) {
+            failure = Messages.t("msg.remoteplay.joinfailed", address, joinFailureCause(e));
+        }
+
+        synchronized (this) {
+            if (guest != null && joinCancelled) {
+                // L'utente ha annullato mentre eravamo in volo (popup chiuso senza OK, o
+                // «Disconnetti» premuto subito): la sessione appena aperta si chiude e non
+                // se ne parla più. Senza questo resterebbe viva una sessione che nessuno
+                // ha più modo di vedere né di fermare.
+                guest.close();
+                guest = null;
+                failure = null;
+            }
+            if (guest != null) {
+                // La sessione si pubblica per ULTIMA: è il campo volatile su cui l'EDT si
+                // sincronizza, quindi tutto ciò che dovrà leggere dopo averlo visto pieno
+                // — a partire dai parametri di sessione — dev'essere già stato scritto.
+                remotePlaySettings = settings;
+                config.setRemotePlayLastHost(address);
+                remotePlayGuest = guest;
+            }
+            remotePlayLastError = failure;
+            joining = false;
+        }
+
+        if (guest != null) {
+            attachRemotePlayLed();
+            startGuestWatchdog(guest);
+        } else if (failure != null) {
+            reportRemotePlayProblem(failure);
+        }
+    }
+
+    @Override
+    public boolean requestLeave() {
+        if (!guestMode) {
+            // La macchina locale non è mai stata smontata: basta chiudere la sessione, e il
+            // popup può restare aperto com'era.
+            cancelGuestSession();
+            return false;
+        }
+        pendingLeave = true;
+        return true;
+    }
+
+    /** Chiude la sessione verso l'host, compresa quella che si sta ancora aprendo. */
+    private void cancelGuestSession() {
+        synchronized (this) {
+            joinCancelled = true;
+        }
+        shutdownGuestSession();
+        remotePlayLastError = null;
+    }
+
+    /**
+     * Aggancia la spia "NET" dell'overscan allo stato della sessione.
+     *
+     * <p>Va rifatto a ogni ricreazione del display, perché le sorgenti stanno sul display
+     * e quello di prima è stato buttato via.
+     */
+    private void attachRemotePlayLed() {
+        if (display == null) return;
+        display.setRemotePlayLedSource(
+                () -> isHosting() || isGuest() || joining,
+                () -> {
+                    if (hasGuest()) return true;
+                    // Una lettura sola del campo: fra "c'è una sessione" e "è in pausa" può
+                    // essercene stata una chiusura, e la seconda lettura sarebbe un null.
+                    RemotePlayGuest guest = remotePlayGuest;
+                    return guest != null && guest.isAlive() && !guest.hostPaused();
+                });
+    }
+
+    /** Formato audio dalla configurazione, nella forma che il protocollo usa. */
+    private int audioFormatFromConfig() {
+        return switch (config.remotePlayAudioMode()) {
+            case "pcm16", "pcm" -> AudioBlockHeader.FORMAT_PCM16;
+            case "off" -> 0;
+            default -> AudioBlockHeader.FORMAT_ADPCM;
+        };
+    }
+
+    /**
+     * L'indirizzo di questa macchina sulla rete locale.
+     *
+     * <p>Il trucco della {@code connect} su un indirizzo esterno (§7.2): non manda un solo
+     * byte — UDP non stabilisce niente — ma costringe il sistema a scegliere l'interfaccia
+     * con cui uscirebbe, che è quella giusta da mostrare. {@code InetAddress.getLocalHost()}
+     * su una macchina con più schede restituisce spesso quella sbagliata.
+     */
+    private String localAddress() {
+        try (java.net.DatagramSocket probe = new java.net.DatagramSocket()) {
+            probe.connect(java.net.InetAddress.getByName("8.8.8.8"), 53);
+            return probe.getLocalAddress().getHostAddress();
+        } catch (Exception e) {
+            return "127.0.0.1";
+        }
+    }
+
+    /**
+     * Esegue la transizione a ospite (o il ritorno a macchina) decisa nel popup.
+     *
+     * <p>Fuori dal dialog, e non per pignoleria: un ospite non emula niente, quindi unirsi
+     * vuol dire <b>smontare la macchina</b>, e farlo sull'EDT dentro una finestra modale
+     * mentre il thread di emulazione gira è il modo di collezionare guasti intermittenti.
+     */
+    private boolean applyPendingRemotePlayTransition() {
+        if (pendingLeave) {
+            pendingLeave = false;
+            leaveGuestMode();
+            return true;
+        }
+        if (guestMode || !isGuest()) {
+            // Niente da smontare: o lo si è già, oppure la sessione è caduta fra l'OK e
+            // adesso, e allora la macchina locale — mai smontata — deve ripartire.
+            return false;
+        }
+        // La sessione è già aperta e sta già disegnando (connectToHost). Qui resta la sola
+        // cosa che da dentro il popup non si poteva fare: smontare la macchina.
+        shutdownMachine();
+        guestMode = true;
+        installGuestInput();
+        attachRemotePlayLed();
+        return true;
+    }
+
+    /**
+     * Torna a essere una macchina normale dopo essere stato un ospite.
+     *
+     * <p>{@link #shutdownMachine()} va chiamato anche se di macchina non ce n'è: i campi
+     * degli adapter di input sono occupati da quelli dell'ospite, che sono agganciati al
+     * componente di input e vanno staccati. Senza, il boot ne aggiungerebbe una seconda
+     * serie sopra la prima e ogni tasto verrebbe consegnato due volte.
+     */
+    private void leaveGuestMode() {
+        shutdownGuestSession();
+        shutdownMachine();
+        guestMode = false;
+        if (validateRom(config)) {
+            bootMachine();
+        }
+    }
+
+    /**
+     * Riallinea macchina e sessione dopo la chiusura del popup, per tutti i casi che non
+     * sono la transizione confermata.
+     *
+     * @return {@code true} se ha già rimesso in piedi la macchina e il chiamante non deve
+     *         fare altro
+     */
+    private boolean settleRemotePlayAfterConfig(ConfigDialog.Result result) {
+        if (result == ConfigDialog.Result.REMOTE_PLAY_TRANSITION) {
+            return false;   // se ne occupa il ramo dedicato dello switch
+        }
+        if (guestMode) {
+            if (!isGuest()) {
+                // La sessione è caduta mentre il popup era aperto: l'avviso l'utente l'ha
+                // già visto (onRemoteSessionLost), ma la macchina va ricostruita qui, che è
+                // fuori dal dialog modale.
+                leaveGuestMode();
+                return true;
+            }
+            return false;
+        }
+        if (joining || isGuest()) {
+            // Ci si è collegati dal popup ma non si è confermato con OK. Confermare è
+            // l'atto che smonta la macchina locale: senza, la sessione va chiusa, o si
+            // resterebbe con l'emulazione locale e il video dell'host sullo stesso schermo.
+            cancelGuestSession();
+        }
+        return false;
+    }
+
+    private int parsePortOrDefault(String text) {
+        try {
+            int p = Integer.parseInt(text.trim());
+            return p > 0 && p <= 65535 ? p : config.remotePlayPort();
+        } catch (NumberFormatException e) {
+            return config.remotePlayPort();
+        }
+    }
+
+    /** Chiude la sessione di gioco a distanza, da qualunque lato la si stia tenendo. */
+    private void shutdownRemotePlay() {
+        shutdownHostSession();
+        shutdownGuestSession();
+    }
+
+    /** Smette di ospitare e stacca video e audio dalla rete. */
+    private void shutdownHostSession() {
+        closeRouterPort();
+        if (remotePlayHost == null) return;
+        if (virtualCRT != null) {
+            virtualCRT.setRemotePlayHost(null);
+        }
+        if (paula != null) {
+            paula.setPcmTap(null);
+        }
+        remotePlayHost.close();
+        remotePlayHost = null;
+        // La porta ceduta all'ospite torna a chi possiede la macchina, con la periferica
+        // che la sua configurazione le assegna: senza questo resterebbe vuota, e chi ha
+        // appena smesso di ospitare si ritroverebbe una game port morta.
+        applyPortAssignments();
+    }
+
+    /**
+     * Chiude la sessione verso l'host, e <b>solo</b> quella: i due ruoli si spengono
+     * separatamente perché annullare un collegamento non deve smettere di ospitare.
+     */
+    private void shutdownGuestSession() {
+        RemotePlayGuest guest = remotePlayGuest;
+        if (guest == null) return;
+        // Il campo si azzera PRIMA della chiusura: il sorvegliante confronta la sessione che
+        // ha visto morire con quella corrente, e deve trovarla già sostituita per sapere che
+        // a chiuderla siamo stati noi e che non c'è niente da annunciare.
+        remotePlayGuest = null;
+        guest.close();
     }
 
     /** Registra la hotkey globale F12 (apre il popup di configurazione). */
@@ -288,6 +1152,9 @@ public class Amija {
     private void openConfig() {
         boolean wasRunning = clock != null && clock.isRunning();
         if (clock != null) clock.pause();
+        // Il popup è modale e mette in pausa: senza avvisarlo, l'ospite vedrebbe lo
+        // schermo fermo e crederebbe di aver perso il collegamento (§9).
+        if (remotePlayHost != null) remotePlayHost.notifyPaused(true);
         if (mouseAdapter != null) mouseAdapter.release();
         boolean exclusiveFullScreenSuspended = display != null && display.suspendExclusiveFullScreen();
 
@@ -323,7 +1190,18 @@ public class Amija {
 
         ConfigDialog.Result result = ConfigDialog.show(frame, config,
                 this::takeScreenshotFile, this::updateShaderParam,
-                this::saveState, this::loadState);
+                this::saveState, this::loadState, this);
+
+        // Mentre il popup era aperto una sessione di gioco a distanza può essersi aperta
+        // (il pulsante «Collega» agisce subito) o essere caduta. Montare e smontare
+        // macchine è roba da qui, non da dentro un dialog modale.
+        if (settleRemotePlayAfterConfig(result)) {
+            if (exclusiveFullScreenSuspended && display != null) {
+                display.resumeExclusiveFullScreen();
+            }
+            recaptureMouse();
+            return;
+        }
         boolean displayRecreated = false;
         switch (result) {
             case OK -> {
@@ -335,17 +1213,31 @@ public class Amija {
                     relaunchApplication(); // non ritorna se il rilancio riesce
                 }
                 applyRuntimeInputConfig();
-                boolean needsColdRestart =
+                boolean windowChanged =
                         displayConfigChanged(oldOverscan, oldIntegerScaling, oldWindowMode,
                                 oldMonitorIndex)
                         || oldVideoMode != config.videoMode()
+                        || oldRenderer != config.renderer();
+                boolean needsColdRestart = windowChanged
                         || oldChipset != config.chipset()
-                        || oldRenderer != config.renderer()
                         || !oldKickstart.equals(config.kickstartPath())
                         || oldChipRam != config.chipRamKb()
                         || oldSlowRam != config.slowRamKb()
                         || oldFastRam != config.fastRamKb();
-                if (needsColdRestart) {
+                if (guestMode) {
+                    // Un ospite non ha macchina da riavviare: dei parametri qui sopra gli
+                    // riguardano solo quelli della finestra, e la sola cosa che va rifatta
+                    // è quella. Il resto — Kickstart, memorie, chipset — descrive una
+                    // macchina che qui non esiste, e riavviarla per applicarli vorrebbe
+                    // dire costruirla mentre si sta guardando quella di qualcun altro.
+                    if (windowChanged) {
+                        recreateGuestDisplay();
+                        displayRecreated = true;
+                    } else if (config.renderer() == RendererType.OPENGL
+                            && !oldShader.equals(config.shader())) {
+                        display.setShaderPreset(resolveShaderPath(config.shader()));
+                    }
+                } else if (needsColdRestart) {
                     // Nessun rilancio della JVM: da quando lo scaling e' applicato da
                     // AmigaDisplay e non da sun.java2d.uiScale, integer scaling e
                     // renderer si applicano ricreando finestra e macchina, che resta
@@ -377,7 +1269,14 @@ public class Amija {
                 if (!oldUiScale.equals(config.uiScaleValue())) {
                     relaunchApplication(); // non ritorna se il rilancio riesce
                 }
-                coldRestart();
+                // Da ospite il pulsante «Riavvia» non c'è nemmeno (non c'è la macchina che
+                // riavvierebbe); se ci si arrivasse lo stesso, si rifà la sola finestra —
+                // costruire un'Amiga qui vorrebbe dire metterla sotto il video dell'host.
+                if (guestMode) {
+                    recreateGuestDisplay();
+                } else {
+                    coldRestart();
+                }
                 displayRecreated = true;
             }
             case SOFT_RESET -> {
@@ -396,9 +1295,26 @@ public class Amija {
                 JOptionPane.showMessageDialog(frame, msg, Messages.t("app.title"),
                         JOptionPane.INFORMATION_MESSAGE);
             }
+            case REMOTE_PLAY_TRANSITION -> {
+                // Confermare un collegamento smonta la macchina; lasciare la sessione la
+                // rimonta. Il popup non fa né l'una né l'altra: qui c'è il posto giusto,
+                // fuori dal dialog modale e sullo stesso percorso del riavvio a freddo.
+                saveConfig();
+                if (!applyPendingRemotePlayTransition()) {
+                    // Non c'era più niente da applicare (la sessione è caduta fra l'OK e
+                    // adesso): la macchina locale è ancora lì, in pausa, e va ripresa.
+                    resumeOrStart();
+                }
+                if (exclusiveFullScreenSuspended && display != null) {
+                    display.resumeExclusiveFullScreen();
+                }
+                recaptureMouse();
+                return;   // niente altro: la macchina o non c'è o è appena partita
+            }
             case CANCEL -> resumeOrStart();
             case QUIT -> { System.exit(0); return; } // lo shutdown hook spegne la macchina
         }
+        if (remotePlayHost != null) remotePlayHost.notifyPaused(false);
         if (exclusiveFullScreenSuspended && !displayRecreated && display != null) {
             display.resumeExclusiveFullScreen();
         }
@@ -576,7 +1492,11 @@ public class Amija {
     }
 
     private void applyRuntimeInputConfig() {
-        applyPortAssignments();
+        if (guestMode) {
+            applyGuestPortAssignment();
+        } else {
+            applyPortAssignments();
+        }
     }
 
     /**
@@ -588,6 +1508,14 @@ public class Amija {
      * <p>Idempotente e sicuro a caldo: reindirizza gli adapter mouse/tastiera sulla porta
      * corretta (abilitandoli/disabilitandoli) e comunica al servizio GLFW l'elenco delle
      * porte che usano un joystick reale.
+     *
+     * <p><b>La porta dell'ospite non è dell'host.</b> Mentre si ospita, la game port
+     * assegnata all'ospite è fuori da questa funzione: cosa ci sia collegato lo decide lui
+     * dal <i>suo</i> popup, e arriva nel pacchetto di feedback ({@code RemoteInputApplier}).
+     * L'host non le assegna una periferica, non ci punta il mouse e non ci manda il joystick
+     * — altrimenti la prima conferma dell'F12 locale scavalcherebbe la scelta dell'ospite,
+     * e i due si contenderebbero la stessa porta a colpi di configurazione. La porta resta
+     * riservata anche mentre l'ospite non c'è: sta per arrivare, o è appena caduto.
      */
     private void applyPortAssignments() {
         if (gamePort1 == null || gamePort2 == null) return;
@@ -595,9 +1523,14 @@ public class Amija {
         PortDevice d0 = config.portDevice(0); // "Port 0" -> game port 1 (mouse/JOY0DAT)
         PortDevice d1 = config.portDevice(1); // "Port 1" -> game port 2 (joystick/JOY1DAT)
 
+        // La porta ceduta all'ospite esce di scena qui: per l'host è come se non ci fosse.
+        int guestPort = hostedGuestPort();
+        if (guestPort == 0) d0 = null;
+        if (guestPort == 1) d1 = null;
+
         // Periferica hardware riportata da ciascuna porta (per le letture JOYxDAT/POTINP).
-        gamePort1.setDevice(d0.hardwareDevice());
-        gamePort2.setDevice(d1.hardwareDevice());
+        if (d0 != null) gamePort1.setDevice(d0.hardwareDevice());
+        if (d1 != null) gamePort2.setDevice(d1.hardwareDevice());
 
         // Mouse host -> porta impostata su MOUSE (priorità a "Port 0" in caso di doppia).
         GamePort mousePort = (d0 == PortDevice.MOUSE) ? gamePort1
@@ -623,6 +1556,72 @@ public class Amija {
         if (d0 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort1);
         if (d1 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort2);
         joystickService.setPorts(realPorts);
+
+        // La porta ceduta si dichiara vuota, e per ULTIMA. Staccare da lì gli adapter
+        // dell'host li fa rilasciare quel che tenevano premuto — cosa giusta e necessaria —
+        // ma ogni rilascio fa dedurre alla GamePort una periferica, e resterebbe un
+        // joystick fermo su una porta in cui non c'è collegato niente.
+        //
+        // Solo però se l'ospite NON è collegato. Se sta giocando, quella porta è già sua e
+        // ciò che c'è dentro lo dice lui a ogni pacchetto: azzerarla qui — perché l'host ha
+        // confermato il proprio popup per tutt'altro motivo — gli toglierebbe il joystick di
+        // sotto per il tempo di un fotogramma, in mezzo a una partita.
+        if (!hasGuest()) {
+            if (guestPort == 0) gamePort1.setDevice(GamePortDevice.NONE);
+            if (guestPort == 1) gamePort2.setDevice(GamePortDevice.NONE);
+        }
+    }
+
+    /**
+     * Lato ospite: cabla i propri adapter alla porta che l'host gli ha assegnato, secondo
+     * la periferica che <b>lui</b> ha scelto nella tendina di quella porta.
+     *
+     * <p>È il gemello di {@link #applyPortAssignments()} per una macchina che non emula
+     * niente: al posto della {@code GamePort} c'è {@link RemoteInputSender}, e i gesti
+     * finiscono in un pacchetto invece che in un registro. Tutto il resto è identico, e
+     * volutamente — il joystick da tastiera legge la mappa tasti <b>locale</b>
+     * ({@code input.portN.joystick.*} di questa macchina), che è il punto di tutta la
+     * faccenda: i tasti con cui si gioca sono i propri, non quelli di chi ospita.
+     *
+     * <p>L'altra porta viene sconfigurata: è la porta dell'host, e non c'è nessun modo
+     * sensato di pilotarla da qui.
+     */
+    private void applyGuestPortAssignment() {
+        RemotePlayGuest guest = remotePlayGuest;
+        if (remoteInputSender == null || guest == null) return;
+
+        int mine = guest.gamePort();
+        PortDevice device = config.portDevice(mine);
+
+        if (mouseAdapter != null) {
+            mouseAdapter.setEnabled(device == PortDevice.MOUSE);
+        }
+        if (joystickAdapter != null) {
+            // L'altra porta esiste sulla macchina dell'host e non è raggiungibile da qui:
+            // configurarla vorrebbe dire consumare i tasti dell'utente per niente.
+            joystickAdapter.configure(1 - mine, null, config.joystickKeyMap(1 - mine));
+            joystickAdapter.configure(mine,
+                    device == PortDevice.JOYSTICK_KEYBOARD ? remoteInputSender : null,
+                    config.joystickKeyMap(mine));
+        }
+        joystickService.setPorts(device == PortDevice.JOYSTICK_REAL
+                ? java.util.List.of(remoteInputSender) : java.util.List.of());
+
+        // Per ULTIMA: sconfigurare gli adapter qui sopra li fa rilasciare quel che tenevano
+        // premuto, e ogni rilascio fa dedurre al sender una periferica. Se la scelta la
+        // dichiarasse prima, un passaggio a «Vuota» si riscriverebbe da sé in «Joystick».
+        remoteInputSender.setDevice(device.hardwareDevice());
+    }
+
+    /**
+     * La game port che questa macchina ha ceduto a un ospite, o {@code -1} se non ospita.
+     *
+     * <p>Volutamente indipendente dal fatto che un ospite ci sia <i>adesso</i>: la porta è
+     * assegnata dal momento in cui si comincia ad ascoltare, e restituirla all'host fra un
+     * ospite e il successivo vorrebbe dire vedersela sfilare da sotto a metà partita.
+     */
+    private int hostedGuestPort() {
+        return remotePlayHost == null ? -1 : remotePlaySettings.guestGamePort();
     }
 
     private void applyFloppySounds(FloppyDrive[] drives) {
@@ -908,8 +1907,21 @@ public class Amija {
         }
     }
 
-    /** Riprende la macchina in pausa, oppure la avvia se non era in esecuzione. */
+    /**
+     * Riprende l'emulazione dopo il popup, o la avvia se non era mai partita.
+     *
+     * <p><b>Da ospite non fa niente, ed è la parte che conta.</b> Un ospite non emula (§3):
+     * non ha un {@code MasterClock} da riprendere, e il ramo «allora avviala» costruirebbe
+     * una macchina locale <i>sotto</i> il video che continua ad arrivare dall'host — due
+     * Amiga che disegnano sulla stessa finestra. Ci si arrivava da ogni chiusura del popup,
+     * OK e Annulla comprese, perché per un ospite {@code clock} è sempre {@code null}. È
+     * diventato un percorso di tutti i giorni da quando l'ospite ha nel popup qualcosa che
+     * gli serve davvero: la tendina della propria game port.
+     */
     private void resumeOrStart() {
+        if (guestMode) {
+            return;
+        }
         if (clock != null && clock.isRunning()) {
             clock.resume();
         } else if (validateRom(config)) {
@@ -1039,9 +2051,16 @@ public class Amija {
             setupHardDisks(agnus);
 
             virtualCRT = new VirtualCRT(agnus, denise, display);
+            // La sessione di gioco a distanza sopravvive ai riavvii della macchina:
+            // l'ospite vede semplicemente il reboot, invece di perdere il collegamento.
+            // I suoi controlli vanno però riagganciati: game port e tastiera sono nuove.
+            if (remotePlayHost != null) {
+                virtualCRT.setRemotePlayHost(remotePlayHost);
+            }
 
             Keyboard keyboard = new Keyboard(ciaA);
             agnus.setKeyboard(keyboard);
+            this.keyboard = keyboard;
 
             // Adapter di input (ricreati a ogni avvio: legano i nuovi port/keyboard).
             // La porta di destinazione e lo stato abilitato di mouse/joystick-tastiera
@@ -1071,6 +2090,10 @@ public class Amija {
             // joystick da tastiera / vuota) secondo la configurazione.
             applyPortAssignments();
 
+            // I controlli dell'ospite vanno riagganciati alle nuove game port e tastiera:
+            // quelle della macchina precedente non esistono più.
+            attachRemoteInput();
+
             // Drive (DF0..DF3): collegamento e disco da inserire all'avvio. Se DF0 ha
             // uno zip multi-disco, i dischi successivi popolano i drive liberi.
             syncZipDiskSet(null);
@@ -1094,6 +2117,7 @@ public class Amija {
             // Il LED HD riflette gli hard disk presenti (WHDLoad e/o master/slave, in ordine).
             display.setStatusLedSource(ciaA::isPowerLedOn);
             display.setHdLedSources(hdLedSources.toArray(new java.util.function.BooleanSupplier[0]));
+            attachRemotePlayLed();
             display.setStatusLedsEnabled(config.ledsVisible());
 
             // Overlay diagnostici opzionali (solo da amiga.properties, non nel popup F12).
@@ -1248,6 +2272,25 @@ public class Amija {
             hf.flush();
         }
         hardFiles.clear();
+        detachInputAdapters();
+        gamePort1 = null;
+        gamePort2 = null;
+        cpu = null;
+        agnus = null;
+    }
+
+    /**
+     * Stacca gli adapter di input dal componente e li smonta.
+     *
+     * <p>Non basta lasciarli andare: {@code keyAdapter} tiene un <b>poller fisico</b> della
+     * tastiera e {@code mouseAdapter} un listener di focus sul frame. Rimpiazzarli senza
+     * fermarli lascerebbe in giro un thread per ogni volta che li si è rifatti, e i tasti
+     * verrebbero consegnati due volte.
+     *
+     * <p>Serve a chi smonta la macchina e a chi rifà la sola finestra ({@code recreateGuestDisplay}):
+     * l'ospite non ha macchina da smontare, ma ha gli stessi adapter.
+     */
+    private void detachInputAdapters() {
         if (inputComponent != null) {
             if (mouseAdapter != null) {
                 inputComponent.removeMouseListener(mouseAdapter);
@@ -1264,10 +2307,6 @@ public class Amija {
         mouseAdapter = null;
         keyAdapter = null;
         joystickAdapter = null;
-        gamePort1 = null;
-        gamePort2 = null;
-        cpu = null;
-        agnus = null;
     }
 
     // =========================================================================

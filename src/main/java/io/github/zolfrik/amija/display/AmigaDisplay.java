@@ -212,6 +212,11 @@ public class AmigaDisplay {
     // Vuoto/null = nessun hard disk → il LED HD e la sua etichetta non vengono disegnati.
     private volatile BooleanSupplier[] hdLedSources;
 
+    // Spia del gioco a distanza: visibile solo durante una sessione, accesa quando l'altro
+    // capo c'è davvero. Entrambe null = funzione spenta, e la riga non viene disegnata.
+    private volatile BooleanSupplier remotePlayLedVisible;
+    private volatile BooleanSupplier remotePlayLedActive;
+
     // Notifica (percorso assoluto, indice drive 0..3) quando un disco viene inserito via
     // drag-and-drop, così il chiamante puo' aggiornare la configurazione (vedi F12).
     private volatile ObjIntConsumer<String> diskDropListener;
@@ -235,6 +240,24 @@ public class AmigaDisplay {
      */
     public void setHdLedSources(BooleanSupplier... sources) {
         this.hdLedSources = sources;
+    }
+
+    /**
+     * Collega la spia del gioco a distanza (docs/remote-play-plan.md §9).
+     *
+     * <p>Risponde alla domanda "sono ancora collegato?" senza aprire F12 — che è
+     * l'unico modo attuale di controllare, ed è <b>distruttivo</b>: aprire il popup mette
+     * in pausa la macchina, e su un host in pausa lo schermo dell'ospite si ferma. Una spia
+     * costa un rettangolo per frame e toglie di mezzo il problema.
+     *
+     * @param visible {@code true} quando c'è una sessione (si ospita o si è ospiti):
+     *                altrimenti la riga non viene disegnata affatto
+     * @param active  {@code true} quando l'altro capo c'è davvero; a {@code false} la spia
+     *                resta accesa fioca, che è la differenza fra "in ascolto" e "collegato"
+     */
+    public void setRemotePlayLedSource(BooleanSupplier visible, BooleanSupplier active) {
+        this.remotePlayLedVisible = visible;
+        this.remotePlayLedActive = active;
     }
 
     /** Mostra o nasconde il pannello dei LED power/drive (a false: nessun disegno). */
@@ -1029,6 +1052,16 @@ public class AmigaDisplay {
         }
         if (hdStates.length > 0) {
             rows.add(new LedRow("HD", hdStates, DRIVE_ACTIVE_STYLE, DRIVE_IDLE_STYLE));
+        }
+        BooleanSupplier netVisible = remotePlayLedVisible;
+        if (netVisible != null && netVisible.getAsBoolean()) {
+            BooleanSupplier netActive = remotePlayLedActive;
+            // Verde come DRIVE e HD, non rosso come POWER: qui si dice "sta succedendo",
+            // e il rosso su questo pannello vuol già dire un'altra cosa. Se a video non
+            // convince, è una costante (piano §15.4, decisione da prendere guardando).
+            rows.add(new LedRow("NET",
+                    new boolean[]{ netActive != null && netActive.getAsBoolean() },
+                    DRIVE_ACTIVE_STYLE, DRIVE_IDLE_STYLE));
         }
 
         final int baseLedW = 59, ledH = 10; // barre sottili come quelle reali (84 ridotto del 30%)

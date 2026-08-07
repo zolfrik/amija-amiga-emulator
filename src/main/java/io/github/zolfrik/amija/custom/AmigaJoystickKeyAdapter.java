@@ -20,7 +20,7 @@
 
 package io.github.zolfrik.amija.custom;
 
-import io.github.zolfrik.amija.input.GamePort;
+import io.github.zolfrik.amija.input.GamePortControls;
 import io.github.zolfrik.amija.input.JoystickAction;
 import io.github.zolfrik.amija.input.JoystickKeyMap;
 
@@ -45,7 +45,7 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
 
     /** Stato di una porta: destinazione, tasti associati e direzioni premute. */
     private static final class PortState {
-        volatile GamePort port;
+        volatile GamePortControls port;
         volatile JoystickKeyMap keyMap;
         boolean up, down, left, right;
     }
@@ -66,7 +66,7 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
      * @param port      game port pilotata, o {@code null} per disattivare la porta
      * @param keyMap    tasti associati; {@code null} ripristina i default della porta
      */
-    public void configure(int portIndex, GamePort port, JoystickKeyMap keyMap) {
+    public void configure(int portIndex, GamePortControls port, JoystickKeyMap keyMap) {
         if (portIndex < 0 || portIndex >= PORTS) return;
         PortState s = states[portIndex];
 
@@ -108,7 +108,7 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
     private boolean handleKey(KeyEvent e, boolean pressed) {
         boolean handled = false;
         for (PortState s : states) {
-            GamePort p = s.port;
+            GamePortControls p = s.port;
             if (p == null) continue;
             JoystickAction action = s.keyMap.actionFor(e);
             if (action == null) continue;
@@ -133,7 +133,7 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
     /** Rilascia direzioni e fuoco sulla porta attualmente configurata, se presente. */
     private void release(PortState s) {
         s.up = s.down = s.left = s.right = false;
-        GamePort p = s.port;
+        GamePortControls p = s.port;
         if (p != null) {
             p.setJoystickAxes(0, 0);
             p.pressJoystickFire(false);

@@ -20,7 +20,7 @@
 
 package io.github.zolfrik.amija.custom;
 
-import io.github.zolfrik.amija.input.GamePort;
+import io.github.zolfrik.amija.input.GamePortControls;
 
 import javax.swing.JFrame;
 import javax.swing.SwingUtilities;
@@ -80,7 +80,7 @@ import java.awt.image.BufferedImage;
  */
 public class AmigaMouseAdapter extends MouseAdapter {
 
-    private volatile GamePort port;
+    private volatile GamePortControls port;
     private volatile boolean enabled = true;
     private final JFrame frame;
 
@@ -116,7 +116,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
     private boolean swallowNextLeftRelease = false;
 
     /** Adapter senza integer scaling (finestra a dimensione nativa). */
-    public AmigaMouseAdapter(GamePort port, JFrame frame) {
+    public AmigaMouseAdapter(GamePortControls port, JFrame frame) {
         this(port, frame, 1);
     }
 
@@ -124,7 +124,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
      * @param videoScale fattore di ingrandimento della finestra emulata; i delta host
      *                   vengono divisi per questo prima di raggiungere la porta
      */
-    public AmigaMouseAdapter(GamePort port, JFrame frame, int videoScale) {
+    public AmigaMouseAdapter(GamePortControls port, JFrame frame, int videoScale) {
         this.port = port;
         this.frame = frame;
         this.videoScale = Math.max(1, videoScale);
@@ -165,8 +165,8 @@ public class AmigaMouseAdapter extends MouseAdapter {
      * Collega il mouse host a un'altra game port (a caldo, dal popup F12): serve quando
      * la periferica "Mouse" viene spostata da una porta all'altra. {@code null} scollega.
      */
-    public void setPort(GamePort port) {
-        GamePort old = this.port;
+    public void setPort(GamePortControls port) {
+        GamePortControls old = this.port;
         if (old != null && old != port) {
             old.pressMouseLeft(false);
             old.pressMouseRight(false);
@@ -184,7 +184,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
         this.enabled = enabled;
         if (!enabled) {
             if (captured) release();
-            GamePort p = port;
+            GamePortControls p = port;
             if (p != null) {
                 p.pressMouseLeft(false);
                 p.pressMouseRight(false);

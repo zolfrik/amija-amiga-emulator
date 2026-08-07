@@ -1082,6 +1082,14 @@ public final class Paula {
         return audioRingBuffer;
     }
 
+    /**
+     * Deriva verso la rete il chunk PCM già convertito e filtrato
+     * (docs/remote-play-plan.md §4.2). {@code null} la rimuove.
+     */
+    public void setPcmTap(JavaSoundAudioOutput.PcmTap tap) {
+        audioOutput.setPcmTap(tap);
+    }
+
     public void setLedFilterEnabled(boolean enabled) {
         audioOutput.setLedFilterEnabled(enabled);
     }

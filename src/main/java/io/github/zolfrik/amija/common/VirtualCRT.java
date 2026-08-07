@@ -24,6 +24,7 @@ import io.github.zolfrik.amija.custom.AbstractAgnus;
 import io.github.zolfrik.amija.custom.AbstractDenise;
 import io.github.zolfrik.amija.display.AmigaDisplay;
 import io.github.zolfrik.amija.display.FrameInfo;
+import io.github.zolfrik.amija.net.RemotePlayHost;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -56,6 +57,12 @@ public final class VirtualCRT {
     // gira più sul thread del MasterClock (~13% del tempo recuperato all'emulazione).
     private int[] frameBuffer;
     private int[] renderBuffer;
+
+    // Gioco a distanza (docs/remote-play-plan.md §2, §11.1): quando c'è un host attivo,
+    // ogni frame completato viene consegnato anche a lui. È l'unico punto in cui nasce
+    // un frame intero, quindi è da qui che parte il video. Con la funzione spenta il
+    // campo è null e il percorso caldo resta quello di sempre: un confronto con null.
+    private volatile RemotePlayHost remotePlayHost;
 
     private final Object renderLock = new Object();
     private volatile boolean renderRunning;
@@ -147,6 +154,14 @@ public final class VirtualCRT {
         renderThread.start();
     }
 
+    /**
+     * Attacca (o stacca, con {@code null}) l'host di gioco a distanza: da qui in poi ogni
+     * frame completato viene consegnato anche a lui.
+     */
+    public void setRemotePlayHost(RemotePlayHost host) {
+        this.remotePlayHost = host;
+    }
+
     /** Ferma il thread di rendering (opzionale; è comunque daemon). */
     public void stop() {
         synchronized (renderLock) {
@@ -216,6 +231,14 @@ public final class VirtualCRT {
             // Non attraversare il confine di frame (riga 311 userebbe la cck-0 del frame
             // nuovo; comunque non croppata). Scarta il campione cross-frame.
             wrapPendingRow = -1;
+            // L'input dell'ospite si applica QUI e non dentro presentFrame(): quello può
+            // saltare un frame (frame-skip) e i controlli non devono saltare con lui.
+            // È il punto di quantizzazione fisso del piano §4.3 — una volta per frame,
+            // sul thread di emulazione, sempre nello stesso posto.
+            RemotePlayHost inputHost = remotePlayHost;
+            if (inputHost != null) {
+                inputHost.applyPendingInput();
+            }
             presentFrame();
         } else if (wrapPendingRow >= 0 && hpos >= 2) {
             // cck 0 della riga corrente completato: il COLOR00 live è il border a inizio
@@ -309,6 +332,14 @@ public final class VirtualCRT {
         }
         consecutiveSkips = 0;
         buildFrameInfo(frameInfo);
+        // Prima di presentare: il ramo asincrono scambia frameBuffer con renderBuffer, e
+        // dopo lo scambio il frame appena completato non è più in frameBuffer. Il costo
+        // ammesso qui è una copia (§11.2); submitFrame non codifica e non spedisce nulla,
+        // e se il thread di rete è ancora occupato salta il frame invece di accodarlo.
+        RemotePlayHost host = remotePlayHost;
+        if (host != null) {
+            host.submitFrame(frameBuffer, frameInfo);
+        }
         if (!ASYNC_RENDER) {
             // Default: composizione sincrona sul thread di emulazione (deterministica).
             display.renderFrame(frameBuffer, RAW_WIDTH, RAW_HEIGHT, frameInfo);

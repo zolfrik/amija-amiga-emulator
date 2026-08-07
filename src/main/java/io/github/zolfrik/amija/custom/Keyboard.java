@@ -22,6 +22,7 @@ package io.github.zolfrik.amija.custom;
 
 import io.github.zolfrik.amija.common.CIAPinSet;
 import io.github.zolfrik.amija.common.MOS8520;
+import io.github.zolfrik.amija.input.AmigaKeyTarget;
 
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.Deque;
@@ -74,7 +75,7 @@ import java.util.Deque;
  *   - Lo stato della linea si legge con {@link #isResetLineAsserted()}; è
  *     {@code Gary} a propagarla su /RESET (vedi AbstractAgnus.serviceCiaEvent).
  */
-public class Keyboard {
+public class Keyboard implements AmigaKeyTarget {
 
     // -------------------------------------------------------------------------
     // Raw key numbers (bits [7:1] del byte keycode trasmesso)

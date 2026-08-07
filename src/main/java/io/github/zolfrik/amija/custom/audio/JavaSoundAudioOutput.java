@@ -52,6 +52,27 @@ public final class JavaSoundAudioOutput implements Runnable {
 
     private DoubleSupplier correctionSupplier;
 
+    /**
+     * Chi riceve una copia del chunk PCM appena prima che finisca sulla scheda audio.
+     *
+     * <p>Il buffer è <b>riusato</b>: chi lo riceve lo consuma o lo copia, non lo tiene.
+     */
+    public interface PcmTap {
+        /** @param pcm S16LE stereo interlacciato, {@code frames*4} byte */
+        void onChunk(byte[] pcm, int frames);
+    }
+
+    private volatile PcmTap pcmTap;
+
+    /**
+     * Installa (o rimuove, con {@code null}) la derivazione del PCM verso la rete.
+     *
+     * <p>Con la funzione spenta il campo è null e il costo sul percorso audio è un confronto.
+     */
+    public void setPcmTap(PcmTap tap) {
+        this.pcmTap = tap;
+    }
+
     public void setLoggingEnabled(boolean enabled) {
         loggingEnabled = enabled;
     }
@@ -157,6 +178,16 @@ public final class JavaSoundAudioOutput implements Runnable {
                     pcm[off + 1] = (byte) (li >>> 8);
                     pcm[off + 2] = (byte) ri;
                     pcm[off + 3] = (byte) (ri >>> 8);
+                }
+
+                // Gioco a distanza (docs/remote-play-plan.md §4.2): il chunk è già
+                // convertito e filtrato, quindi l'ospite sente ESATTAMENTE quello che
+                // sente l'host. Il tee è qui e non altrove per questo. Costa un confronto
+                // con null quando la funzione è spenta, e sta comunque fuori dal thread
+                // di emulazione.
+                PcmTap tap = pcmTap;
+                if (tap != null) {
+                    tap.onChunk(pcm, CHUNK_FRAMES);
                 }
 
                 line.write(pcm, 0, pcm.length);

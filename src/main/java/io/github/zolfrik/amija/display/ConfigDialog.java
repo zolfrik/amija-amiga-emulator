@@ -36,6 +36,7 @@ import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.JoystickKeyMap;
 import io.github.zolfrik.amija.input.PortDevice;
+import io.github.zolfrik.amija.net.RemotePlayControl;
 import io.github.zolfrik.amija.state.SaveStateManager;
 import io.github.zolfrik.amija.whdload.WhdLoadManager;
 
@@ -104,6 +105,14 @@ public final class ConfigDialog {
     /** Esito della finestra: l'azione che il chiamante deve eseguire. */
     public enum Result {
         CANCEL, OK, RESTART, SOFT_RESET, QUIT,
+        /**
+         * L'utente ha chiesto di unirsi a un host (o di lasciarlo). La transizione la fa
+         * il chiamante: un ospite non emula niente, quindi unirsi <b>smonta la
+         * macchina</b>, e non si smonta una macchina da dentro un dialog modale mentre il
+         * thread di emulazione gira. Le modifiche del popup non sono state applicate:
+         * quello che conta è l'indirizzo registrato in {@code RemotePlayControl}.
+         */
+        REMOTE_PLAY_TRANSITION,
         /**
          * Lo stato da caricare pretende una macchina diversa da quella accesa. Il popup
          * si è chiuso <b>senza</b> applicare le modifiche in corso: quello che conta ora
@@ -187,7 +196,8 @@ public final class ConfigDialog {
             java.util.function.Supplier<java.io.File> onScreenshot,
             java.util.function.BiConsumer<String, Float> shaderParamUpdater,
             java.util.function.Supplier<String> onSaveState,
-            java.util.function.Supplier<LoadStateOutcome> onLoadState) {
+            java.util.function.Supplier<LoadStateOutcome> onLoadState,
+            RemotePlayControl remotePlay) {
         final Result[] result = { Result.CANCEL };
 
         // Prima di costruire qualsiasi cosa: i tooltip di questo popup vanno letti, non
@@ -284,6 +294,11 @@ public final class ConfigDialog {
         // Con "Joystick (via tastiera)" compare accanto alla tendina il pulsante "..."
         // che apre la configurazione dei tasti di quella porta. Le due mappe sono
         // modificate in copia e scritte nella configurazione solo alla conferma.
+        //
+        // Nel gioco a distanza le due porte hanno DUE PADRONI: l'host cede all'ospite una
+        // delle due, e da quel momento è l'ospite a decidere cosa infilarci e con quali
+        // tasti. Ciascuno ha quindi la tendina della propria porta e non dell'altra —
+        // altrimenti l'ultimo che conferma il popup scavalcherebbe la scelta dell'altro.
         JPanel ports = section(Messages.t("section.gameports"));
         JoystickKeyMap[] joyKeyMaps = { config.joystickKeyMap(0), config.joystickKeyMap(1) };
 
@@ -292,25 +307,56 @@ public final class ConfigDialog {
         // mantiene la propria larghezza sia che il pulsante ci sia sia che non ci sia.
         JComboBox<PortDevice> port0Combo = deviceCombo(config.portDevice(0));
         JButton port0Keys = joystickKeysButton();
-        addRow(ports, 0, "label.port0", port0Combo, port0Keys);
+        JLabel port0Label = addRow(ports, 0, "label.port0", port0Combo, port0Keys);
 
         JComboBox<PortDevice> port1Combo = deviceCombo(config.portDevice(1));
         JButton port1Keys = joystickKeysButton();
-        addRow(ports, 1, "label.port1", port1Combo, port1Keys);
+        JLabel port1Label = addRow(ports, 1, "label.port1", port1Combo, port1Keys);
+
+        // Una porta spenta senza motivo è un guasto; con il motivo scritto sotto è una
+        // regola. La riga compare solo quando c'è davvero una sessione di mezzo.
+        JLabel portOwnerNote = label("");
+        addRow(ports, 2, new JLabel(""), portOwnerNote, null);
 
         port0Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 0, joyKeyMaps));
         port1Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 1, joyKeyMaps));
 
-        // Il pulsante dei tasti appare solo per la porta impostata sul joystick da tastiera.
-        Runnable syncJoystickKeyButtons = () -> {
-            setJoystickKeysButtonVisible(port0Keys,
-                    port0Combo.getSelectedItem() == PortDevice.JOYSTICK_KEYBOARD);
-            setJoystickKeysButtonVisible(port1Keys,
-                    port1Combo.getSelectedItem() == PortDevice.JOYSTICK_KEYBOARD);
+        // Un solo posto in cui le due righe si riallineano: chi possiede quale porta, e il
+        // pulsante dei tasti, che appare solo sulla porta PROPRIA impostata sul joystick da
+        // tastiera. Lo richiamano le tendine e — perché ospite e ospitante vanno e vengono
+        // mentre il popup è aperto — il timer della sezione «Gioco a distanza».
+        Runnable syncPorts = () -> {
+            int remotePort = remotePlay == null ? -1 : remotePlay.remoteGamePort();
+            boolean hosting = remotePlay != null && remotePlay.isHosting();
+            boolean guest = remotePlay != null && remotePlay.isGuest();
+            // Ospitando si perde la porta ceduta; da ospite si ha soltanto la propria.
+            boolean[] mine = {
+                !(hosting && remotePort == 0) && !(guest && remotePort != 0),
+                !(hosting && remotePort == 1) && !(guest && remotePort != 1),
+            };
+            port0Combo.setEnabled(mine[0]);
+            port1Combo.setEnabled(mine[1]);
+            port0Label.setEnabled(mine[0]);
+            port1Label.setEnabled(mine[1]);
+            setJoystickKeysButtonVisible(port0Keys, mine[0]
+                    && port0Combo.getSelectedItem() == PortDevice.JOYSTICK_KEYBOARD);
+            setJoystickKeysButtonVisible(port1Keys, mine[1]
+                    && port1Combo.getSelectedItem() == PortDevice.JOYSTICK_KEYBOARD);
+
+            String note = null;
+            if (guest && remotePort >= 0) {
+                note = Messages.t("msg.ports.guestowns", Messages.t(portName(remotePort)),
+                        Messages.t(portName(1 - remotePort)));
+            } else if (hosting && remotePort >= 0) {
+                note = Messages.t("msg.ports.hostgaveaway", Messages.t(portName(remotePort)));
+            }
+            portOwnerNote.setText(note == null ? ""
+                    : "<html><body style='width: 320px'>" + note + "</body></html>");
+            setRowVisible(note != null, portOwnerNote);
         };
-        port0Combo.addActionListener(e -> syncJoystickKeyButtons.run());
-        port1Combo.addActionListener(e -> syncJoystickKeyButtons.run());
-        syncJoystickKeyButtons.run();
+        port0Combo.addActionListener(e -> syncPorts.run());
+        port1Combo.addActionListener(e -> syncPorts.run());
+        syncPorts.run();
 
         // -------------------------------------------------------------------
         // Sezione: Floppy drive
@@ -757,6 +803,19 @@ public final class ConfigDialog {
         JPanel state = stateSection(dialog, result, onSaveState, onLoadState);
 
         // -------------------------------------------------------------------
+        // Sezione: Gioco a distanza (docs/remote-play-plan.md §9)
+        // -------------------------------------------------------------------
+        // Sta dopo le game port perché è di quelle che parla: l'ospite ne occupa una.
+        // I widget glieli passa il dialog invece di duplicarli: sono gli stessi, e due
+        // copie divergerebbero al primo ritocco della palette.
+        // Il riallineamento delle game port viaggia sul timer di questa sezione invece di
+        // avere il proprio: la cosa che lo rende necessario — un ospite che si collega o
+        // cade mentre il popup è aperto — è esattamente la cosa che quel timer sorveglia.
+        RemotePlaySection.Built remotePlaySection = remotePlay == null ? null
+                : RemotePlaySection.build(config, remotePlay, ConfigDialog::section,
+                        widgets(dialog, result), syncPorts);
+
+        // -------------------------------------------------------------------
         // Contenuto scorrevole
         // -------------------------------------------------------------------
         JPanel content = new JPanel();
@@ -765,20 +824,37 @@ public final class ConfigDialog {
         content.setBorder(pad(14, 16, 14, 16));
         content.add(header());
         content.add(Box.createVerticalStrut(10));
-        content.add(system);
-        content.add(media);       // modalità Auto: sostituisce le tre sezioni qui sotto
-        content.add(drives);
-        content.add(hds);
-        content.add(whd);
+        // Modalità ospite: questa macchina NON emula niente (piano §3), quindi non c'è
+        // nessuna macchina da configurare. Le sezioni relative non si nascondono, non
+        // vengono proprio costruite dentro il contenitore: restano quelle locali — video,
+        // audio, interfaccia — che per l'ospite hanno senso eccome, perché crop, scaling,
+        // shader e fullscreen li decide lui.
+        boolean guestMode = remotePlay != null && remotePlay.isGuest();
+        if (!guestMode) {
+            content.add(system);
+            content.add(media);   // modalità Auto: sostituisce le tre sezioni qui sotto
+            content.add(drives);
+            content.add(hds);
+            content.add(whd);
+        }
         // Lo stato salvato viene dopo i supporti — dopo TUTTI, cioè anche dopo le tre
         // sezioni per tipo che in Expert mode prendono il posto della lista unica: così
         // sta sotto i dischi in entrambe le modalità. È l'unica sezione che non imposta
         // niente ma agisce sulla macchina accesa, e segue il disco a cui appartiene.
-        content.add(state);
+        if (!guestMode) {
+            content.add(state);
+        }
+        // Le game port ci sono anche per l'ospite, ed è il punto: la porta che l'host gli ha
+        // ceduto la riempie lui. Delle due righe gliene serve una — l'altra è dell'host e
+        // resta spenta — ma senza questa sezione non avrebbe modo di dire che gioca col
+        // joystick, né con quali tasti. Sono i suoi, letti dalla sua amiga.properties.
         content.add(ports);
+        if (remotePlaySection != null) {
+            content.add(remotePlaySection.panel());
+        }
         content.add(av);
         content.add(gui);
-        if (assets != null) {
+        if (assets != null && !guestMode) {
             content.add(assets);
         }
         content.add(Box.createVerticalGlue());
@@ -886,7 +962,15 @@ public final class ConfigDialog {
         ok.addActionListener(e -> {
             // Applica i valori modificati all'AmigaConfig prima di chiudere.
             applyConfig.run();
-            result[0] = Result.OK;
+            if (remotePlaySection != null) {
+                remotePlaySection.applyToConfig().run();
+            }
+            // Se durante il popup ci si è collegati a un host, confermare significa passare
+            // davvero a fare l'ospite — cioè smontare la macchina, che è l'operazione che
+            // questo dialog non può fare da sé. Esce con l'esito che la fa eseguire fuori.
+            boolean joined = remotePlaySection != null
+                    && remotePlaySection.outcome().get() == RemotePlaySection.Outcome.JOIN;
+            result[0] = joined ? Result.REMOTE_PLAY_TRANSITION : Result.OK;
             dialog.dispose();
         });
 
@@ -898,8 +982,13 @@ public final class ConfigDialog {
         left.setOpaque(false);
         left.add(about);
         left.add(screenshot);
-        left.add(softReset);
-        left.add(restart);
+        // «Reset» e «Riavvia» agiscono su una macchina, e un ospite non ne ha: sono le
+        // stesse ragioni per cui non vede le sezioni che la descrivono. Lo screenshot sì —
+        // quello lo fa sul video che sta guardando, che è suo quanto quello di chiunque.
+        if (!guestMode) {
+            left.add(softReset);
+            left.add(restart);
+        }
         left.add(quit);
 
         JPanel right = new JPanel();
@@ -932,6 +1021,13 @@ public final class ConfigDialog {
         prepareDialogFocus(dialog, ok);
         dialog.setVisible(true); // bloccante (modale)
 
+        // Il timer della sezione «Gioco a distanza» va fermato qui e non nel suo listener
+        // di chiusura: un Timer di Swing non è legato al ciclo di vita della finestra e
+        // continuerebbe a battere sull'EDT per tutta la vita del processo, una volta per
+        // ogni volta che il popup è stato aperto.
+        if (remotePlaySection != null) {
+            remotePlaySection.dispose().run();
+        }
         return result[0];
     }
 
@@ -1233,6 +1329,75 @@ public final class ConfigDialog {
         }
     }
 
+    /**
+     * I pezzi di questo dialog che {@link RemotePlaySection} usa, passati invece che
+     * duplicati: sono gli stessi widget delle altre sezioni, e due copie divergerebbero
+     * al primo ritocco della palette.
+     */
+    private static RemotePlaySection.Widgets widgets(JDialog dialog, Result[] result) {
+        return new RemotePlaySection.Widgets() {
+            @Override
+            public <T> JComboBox<T> combo(T[] values) {
+                JComboBox<T> c = new JComboBox<>(values);
+                c.setMaximumSize(dim(200, 26));
+                return c;
+            }
+
+            @Override
+            public JTextField text(String value) {
+                return textField(value);
+            }
+
+            @Override
+            public JTextField readOnlyText(String value) {
+                JTextField tf = textField(value);
+                tf.setEditable(false);
+                // Non disabilitato: da disabilitato il testo si sbiadisce e non si può
+                // selezionare, e questi sono proprio i campi che si copiano a mano.
+                tf.setFocusable(true);
+                return tf;
+            }
+
+            @Override
+            public JCheckBox check(String text, boolean selected) {
+                return ConfigDialog.check(text, selected);
+            }
+
+            @Override
+            public JButton button(String text) {
+                return ConfigDialog.button(text, false);
+            }
+
+            @Override
+            public JLabel addRow(JComponent panel, int row, String labelKey,
+                                 JComponent field, JComponent trailing) {
+                return ConfigDialog.addRow((JPanel) panel, row, labelKey, field, trailing);
+            }
+
+            @Override
+            public void setRowVisible(boolean visible, java.util.List<JComponent> comps) {
+                ConfigDialog.setRowVisible(visible, comps.toArray(new JComponent[0]));
+            }
+
+            @Override
+            public void tip(String baseKey, JComponent... components) {
+                ConfigDialog.tip(baseKey, components);
+            }
+
+            @Override
+            public void error(String message) {
+                JOptionPane.showMessageDialog(dialog, message, Messages.t("app.title"),
+                        JOptionPane.WARNING_MESSAGE);
+            }
+
+            @Override
+            public void closeDialog() {
+                result[0] = Result.REMOTE_PLAY_TRANSITION;
+                dialog.dispose();
+            }
+        };
+    }
+
     private static JPanel section(String title) {
         JPanel p = new JPanel(new GridBagLayout());
         p.setBackground(PANEL_BG);
@@ -1424,6 +1589,15 @@ public final class ConfigDialog {
         c.setOpaque(false);
         c.setForeground(FG);
         return c;
+    }
+
+    /**
+     * Chiave del nome di una game port <b>senza i due punti</b>: {@code label.portN} li ha,
+     * perché è l'etichetta di una riga, e infilarla in mezzo a una frase darebbe «Port 1: la
+     * riempie l'ospite».
+     */
+    private static String portName(int port) {
+        return port == 0 ? "port.name.0" : "port.name.1";
     }
 
     /** Tendina di scelta della periferica di una game port (Mouse / Joystick / Vuota). */
