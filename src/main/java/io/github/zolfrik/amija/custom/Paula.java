@@ -113,12 +113,9 @@ public final class Paula {
 
     private int serper;
     private int serReceiveBuffer;
-    private int serReceiveShiftReg;
     private int serTransmitBuffer;
     private int serTransmitShiftReg;
-    private int serRecCnt;
     private boolean serOvrun;
-    private int serOutBit = 1;
     // Separate flag to detect a full transmit buffer: serTransmitBuffer==0 is a valid SERDAT value,
     // so we cannot use a zero-check to determine whether the buffer is empty.
     private boolean serTxbFull = false;
@@ -216,11 +213,9 @@ public final class Paula {
         dskbytr_incoming = 0;
 
         serper = 0;
-        serReceiveBuffer = serReceiveShiftReg = 0;
+        serReceiveBuffer = 0;
         serTransmitBuffer = serTransmitShiftReg = 0;
-        serRecCnt = 0;
         serOvrun = false;
-        serOutBit = 1;
         serTxbFull = false;
 
         Arrays.fill(audLCH, 0); Arrays.fill(audLCL, 0);
@@ -546,14 +541,12 @@ public final class Paula {
                 raiseInterrupt(0x0001);
             } else {
                 // Nothing left to send — stop scheduling.
-                serOutBit = 1; // return to idle / mark state
                 agnus.cancel(EventSlot.SLOT_TXD);
                 return;
             }
         }
 
-        // Output the current LSB (0 = space, 1 = mark).
-        serOutBit = serTransmitShiftReg & 1;
+        // Consume the current LSB (0 = space, 1 = mark); the TXD pin is not wired anywhere.
         serTransmitShiftReg >>>= 1;   // unsigned right-shift (sentinel propagates correctly)
 
         agnus.scheduleRel(EventSlot.SLOT_TXD, getSerPulseWidth(), EventID.TXD_BIT);

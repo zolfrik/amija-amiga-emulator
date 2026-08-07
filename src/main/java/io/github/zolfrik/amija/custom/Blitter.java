@@ -263,8 +263,6 @@ public final class Blitter {
 
     // Contatori line-mode
     private int hCount = 0;
-    private int wCount = 0;
-    private int totalWords = 0;
 
     // =========================================================================
     // Costruttore & Inizializzazione Tabelle Fill
@@ -451,7 +449,6 @@ public final class Blitter {
         if (!dmaEnabled) { running = false; bbusy = false; clearBusyCountdown = 0; return; }
 
         recacheAreaBlitFields();
-        if (BLITLOG) { startApt = getApt(); startBpt = getBpt(); startCpt = getCpt(); startDpt = getDpt(); startPc = agnus.getCpuPc(); }
 
         running = true;
         bbusy   = true;
@@ -583,7 +580,6 @@ public final class Blitter {
             int addr = getDpt();
             agnus.blitterImmediateWrite(addr, dhold & 0xFFFF);
             tookBus = true;
-            if (BLITLOG) { curDChk = (curDChk * 1000003L + (dhold & 0xFFFF) + curDWrites) & 0xFFFFFFFFL; curDWrites++; }
             setDpt(addr + (desc ? -2 : 2));
             if (--cntD == 0) {
                 setDpt(getDpt() + (desc ? -bltdmod : bltdmod));
@@ -625,7 +621,6 @@ public final class Blitter {
             if (!lockD) {
                 if ((op & FILL) != 0) doFillD();
                 if (dhold != 0) bzero = false;
-                if (BLITLOG) captureWordDump();
             }
         }
 
@@ -682,15 +677,6 @@ public final class Blitter {
     private void clearBusyFlag() { bbusy = false; }
 
     private void endBlit() {
-        if (BLITLOG) {
-            boolean line = (bltcon1 & BLTCON1_LINE) != 0;
-            blitLog.add(String.format("%d con0=%04X con1=%04X w=%d h=%d afwm=%04X alwm=%04X am=%d bm=%d cm=%d dm=%d apt=%06X bpt=%06X cpt=%06X dpt=%06X dW=%d dchk=%08X pc=%06X %s",
-                blitSeq++, bltcon0, bltcon1, bltsizeH, bltsizeV, bltafwm, bltalwm,
-                bltamod, bltbmod, bltcmod, bltdmod,
-                startApt & 0xFFFFFF, startBpt & 0xFFFFFF, startCpt & 0xFFFFFF, startDpt & 0xFFFFFF,
-                curDWrites, curDChk & 0xFFFFFFFFL, startPc & 0xFFFFFF, line ? "LINE" : "AREA"));
-        }
-        curDChk = 0; curDWrites = 0;
         running = false;
         // BBUSY: se il countdown del clear è in corso NON scavalcarlo — le micro-op
         // NOTHING/BLTDONE avanzano anche su cck rubati, quindi sotto contesa il
@@ -776,7 +762,6 @@ public final class Blitter {
         if ((op & WRITE_D) != 0 && lineWrite) {
             agnus.blitterImmediateWrite(getDpt(), dhold & 0xFFFF);
             tookBus = true;
-            if (BLITLOG) { curDChk = (curDChk * 1000003L + (dhold & 0xFFFF) + curDWrites) & 0xFFFFFFFFL; curDWrites++; }
         }
 
         if ((op & REPEAT) != 0) {
@@ -885,42 +870,6 @@ public final class Blitter {
     }
 
     private int bltconFE() { return (bltcon1 & (BLTCON1_EFE | BLTCON1_IFE)) != 0 ? 1 : 0; }
-
-    // =========================================================================
-    // BLITLOG (confronto con SAE) + per-word dump per Agony cookie-cut
-    // =========================================================================
-
-    public static volatile boolean BLITLOG = false;
-    public static volatile long BLTLOG_TARGET = -1;
-    public static volatile long BLTLOG_COUNT = 1;
-    private static final java.util.List<String> blitLog = new java.util.ArrayList<>();
-    private static final java.util.List<String> wordDump = new java.util.ArrayList<>();
-    private static long blitSeq = 0;
-    private long curDChk = 0; private int curDWrites = 0;
-    private int startApt, startBpt, startCpt, startDpt;
-    private int startPc;
-
-    private void captureWordDump() {
-        if (BLTLOG_TARGET < 0 || blitSeq < BLTLOG_TARGET || blitSeq >= BLTLOG_TARGET + BLTLOG_COUNT) return;
-        int row = bltsizeV - yCounter;   // 0-based (approssimato: la D è pipelinata di 1 word)
-        int col = bltsizeH - xCounter;   // 0-based
-        wordDump.add(String.format("seq=%d con0=%04X r=%d w=%d ash=%d bsh=%d mask=%04X anew=%04X bnew=%04X chold=%04X ahold=%04X bhold=%04X result=%04X dpt=%06X",
-            blitSeq, bltcon0, row, col, cachedAsh, cachedBsh, mask, anew, bnew, chold, ahold, bhold, dhold & 0xFFFF, getDpt() & 0xFFFFFF));
-    }
-
-    public static void blitLogReset() { blitLog.clear(); blitSeq = 0; }
-    public static void blitLogDump(String path) {
-        try (java.io.BufferedWriter w = new java.io.BufferedWriter(new java.io.FileWriter(path))) {
-            for (String s : blitLog) { w.write(s); w.write("\n"); }
-        } catch (Exception e) { System.out.println("[BLITLOG] dump fail: " + e); }
-        System.out.println("[BLITLOG] scritte " + blitLog.size() + " righe in " + path);
-    }
-    public static void wordDumpDump(String path) {
-        try (java.io.BufferedWriter w = new java.io.BufferedWriter(new java.io.FileWriter(path))) {
-            for (String s : wordDump) { w.write(s); w.write("\n"); }
-        } catch (Exception e) { System.out.println("[WORDDUMP] fail: " + e); }
-        System.out.println("[WORDDUMP] " + wordDump.size() + " righe in " + path);
-    }
 
     private boolean isUsed(int channel) {
         return (bltcon0 & channel) != 0;

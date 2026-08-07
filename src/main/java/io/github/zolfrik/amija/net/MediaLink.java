@@ -66,7 +66,6 @@ public final class MediaLink implements AutoCloseable {
     private final DatagramSocket socket;
     private final MediaCipher cipher;
     private final NetImpairment impairment;
-    private final boolean adoptPeer;
 
     private final byte[] txBuffer = new byte[RemotePlayProtocol.MAX_DATAGRAM];
     private final byte[] rxBuffer = new byte[RemotePlayProtocol.MAX_DATAGRAM];
@@ -97,7 +96,6 @@ public final class MediaLink implements AutoCloseable {
         this.socket = socket;
         this.cipher = cipher;
         this.peer = peer;
-        this.adoptPeer = peer == null;
         this.impairment = impairment == null ? NetImpairment.NONE : impairment;
     }
 

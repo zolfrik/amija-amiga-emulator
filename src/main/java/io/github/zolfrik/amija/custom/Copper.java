@@ -245,22 +245,6 @@ public final class Copper {
     private int tickDelay = 0;
 
     // =========================================================================
-    // Trace oracolo (Fase 0 del refactoring timing Copper/Blitter)
-    // =========================================================================
-    // Log per-evento nel formato "[COPPER] v=.. h=.. cck=.. pc=$.. IR1=$.. IR2=$.. EVENTO",
-    // da diffare contro l'oracolo SAE. Gated: OFF di default (-Damiga.coplog=true
-    // oppure Copper.logEnabled=true da test). Non altera il comportamento.
-    public static boolean logEnabled = Boolean.getBoolean("amiga.coplog");
-
-    private void coplog(String event, int instrPc) {
-        if (!logEnabled) return;
-        System.out.printf(
-                "[COPPER] v=%3d h=%3d cck=%3d pc=$%06X list=%d IR1=$%04X IR2=$%04X %s%n",
-                agnus.getVpos(), agnus.getHpos(), agnus.getHpos() >> 1,
-                instrPc & 0x1FFFFF, copList, ir1 & 0xFFFF, ir2 & 0xFFFF, event);
-    }
-
-    // =========================================================================
     // Costruttore
     // =========================================================================
 
@@ -369,9 +353,6 @@ public final class Copper {
      */
     private void strobeCopperList(int address) {
         setPC(address);
-        if (logEnabled)
-            System.out.printf("[COPPER] v=%3d h=%3d cck=%3d COPJMP -> pc=$%06X (list=%d)%n",
-                    agnus.getVpos(), agnus.getHpos(), agnus.getHpos() >> 1, pc & 0x1FFFFF, copList);
         state                 = State.REQ_DMA;
         skip                  = false;
         forbiddenMoveDetected = false;
@@ -395,9 +376,6 @@ public final class Copper {
         // "Initial DMA request" (vedi State.STROBE). NB: i COPJMP (interni JMP1/2
         // e strobe CPU) restano sul modello vAmiga senza slot extra — da misurare.
         state             = State.STROBE;
-        if (logEnabled)
-            System.out.printf("[COPPER] v=%3d h=%3d cck=%3d VBLANK -> pc=$%06X (copen=%b)%n",
-                    agnus.getVpos(), agnus.getHpos(), agnus.getHpos() >> 1, pc & 0x1FFFFF, copperEnabled);
         busReq.clear();
     }
 
@@ -414,10 +392,6 @@ public final class Copper {
     public void setDmaEnabled(boolean enabled) {
         boolean old = this.dmaEnabled;
         this.dmaEnabled = enabled;
-        if (logEnabled && old != enabled)
-            System.out.printf("[COPPER] v=%3d h=%3d cck=%3d COPEN %s (state=%s active=%b)%n",
-                    agnus.getVpos(), agnus.getHpos(), agnus.getHpos() >> 1,
-                    enabled ? "ON" : "OFF", state, activeInThisFrame);
         if (enabled) {
             // vAmiga Agnus::setCOPEN(true): copper.activeInThisFrame = true.
             activeInThisFrame = true;
@@ -493,7 +467,6 @@ public final class Copper {
                 if (!busFree) return;
                 if (!evenCck) return;
                 if (isConditionMet()) {
-                    coplog("WAKEUP", pc);
                     state = State.FETCH;
                     tickDelay = 1;
                 }
@@ -542,7 +515,6 @@ public final class Copper {
                 if (!busFree) return;
                 copList = pendingList;
                 setPC(pendingList == 1 ? cop1lc : cop2lc);
-                coplog("JMP -> switch list", pc);
                 state = State.FETCH;
                 tickDelay = 1;
                 return;
@@ -627,7 +599,6 @@ public final class Copper {
         pc += 2;
 
         int reg = ir1 & 0x1FE;
-        coplog("MOVE $" + Integer.toHexString(reg) + "<-$" + Integer.toHexString(ir2 & 0xFFFF), pc - 4);
 
         // Registro illegale → il Copper si ferma (vAmiga cancel<SLOT_COP>).
         if (isIllegalAddress(reg)) {
@@ -661,11 +632,8 @@ public final class Copper {
         ir2 = data;
         pc += 2;
         if (isWaitCmd()) {
-            coplog("WAIT v=" + ((ir1 >> 8) & 0xFF) + " h=" + (ir1 & 0xFE)
-                    + (((ir2 >> 15) & 1) == 0 ? " BFD0" : ""), pc - 4);
             state = State.WAIT1;
         } else {
-            coplog("SKIP v=" + ((ir1 >> 8) & 0xFF) + " h=" + (ir1 & 0xFE), pc - 4);
             state = State.SKIP1;
         }
     }

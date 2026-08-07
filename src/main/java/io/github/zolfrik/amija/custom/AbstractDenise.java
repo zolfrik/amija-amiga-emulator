@@ -20,8 +20,6 @@
 
 package io.github.zolfrik.amija.custom;
 
-import io.github.zolfrik.amija.common.BusRequest;
-import io.github.zolfrik.amija.common.BusResponse;
 import io.github.zolfrik.amija.input.GamePort;
 import java.util.Arrays;
 
@@ -40,7 +38,6 @@ import java.util.Arrays;
  *  - Supporto ECS: isECS, deniseId, setDeniseId(), isECS()
  *  - readRegister 0x07C: DENISEID corretto per OCS/ECS
  *  - Aggiunto triggerLightPen()
- *  - Aggiunto computeDisplayY() per supporto interlace
  *  - Ripristinati bplcon3 e bplcon4 (necessari per ECS)
  *  - clxdat read: mascherato con 0x7FFF prima dell'OR con 0x8000
  *  - Corretta identificazione sotto-registro sprite in drawSpritePair
@@ -176,9 +173,6 @@ public abstract class AbstractDenise {
     // =========================================================================
     // Dipendenze
     // =========================================================================
-
-    //@SuppressWarnings("unused") private final BusRequest  busReq;
-    //@SuppressWarnings("unused") private final BusResponse busResp;
 
     private AbstractAgnus        agnus;
     private int          field;   // 0 o 1 per interlace
@@ -491,12 +485,6 @@ public abstract class AbstractDenise {
             case 0x100: // BPLCON0
                 if (DBG_COLOR && ((bplcon0 >> 12) & 7) != ((value >> 12) & 7))
                     System.out.printf("[BPLCON0] %04X -> %04X (BPU %d->%d)%n", bplcon0, value, (bplcon0 >> 12) & 7, (value >> 12) & 7);
-                // Oracolo LED Storm §1.2: log scritture BPLCON0 nel formato del log SAE
-                // (h = cck per allinearsi a SAE current_hpos). Gated -Damiga.bpllog.
-                if (AbstractAgnus.bplLogEnabled && agnus != null)
-                    System.out.printf("[BPL] %s f=%d v=%d h=%d val=$%x%n",
-                            agnus.isInCopperWrite() ? "COP" : "CPU", agnus.getFrameCount(),
-                            agnus.getVpos(), agnus.getHpos() >> 1, value & 0xFFFF);
                 conChanges.insert(pixel, address, value);
                 // Cambio modalità HAM: tracciato in colChanges per colorize
                 if (isHAM(bplcon0) != isHAM(value)) colChanges.insert(pixel, address, value);
@@ -1514,9 +1502,6 @@ public abstract class AbstractDenise {
      * e il campo corrente (field 0 o 1) determina se si disegna sulle righe
      * pari o dispari.
      */
-    private int computeDisplayY(int vpos) {
-        return (bplcon0 & 0x0004) != 0 ? vpos * 2 + field : vpos;
-    }
 
     /** HAM attivo se bit 11 (HOMOD) di BPLCON0 è impostato. */
     private static boolean isHAM(int bplcon0) {

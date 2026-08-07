@@ -37,7 +37,6 @@ public class DivsInstruction extends AbstractM68kInstruction {
     private static final int SRC_VAL = 2;
     private static final int QUOT_RES = 3;
     private static final int REM_RES = 4;
-    private static final int IDLE_AMT = 5;
 
     @Override
     public boolean shouldInhibitPrefetch() {

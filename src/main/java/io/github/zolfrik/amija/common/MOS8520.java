@@ -43,7 +43,6 @@ public class MOS8520 {
     private final CIAPinSet pinSet;
     private final boolean isCIAA;
     private Revision revision = Revision.MOS_8520_DIP;
-    private String name = "CIA";
     private boolean todBug = false;
     private int cachedDdra = -1;
     private int cachedDdrb = -1;
@@ -126,8 +125,6 @@ public class MOS8520 {
             | CIASerInt0 | CIASdrToSsr0 | CIASsrToSdr0 | CIASerClk0);
 
     // ── Diagnostics ──────────────────────────────────────────────────────────
-    public void setName(String n) { this.name = n; }
-
     public void setTodBug(boolean en) { this.todBug = en; }
 
     public void setCpuPcSupplier(java.util.function.IntSupplier s) { }
@@ -159,7 +156,6 @@ public class MOS8520 {
 
     private int pra, prb;   // Data registers
     private int ddra, ddrb; // Data direction registers
-    private int pa, pb;     // Sensed port values (PRA/PRB read what's on the pins)
 
     private int pb67TimerMode; // 0 = port register, 1 = timer mode
     private int pb67TimerOut;  // PB output level when in timer mode
@@ -174,8 +170,6 @@ public class MOS8520 {
 
     private int todCounter;  // 24-bit TOD counter
     private final int[] todHistory = new int[64]; // History for reading latency
-    private int todPre;      // TOD value before last increment
-    private long todLastInc; // Timestamp of last increment
     private int todLatch;    // Latch value when TODHI is read
     private int todAlarm;    // Alarm threshold
     private boolean todFrozen;  // Freezes on TODHI read, defreezes on TODLO read
@@ -189,7 +183,6 @@ public class MOS8520 {
     public MOS8520(CIAPinSet pinSet, boolean isCIAA) {
         this.pinSet = pinSet;
         this.isCIAA = isCIAA;
-        this.name = isCIAA ? "CIA-A" : "CIA-B";
         reset();
     }
 
@@ -217,8 +210,6 @@ public class MOS8520 {
         prb = 0x00;
         ddra = 0;
         ddrb = 0;
-        pa = 0xFF;
-        pb = 0xFF;
 
         pb67TimerMode = 0;
         pb67TimerOut = 0;
@@ -235,8 +226,6 @@ public class MOS8520 {
         serCounter = 0;
 
         todCounter = 0x000000;
-        todPre = todCounter;
-        todLastInc = 0;
         todLatch = 0;
         todAlarm = 0;
         todFrozen = false;
@@ -300,9 +289,6 @@ public class MOS8520 {
 
     public void incrementTod() {
         if (todStopped) return;
-
-        todPre = todCounter;
-        todLastInc = clock;
 
         // Increment bits using nibble overflow carry
         if (!incTodLoNibble(0)) { checkTodIrq(); return; }
@@ -697,9 +683,6 @@ public class MOS8520 {
             if (pinSet.getFlagPin().isFallingEdge()) emulateFallingEdgeOnFlagPin();
             if (pinSet.getTodPin().isRisingEdge()) incrementTod();
         }
-
-        this.pa = computePA();
-        this.pb = computePB();
     }
 
     // -------------------------------------------------------------------------

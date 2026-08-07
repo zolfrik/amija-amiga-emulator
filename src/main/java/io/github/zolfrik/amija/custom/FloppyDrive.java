@@ -98,8 +98,6 @@ public final class FloppyDrive {
     private static final int    BIT_CLOCK_SCALE          = 10_000;
     private static final int    ADF_CYCLES_PER_BIT_FIXED = 141_876;
     private static final int    TRACK_BUFFER_SIZE        = DiskImage.TRACK_BUFFER_BYTES;
-    private static final int    SECTORS_PER_TRACK        = DiskImage.SECTORS_PER_TRACK_DD;
-    private static final int    SECTOR_SIZE              = DiskImage.SECTOR_SIZE;
     private static final int    ID_SEQUENCE_BITS         = 32;
 
     // -------------------------------------------------------------------------

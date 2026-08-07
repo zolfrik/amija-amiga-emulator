@@ -156,11 +156,6 @@ public class AmigaDisplay {
     private final int windowWidth;
     private final int windowHeight;
     private final AmigaWindowMode windowMode;
-    // Taglia di PRESENTAZIONE: il contenuto della finestra in pixel FISICI (frame×videoScale
-    // in windowed, lo schermo in fullscreen/borderless). Serve solo a dimensionare la
-    // finestra e il canvas GL: nessun buffer di composizione ha questa taglia.
-    private final int presentationWidth;
-    private final int presentationHeight;
     /** Fattore di integer scaling della finestra emulata ({@code video.integerScaling}), ≥ 1. */
     private final int videoScale;
     private GraphicsDevice fullScreenDevice;
@@ -328,8 +323,6 @@ public class AmigaDisplay {
         this.videoScale = Math.max(1, videoScale);
         Dimension contentSize = contentSizeFor(this.windowMode,
                 windowWidth * this.videoScale, windowHeight * this.videoScale, screenDevice);
-        this.presentationWidth = contentSize.width;
-        this.presentationHeight = contentSize.height;
         this.width  = frameWidth;
         this.height = frameHeight;
         this.image  = new BufferedImage(frameWidth, frameHeight, BufferedImage.TYPE_INT_RGB);

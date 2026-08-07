@@ -172,7 +172,6 @@ public class CIAPinSet {
     }
 
     // Identification and logging (Stubbed)
-    public void setName(String name)                          { }
     public void setClkSupplier(java.util.function.LongSupplier s) { }
     public void setPcSupplier(java.util.function.IntSupplier s)   { }
 

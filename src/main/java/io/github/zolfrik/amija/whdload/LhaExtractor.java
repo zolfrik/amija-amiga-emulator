@@ -324,8 +324,6 @@ public final class LhaExtractor {
         private final int origSize;
         private final int np;        // numero codici di posizione = dicbit + 1
         private final int pbit;      // bit per leggere il conteggio dell'albero posizioni
-        private final int windowSize;
-        private final int windowMask;
 
         // Bit reader MSB-first.
         private int pos;
@@ -349,8 +347,6 @@ public final class LhaExtractor {
             this.origSize = origSize;
             this.np = dicbit + 1;
             this.pbit = (dicbit <= 13) ? 4 : 5;
-            this.windowSize = 1 << dicbit;
-            this.windowMask = windowSize - 1;
         }
 
         byte[] decode() {

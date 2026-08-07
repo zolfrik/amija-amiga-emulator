@@ -117,8 +117,6 @@ public final class Gary {
     // Logging / debug
     // =========================================================================
 
-    private long routeCounter = 0;
-
     private static String hx(int v) {
         return String.format("0x%06X", v & 0xFFFFFF);
     }
@@ -815,7 +813,6 @@ public final class Gary {
         this.kbResetLine    = false;
         this.resetAsserted  = false;
         this.haltAsserted   = false;
-        this.routeCounter   = 0;
     }
 
     // =========================================================================
@@ -881,10 +878,6 @@ public final class Gary {
      * route che conserva oltre la chiamata successiva (vedi {@link Route}).
      */
     public Route route(int rawAddress, AccessType type, boolean uds, boolean lds, boolean isCpu, Route out) {
-        // STEP 14/P-21 (PERFORMANCE_REPORT_FINAL): rimosso 'routeCounter++' che
-        // veniva eseguito ad OGNI bus cycle (~3.5M/s). routeCounter non è mai letto
-        // (nessun getter né altro uso nel progetto): era lavoro morto. Il campo è
-        // mantenuto (decl + reset) per eventuale strumentazione futura.
         final int addr = rawAddress & 0x00FFFFFF;
 
         // ── 1. Auto-clear OVL (Bug fix #3) ───────────────────────────────────

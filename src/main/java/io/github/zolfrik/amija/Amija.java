@@ -2013,8 +2013,6 @@ public class Amija implements RemotePlayControl {
             CIAPinSet ciaAPins = new CIAPinSet();
             MOS8520 ciaA = new MOS8520(ciaAPins, true);
             MOS8520 ciaB = new MOS8520(new CIAPinSet(), false);
-            ciaA.setName("CIA-A");
-            ciaB.setName("CIA-B");
 
             // Game port 1 (JOY0DAT, "Port 0") e port 2 (JOY1DAT, "Port 1"). La periferica
             // host di ciascuna (mouse / joystick reale / joystick da tastiera / vuota) è

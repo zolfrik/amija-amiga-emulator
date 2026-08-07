@@ -21,7 +21,6 @@
 package io.github.zolfrik.amija.display;
 
 import static io.github.zolfrik.amija.display.UiScaling.derive;
-import static io.github.zolfrik.amija.display.UiScaling.dim;
 import static io.github.zolfrik.amija.display.UiScaling.pad;
 import static io.github.zolfrik.amija.display.UiScaling.px;
 

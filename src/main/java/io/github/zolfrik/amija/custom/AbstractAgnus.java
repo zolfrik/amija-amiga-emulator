@@ -89,11 +89,6 @@ public abstract class AbstractAgnus {
 
     private int frameCount = 1;
 
-    private int frameMin = -1;
-    private int frameMax = -1;
-    private int pcMin = -1;
-    private int pcMax = -1;
-
     // =========================================================================
     // Dipendenze
     // =========================================================================
@@ -889,8 +884,7 @@ public abstract class AbstractAgnus {
     // line changes 0.5 CCKs later. 68000 needs one more CPU clock (0.5 CCK) before it
     // detects it"). Il secondo mezzo CCK il nostro modello lo spende già nel latch del
     // pin in `Motorola68000.fallingEdge()`, quindi qui ne resta uno solo.
-    public static boolean intreqDelay = !"false".equals(System.getProperty("amiga.intreqdelay"));
-    public static int intreqDelayMc = Integer.getInteger("amiga.intreqdelaymc", 1);
+    private static final int INTREQ_DELAY_MC = 1;
 
     /** DIAG (Fase B4): cattura raster-keyed degli eventi che posizionano le barre
      *  bbusy (COLOR00 $180, INTREQ $09C, BLTSIZE $058), per diff diretto contro
@@ -1228,7 +1222,6 @@ public abstract class AbstractAgnus {
      */
     private int ddfStrt = 0, ddfStop = 0;
     private int ddfCckStart = 0, ddfCckStop = 0;
-    private boolean bplFetchedThisLine = false;
 
     private int bplcon1 = 0;
     private int scrollOdd = 0;
@@ -1325,106 +1318,6 @@ public abstract class AbstractAgnus {
     /** true se il bus di sistema in questo CCK è occupato da un chip custom. */
     private boolean busTakenByCustom = false;
 
-    // =========================================================================
-    // Trace CPU-oracle (docs/agnus-cpu-trace-oracle-plan.md, Fase A)
-    // =========================================================================
-    // Log ciclo-per-istruzione parallelo al coplog Copper, da diffare contro
-    // l'oracolo SAE CPU-trace. Per ogni istruzione CPU ritirata/avviata emette:
-    //   [CPU] v=.. h=.. cck=.. pc=$.. op=$.. wait=.. cause=..
-    // dove `wait` = system-clock in cui la CPU voleva il bus e /DTACK le è stato
-    // negato dall'avvio dell'istruzione precedente a questa, e `cause` = la
-    // sorgente dominante di quel blocco (REFRESH/DISK/AUDIO/SPRITE/BPL/COP/BLT =
-    // contesa DMA, ALIGN = wait di sincronizzazione al CCK boundary, CIA = ciclo
-    // sincrono E-clock). Gated: OFF di default (-Damiga.cputrace=true oppure
-    // AbstractAgnus.cpuTraceEnabled=true da test). Puramente diagnostico: legge
-    // solo lo stato, non altera il comportamento (golden CRC invariato).
-    public static boolean cpuTraceEnabled = Boolean.getBoolean("amiga.cputrace");
-
-    // Finestra di cattura del CPU-trace, in parallelo all'oracolo vAmiga
-    // (tools/vamiga-oracle/run_oracle.sh, env VA_CPUTRACE_VFROM/VTO/FRAME/CAP).
-    // Emette [CPU] solo per vpos in [vfrom,vto], a partire dal frame >= frame,
-    // per al più cap righe. Default = tutta la finestra (nessun limite) così il
-    // vecchio comportamento è preservato quando le proprietà non sono settate.
-    public static int cpuTraceVfrom = Integer.getInteger("amiga.cputrace.vfrom", 0);
-    public static int cpuTraceVto   = Integer.getInteger("amiga.cputrace.vto", 9999);
-    public static int cpuTraceFrame = Integer.getInteger("amiga.cputrace.frame", 0);
-    public static int cpuTraceCap   = Integer.getInteger("amiga.cputrace.cap", Integer.MAX_VALUE);
-    private int cpuTraceEmitted = 0;
-
-    // Log scritture BPLCON0 (oracolo LED Storm §1.2): confronto diretto col log SAE
-    // (sae_bplcon0log.txt). Gated, OFF di default (-Damiga.bpllog=true). Emesso dal
-    // funnel unico AbstractDenise.writeRegister(0x100); il writer (CPU/COP) è distinto
-    // da isInCopperWrite(). Formato = lato SAE: "<src> f=.. v=.. h=.. val=$..".
-    public static boolean bplLogEnabled = Boolean.getBoolean("amiga.bpllog");
-
-    // Categorie di causa-attesa (indice nel tally). L'ordine è anche la priorità
-    // di spareggio quando due cause hanno lo stesso conteggio.
-    private static final int CAUSE_BLITTER = 0;
-    private static final int CAUSE_COPPER  = 1;
-    private static final int CAUSE_BPL     = 2;
-    private static final int CAUSE_SPRITE  = 3;
-    private static final int CAUSE_AUDIO   = 4;
-    private static final int CAUSE_DISK    = 5;
-    private static final int CAUSE_REFRESH = 6;
-    private static final int CAUSE_ALIGN   = 7; // wait di allineamento CCK (no DMA)
-    private static final int CAUSE_CIA     = 8; // ciclo sincrono E-clock (VPA)
-    private static final int CAUSE_OTHER   = 9;
-    private static final String[] CAUSE_NAMES = {
-        "BLT", "COP", "BPL", "SPR", "AUD", "DSK", "RFS", "ALIGN", "CIA", "-"
-    };
-    private final int[] cpuTraceCauseTally = new int[CAUSE_NAMES.length];
-    private int cpuTraceWaitClocks = 0;
-
-    /**
-     * Accumula un system-clock di stallo CPU e ne attribuisce la causa. Chiamato
-     * ad ogni risingEdge quando il trace è attivo, DOPO handleCpuBusCycle (così
-     * cpuBusResp riflette la decisione /DTACK di questo ciclo). No-op se la CPU
-     * non stava chiedendo il bus o l'ha ottenuto.
-     */
-    private void accumulateCpuStall(int cck, boolean cckEdge) {
-        boolean cpuWants = cpuBusReq.as && !cpuBusReq.iack;
-        if (!cpuWants) return;
-        if (cpuBusResp.ack || cpuBusResp.berr) return; // servito o abortito: non è stallo
-        cpuTraceWaitClocks++;
-        cpuTraceCauseTally[classifyCpuStall(cck)]++;
-    }
-
-    /** Classifica la causa dominante dello stallo CPU nel CCK corrente. */
-    private int classifyCpuStall(int cck) {
-        if (cpuBusResp.vpa) return CAUSE_CIA;          // ciclo CIA sincrono (E-clock)
-        if (busTakenByCustom) {                        // un DMA ha preso questo CCK
-            int o = busOwners[cck];
-            if (o == BusOwner.BLITTER.ordinal())  return CAUSE_BLITTER;
-            if (o == BusOwner.COPPER.ordinal())   return CAUSE_COPPER;
-            if (o == BusOwner.REFRESH.ordinal())  return CAUSE_REFRESH;
-            if (o == BusOwner.DISK.ordinal())     return CAUSE_DISK;
-            if (o >= BusOwner.AUDIO0.ordinal() && o <= BusOwner.AUDIO3.ordinal())  return CAUSE_AUDIO;
-            if (o >= BusOwner.SPRITE0.ordinal() && o <= BusOwner.SPRITE7.ordinal()) return CAUSE_SPRITE;
-            if (o >= BusOwner.BPL1.ordinal() && o <= BusOwner.BPL6.ordinal())       return CAUSE_BPL;
-            if (o == BusOwner.BLOCKED.ordinal())  return CAUSE_COPPER; // $E0 copper-blocked
-            return CAUSE_OTHER;
-        }
-        // Nessun DMA sul CCK ma /DTACK negato: wait di allineamento al chip-bus
-        // (la CPU campiona DTACK solo al CCK boundary; hpos dispari = attesa).
-        return CAUSE_ALIGN;
-    }
-
-    /** Emette la riga di trace per l'istruzione appena avviata e azzera i contatori. */
-    private void emitCpuTrace() {
-        int dominant = CAUSE_OTHER;
-        int best = 0;
-        for (int i = 0; i < cpuTraceCauseTally.length; i++) {
-            if (cpuTraceCauseTally[i] > best) { best = cpuTraceCauseTally[i]; dominant = i; }
-        }
-        String cause = cpuTraceWaitClocks == 0 ? "-" : CAUSE_NAMES[dominant];
-        System.out.printf(
-                "[CPU] v=%3d h=%3d cck=%3d pc=$%06X op=$%04X wait=%2d cause=%s%n",
-                vpos, hpos, hpos >> 1, cpu.getOpcodeAddress() & 0xFFFFFF,
-                cpu.getCurrentOpcode(), cpuTraceWaitClocks, cause);
-        cpuTraceWaitClocks = 0;
-        java.util.Arrays.fill(cpuTraceCauseTally, 0);
-    }
-
     /**
      * True se il bus chip in questo CCK è preso da un DMA a priorità superiore al
      * blitter (refresh/disk/audio/bitplane/sprite/copper). Usato dal null-blit del
@@ -1502,18 +1395,14 @@ public abstract class AbstractAgnus {
         this.ciaA = ciaA;
         this.ciaB = ciaB;
         if (this.ciaA != null) {
-            this.ciaA.setName("CIA-A");
             this.ciaA.setCpuPcSupplier(() -> cpu.getOpcodeAddress());
             this.ciaA.setClkSupplier(() -> this.masterClock);
-            this.ciaA.getPinSet().setName("CIA-A");
             this.ciaA.getPinSet().setClkSupplier(() -> this.masterClock);
             this.ciaA.getPinSet().setPcSupplier(() -> cpu.getOpcodeAddress());
         }
         if (this.ciaB != null) {
-            this.ciaB.setName("CIA-B");
             this.ciaB.setCpuPcSupplier(() -> cpu.getOpcodeAddress());
             this.ciaB.setClkSupplier(() -> this.masterClock);
-            this.ciaB.getPinSet().setName("CIA-B");
             this.ciaB.getPinSet().setClkSupplier(() -> this.masterClock);
             this.ciaB.getPinSet().setPcSupplier(() -> cpu.getOpcodeAddress());
         }
@@ -2038,17 +1927,7 @@ public abstract class AbstractAgnus {
         //   — hpos dispari + Chip RAM → cpuBusResp.ack = false  (CCK sync wait)
         //   — altrimenti              → DTACK garantito normalmente
         cpu.risingEdge();
-        // Trace CPU-oracle (Fase A): l'avvio istruzione avviene dentro cpu.risingEdge().
-        // Emetti la riga con i contatori di stallo accumulati nei cicli PRECEDENTI a
-        // questo (poi azzerati), così ogni riga misura il costo bus dell'istruzione.
-        if (cpuTraceEnabled && cpu.didStartInstructionThisCycle()
-                && vpos >= cpuTraceVfrom && vpos <= cpuTraceVto
-                && frameCount >= cpuTraceFrame && cpuTraceEmitted < cpuTraceCap) {
-            emitCpuTrace();
-            cpuTraceEmitted++;
-        }
         handleCpuBusCycle();
-        if (cpuTraceEnabled) accumulateCpuStall(cck, cckEdge);
 
         // Registra la CPU come proprietaria del bus (solo su CCK) e azzera
         // il contatore di stallo blitter quando la CPU ottiene il bus con successo.
@@ -2164,7 +2043,6 @@ public abstract class AbstractAgnus {
         scheduleSyncEvent(EVFL_EOL);
 
         hpos = 0;
-        bplFetchedThisLine = false;
         fetchWindowOpened = false;   // riarma il latch della finestra di fetch per la nuova riga
         bpuRelatchCck = -1;          // un re-latch BPU mai maturato non sopravvive alla riga
 
@@ -2182,32 +2060,6 @@ public abstract class AbstractAgnus {
         // 120 byte oltre i suoi dati, nei gap a zero → bit0 perso → solo colori a indice
         // pari → palette del tavolo "sballata".) Allineato a WinUAE/vAmiga: il modulo è
         // parte della sequenza DMA bitplane e segue gli effettivi fetch della riga.
-        // TEMP G4 (Passo 6): mappa owner per CCK della riga completata — RIMUOVERE.
-        if (cpuTraceEnabled && vpos >= cpuTraceVfrom && vpos <= cpuTraceVto
-                && frameCount >= cpuTraceFrame) {
-            StringBuilder sb = new StringBuilder(busOwners.length);
-            for (int i = 0; i < busOwners.length; i++) {
-                BusOwner o = OWNER_VALUES[busOwners[i]];
-                char ch;
-                switch (o) {
-                    case NONE -> ch = '.';
-                    case REFRESH -> ch = 'r';
-                    case DISK -> ch = 'd';
-                    case COPPER -> ch = 'C';
-                    case BLITTER -> ch = 'B';
-                    case CPU -> ch = 'U';
-                    default -> {
-                        String n = o.name();
-                        ch = n.startsWith("BPL") ? n.charAt(3)
-                                : n.startsWith("AUDIO") ? 'a'
-                                : n.startsWith("SPRITE") ? 's'
-                                : n.equals("BLOCKED") ? 'x' : '?';
-                    }
-                }
-                sb.append(ch);
-            }
-            System.out.printf("[ROW] f=%d v=%d %s%n", frameCount, vpos, sb);
-        }
         // I moduli bitplane NON si applicano più qui a fine riga: sono aggiunti
         // per-piano all'ULTIMO fetch della riga (handleBitplaneDMA, `domod`
         // WinUAE). Il gate lineDidFetch (Pinball Fantasies) è assorbito: una riga
@@ -2769,7 +2621,6 @@ public abstract class AbstractAgnus {
             int mod = (bplIdx % 2 == 0) ? bpl1mod : bpl2mod;
             bplPtrInternal[bplIdx] = (bplPtrInternal[bplIdx] + mod) & 0xFFFFF;
         }
-        bplFetchedThisLine = true;
     }
 
     private void handleBitplaneDrawEvent(int cck) {
@@ -3048,16 +2899,6 @@ public abstract class AbstractAgnus {
                     cpu.getOpcodeAddress() & 0xFFFFFF, cpuCurrentRoute.target,
                     addr & 0xFFFFFF, cpuBusReq.read ? "R" : "W", hpos);
         }
-        // TEMP G4 (Passo 6): accesso CPU nel formato del trace WinUAE [WACC],
-        // gated sulla finestra cputrace — RIMUOVERE a fine indagine.
-        if (cpuTraceEnabled && vpos >= cpuTraceVfrom && vpos <= cpuTraceVto
-                && frameCount >= cpuTraceFrame) {
-            System.out.printf("[ACC2] f=%d v=%d c=%d %s a=%06X d=%04X pc=%06X t=%d%n",
-                    frameCount, vpos, hpos >> 1, cpuBusReq.read ? "R" : "W",
-                    addr & 0xFFFFFF, cpuBusReq.dataOut & 0xFFFF,
-                    cpu.getOpcodeAddress() & 0xFFFFFF, cpu.getTotalCycles());
-        }
-
         // Coerenza della lettura della posizione del pennello (VPOSR/VHPOSR).
         // Il 68000 legge `MOVE.L $DFF004` come DUE accessi word distinti ($004 poi $006).
         // Se vpos incrementa tra i due (al confine di riga, es. 255→256) la posizione
@@ -3776,8 +3617,8 @@ public abstract class AbstractAgnus {
                 || regAddr == 0x09A || regAddr == 0x09C || regAddr == 0x09E
                 || (regAddr >= 0x0A0 && regAddr <= 0x0DF)) {
             // EXPERIMENT (Step 2): INTENA ($09A) / INTREQ ($09C) differiti 1 CCK come vAmiga.
-            if (intreqDelay && regAddr == 0x09C) { recordRegisterChange(intreqDelayMc, AgnusReg.INTREQ, value); return; }
-            if (intreqDelay && regAddr == 0x09A) { recordRegisterChange(intreqDelayMc, AgnusReg.INTENA, value); return; }
+            if (regAddr == 0x09C) { recordRegisterChange(INTREQ_DELAY_MC, AgnusReg.INTREQ, value); return; }
+            if (regAddr == 0x09A) { recordRegisterChange(INTREQ_DELAY_MC, AgnusReg.INTENA, value); return; }
             if (paula != null) paula.writeRegister(regAddr, value);
             return;
         }
@@ -4059,10 +3900,6 @@ public abstract class AbstractAgnus {
         bitplaneDmaActive  = bitplaneDmaEnabled && bitplaneVerticalActive;
     }
 
-    private boolean isBitplaneDMAEnabled() {
-        return bitplaneDmaEnabled;
-    }
-
     private boolean isBitplaneDMAActive() {
         return bitplaneDmaActive;
     }
@@ -4215,22 +4052,6 @@ public abstract class AbstractAgnus {
 
         int plane = getBitplaneIndexForFetchUnit(cck - fetchUnitDdfStart, hires);
         return plane < bplCount ? plane : -1;
-    }
-
-    private int getBitplaneIndexForSlot(int cck, int bplCount, boolean hires) {
-        if (cck < ddfCckStart || cck >= getEffectiveDdfStopCck(hires) || bplCount <= 0) return -1;
-        int relCck = cck - ddfCckStart;
-
-        if (hires) {
-            int plane = getBitplaneIndexForFetchUnit(relCck, true);
-            return plane < bplCount ? plane : -1;
-        } else {
-            // In modalità Lores (Low Resolution):
-            // - BPL1, BPL2, BPL3, BPL4 usano ESCLUSIVAMENTE slot dispari (uno ogni 2 CCK).
-            // - BPL5, BPL6 usano slot pari (solo se presenti).
-            int plane = getBitplaneIndexForFetchUnit(relCck, false);
-            return plane < bplCount ? plane : -1;
-        }
     }
 
     private int getEffectiveDdfStopCck(boolean hires) {
@@ -4501,41 +4322,6 @@ public abstract class AbstractAgnus {
 
     public boolean isTraceEnabled() {
         return false;
-    }
-
-    public void setTraceEnabled(boolean enabled) {
-    }
-
-    public int getFrameMin() {
-        return frameMin;
-    }
-
-    public void setFrameMin(int frameMin) {
-        this.frameMin = frameMin;
-    }
-
-    public int getFrameMax() {
-        return frameMax;
-    }
-
-    public void setFrameMax(int frameMax) {
-        this.frameMax = frameMax;
-    }
-
-    public int getPcMin() {
-        return pcMin;
-    }
-
-    public void setPcMin(int pcMin) {
-        this.pcMin = pcMin;
-    }
-
-    public int getPcMax() {
-        return pcMax;
-    }
-
-    public void setPcMax(int pcMax) {
-        this.pcMax = pcMax;
     }
 
     public int getLastBusData() {

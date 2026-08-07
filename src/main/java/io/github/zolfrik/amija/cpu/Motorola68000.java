@@ -149,15 +149,12 @@ public final class Motorola68000 {
     // lo usa nel path NORMAL. DEFAULT ON (modello hardware corretto): rende il cycle-trace
     // CPU bit-identico all'oracolo vAmiga sui test vAmigaTS (NOP 0.70→0.38%, tutti i marker
     // cycle-exact); disattivabile con -Damiga.iplpoll=false. Vedi vamigats-ipl-poll-point.
-    public static boolean iplPollAtPrefetch =
-            Boolean.parseBoolean(System.getProperty("amiga.iplpoll", "true"));
-    // Stato del ciclo bus in cui avviene il campionamento (S0=0, S2=1, S4=2, S6=3
-    // clock dopo l'inizio del ciclo). Moira campiona all'avvio (S0); WinUAE — che è
-    // l'oracolo — lo fa nella PARTE DATI del ciclo: gencpu.cpp check_ipl,
-    // "IPL fetch happens when CPU is doing memory cycle data part followed by
-    // prefetch cycle ... after possible bus error has been detected but before
-    // following prefetch memory cycle". Leva di calibrazione: -Damiga.iplpollstate.
-    public static int iplPollState = Integer.getInteger("amiga.iplpollstate", 0);
+    // Il campionamento avviene all'S0 del ciclo bus ancora (iplPollState = 0).
+    // Moira campiona all'avvio (S0); WinUAE — che è l'oracolo — lo fa nella PARTE
+    // DATI del ciclo: gencpu.cpp check_ipl, "IPL fetch happens when CPU is doing
+    // memory cycle data part followed by prefetch cycle ... after possible bus error
+    // has been detected but before following prefetch memory cycle".
+    private static final int IPL_POLL_STATE = 0;
     private int polledIpl = 0;
 
     // ── Regola WinUAE `ipl_fetch_next` (newcpu.cpp) ────────────────────────────
@@ -167,18 +164,11 @@ public final class Motorola68000 {
     //   cdp >= 2  → ipl[0] = pin_prev   (il cambio è troppo fresco: si ignora)
     //   altrimenti → ipl[1] = pin       (DIFFERITO all'istruzione SUCCESSIVA)
     // e a ogni ritiro di istruzione fa `ipl[0] = ipl[1]; ipl[1] = 0`.
-    // Il nostro modello campionava il pin nudo: nessuna soglia, nessun differimento.
-    // -Damiga.iplwinuae per l'A/B.
-    public static boolean iplWinuaeRule = Boolean.getBoolean("amiga.iplwinuae");
-    // Punto di POLL per-istruzione (WinUAE gencpu.cpp check_ipl): ancorato all'ultimo
-    // accesso DATI dell'istruzione, con fallback al prefetch. DEFAULT ON dal
-    // 2026-07-31 (§6.7 del report): da solo non basta — vale insieme a `iplcond`,
-    // `iplwaitoverride` e alla fase-pin di WinUAE. -Damiga.iplperinstr=false per l'A/B.
-    public static boolean iplPerInstrPoll =
-            Boolean.parseBoolean(System.getProperty("amiga.iplperinstr", "true"));
-    // Stato di POLL quando l'ancora è il PREFETCH (istruzioni senza accessi dati:
-    // nop, bra, …). Separato da iplPollState, che vale per l'ancora "accesso dati".
-    public static int iplPollStateFetch = Integer.getInteger("amiga.iplpollstatefetch", -1);
+    // Le soglie sono misurate dall'ISTANTE DEL CAMBIO DI PIN, quindi dipendono dalla
+    // fase del nostro pin IPL rispetto a quello di WinUAE (la nostra pipe IPL è un
+    // port di vAmiga: 3 stadi da 1 CCK + poke-delay).
+    private static final int IPL_DELAY4 = 4;
+    private static final int IPL_DELAY2 = 2;
     // ── Selezione CONDIZIONALE now/next (WinUAE gencpu.cpp ~9498) ─────────────
     // WinUAE non applica sempre le soglie di `ipl_fetch_next`: sceglie quale delle due
     // funzioni emettere in base alla distanza fra il punto di POLL e la fine
@@ -191,22 +181,9 @@ public final class Motorola68000 {
     // In WinUAE è una decisione di CODEGEN, presa sui cicli NOMINALI; a runtime la
     // distanza POLL→boundary si conosce solo al boundary, quindi al POLL registriamo
     // ENTRAMBI i candidati e la scelta si fa al boundary (resolveIplAtBoundary).
-    //   -Damiga.iplcond=0  OFF (comportamento pre-2026-07-31)
-    //   -Damiga.iplcond=1  distanza misurata a runtime: anchorS0 → boundary
-    //   -Damiga.iplcond=2  DEFAULT: criterio strutturale, indipendente dalla contention:
-    //                      ancora = prefetch → next, ancora = accesso dati → now
-    //                      (l'ancora dati è per costruzione seguita dalla prefetch
-    //                      finale, quindi dista 8 clock dalla fine)
-    public static int iplCondRule = Integer.getInteger("amiga.iplcond", 2);
-    /** Soglia in clock CPU della selezione now/next (WinUAE: 4). Sweep con -Damiga.iplcondthreshold. */
-    public static int iplCondThreshold = Integer.getInteger("amiga.iplcondthreshold", 4);
-    // Soglie di `ipl_fetch_next` (WinUAE cpuipldelay4/cpuipldelay2 = 4 e 2 clock CPU).
-    // Sono misurate dall'ISTANTE DEL CAMBIO DI PIN, quindi dipendono dalla fase del
-    // nostro pin IPL rispetto a quello di WinUAE (la nostra pipe IPL è un port di
-    // vAmiga: 3 stadi da 1 CCK + poke-delay). Esposte per lo sweep di calibrazione:
-    // -Damiga.ipldelay4 / -Damiga.ipldelay2.
-    public static int iplDelay4 = Integer.getInteger("amiga.ipldelay4", 4);
-    public static int iplDelay2 = Integer.getInteger("amiga.ipldelay2", 2);
+    // Criterio adottato (2026-07-31): STRUTTURALE, indipendente dalla contention —
+    // ancora = prefetch → next, ancora = accesso dati → now (l'ancora dati è per
+    // costruzione seguita dalla prefetch finale, quindi dista 8 clock dalla fine).
     // ── Ri-campionamento del pin durante i WAIT-STATE del bus (WinUAE) ─────────
     // `wait_cpu_cycle_read/write` (custom.cpp) salva `now = get_cycles()` PRIMA di
     // attendere il bus e, alla fine dell'accesso, fa:
@@ -219,15 +196,8 @@ public final class Motorola68000 {
     // l'override è un no-op (il ciclo `while` non gira).
     // Noi campionavamo sempre all'S0 = istante "pronta": sotto contention di
     // bitplane vedevamo il pin ~1 CCK troppo presto e perdevamo l'edge, prendendo
-    // l'interrupt un'istruzione dopo. -Damiga.iplwaitoverride:
-    //   0 = OFF (comportamento pre-2026-07-31)
-    //   1 = DEFAULT: pin dell'ULTIMO master-cycle di attesa
-    //   2 = pin del penultimo (= inizio dell'ultimo CCK bloccato)
-    //   3 = come 1, ma solo sui cicli in cui lo slot chip-bus è DAVVERO allocato a
-    //       un canale DMA (`read_rga_out()->alloc > 0`). È il criterio di WinUAE:
-    //       il `while` di `dma_cycle()` gira solo sull'allocazione, mentre l'attesa
-    //       di allineamento al CCK (`sync_cycles()`) NON ri-campiona il pin.
-    public static int iplWaitOverride = Integer.getInteger("amiga.iplwaitoverride", 1);
+    // l'interrupt un'istruzione dopo. Criterio adottato (2026-07-31): si usa il pin
+    // dell'ULTIMO master-cycle di attesa.
     // ── Ancora dell'IPL in coda all'INGRESSO IN ECCEZIONE (WinUAE Exception_ce000) ──
     // WinUAE, in fondo a `Exception_ce000` (newcpu.cpp ~2937), emette `ipl_fetch_next()`
     // DOPO la prima prefetch di refill e i suoi 2 clock idle, cioè 4 clock prima della
@@ -239,11 +209,8 @@ public final class Motorola68000 {
     // Noi invece lasciavamo l'ancora sull'ultimo ACCESSO DATI dell'entry (la lettura
     // del vettore), che con `iplcond=2` ha semantica `now`: campionamento
     // INCONDIZIONATO del pin ~14 clock prima della fine, invece delle soglie 4/2
-    // applicate a 4 clock dalla fine. Differenza strutturale nota (§4 "Cosa resta"
-    // del report), che nessun test distingueva.
-    //   -Damiga.iplexcentry=0  OFF (comportamento pre-2026-07-31, ancora = vettore)
-    //   -Damiga.iplexcentry=1  DEFAULT: `ipl_fetch_next()` in coda all'entry
-    public static int iplExcEntryAnchor = Integer.getInteger("amiga.iplexcentry", 1);
+    // applicate a 4 clock dalla fine. Dal 2026-07-31 l'ancora è `ipl_fetch_next()`
+    // in coda all'entry, come WinUAE.
     private boolean iplAnchorIsCurrentOp = false, iplAnchorHadWait = false;
     private int iplWaitIpl0 = 0, iplWaitIpl1 = 0;
     private boolean iplHadDataAccess = false;
@@ -251,64 +218,28 @@ public final class Motorola68000 {
     private long iplPinChangeCycle = -1000, iplPinChangeCycleP = -1000;
     // Candidati registrati all'ultimo POLL dell'istruzione corrente (modo iplcond).
     private boolean iplPollValid = false, iplPollOnFetch = false, iplNextDefer = false;
-    private long iplPollAnchorCycle = 0;
     private int iplNowIpl = 0, iplNextIpl = 0, iplNextPending = 0;
     /** true se una delle leve che leggono la STORIA del pin è attiva (default: sì). */
-    private static boolean iplTrackPin() { return iplWinuaeRule || iplCondRule != 0 || stopWinuae; }
 
-    // ── Wake da STOP: riconoscimento IPL Moira-fedele (POLL_IPL; sync(2)) ──────
-    // Moira, mentre è STOPPED, fa `POLL_IPL` (campiona il pin in reg.ipl) e poi
-    // `sync(2)`; il `checkForIrq` del giro SUCCESSIVO usa il valore campionato 2
-    // cicli prima. Noi invece riconoscevamo l'IRQ sul pin LIVE (`latchedIpl`)
-    // l'istante in cui saliva → il wake partiva −2 CCK troppo presto (difetto reale
-    // di latenza, blast-radius STOP-only). Il ramo STOPPED gira ogni master-cycle
-    // (2 per CCK), quindi una pipe a 2 stadi riproduce esattamente la latenza
-    // sync(2) di Moira. Attiva di default; -Damiga.stopwakepoll=false per A/B.
-    static final boolean stopWakePoll =
-            Boolean.parseBoolean(System.getProperty("amiga.stopwakepoll", "true"));
-    // Profondità della pipe = latenza di riconoscimento in master-cycle. Default 2
-    // (= Moira sync(2)); sweep -Damiga.stopwakedelay per calibrare sull'oracolo.
-    static final int stopWakeDelay =
-            Integer.getInteger("amiga.stopwakedelay", 2);
-    private final int[] stoppedIplPipe = new int[Math.max(1, stopWakeDelay)];
-    private int stoppedRecogIpl = 0;
-    // ── Quantizzazione del wake alla griglia dei round STOP (oracolo WinUAE) ──
-    // WinUAE (m68k_run_1_ce + op_4e72_13): mentre è stopped la CPU RI-ESEGUE lo
-    // STOP in round da 4 clock (`do_cycles_stop(4)`) ancorati all'ingresso; l'IPL è
-    // campionato a inizio round (`ipl_fetch_next`) e l'interrupt riconosciuto SOLO
-    // al confine del round (`do_specialties`). Il wake quindi non parte al pin+delay
-    // ma al primo confine di griglia successivo: la correzione dipende dalla FASE
-    // del pin rispetto alla griglia (±0..3 mc), non è un delay costante — è ciò che
-    // spiega i due wake di stop5 con segni OPPOSTI (−1/+1 CCK), infixabili a sweep.
-    // La pipe sync(2) resta (latenza minima); qui aggiungiamo solo la quantizzazione.
-    // -Damiga.stopwakephase = offset di fase della griglia in mc (default 0),
-    // -Damiga.stopwakegrid=false per disattivare (modello vAmiga puro).
-    static final boolean stopWakeGrid =
-            Boolean.parseBoolean(System.getProperty("amiga.stopwakegrid", "true"));
-    static final int stopWakePhase = Integer.getInteger("amiga.stopwakephase", 0);
-    private long stopRoundAnchor = 0;
-    // ── Modello di wake da STOP FEDELE a WinUAE (-Damiga.stopwinuae) ──────────
-    // La quantizzazione sopra (`stopWakeGrid`) è un'APPROSSIMAZIONE: riconosce
-    // sul pin ritardato di 2 mc al primo punto di griglia. WinUAE fa due cose
-    // distinte, con `ipl[0]`/`ipl[1]` (m68k_run_1_ce + op_4e72_13_ff):
-    //   • a INIZIO round (T)      → `ipl_fetch_next()`: soglie 4/2 sull'anzianità
-    //                               del cambio di pin (le stesse di §iplcond);
-    //   • a FINE round (T+4)      → `do_specialties()` riconosce `ipl[0]`, poi
-    //                               `ipl[0] = ipl[1]; ipl[1] = 0`.
+    // ── Wake da STOP: modello dei round di WinUAE ─────────────────────────────
+    // WinUAE (m68k_run_1_ce + op_4e72_13_ff): mentre è stopped la CPU RI-ESEGUE lo
+    // STOP in round da 4 clock (`do_cycles_stop(4)`) ancorati all'ingresso, con due
+    // registri ipl[0]/ipl[1]:
+    //   • a INIZIO round (T)   → `ipl_fetch_next()`: soglie 4/2 sull'anzianità del
+    //                            cambio di pin (le stesse di §iplcond);
+    //   • a FINE round (T+4)   → `do_specialties()` riconosce `ipl[0]`, poi
+    //                            `ipl[0] = ipl[1]; ipl[1] = 0`.
     // Il wake cade quindi al PRIMO fine-round successivo al primo inizio-round che
-    // vede il pin "vecchio" di ≥4 clock: la correzione rispetto al modello a pipe
-    // vale 4 o 8 clock a seconda della fase del pin nella griglia — non un delay
-    // costante, ed è per questo che nessuno sweep di stopwakedelay/stopwakephase
-    // recuperava stop1+stop5 insieme (vedi §6.6.5 del report).
-    // DEFAULT ON dal 2026-07-31 (§6.7 del report): chiude `stop1`+`stop5` insieme,
-    // che era il residuo aperto di FIX #24. -Damiga.stopwinuae=false torna al modello
-    // a pipe + griglia (stopWakePoll/stopWakeGrid), tarato sull'oracolo vAmiga.
-    public static final boolean stopWinuae =
-            Boolean.parseBoolean(System.getProperty("amiga.stopwinuae", "true"));
+    // vede il pin "vecchio" di ≥4 clock: la correzione rispetto a un ritardo COSTANTE
+    // vale 4 o 8 clock secondo la fase del pin nella griglia. È questa dipendenza
+    // dalla fase — non un delay fisso — a chiudere `stop1` e `stop5` insieme, che era
+    // il residuo aperto di FIX #24 (nessuno sweep di un ritardo costante li prendeva
+    // entrambi: i due wake sbagliavano di segno OPPOSTO).
+    private int stoppedRecogIpl = 0;
+    private long stopRoundAnchor = 0;
     private int stopIpl0 = 0, stopIpl1 = 0;
-    /** Reset della pipe IPL all'ingresso in STOPPED (nessun wake spurio da valori stantii). */
+    /** Reset dello stato IPL all'ingresso in STOPPED (nessun wake spurio da valori stantii). */
     public void resetStoppedIplPipe() {
-        java.util.Arrays.fill(stoppedIplPipe, latchedIpl);
         stoppedRecogIpl = latchedIpl;
         stopRoundAnchor = totalCycles;
         stopIpl0 = 0;
@@ -804,7 +735,7 @@ public final class Motorola68000 {
         // sostituisce un IDIV (20-90 cicli host) con un confronto+branch.
         totalCycles++; if (++eClockCounter >= 10) eClockCounter = 0;
         latchedIpl = busResp.ipl & 0x7;
-        if (iplTrackPin() && latchedIpl != iplPin) {
+        if (latchedIpl != iplPin) {
             // WinUAE update_ipl(): memorizza valore e istante del cambio PRECEDENTE
             // (ipl_pin_p / ipl_pin_change_evt_p) prima di registrare quello nuovo.
             iplPinPrev = iplPin;
@@ -841,8 +772,7 @@ public final class Motorola68000 {
                 if (busCycleState == BusCycleState.S4 && !busResp.ack && !busResp.berr && !busResp.vpa) {
                     waitCycles++;
                     // WinUAE dma_cycle(): a ogni ciclo bloccato il pin viene ri-letto.
-                    if (iplWaitOverride != 0 && iplAnchorIsCurrentOp
-                            && (iplWaitOverride != 3 || isChipBusBusyNow())) {
+                    if (iplAnchorIsCurrentOp) {
                         iplWaitIpl1 = iplWaitIpl0;
                         iplWaitIpl0 = busResp.ipl & 0x7;
                         iplAnchorHadWait = true;
@@ -906,21 +836,7 @@ public final class Motorola68000 {
                 triggerPrivilegeViolation();
                 return;
             }
-            if (stopWinuae) { serviceStopRound(); return; }
-            // Moira POLL_IPL; sync(2): campiona il pin ORA ma riconosci l'IRQ sul
-            // valore campionato 2 cicli (1 CCK) fa. La pipe a 2 stadi replica la
-            // latenza sync(2) (il ramo gira ogni master-cycle, 2 per CCK).
-            if (stopWakePoll) {
-                stoppedRecogIpl = stoppedIplPipe[stoppedIplPipe.length - 1];
-                for (int i = stoppedIplPipe.length - 1; i > 0; i--) stoppedIplPipe[i] = stoppedIplPipe[i - 1];
-                stoppedIplPipe[0] = latchedIpl;
-            } else {
-                stoppedRecogIpl = latchedIpl;
-            }
-            // Quantizzazione WinUAE: riconosci solo ai confini dei round da 4 mc
-            // ancorati all'ingresso in STOPPED (vedi stopWakeGrid sopra).
-            if (stopWakeGrid && ((totalCycles - stopRoundAnchor - stopWakePhase) & 3) != 0) return;
-            checkInterrupts();
+            serviceStopRound();
             return;
         }
         if (currentMicroTask != InternalTask.NONE) { processInternalTask(); return; }
@@ -990,7 +906,7 @@ public final class Motorola68000 {
             // WinUAE (m68k_run_1_ce): al ritiro di ogni istruzione `ipl[0] = ipl[1];
             // ipl[1] = 0`. Qui = avvio della successiva, dopo il checkInterrupts del
             // boundary e prima che i prefetch di questa istruzione ri-campionino.
-            if (iplTrackPin()) { polledIpl = pendingIpl; pendingIpl = 0; }
+            polledIpl = pendingIpl; pendingIpl = 0;
             iplHadDataAccess = false;
             iplPollValid = false;
 
@@ -1087,7 +1003,7 @@ public final class Motorola68000 {
     }
     private void applyBusSignalsS0(BusOp op) { busReq.address = op.address; busReq.sizeBytes = op.size; busReq.read = op.read; busReq.fc = op.fc; busReq.instruction = (op.type == BusOpType.INSTRUCTION_FETCH); busReq.iack = (op.type == BusOpType.INTERRUPT_ACK); busReq.dataOut = op.dataOut; if (!op.read) { busReq.uds = op.uds; busReq.lds = op.lds; }
         // Un nuovo accesso: l'ancora del POLL non è (ancora) questo ciclo bus.
-        if (iplWaitOverride != 0) { iplAnchorIsCurrentOp = false; iplAnchorHadWait = false; }
+        iplAnchorIsCurrentOp = false; iplAnchorHadWait = false;
         // POLL_IPL: campiona il pin IPL all'avvio di ogni prefetch. Il valore usato al
         // boundary è quello dell'ultima prefetch dell'istruzione (~2 CCK prima), come Moira.
         pollIpl(op, 0); }
@@ -1096,56 +1012,39 @@ public final class Motorola68000 {
      * questo accesso vale il pin dell'ultimo ciclo di attesa, non quello dell'S0.
      */
     private void commitIplWaitOverride() {
-        int v = (iplWaitOverride >= 2) ? iplWaitIpl1 : iplWaitIpl0;
-        if (iplCondRule != 0) iplNowIpl = v; else polledIpl = v;
+        int v = iplWaitIpl0;
+        iplNowIpl = v;
         iplAnchorHadWait = false; iplAnchorIsCurrentOp = false;
     }
     /** Campiona il pin IPL se questo è lo stato-bus configurato come punto di POLL. */
     private void pollIpl(BusOp op, int state) {
-        if (!iplPollAtPrefetch) return;
         boolean fetch = op.type == BusOpType.INSTRUCTION_FETCH;
-        int wanted = (iplPerInstrPoll && fetch && iplPollStateFetch >= 0)
-                ? iplPollStateFetch : iplPollState;
-        if (state != wanted) return;
-        if (iplPerInstrPoll) {
-            // WinUAE gencpu.cpp check_ipl(): il POLL è ancorato alla parte dati
-            // dell'ULTIMO accesso in memoria dell'istruzione ("memory cycle data part
-            // followed by prefetch cycle"); solo se l'istruzione non ha accessi dati
-            // (nop, bra, …) resta ancorato al prefetch. Qui: ogni accesso dati
-            // ricampiona e marca l'istruzione; i prefetch campionano solo finché non
-            // è arrivato un accesso dati. Il flag si azzera all'avvio dell'istruzione.
-            if (op.type == BusOpType.INTERRUPT_ACK) return;
-            if (fetch) { if (iplHadDataAccess) return; }
-            else iplHadDataAccess = true;
-        } else if (!fetch) {
-            return;
-        }
+        if (state != IPL_POLL_STATE) return;
+        // WinUAE gencpu.cpp check_ipl(): il POLL è ancorato alla parte dati
+        // dell'ULTIMO accesso in memoria dell'istruzione ("memory cycle data part
+        // followed by prefetch cycle"); solo se l'istruzione non ha accessi dati
+        // (nop, bra, …) resta ancorato al prefetch. Qui: ogni accesso dati
+        // ricampiona e marca l'istruzione; i prefetch campionano solo finché non
+        // è arrivato un accesso dati. Il flag si azzera all'avvio dell'istruzione.
+        if (op.type == BusOpType.INTERRUPT_ACK) return;
+        if (fetch) { if (iplHadDataAccess) return; }
+        else iplHadDataAccess = true;
         // WinUAE: `ipl_fetch_now()` è emesso subito prima dell'accesso DATI, quindi
         // `regs.ipl_evt == now` e l'override sui wait-state di wait_cpu_cycle_*
         // riguarda solo questo caso (un'ancora-prefetch usa ipl_fetch_next, che non
         // aggiorna ipl_evt).
-        if (iplWaitOverride != 0 && !fetch && state == 0) {
+        if (!fetch && state == 0) {
             iplAnchorIsCurrentOp = true;
             iplWaitIpl0 = iplWaitIpl1 = busResp.ipl & 0x7;
         }
-        if (iplCondRule != 0) {
-            // Registra i due esiti possibili; la scelta è al boundary. `state` è lo
-            // scostamento in clock dall'S0 del ciclo bus ancora: normalizzandolo
-            // otteniamo l'equivalente di `ipl_fetch_cycles` di WinUAE, che è preso
-            // PRIMA dell'accesso (get_current_cycles() precede count_readw++).
-            iplPollValid = true;
-            iplPollOnFetch = fetch;
-            iplPollAnchorCycle = totalCycles - state;
-            iplNowIpl = iplPin;                                   // ipl_fetch_now()
-            recordIplFetchNext();                                 // ipl_fetch_next()
-            return;
-        }
-        if (!iplWinuaeRule) { polledIpl = busResp.ipl & 0x7; return; }
-        long cd = totalCycles - iplPinChangeCycle;
-        long cdp = totalCycles - iplPinChangeCycleP;
-        if (cd >= 4) { polledIpl = iplPin; pendingIpl = 0; }
-        else if (cdp >= 2) { polledIpl = iplPinPrev; pendingIpl = 0; }
-        else { pendingIpl = iplPin; }
+        // Registra i due esiti possibili; la scelta è al boundary. `state` è lo
+        // scostamento in clock dall'S0 del ciclo bus ancora: normalizzandolo
+        // otteniamo l'equivalente di `ipl_fetch_cycles` di WinUAE, che è preso
+        // PRIMA dell'accesso (get_current_cycles() precede count_readw++).
+        iplPollValid = true;
+        iplPollOnFetch = fetch;
+        iplNowIpl = iplPin;                                   // ipl_fetch_now()
+        recordIplFetchNext();                                 // ipl_fetch_next()
     }
     /**
      * Esito di `ipl_fetch_next()` (WinUAE newcpu.cpp): confronta l'anzianità del
@@ -1157,8 +1056,8 @@ public final class Motorola68000 {
     private int iplFetchNextValue() {
         long cd = totalCycles - iplPinChangeCycle;
         long cdp = totalCycles - iplPinChangeCycleP;
-        if (cd >= iplDelay4) return iplPin;
-        if (cdp >= iplDelay2) return iplPinPrev;
+        if (cd >= IPL_DELAY4) return iplPin;
+        if (cdp >= IPL_DELAY2) return iplPinPrev;
         return -1;
     }
     /** Registra l'esito di `ipl_fetch_next()` nei candidati risolti al boundary. */
@@ -1176,21 +1075,13 @@ public final class Motorola68000 {
      * l'unica cosa che WinUAE emette qui. Vedi {@link #iplExcEntryAnchor}.
      */
     private void iplFetchNextAtExceptionEntry() {
-        if (iplExcEntryAnchor == 0 || !iplPollAtPrefetch || !iplTrackPin()) return;
         // L'ancora non è più un accesso dati: l'override sui wait-state
         // (wait_cpu_cycle_*) non si applica a `ipl_fetch_next`, che non tocca ipl_evt.
         iplAnchorIsCurrentOp = false; iplAnchorHadWait = false;
-        if (iplCondRule != 0) {
-            iplPollValid = true;
-            iplPollOnFetch = true;            // ancora-prefetch → ramo `next` (iplcond=2)
-            iplPollAnchorCycle = totalCycles; // dista 4 clock dal boundary (iplcond=1)
-            iplNowIpl = iplPin;
-            recordIplFetchNext();
-            return;
-        }
-        int v = iplFetchNextValue();
-        if (v < 0) pendingIpl = iplPin;
-        else { polledIpl = v; pendingIpl = 0; }
+        iplPollValid = true;
+        iplPollOnFetch = true;            // ancora-prefetch → ramo `next`
+        iplNowIpl = iplPin;
+        recordIplFetchNext();
     }
     /**
      * Applica al boundary la selezione now/next di WinUAE (gencpu.cpp ~9498) sui
@@ -1200,11 +1091,9 @@ public final class Motorola68000 {
      * termine dell'istruzione SUCCESSIVA, via lo shift ipl[0]=ipl[1] all'avvio.
      */
     private void resolveIplAtBoundary() {
-        if (iplCondRule == 0 || !iplPollValid) return;
+        if (!iplPollValid) return;
         iplPollValid = false;
-        boolean now = (iplCondRule == 2)
-                ? !iplPollOnFetch
-                : (totalCycles - iplPollAnchorCycle) > iplCondThreshold;
+        boolean now = !iplPollOnFetch;
         if (now) { polledIpl = iplNowIpl; pendingIpl = 0; }
         else if (iplNextDefer) { pendingIpl = iplNextPending; }
         else { polledIpl = iplNextIpl; pendingIpl = 0; }
@@ -1661,10 +1550,8 @@ public final class Motorola68000 {
      * STOPPED = l'istante in cui l'istruzione STOP chiama `ipl_fetch_next()`.
      */
     private void serviceStopRound() {
-        // stopWakePhase = scostamento in mc dell'ancora della griglia (sweep: il punto
-        // esatto in cui WinUAE avvia `do_cycles_stop(4)` non è osservabile da qui).
-        if (((totalCycles - stopRoundAnchor - stopWakePhase) & 3) != 0) return;
-        boolean firstRound = (totalCycles == stopRoundAnchor + stopWakePhase);
+        if (((totalCycles - stopRoundAnchor) & 3) != 0) return;
+        boolean firstRound = (totalCycles == stopRoundAnchor);
         if (!firstRound) {
             // FINE del round precedente: `if (regs.ipl[0] > 0) do_specialties(0);`
             stoppedRecogIpl = stopIpl0;
@@ -1686,7 +1573,7 @@ public final class Motorola68000 {
         // (ultima prefetch), come Moira. Path STOPPED: usa il valore ritardato dalla
         // pipe IPL (Moira POLL_IPL; sync(2) → riconosce sul poll precedente), NON il
         // pin live — vedi il ramo STOPPED di risingEdge e stoppedRecogIpl.
-        int ipl = (iplPollAtPrefetch && cpuState == CpuState.NORMAL) ? polledIpl
+        int ipl = (cpuState == CpuState.NORMAL) ? polledIpl
                 : (cpuState == CpuState.STOPPED ? stoppedRecogIpl : latchedIpl);
         // Il livello 7 è NMI ma richiede edge-detection: viene accettato solo se
         // level7EdgeArmed è true (IPL è sceso sotto 7 da quando è stato servito l'ultimo NMI).
