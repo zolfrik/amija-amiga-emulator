@@ -40,6 +40,13 @@ x86_64,arm64}.dll`, `libflatlaf-linux-{x86_64,arm64}.so`,
 Having all seven inside a single artifact is why no per-platform classifier is
 needed for it.
 
+**Remote play added no dependency.** The networking, the AES-GCM session
+encryption, the PBKDF2/HKDF key derivation, the video codec, the IMA-ADPCM audio
+codec and the UPnP IGD client are all written for this project against the JDK
+alone — `java.net`, `java.net.http` and `javax.crypto`. IMA-ADPCM and UPnP IGD
+are published specifications, not libraries: implementing them from the spec
+borrows no code and carries no licence of its own.
+
 ---
 
 ## 2. Shaders — `shaders/` and `blurs/`

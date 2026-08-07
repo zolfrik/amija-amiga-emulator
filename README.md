@@ -33,6 +33,8 @@ screen.
 - save / load state
 - audio, real joysticks (via GLFW), mouse, and full keyboard mapping
 - software renderer or an OpenGL backend with RetroArch CRT shaders
+- remote play: a second player joins over the network and takes one of the two
+  game ports, without needing a Kickstart or a copy of the game
 
 ## Download
 
@@ -131,11 +133,41 @@ the game by itself, which is a good part of the classic library.
 
 It is not a full Kickstart — it has no AmigaDOS. Disks that hand over to
 `dos.library`, hard-disk installs and WHDLoad all still need a real Kickstart:
-press **F12** and point *Kickstart (.rom)* at your own ROM image. See
+press **F12** and point *Kickstart 1.3* at your own ROM image, adding a
+*Kickstart 3.1* below it if you also play hard-disk or WHDLoad games — AmiJa
+picks whichever the game needs. See
 [User-supplied files](#user-supplied-files) below.
 
 The full guide to every setting and every key is in
 [USER_MANUAL.txt](USER_MANUAL.txt).
+
+## Remote play
+
+Two people, two computers, one Amiga. The machine runs on the host's computer,
+which sends the picture and the sound over the network; the guest's computer
+emulates nothing at all — it shows what arrives and sends back the controls,
+which drive one of the two game ports of the host's machine.
+
+So **the guest needs neither a Kickstart nor a copy of the game.** Whoever owns
+the disk hosts, and the other one joins with a code:
+
+1. the host presses **F12** → *Remote play* → *Host* → **Start hosting**, and
+   reads out the address and the eight-character join code that appear;
+2. the guest presses **F12** → *Remote play* → *Join*, types both in, presses
+   **Connect** and then **OK**.
+
+The delay is paid by the guest alone — the host plays exactly as if nobody were
+connected. On a LAN it is about one frame and imperceptible; over a decent
+Internet connection in the same country, around three. The picture is a lossless
+codec at 0–5 Mbit/s and the sound is IMA-ADPCM at 355 kbit/s, so an ordinary
+upstream is enough.
+
+The session is encrypted and authenticated with keys derived from the join code,
+which is generated afresh every time and never travels in the clear. Hosting is
+restricted to your own local network unless you say otherwise, and UPnP will ask
+the router to open the port when you do — telling you plainly when it cannot,
+CGNAT included. There is no rendezvous server and no relay: the two computers
+talk to each other directly.
 
 ## Building
 
@@ -182,7 +214,7 @@ feature simply stays off — no errors. Put it in AmiJa's home folder, next to
 
 | Path | What goes in it | Feature |
 |---|---|---|
-| *(configured)* `kickstart.path` | a Kickstart ROM image, 256 KB | AmigaDOS disks, hard disks, WHDLoad — floppy games with a self-loading boot block run on the built-in ROM |
+| *(configured)* `auto.kickstart13.path`, `auto.kickstart31.path` | Kickstart ROM images, 256 KB each | AmigaDOS disks, hard disks, WHDLoad — floppy games with a self-loading boot block run on the built-in ROM |
 | *(configured)* `drive.dfN.disk` | `.adf` / `.ipf` disk images | floppies |
 | `floppysounds/` | `drive_click_A500.wav`, `drive_spin_A500.wav`, `drive_startup_A500.wav`, `drive_snatch_A500.wav` — e.g. from a WinUAE installation | drive sounds |
 | `whdload/WHDLoad_files/` | the WHDLoad loader (`C/`, `S/`) from <https://www.whdload.de/>, plus the `.RTB` relocation tables in `Devs/Kickstarts/` for installs that emulate a different Kickstart | running `.lha` WHDLoad archives |
