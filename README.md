@@ -25,6 +25,13 @@ one of the seven million cycles per second, oracles exist to check it against,
 and a plausible-looking answer that is wrong shows up immediately as a black
 screen.
 
+And one thing worth saying plainly: this is an amateur project, and it is not
+competing with anyone. WinUAE and vAmiga are the work of decades of reverse
+engineering, and here they were the reference and — whenever a timing question
+had no other answer — the arbiter. Nothing in this repository is a claim to
+stand alongside them. The [Acknowledgements](#acknowledgements) at the bottom
+say what AmiJa owes them, and it owes them a great deal.
+
 **Features**
 
 - OCS and ECS chipsets, PAL and NTSC
