@@ -8,7 +8,7 @@
     <name>AmiJa</name>
     <!-- Repository PUBBLICO: contiene i soli src/main (specchio del repo privato)
          e la build di distribuzione. Niente src/test, quindi niente dipendenze di
-         test, niente surefire e niente strumenti d'analisi (Playwright/SAE, JSON):
+         test, niente surefire e niente strumenti d'analisi (JSON):
          quelli vivono solo nel repo privato. -->
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

@@ -398,30 +398,18 @@ public final class Paula {
     }
 
     /**
-     * Livello IPL "ritardato" che la CPU vede sui pin: il byte alto della pipe
-     * (cfr. vAmiga {@code cpu.setIPL((iplPipe >> 24) & 0xFF)} in serviceIplEvent).
-     * I cambi di livello IPL si propagano lungo la pipe a 1 CCK per stadio, quindi
-     * la CPU li vede ~2-3 CCK dopo la scrittura di INTREQ/INTENA, come l'hardware.
+     * Livello IPL che la CPU vede sui pin: lo stadio 0 della pipe, cioè il valore
+     * SUBITO, senza ritardo. È il modello WinUAE (adottato il 2026-07-31): {@code doint()}
+     * chiama {@code update_ipl()} immediatamente, senza pipe. Gli stadi alti della pipe
+     * restano perché {@link #serviceIplEvent} li usa per propagare il livello, ma il pin
+     * non li legge: leggere lo stadio 3 (il vecchio modello) metterebbe il pin ~3 CCK più
+     * tardi di WinUAE, differenza invisibile finché il riconoscimento dell'interrupt è
+     * quantizzato al boundary d'istruzione ma misurabile con le soglie di
+     * {@code ipl_fetch_next} (cd/cdp), che partono dall'istante del cambio di pin.
      */
     public int getCpuIplFromPipe() {
-        return (int) ((iplPipe >> iplPipeShift) & 0xFF);
+        return (int) (iplPipe & 0xFF);
     }
-
-    /**
-     * Stadio della pipe letto dal pin IPL della CPU (default 0 dal 2026-07-31 =
-     * modello WinUAE, nessuna pipe; 3 = modello vAmiga, comportamento precedente).
-     * È la FASE del pin rispetto alla scrittura di INTREQ/INTENA: ogni stadio vale
-     * 1 CCK = 2 clock CPU. WinUAE — l'oracolo — non ha pipe: {@code doint()} chiama
-     * {@code update_ipl()} subito, quindi il suo pin è ~3 CCK più presto del nostro.
-     * La differenza è invisibile finché il riconoscimento dell'interrupt è quantizzato
-     * al boundary d'istruzione, ma diventa misurabile con le soglie di
-     * {@code ipl_fetch_next} (cd/cdp), che si misurano dall'istante del cambio di pin.
-     * Leva di calibrazione: -Damiga.iplpipestage (0..3). Vedi §6.7 del report
-     * docs/vamigats-cpu-misc-report.md: la pipe va rimossa INSIEME al modello di POLL
-     * per-istruzione, altrimenti da sola peggiora.
-     */
-    public static final int iplPipeStage = Math.max(0, Math.min(3, Integer.getInteger("amiga.iplpipestage", 0)));
-    private static final int iplPipeShift = iplPipeStage * 8;
 
     /**
      * Avanza la pipe IPL di uno stadio (1 CCK). Porta fedele di vAmiga
