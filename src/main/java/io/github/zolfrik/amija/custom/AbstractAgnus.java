@@ -1401,6 +1401,14 @@ public abstract class AbstractAgnus {
 
         if (gary != null) {
             if (rom != null)  gary.setRomSize(rom.size());
+            // La Chip RAM installata la conosce solo Agnus: è il banco che gli passa il
+            // costruttore. Gary ne ha bisogno per sapere dove comincia il mirror dentro
+            // il chip select $000000-$1FFFFF, quindi glielo diciamo qui insieme alla
+            // Slow RAM invece di lasciarlo fare a ogni chiamante: chi costruisse la
+            // macchina dimenticando setChipRamSize otterrebbe una macchina che mirrora
+            // ogni 512 KB (il default di defaultA500) e un Kickstart che misura 512 KB
+            // di Chip qualunque sia la configurazione.
+            gary.setChipRamSize(chipRAM.size());
             gary.setSlowRamPresent(slowRAM != null);
             gary.setSlowRamSize(slowRAM != null ? slowRAM.size() : 0);
         }

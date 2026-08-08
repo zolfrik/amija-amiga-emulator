@@ -206,9 +206,19 @@ public final class AmigaConfig {
     private static final AutoDefaults AUTO_FLOPPY =
             new AutoDefaults("auto.floppy.", 512, 512, 0, Chipset.OCS);
 
-    /** Hard disk o WHDLoad attivo: la macchina espansa che quel software richiede. */
+    /**
+     * Hard disk o WHDLoad attivo: la macchina espansa che quel software richiede.
+     *
+     * <p>2 MB di Chip RAM, non 1: è l'A1200 che gli installer WHDLoad danno per
+     * scontato. Ogni slave dichiara nell'header (ws_BaseMemSize) quanta memoria
+     * contigua vuole a partire da $000000, e quel blocco può stare solo in Chip;
+     * quando non ce n'è abbastanza WHDLoad si ferma con "you need chipmem up to
+     * $xxxxxx". Ce ne sono parecchi sopra 1 MB — p.es. Dragon's Lair chiede
+     * $180000 (1,5 MB) — mentre chi ne vuole meno gira identico su una macchina
+     * più grande: il massimo è la sola scelta che non fallisce mai.
+     */
     private static final AutoDefaults AUTO_EXPANDED =
-            new AutoDefaults("auto.hd.", 1024, 512, 8192, Chipset.ECS);
+            new AutoDefaults("auto.hd.", 2048, 512, 8192, Chipset.ECS);
 
     private static final AutoDefaults[] AUTO_PROFILES = { AUTO_FLOPPY, AUTO_EXPANDED };
 

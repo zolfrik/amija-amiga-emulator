@@ -506,13 +506,27 @@ public final class Gary {
         g.romBase = 0xFC0000;
         g.slowRamPresent = true;
 
-        // Chip RAM: $000000–$07FFFF (512 KB fisici)
-        // Gary decodifica l'intero primo megabyte per la Chip RAM ($000000–$0FFFFF).
-        // Se è presente solo Agnus da 512KB (come nell'A500 standard), gli indirizzi
-        // sopra $07FFFF mirrorano i primi 512KB a causa del wrap-around dei bit
-        // di indirizzo sul bus chip (A19 ignorato).
+        // Chip RAM: $000000–$1FFFFF (512 KB fisici di default)
+        //
+        // Il chip select /CHIP copre i primi DUE megabyte, non uno solo: è lo spazio
+        // che l'Agnus più capiente (8375, 2 MB) sa indirizzare, e sulle Agnus più
+        // piccole gli indirizzi oltre la RAM installata mirrorano i bit bassi perché
+        // le linee di indirizzo alte non sono collegate. physicalSize decide dove
+        // comincia il mirror: 512 KB → $080000 rispecchia $000000, 1 MB → $100000
+        // rispecchia $000000, 2 MB → nessun mirror.
+        //
+        // È così che il Kickstart misura la Chip RAM: sale a passi e confronta con
+        // l'indirizzo 0; dove ritrova il proprio pattern, la RAM finisce. Fermando la
+        // decodifica a $0FFFFF il tetto diventava 1 MB comunque, e una macchina
+        // configurata con 2 MB di Chip ne vedeva solo la metà — abbastanza per far
+        // fallire WHDLoad sui giochi con ws_BaseMemSize > $100000 (p.es. Dragon's
+        // Lair, $180000) con "you need chipmem up to $180000".
+        //
+        // Oracolo WinUAE (memory.cpp, map_overlay): `mapsize = 32` pagine da 64 KB,
+        // cioè 2 MB, con `map_banks(cb, 0, mapsize, chipmem_bank.allocated_size)` —
+        // il quarto parametro è proprio la dimensione del mirror.
         RegionRules rrChip = new RegionRules();
-        g.addRegion(new Region(0x000000, 0x0FFFFF, Target.CHIP_RAM, "CS_CHIP", rrChip, 512 * 1024));
+        g.addRegion(new Region(0x000000, 0x1FFFFF, Target.CHIP_RAM, "CS_CHIP", rrChip, 512 * 1024));
 
         
         // Custom Registers: Gary decodifica l'intera pagina $DFxxxx
@@ -699,16 +713,20 @@ public final class Gary {
 
     /**
      * Imposta la dimensione fisica della Chip RAM e la propaga alla relativa
-     * Region. Gary decodifica comunque l'intero primo megabyte ($000000–$0FFFFF):
+     * Region. Gary decodifica comunque i primi due megabyte ($000000–$1FFFFF):
      * questo valore determina solo il punto in cui gli indirizzi "wrappano"
      * (aliasing) sui primi byte fisici.
      *
      * Con 512 KB (A500 standard, Agnus da 512K) gli accessi sopra $07FFFF
-     * mirrorano i primi 512 KB; con 1 MB (Fatter Agnus 8372A) la chip RAM è
-     * contigua fino a $0FFFFF, requisito di molti slave WHDLoad che pretendono
-     * chip RAM fino almeno a $A0000 (640 KB).
+     * mirrorano i primi 512 KB; con 1 MB (Fatter Agnus 8372A) la Chip RAM è
+     * contigua fino a $0FFFFF; con 2 MB (Super Agnus 8375) non c'è mirror.
+     * È da qui che il Kickstart deduce quanta Chip RAM c'è, quindi è anche il
+     * tetto che WHDLoad vede quando confronta il ws_BaseMemSize dello slave.
      *
-     * Valori validi: potenze di due (es. 524288 = 512 KB, 1048576 = 1 MB).
+     * Normalmente non serve chiamarlo: il costruttore di AbstractAgnus lo fa
+     * con la dimensione del banco Chip che gli è stato passato.
+     *
+     * Valori validi: potenze di due (es. 524288 = 512 KB, 2097152 = 2 MB).
      */
     public void setChipRamSize(int size) {
         if (size <= 0 || (size & (size - 1)) != 0) {
