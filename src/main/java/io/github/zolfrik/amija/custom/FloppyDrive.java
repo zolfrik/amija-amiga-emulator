@@ -293,9 +293,10 @@ public final class FloppyDrive {
         }
 
         // PERF (vedi statusDirty): fuori dallo stato stazionario "motore a regime"
-        // il valore di /RDY dipende da motorSpeed(), funzione continua del tempo:
-        // può cambiare senza che nessun campo venga scritto. Qui il flag resta
-        // sempre alto — è la rampa del motore, non il caricamento a regime.
+        // i segnali possono cambiare per il solo passare del tempo — /RDY quando la
+        // rampa completa (motorAtSpeed, deciso poco sotto) e /INDEX a ogni giro del
+        // piatto. Qui il flag resta sempre alto: è la rampa del motore, non il
+        // caricamento a regime.
         if (!(motorTarget && motorAtSpeed)) statusDirty = true;
 
         // PERF: a regime (motore acceso e già a velocità) la velocità è
@@ -651,57 +652,57 @@ public final class FloppyDrive {
     // =========================================================================
 
     /**
-     * /RDY raw, modellato su vAmiga (FloppyDrive::driveStatusFlags / idMode):
+     * /RDY raw, modellato su WinUAE ({@code disk.cpp}, {@code DISK_status_ciaa} +
+     * {@code drive_motor}). Il discriminante è il <b>flip-flop</b> del motore
+     * ({@code drive_running} = {@code !motoroff}), mai la velocità del piatto:
      *
-     *   idMode = motorStopped() || motorSpeedingUp()
-     *   /RDY attivo se:  idMode  → idBit
-     *                    altrimenti (a regime O in spin-down) → disco presente
+     * <pre>
+     *   motore ACCESO  → /RDY = DSKRDY, che sale a fine rampa e solo con un disco
+     *   motore SPENTO  → /RDY = bit ID del drive (DSKRDY è già caduto)
+     * </pre>
      *
-     * FIX (Agony): il punto chiave è lo spin-down del drive INTERNO. Quando il
-     * motore viene SPENTO ma il disco sta ancora girando (motorSlowingDown:
-     * !motorTarget e velocità &gt; 0), /RDY deve restare ATTIVO finché il piatto
-     * rallenta — NON passare subito al bit ID. La revisione precedente ritornava
-     * idBit appena motorTarget=false, così un loader che spegne il motore e poi
-     * attende /RDY (es. l'handoff cracktro→intro di Agony) non vedeva mai
-     * "ready" e si bloccava in un loop di polling. Su DF0 la cosa è innocua
-     * perché il drive interno non ha ID hardware (DD_INT = $00000000, idBit
-     * sempre 0) ed è lo stesso caso di WinUAE {@code cs_df0idhw=false}, che
-     * mantiene DSKRDY attivo per un po' dopo lo spegnimento (motordelay).
+     * <p>La caduta di DSKRDY è <b>istantanea</b>: {@code drive_motor()} esegue
+     * {@code if (drv->motoroff) drv->dskready = 0;} nello stesso istante in cui
+     * il flip-flop si spegne. Non esiste alcuna "grazia di spin-down": il piatto
+     * continua a girare — e la testina a leggere, vedi {@link #tick} — ma la
+     * linea /RDY no.
      *
-     * <p>FIX (cambio disco sotto Workbench): sui drive CON ID hardware (DF1-DF3)
-     * la grazia di spin-down NON deve esistere. WinUAE (disk.cpp
-     * DISK_status_ciaa) sceglie fra DSKRDY e bit ID in base al SOLO flip-flop del
-     * motore ({@code drive_running} = {@code !motoroff}), non alla velocità del
-     * piatto; vAmiga fa lo stesso perché di default la meccanica ha rampe nulle.
-     * La sequenza con cui il Kickstart legge l'ID (FC4984: seleziona il drive con
-     * /MTR basso, poi 32 impulsi di /SEL con /MTR alto leggendo /RDY) accende e
-     * subito rispegne il motore: con la grazia attiva i 32 bit letti non erano
-     * l'ID ma {@code diskInserted}, quindi un DF1 VUOTO restituiva ID $00000000 =
-     * "nessun drive". Da lì trackdisk non apre l'unità, non fa più polling di
-     * /CHNG e un disco inserito a caldo non viene mai visto (mentre un DF1 con
-     * disco all'avvio restituiva $FFFFFFFF e funzionava).
+     * <p><b>Perché la grazia è un bug e non un dettaglio</b> (KS 2.0/3.1 non
+     * bootava da floppy, 2026-08-08). La sequenza con cui il Kickstart legge
+     * l'ID del drive accende il motore, lo rispegne <i>subito</i> e poi batte 32
+     * impulsi di /SEL leggendo /RDY: per tutta la durata della lettura il drive
+     * è quindi in spin-down. Con la grazia attiva i primi bit letti non erano
+     * l'ID ma {@code diskInserted}, così DF0 <b>con un disco dentro</b>
+     * annunciava un ID spurio ($E0000000) invece di $00000000. Kickstart 1.3 non
+     * consulta l'ID dell'unità 0 e bootava lo stesso; trackdisk 2.0+ sì, non
+     * riconosceva il drive e non montava mai l'unità — schermo fermo e motore
+     * mai avviato. Col drive <i>vuoto</i> il bug non si vedeva ({@code
+     * diskInserted} falso ⇒ 32 zeri ⇒ ID corretto), il che spiega l'asimmetria
+     * "senza disco arriva la manina, con il disco non parte niente".
+     *
+     * <p>Lo stesso meccanismo, sui drive esterni, era già stato corretto nel
+     * senso opposto (cambio disco a caldo sotto Workbench): un DF1 vuoto
+     * restituiva $00000000 = "nessun drive" e non veniva più interrogato. Ora la
+     * regola è una sola per tutti i drive.
+     *
+     * <p>DF0 (interno A500) non ha hardware di ID — è il caso {@code
+     * cs_df0idhw=0} di WinUAE — e infatti {@link DriveType#DD_INT} vale
+     * $00000000: {@code idBit} resta sempre falso e la linea legge zeri, che è
+     * ciò che trackdisk si aspetta da un drive Amiga standard. Non è modellata
+     * la finestra {@code motordelay} di WinUAE (30 cicli CPU dopo lo
+     * spegnimento, aggiunta lì per Pro Tennis Tour).
      */
     public boolean isReadyRaw() {
         if (!connected) return false;
-        // PERF fast-path: a regime (motore acceso e già a piena velocità) /RDY è
-        // "pronto se c'è disco", senza calcolare motorSpeed() — evita una divisione
-        // FP che, chiamata da updateFloppy ad ogni CCK, pesava sul caricamento.
-        // motorAtSpeed è vero SOLO mentre la velocità è 100 (motorAtFullSpeed).
-        if (motorTarget && motorAtSpeed) return diskInserted;
-        if (!motorTarget && driveType != DriveType.DD_INT) {
-            // Drive con ID hardware: motore spento (flip-flop) ⇒ la linea /RDY
-            // trasporta SEMPRE il bitstream dell'ID, anche mentre il piatto rallenta.
-            return idBit;
+        if (motorTarget) {
+            // Motore comandato acceso: /RDY è DSKRDY, che WinUAE alza al termine
+            // della rampa (dskready_up_time) e solo se un disco è presente.
+            // motorAtSpeed è vero SOLO a velocità 100 — nessuna motorSpeed() qui,
+            // che a ogni CCK costava una divisione FP nel percorso caldo.
+            return motorAtSpeed && diskInserted;
         }
-        double speed = motorSpeed();
-        boolean motorStopped    = (speed == 0.0);
-        boolean motorSpeedingUp = motorTarget && speed < 100.0;
-        if (motorStopped || motorSpeedingUp) {
-            // idMode: la linea /RDY trasporta il bitstream dell'ID del drive.
-            return idBit;
-        }
-        // motorAtFullSpeed || motorSlowingDown: pronto se c'è un disco.
-        return diskInserted;
+        // Motore comandato spento: DSKRDY è già caduto, la linea porta il bit ID.
+        return idBit;
     }
 
     // =========================================================================
@@ -718,9 +719,10 @@ public final class FloppyDrive {
     //
     // La regola è CONSERVATIVA: nel dubbio il flag resta alto. In particolare
     // resta alto per tutta la rampa del motore (accensione e spin-down), dove
-    // /RDY dipende da motorSpeed() — una funzione continua del tempo, che può
-    // cambiare valore senza che nessun campo venga scritto. Si sfrutta il solo
-    // stato stazionario: motore a regime, oppure fermo da tempo.
+    // /RDY e /INDEX dipendono dal tempo trascorso — motorAtSpeed e l'avvolgimento
+    // di bitPointer cambiano dentro tick(), senza che nessuno scriva un campo da
+    // fuori. Si sfrutta il solo stato stazionario: motore a regime, oppure fermo
+    // da tempo.
     private boolean statusDirty = true;
 
     /** True se uno dei 5 segnali di stato può essere cambiato dall'ultima pubblicazione. */
