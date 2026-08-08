@@ -85,10 +85,10 @@ powershell -File packaging\build-image.ps1    # Windows
 
 ## User-supplied files
 
-| Contents | Path | Feature |
-|---|---|---|
-| Kickstart ROM images (1.3 and 3.1) | configured into `amiga.properties` | AmigaDOS disks, hard disks, WHDLoad — floppy games with a self-loading boot block run on the built-in ROM |
-| the WHDLoad loader (`C/`, `S/`) from <https://www.whdload.de/>, plus the `.RTB` relocation tables in `Devs/Kickstarts/` for installs that emulate a different Kickstart | `whdload/WHDLoad_files/` | running `.lha` WHDLoad archives |
+| Contents                                                                                                                                                                | Path                               | Feature                                                                                                   |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Kickstart ROM images (1.3 and 3.1)                                                                                                                                      | configured into `amiga.properties` | AmigaDOS disks, hard disks, WHDLoad — floppy games with a self-loading boot block run on the built-in ROM |
+| the WHDLoad loader (`C/`, `S/`) from <https://www.whdload.de/>, plus the `.RTB` relocation tables in `Devs/Kickstarts/` for installs that emulate a different Kickstart | `whdload/WHDLoad_files/`           | running `.lha` WHDLoad archives                                                                           |
 
 **AmiJa can fetch WHDLoad for you.** Press **F12**, then *Optional files* →
 *Download…*: the assistant downloads WHDLoad and the `.RTB` tables from their
