@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -149,7 +150,26 @@ final class FastFileChooser {
 
         @Override
         public File[] getFiles(File dir, boolean useFileHiding) {
-            Path root = dir.toPath();
+            Path root;
+            try {
+                root = dir.toPath();
+            } catch (InvalidPathException e) {
+                // «Questo PC», «Rete»: cartelle virtuali della shell, il cui percorso è
+                // un segnaposto («ShellFolder: 0x11») e non un percorso di Windows. Il
+                // loro contenuto — i dischi, le macchine di rete — esiste solo per la
+                // shell, quindi qui si delega. Senza questo ramo l'eccezione usciva da
+                // getFiles e uccideva il thread di caricamento di Swing: nessun errore a
+                // schermo, solo l'elenco che restava vuoto.
+                //
+                // Anche la delega va protetta: FileSystemView.getFiles passa per
+                // ShellFolder.getShellFolder, che su un File che ShellFolder non è
+                // ritenta lo stesso Paths.get e rilancia la stessa eccezione.
+                try {
+                    return system.getFiles(dir, useFileHiding);
+                } catch (RuntimeException ignored) {
+                    return new File[0];
+                }
+            }
             List<File> out = new ArrayList<>(1024);
             try {
                 Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), 1,
