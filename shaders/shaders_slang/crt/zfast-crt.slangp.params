@@ -1,0 +1,8 @@
+#Override parametri shader per zfast-crt.slangp
+#Sun Aug 09 16:58:09 CEST 2026
+BLURSCALEX=0.3
+BRIGHTBOOST=1.25
+HILUMSCAN=8.0
+LOWLUMSCAN=6.0
+MASK_DARK=1.0
+MASK_FADE=0.8

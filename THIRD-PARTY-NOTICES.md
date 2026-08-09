@@ -76,16 +76,20 @@ header first — you need either *"or any later version"* or a permissive licenc
 (MIT / public domain). A shader marked **GPL-2.0 only**, without "or later", is
 not combinable with the GPL-3 and must be left out. A `.glslp` preset also needs
 every `.glsl` and texture (`.png`) it references. Leave the copyright headers
-inside the files intact.
+inside the files intact. The same test applies to a `.slangp` taken from
+[libretro/slang-shaders](https://github.com/libretro/slang-shaders): read the
+`.slang` header, follow every `#include`, and keep the pack at its upstream path
+under `shaders/shaders_slang/` (§2.1) so its relative references still resolve.
 
-### 2.1 `shaders/shaders_slang/` — the slang commons
+### 2.1 `shaders/shaders_slang/` — the slang commons and `crt/`
 
 AmiJa also loads RetroArch's **slang** presets (`.slangp`), translating their
-Vulkan-GLSL to desktop GLSL as they are read. **No slang shader pack is shipped
-here.** What `shaders/shaders_slang/` contains is the folder layout RetroArch
-uses plus the handful of shared include files that a downloaded pack expects to
-find already in place, because its `#include`s reach outside itself by counting
-`../` segments:
+Vulkan-GLSL to desktop GLSL as they are read. **No *large* slang pack is shipped
+here** — the Mega Bezel and the machine packs built on it are installed by the
+user, by hand. What `shaders/shaders_slang/` contains is the folder layout
+RetroArch uses, the handful of shared include files that a downloaded pack
+expects to find already in place (its `#include`s reach outside itself by
+counting `../` segments), and one small self-contained CRT preset:
 
 | Path | Author | Licence |
 |---|---|---|
@@ -93,9 +97,17 @@ find already in place, because its `#include`s reach outside itself by counting
 | `include/subpixel_masks.h` | hunterk | public domain (stated in the file) |
 | `include/compat_macros.inc` | libretro contributors | no per-file header: covered by the collection's GPL-2.0-or-later |
 | `blurs/shaders/royale/blur9x9.slang`, `vertex-shader-blur-one-pass.h` | TroggleMonkey (2014) | MIT |
+| `crt/zfast-crt.slangp` + `crt/shaders/zfast_crt/` — `zfast_crt_impl.inc`, `_composite`, `_curvature`, `_geo`, `_geo_svideo` | Greg Hogan (SoltanGris42), 2017; the `_geo*` pair also Jose Linares (Dogway), 2023; composite blur by metallic77 | GPL-2.0-or-later |
+| `crt/shaders/zfast_crt/zfast_crt_coarsemask.slang`, `zfast_crt_finemask.slang` | — | two `#include` lines and a `#define`, no per-file header: covered by the collection's GPL-2.0-or-later |
 
-They come from **[libretro/slang-shaders](https://github.com/libretro/slang-shaders)**,
-are ~200 KB in total and keep their headers. `shaders/shaders_slang/bezel/` and
+`zfast_crt` sits at exactly the path it has upstream (`crt/` for the preset,
+`crt/shaders/` for the sources) so the preset's own relative `shader0` resolves
+unchanged. It `#include`s nothing outside its own folder and references no
+texture, so what is here is the whole of it. The `crt/zfast-crt.slangp.params`
+beside it is AmiJa's own parameter-override file, not third-party material.
+
+They come from **[libretro/slang-shaders](https://github.com/libretro/slang-shaders)**
+and keep their headers; the commons alone are ~200 KB. `shaders/shaders_slang/bezel/` and
 `shaders/Mega_Bezel_Packs/` are empty on purpose: the Mega Bezel (GPL-3.0-or-later)
 and the machine packs built on it are installed by the user, by hand — the
 download assistant of §5 does not offer them. `shaders/Mega_Bezel_Packs/readme.txt`
