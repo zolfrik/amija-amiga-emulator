@@ -1743,15 +1743,12 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Risolve il nome dello shader configurato nel percorso del {@code .glslp} sotto
-     * {@code shaders/}. {@code "none"}/vuoto o file assente -&gt; {@code null} (passthrough).
+     * Risolve il nome dello shader configurato nel percorso del preset ({@code .slangp} o
+     * {@code .glslp}) sotto {@code shaders/}, anche in sottocartelle.
+     * {@code "none"}/vuoto o file assente -&gt; {@code null} (passthrough).
      */
     private static java.nio.file.Path resolveShaderPath(String name) {
-        if (name == null) return null;
-        String n = name.trim();
-        if (n.isEmpty() || n.equalsIgnoreCase("none")) return null;
-        java.nio.file.Path p = AppHome.resolve("shaders", n + ".glslp");
-        return java.nio.file.Files.isRegularFile(p) ? p : null;
+        return io.github.zolfrik.amija.display.render.gl.ShaderCatalog.resolve(name);
     }
 
     /**

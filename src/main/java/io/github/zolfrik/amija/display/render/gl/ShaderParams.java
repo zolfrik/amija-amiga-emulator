@@ -57,13 +57,39 @@ public final class ShaderParams {
     private ShaderParams() { }
 
     /**
-     * Elenca i parametri del preset, in ordine di prima apparizione fra i pass. Lancia se
-     * il preset non è leggibile.
+     * Elenca i parametri del preset, in ordine di prima apparizione fra i pass. Riconosce
+     * sia i {@code .glslp} sia i {@code .slangp}. Lancia se il preset non è leggibile.
      */
-    public static List<Param> parse(Path glslp) throws IOException {
-        GlslPreset preset = GlslPreset.load(glslp);
+    public static List<Param> parse(Path preset) throws IOException {
         LinkedHashMap<String, Param> out = new LinkedHashMap<>();
-        for (GlslPreset.PassSpec pass : preset.passes()) {
+        if (isSlang(preset)) {
+            SlangPreset sp = SlangPreset.load(preset);
+            for (SlangPreset.PassSpec pass : sp.passes()) {
+                try {
+                    // La versione GLSL è irrilevante qui: interessano solo i #pragma.
+                    for (Param p : SlangSource.load(pass.shader, 330).parameters()) {
+                        out.putIfAbsent(p.name(), p);
+                    }
+                } catch (RuntimeException | IOException e) {
+                    // pass illeggibile o non traducibile: salta, non bloccare l'intero
+                    // elenco — e soprattutto non lasciar salire l'eccezione fino all'EDT.
+                }
+            }
+            // Il preset (e la sua catena di #reference) può cambiare il valore di default
+            // mostrato dal popup: senza questo, i cursori partono dal default dello shader
+            // invece che da quello effettivamente in uso.
+            for (Map.Entry<String, Float> e : sp.paramOverrides().entrySet()) {
+                Param p = out.get(e.getKey());
+                if (p != null) {
+                    out.put(p.name(), new Param(p.name(), p.desc(), e.getValue(),
+                            p.min(), p.max(), p.step()));
+                }
+            }
+            return new ArrayList<>(out.values());
+        }
+
+        GlslPreset gp = GlslPreset.load(preset);
+        for (GlslPreset.PassSpec pass : gp.passes()) {
             String body;
             try {
                 body = ShaderChain.loadWithIncludes(pass.shader, new HashSet<>());
@@ -82,6 +108,12 @@ public final class ShaderParams {
             }
         }
         return new ArrayList<>(out.values());
+    }
+
+    /** {@code true} per i preset in formato slang ({@code .slangp}). */
+    public static boolean isSlang(Path preset) {
+        return preset.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
+                .endsWith(".slangp");
     }
 
     /** File affiancato al preset con gli override dell'utente. */

@@ -656,12 +656,25 @@ public final class ConfigDialog {
         }
         shaderCombo.setSelectedItem(shaderPresent ? curShader : "none");
         shaderCombo.setMaximumSize(dim(220, 26));
+        shaderCombo.setMaximumRowCount(16);
         shaderCombo.setRenderer(new DefaultListCellRenderer() {
             @Override
             public Component getListCellRendererComponent(JList<?> list, Object value,
                     int index, boolean isSelected, boolean cellHasFocus) {
                 super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
-                if ("none".equals(value)) setText(Messages.t("shader.none"));
+                if ("none".equals(value)) {
+                    setText(Messages.t("shader.none"));
+                } else if (value != null) {
+                    // Un pacchetto come il Mega Bezel porta centinaia di preset annidati e
+                    // il percorso intero non entra in una tendina da 220px. Si mostrano le
+                    // ultime due parti — bastano a distinguere i nomi che si ripetono in
+                    // cartelle diverse — e il percorso completo va nel tooltip.
+                    String name = value.toString();
+                    int last = name.lastIndexOf('/');
+                    int prev = last < 0 ? -1 : name.lastIndexOf('/', last - 1);
+                    setText(prev >= 0 ? name.substring(prev + 1) : name);
+                    setToolTipText(name);
+                }
                 return this;
             }
         });
@@ -687,9 +700,10 @@ public final class ConfigDialog {
         shaderParamsBtn.addActionListener(e -> {
             Object sel = shaderCombo.getSelectedItem();
             if (sel == null || "none".equals(sel)) return;
-            java.nio.file.Path glslp = AppHome.resolve("shaders", sel + ".glslp");
-            if (java.nio.file.Files.isRegularFile(glslp)) {
-                ShaderParamsDialog.show(dialog, glslp, shaderParamUpdater);
+            java.nio.file.Path preset =
+                    io.github.zolfrik.amija.display.render.gl.ShaderCatalog.resolve(sel.toString());
+            if (preset != null) {
+                ShaderParamsDialog.show(dialog, preset, shaderParamUpdater);
             }
         });
 
@@ -1690,23 +1704,15 @@ public final class ConfigDialog {
     }
 
     /**
-     * Elenca i preset shader disponibili: {@code "none"} seguito dai nomi (senza
-     * estensione) dei {@code .glslp} nella cartella {@code shaders} della home
-     * dell'applicazione, in ordine alfabetico case-insensitive.
+     * Elenca i preset shader disponibili: {@code "none"} seguito dai nomi restituiti da
+     * {@link io.github.zolfrik.amija.display.render.gl.ShaderCatalog} — i {@code .glslp} e
+     * i {@code .slangp} sotto {@code shaders/}, sottocartelle comprese (un pacchetto come
+     * il Mega Bezel ne porta centinaia, tutti annidati).
      */
     private static String[] scanShaderNames() {
         java.util.List<String> names = new java.util.ArrayList<>();
-        names.add("none");
-        File dir = AppHome.file("shaders");
-        File[] files = dir.listFiles((d, n) -> n.toLowerCase().endsWith(".glslp"));
-        if (files != null) {
-            java.util.Arrays.sort(files,
-                    (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
-            for (File f : files) {
-                String n = f.getName();
-                names.add(n.substring(0, n.length() - ".glslp".length()));
-            }
-        }
+        names.add(io.github.zolfrik.amija.display.render.gl.ShaderCatalog.NONE);
+        names.addAll(io.github.zolfrik.amija.display.render.gl.ShaderCatalog.names());
         return names.toArray(new String[0]);
     }
 

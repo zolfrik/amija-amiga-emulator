@@ -15,6 +15,17 @@ target/
 whdload/*
 !whdload/readme.txt
 
+# Shader slang scaricati dall'utente: il Mega Bezel e i pacchetti community che
+# ci si montano sopra. Nessuno dei due va versionato qui — quello Commodore di
+# TheNamec è CC BY-NC-ND 4.0, quindi NON ridistribuibile (§2.1), e il Mega Bezel
+# sono 15 MB di texture che l'utente si installa da sé. Restano invece
+# versionati shaders/shaders_slang/{include,blurs}: sono i commons libretro
+# (MIT / pubblico dominio), minuscoli, e senza di loro il Mega Bezel installato
+# a mano perde ogni preset con i riflessi.
+shaders/shaders_slang/bezel/*
+shaders/Mega_Bezel_Packs/*
+!shaders/Mega_Bezel_Packs/readme.txt
+
 # NB: floppysounds/ NON è più qui. Dal 2026-08-07 i campioni del drive sono
 # materiale del progetto (sintetizzati, non registrati — vedi
 # THIRD-PARTY-NOTICES.md §3 e floppysounds/readme.txt) e vanno versionati.

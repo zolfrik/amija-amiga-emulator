@@ -161,7 +161,7 @@ public abstract class AbstractAgnus {
     private final Blitter     blitter;
 
     private final Paula  paula;
-    private final AbstractDenise denise;
+    protected final AbstractDenise denise;
 
     private final MOS8520 ciaA;
     private final MOS8520 ciaB;
@@ -1059,7 +1059,7 @@ public abstract class AbstractAgnus {
      * Bit 5: VARVSYEN — PAL/NTSC select (0=NTSC, 1=PAL su ECS; su OCS ignorato).
      * Default: 0x0020 per PAL.
      */
-    private int beamcon0 = 0x0020;
+    protected int beamcon0 = 0x0020;
 
     // =========================================================================
     // Chip ID (VPOSR bits 15-8)
@@ -3182,8 +3182,6 @@ public abstract class AbstractAgnus {
                 ? (data & 0xFFFF)
                 : busLatchValue(data, uds, lds);
 
-        // TEMP DIAG (LED Storm §7.3): traccia la scrittura CPU del valore inquinato
-        // $a302/$0302 (= $a200/$0200 | $0102) nella lista Copper in chip-RAM.
         switch (route.target) {
             case CHIP_RAM:
             case OVERLAY_ROM:  // Scritture durante overlay vanno alla Chip RAM
@@ -3981,6 +3979,20 @@ public abstract class AbstractAgnus {
     protected int ddfMask() { return 0xFC; }
 
     /**
+     * CCK del limite HARD di fine fetch bitplane. Agnus attiva la condizione DDFSTOP
+     * a $D7 anche quando DDFSTOP è programmato oltre: è ciò che tiene la finestra di
+     * fetch dentro la riga. Rif. WinUAE {@code decide_bpl()}, {@code hpos == 0xd7}.
+     */
+    protected static final int DDF_HARD_STOP_CCK = 0xD7;
+
+    /**
+     * {@code true} se i limiti HARD della finestra di fetch sono disattivati. Su OCS
+     * non lo sono mai; su ECS li disabilitano BEAMCON0 VARBEAMEN/HARDDIS e i bit
+     * UHRES/SHRES di BPLCON0 (WinUAE {@code harddis_h}).
+     */
+    protected boolean ddfHardLimitsDisabled() { return false; }
+
+    /**
      * Bit 14-8 dell'ID Agnus restituito da VPOSR ($004). OCS: {@code 0x00} (PAL) o
      * {@code 0x10} (NTSC); ECS aggiunge il bit 13 ({@code 0x20}). {@link #isOCS()} e
      * {@link #isECS()} derivano da qui. Rif. vAmiga {@code Agnus::idBits()}.
@@ -4050,10 +4062,27 @@ public abstract class AbstractAgnus {
     }
 
     private int getEffectiveDdfStopCck(boolean hires) {
+        // Limite HARD di fine fetch: a CCK $D7 Agnus attiva comunque la condizione
+        // DDFSTOP, anche se DDFSTOP è programmato più a destra. WinUAE decide_bpl():
+        // `if (hpos == 0xd7) { if (bprun && !ddf_stopping) ddf_stopping = 1; }` sul
+        // ramo OCS, e `if (!harddis_h) ddf_limit_in = true;` su quello ECS — cioè
+        // esattamente un min() fra DDFSTOP e $D7. Senza questo tetto un DDFSTOP
+        // oltre $D7 (Crack, LINEL 1988: DDFSTRT=$30, DDFSTOP=$DF) allargava la
+        // finestra di un'unità di fetch intera, con due conseguenze:
+        //  - l'unità in più era troncata dalla fine riga, quindi il solo piano che
+        //    ha lo slot subito dopo il confine (indice 3 in lores, CCK+1) faceva un
+        //    fetch di troppo e derivava di 2 byte/riga;
+        //  - il modulo BPLxMOD, che si applica nell'ULTIMA unità, cadeva in
+        //    quell'unità fantasma e quindi NON veniva mai applicato agli altri
+        //    piani: avanzavano 44 byte/riga invece di 64.
+        int stop = ddfCckStop;
+        if (!ddfHardLimitsDisabled()) {
+            stop = Math.min(stop, DDF_HARD_STOP_CCK + 8);
+        }
         // Ancorato allo start CAMPIONATO (fetchUnitDdfStart), non al registro vivo:
         // l'arrotondamento all'unità di 8 CCK deve usare la stessa origine della fase
         // di fetch, altrimenti un cambio di DDFSTRT a metà riga sfaserebbe il confine.
-        int relStop = Math.max(0, ddfCckStop - fetchUnitDdfStart);
+        int relStop = Math.max(0, stop - fetchUnitDdfStart);
         // I fetch bitplane sono raggruppati in unità da 8 CCK. Se DDFSTOP non è
         // allineato all'unità (relativamente a DDFSTRT) la DMA completa comunque
         // l'unità in corso, producendo un fetch extra. Questo allinea la larghezza

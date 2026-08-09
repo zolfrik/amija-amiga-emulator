@@ -78,6 +78,32 @@ not combinable with the GPL-3 and must be left out. A `.glslp` preset also needs
 every `.glsl` and texture (`.png`) it references. Leave the copyright headers
 inside the files intact.
 
+### 2.1 `shaders/shaders_slang/` — the slang commons
+
+AmiJa also loads RetroArch's **slang** presets (`.slangp`), translating their
+Vulkan-GLSL to desktop GLSL as they are read. **No slang shader pack is shipped
+here.** What `shaders/shaders_slang/` contains is the folder layout RetroArch
+uses plus the handful of shared include files that a downloaded pack expects to
+find already in place, because its `#include`s reach outside itself by counting
+`../` segments:
+
+| Path | Author | Licence |
+|---|---|---|
+| `include/blur-functions.h`, `gamma-management.h`, `quad-pixel-communication.h`, `special-functions.h` | TroggleMonkey (2014) | MIT |
+| `include/subpixel_masks.h` | hunterk | public domain (stated in the file) |
+| `include/compat_macros.inc` | libretro contributors | no per-file header: covered by the collection's GPL-2.0-or-later |
+| `blurs/shaders/royale/blur9x9.slang`, `vertex-shader-blur-one-pass.h` | TroggleMonkey (2014) | MIT |
+
+They come from **[libretro/slang-shaders](https://github.com/libretro/slang-shaders)**,
+are ~200 KB in total and keep their headers. `shaders/shaders_slang/bezel/` and
+`shaders/Mega_Bezel_Packs/` are empty on purpose: the Mega Bezel (GPL-3.0-or-later)
+and the machine packs built on it are installed by the user, by hand — the
+download assistant of §5 does not offer them. `shaders/Mega_Bezel_Packs/readme.txt`
+says where to get them and exactly where they must be unpacked. In particular
+TheNamec's Commodore pack is **CC BY-NC-ND 4.0**: both the NonCommercial and the
+NoDerivatives clause are incompatible with GPL-3.0-or-later, so it may never be
+vendored here, nor filtered, nor repackaged — not even unchanged.
+
 ---
 
 ## 3. `src/main/resources/hd/exprom.bin`

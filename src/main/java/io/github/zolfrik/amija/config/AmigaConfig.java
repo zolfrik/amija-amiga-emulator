@@ -843,10 +843,11 @@ public final class AmigaConfig {
     }
 
     /**
-     * Nome dello shader RetroArch selezionato (solo renderer OpenGL): nome del file
-     * {@code .glslp} nella cartella {@code shaders} (senza estensione), oppure
-     * {@code "none"} (default) per nessuno shader (passthrough). Applicabile a caldo dal
-     * popup F12.
+     * Nome dello shader RetroArch selezionato (solo renderer OpenGL): percorso del preset
+     * {@code .slangp} o {@code .glslp} relativo alla cartella {@code shaders}, con
+     * separatori {@code /} e senza estensione (es. {@code Mega_Bezel/Presets/MBZ__5__POTATO}),
+     * oppure {@code "none"} (default) per nessuno shader (passthrough). Applicabile a caldo
+     * dal popup F12.
      */
     public String shader() {
         String v = props.getProperty(K_SHADER, "none").trim();
@@ -1341,8 +1342,10 @@ public final class AmigaConfig {
         sb.append("# The change takes effect only after restarting the emulator (cold restart).\n");
         line(sb, K_RENDERER, renderer().configValue());
 
-        sb.append("\n# RetroArch shader (opengl renderer only): name of the .glslp file in the\n");
-        sb.append("# \"shaders\" folder next to amiga.properties, without extension.\n");
+        sb.append("\n# RetroArch shader (opengl renderer only): path of the .slangp or .glslp preset\n");
+        sb.append("# inside the \"shaders\" folder next to amiga.properties, without extension.\n");
+        sb.append("# Subfolders are allowed, separated by \"/\" -- e.g.\n");
+        sb.append("#   video.shader=Mega_Bezel/Presets/MBZ__5__POTATO\n");
         sb.append("# \"none\" = no shader (passthrough). Can be applied on the fly from the F12 popup.\n");
         line(sb, K_SHADER, shader());
 

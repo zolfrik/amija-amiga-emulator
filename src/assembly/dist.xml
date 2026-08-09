@@ -52,10 +52,29 @@
 
         <!-- Pack di shader RetroArch usati dal renderer OpenGL: sono
              ridistribuibili (GPL-2.0-or-later / MIT, vedi THIRD-PARTY-NOTICES.md)
-             e vanno letti dalla directory di lavoro, non dal jar. -->
+             e vanno letti dalla directory di lavoro, non dal jar.
+             Gli <excludes> sono la stessa rete di sicurezza di whdload/ qui
+             sotto: bezel/ e Mega_Bezel_Packs/ sono vuote nel repository (il
+             Mega Bezel e i pacchetti community se li installa l'utente), ma su
+             una macchina dove sono state riempite lo zip non deve ridistribuirle
+             — quello Commodore di TheNamec è CC BY-NC-ND 4.0. -->
         <fileSet>
             <directory>${project.basedir}/shaders</directory>
             <outputDirectory>shaders</outputDirectory>
+            <excludes>
+                <exclude>shaders_slang/bezel/**</exclude>
+                <exclude>Mega_Bezel_Packs/**</exclude>
+            </excludes>
+            <fileMode>0644</fileMode>
+            <directoryMode>0755</directoryMode>
+        </fileSet>
+        <!-- ...tranne il readme che spiega dove installarli a mano. -->
+        <fileSet>
+            <directory>${project.basedir}/shaders/Mega_Bezel_Packs</directory>
+            <outputDirectory>shaders/Mega_Bezel_Packs</outputDirectory>
+            <includes>
+                <include>readme.txt</include>
+            </includes>
             <fileMode>0644</fileMode>
             <directoryMode>0755</directoryMode>
         </fileSet>

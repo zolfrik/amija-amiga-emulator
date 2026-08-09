@@ -30,7 +30,8 @@ AmiJa owes them, and it owes them a great deal.
 - hard disk support (`.hdf`, Zorro II autoconfig) and WHDLoad `.lha` auto-run
 - save / load state
 - audio, real joysticks (via GLFW), mouse, and full keyboard mapping
-- software renderer or an OpenGL backend with RetroArch CRT shaders
+- software renderer or an OpenGL backend with RetroArch CRT shaders — the
+  `.glslp` presets are included, `.slangp` ones are supported and installed by you
 - remote play: a second player joins over the network and takes one of the two
   game ports, without needing a Kickstart or a copy of the game
 

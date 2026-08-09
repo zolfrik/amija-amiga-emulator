@@ -57,7 +57,7 @@ import static org.lwjgl.opengl.GL30.*;
  * <p>Robustezza: {@link #build} lancia in caso di errore di parsing/compilazione; il
  * chiamante ripiega sul passthrough. Nessuna chiamata qui deve mai crashare a runtime.
  */
-public final class ShaderChain {
+public final class ShaderChain implements RenderChain {
 
     // Locazioni fisse degli attributi (bindate prima del link su tutti i program).
     private static final int ATTR_VERTEX = 0;
@@ -156,6 +156,7 @@ public final class ShaderChain {
      * Esegue la catena: ORIG -> pass0 -> ... -> ultimo pass sul backbuffer (viewport
      * aspect-fit). {@code origTex} è la texture sorgente ad altezza nativa.
      */
+    @Override
     public void render(int origTex, int origW, int origH,
                        int vpX, int vpY, int vpW, int vpH, long frameCount) {
         ensureFramebuffers(origW, origH, vpW, vpH);
@@ -288,6 +289,7 @@ public final class ShaderChain {
      * Aggiorna a caldo un parametro (dal popup dei parametri). Ha effetto solo se il
      * parametro esiste nel preset; applicato al frame successivo da {@link #bindParams}.
      */
+    @Override
     public void setParam(String name, float value) {
         synchronized (paramLock) {
             if (params.containsKey(name)) {
@@ -588,6 +590,7 @@ public final class ShaderChain {
     // Cleanup
     // =====================================================================================
 
+    @Override
     public void dispose() {
         deleteFramebuffers();
         for (int p : program) {

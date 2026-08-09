@@ -115,7 +115,7 @@ public final class GlDisplaySurface {
     // ---- Shader chain -----------------------------------------------------------------
     private volatile Path requestedShader;   // null = nessuno (passthrough)
     private volatile boolean shaderDirty;
-    private volatile ShaderChain chain;      // costruito/usato dal thread GL; setParam dall'EDT
+    private volatile RenderChain chain;      // costruito/usato dal thread GL; setParam dall'EDT
 
     // ---- Overlay (LED, FPS, contatore) ------------------------------------------------
     // Immagine ARGB (frameWidth×frameHeight) composta con Java2D da AmigaDisplay e
@@ -319,11 +319,12 @@ public final class GlDisplaySurface {
      * Seleziona (a caldo) il preset shader RetroArch. La (ri)compilazione avviene sul
      * thread GL al frame successivo; un errore ripiega sul passthrough senza crashare.
      *
-     * @param glslp percorso del {@code .glslp}, o {@code null} per "nessuno".
+     * @param preset percorso del {@code .glslp} o del {@code .slangp}, o {@code null}
+     *               per "nessuno".
      */
-    public void setShaderPreset(Path glslp) {
+    public void setShaderPreset(Path preset) {
         synchronized (lock) {
-            requestedShader = glslp;
+            requestedShader = preset;
             shaderDirty = true;
             lock.notifyAll();
         }
@@ -335,7 +336,7 @@ public final class GlDisplaySurface {
      * successivo dal thread GL.
      */
     public void setShaderParam(String name, float value) {
-        ShaderChain c = chain;
+        RenderChain c = chain;
         if (c != null) {
             c.setParam(name, value);
         }
@@ -438,6 +439,11 @@ public final class GlDisplaySurface {
         glDisable(GL_BLEND);
         glDisable(GL_DEPTH_TEST);
         glClearColor(0f, 0f, 0f, 1f);
+
+        // La versione del contesto decide che cosa si può caricare: i preset .slangp
+        // complessi vogliono la 4.3 (vedi SlangChain.build). Vale la riga di log.
+        System.out.println("[GL] OpenGL " + glGetString(GL_VERSION)
+                + " — " + glGetString(GL_RENDERER));
     }
 
     private void renderGl() {
@@ -730,7 +736,7 @@ public final class GlDisplaySurface {
             return;
         }
         try {
-            chain = ShaderChain.build(p);
+            chain = RenderChain.build(p);
             System.out.println("[GL] Shader attivo: " + p);
         } catch (Throwable t) {
             chain = null;

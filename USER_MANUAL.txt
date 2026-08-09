@@ -61,7 +61,8 @@ CONTENTS
     *  ADF, IPF (copy-protected originals) and ZIP disk sets
     *  Hard disk images (.hdf) through a Zorro II AutoConfig controller
     *  WHDLoad archives (.lha) started automatically, with no manual install
-    *  Software or OpenGL rendering, with RetroArch (.glslp) CRT shaders
+    *  Software or OpenGL rendering, with RetroArch CRT shaders (.glslp
+       and .slangp)
     *  Save states, screenshots, real joysticks, floppy drive sounds
     *  Remote play: a second player joins over the network and takes a game
        port, without needing a Kickstart or a copy of the game
@@ -113,10 +114,14 @@ CONTENTS
     amiga.properties     the configuration file. Searched in the home folder
                          first, then on the classpath; if it is missing
                          altogether a default one is created.
-    shaders/             RetroArch shader presets (*.glslp) offered in the
-                         Shader drop-down.
+    shaders/             RetroArch shader presets (*.glslp, *.slangp) offered
+                         in the Shader drop-down, subfolders included.
     blurs/               the companion shader pack, used by presets that ask
                          for a blur pass.
+    shaders/shaders_slang/
+                         the layout a downloaded slang pack expects, with the
+                         few shared include files it needs; see
+                         shaders/Mega_Bezel_Packs/readme.txt.
     screenshots/         PNG files written by "Take Screenshot".
     savestate/           state1.a5s (the single save-state slot) and
                          state1.png (a thumbnail of the saved screen).
@@ -773,14 +778,20 @@ CONTENTS
   |  Shader:                                                  video.shader   |
   +-------------------------------------------------------------------------+
      RetroArch shader preset applied to the picture - scanlines, aperture
-     grille, curvature, and so on. The drop-down lists the *.glslp files found
-     in the shaders/ folder, plus "None" for a clean passthrough. Available
-     only with the OpenGL renderer.
+     grille, curvature, and so on. The drop-down lists the *.glslp and *.slangp
+     files found in the shaders/ folder and its subfolders, plus "None" for a
+     clean passthrough. Available only with the OpenGL renderer.
+
+     The presets that come with AmiJa are the .glslp ones. Slang presets
+     (.slangp, the format RetroArch uses today) are supported and translated as
+     they are loaded, but none is shipped: you install those yourself, and
+     shaders/Mega_Bezel_Packs/readme.txt explains where they go.
 
      The "..." button next to it opens the shader's own parameters (3.12.2).
      It is enabled only for the shader that is currently applied, so that what
      you tweak is what you see.
-     Values . . . . . preset name without extension, or none
+     Values . . . . . preset path inside shaders/, without extension
+                      (subfolders separated by "/"), or none
      Applies . . . . . LIVE
 
   +-------------------------------------------------------------------------+

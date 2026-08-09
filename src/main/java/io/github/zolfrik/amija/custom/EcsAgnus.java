@@ -82,6 +82,23 @@ public final class EcsAgnus extends AbstractAgnus {
         return true;
     }
 
+    /**
+     * Su ECS i limiti HARD della finestra di fetch si possono disattivare: BEAMCON0
+     * VARBEAMEN ($0080) o HARDDIS ($4000), oppure i bit UHRES ($0040) / SHRES ($0080)
+     * di BPLCON0. Rif. WinUAE {@code custom.cpp}, calcolo di {@code harddis_h}.
+     */
+    @Override
+    protected boolean ddfHardLimitsDisabled() {
+        if ((beamcon0 & (BEAMCON0_VARBEAMEN | BEAMCON0_HARDDIS)) != 0) return true;
+        int bplcon0 = denise != null ? denise.getBplcon0() : 0;
+        return (bplcon0 & (BPLCON0_UHRES | BPLCON0_SHRES)) != 0;
+    }
+
+    private static final int BEAMCON0_VARBEAMEN = 0x0080;
+    private static final int BEAMCON0_HARDDIS   = 0x4000;
+    private static final int BPLCON0_UHRES      = 0x0040;
+    private static final int BPLCON0_SHRES      = 0x0080;
+
     @Override
     protected int refptrMask() {
         // A8 — su ECS il puntatore di refresh ha più bit dell'OCS (9 bit, 0x01FF).

@@ -58,7 +58,11 @@ import java.util.Map;
 
 /**
  * Assistente di download del materiale di terze parti che AmiJa non può
- * ridistribuire: i suoni del drive, WHDLoad, le tabelle di rilocazione.
+ * ridistribuire: WHDLoad e le tabelle di rilocazione.
+ *
+ * <p>Mostra esattamente ciò che {@link AssetCatalog#packages} elenca — che non è
+ * tutto ciò che il catalogo sa installare: i due pacchetti del Mega Bezel sono
+ * definiti ma tenuti fuori dalla lista (vedi {@code AssetCatalog.hiddenPackages}).
  *
  * <p>La finestra <b>è</b> il consenso. Niente parte da sola: ogni pacchetto va
  * spuntato a mano, e prima della spunta l'utente vede a chi appartiene, da quale
@@ -123,8 +127,11 @@ public final class AssetDownloadDialog {
             box.setForeground(FG);
             box.setAlignmentX(Component.LEFT_ALIGNMENT);
             // Già installato ⇒ non lo si riscarica per sbaglio; resta comunque
-            // spuntabile a mano, che è il modo per aggiornarlo.
-            box.setSelected(!pkg.installed());
+            // spuntabile a mano, che è il modo per aggiornarlo. Un pacchetto non
+            // preselezionato parte spento anche quando manca: è il trattamento dei
+            // pacchetti grossi e facoltativi, che vanno scelti apposta perché
+            // "Scarica" non avvii centinaia di MB non richiesti.
+            box.setSelected(pkg.preselected() && !pkg.installed());
             card.add(box);
 
             JLabel state = small(stateText(pkg), pkg.installed() ? OK : DIM);

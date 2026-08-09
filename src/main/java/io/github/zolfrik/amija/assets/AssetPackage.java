@@ -48,6 +48,11 @@ import java.util.function.UnaryOperator;
  * @param approxBytes    dimensione attesa, usata per la barra di avanzamento quando
  *                       il server non manda {@code Content-Length}
  * @param rightsHolder   titolare dei diritti, mostrato all'utente prima del download
+ * @param preselected    se la casella parte spuntata quando il pacchetto non è ancora
+ *                       installato. Vale per ciò che serve a far girare i giochi; i
+ *                       pacchetti grossi e facoltativi — gli shader — partono spenti,
+ *                       perché "Scarica" non deve mai avviare centinaia di MB che
+ *                       l'utente non ha chiesto
  * @param format         formato dell'archivio
  * @param destDir        cartella di destinazione, relativa alla working dir
  * @param probe          file la cui presenza indica che il pacchetto è già installato
@@ -62,6 +67,7 @@ public record AssetPackage(
         String sha256,
         long approxBytes,
         String rightsHolder,
+        boolean preselected,
         Format format,
         Path destDir,
         Path probe,
