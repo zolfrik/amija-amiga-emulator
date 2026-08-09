@@ -2618,7 +2618,14 @@ public abstract class AbstractAgnus {
         int effStop = getEffectiveDdfStopCck(hires);
         if (cck >= effStop - (hires ? 4 : 8)) {
             int mod = (bplIdx % 2 == 0) ? bpl1mod : bpl2mod;
-            bplPtrInternal[bplIdx] = (bplPtrInternal[bplIdx] + mod) & 0xFFFFF;
+            // Il modulo si somma SENZA maschera: il wrap entro la Chip RAM installata è
+            // di dmaChipAddr, al momento della fetch (oracolo WinUAE: bitplane_rga_ptmod
+            // fa `bplpt[i] += mod` e solo chipmem_agnus_wget applica chipmem_full_mask).
+            // Qui c'era un `& 0xFFFFF` cablato a 1 MB: con 2 MB di Chip RAM un piano
+            // sopra $0FFFFF perdeva il bit 20 a ogni riga e il display collassava nel
+            // primo megabyte — è il caso di WHDLoad, che riserva la Chip bassa al gioco
+            // e alloca lo schermo Workbench più in alto.
+            bplPtrInternal[bplIdx] = bplPtrInternal[bplIdx] + mod;
         }
     }
 

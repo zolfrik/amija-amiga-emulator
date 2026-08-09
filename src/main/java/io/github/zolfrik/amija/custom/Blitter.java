@@ -55,7 +55,8 @@ public final class Blitter {
     private int bltafwm;
     private int bltalwm;
 
-    // Puntatori (20 bit)
+    // Puntatori DMA. La larghezza NON è fissa: come ogni canale DMA di Agnus è
+    // quella della Chip RAM installata (vedi ptrMask/ptrHiMask), fino a 21 bit.
     private int bltapt;
     private int bltbpt;
     private int bltcpt;
@@ -319,16 +320,16 @@ public final class Blitter {
             case 0x044: bltafwm = value & 0xFFFF; break;
             case 0x046: bltalwm = value & 0xFFFF; break;
 
-            case 0x048: bltcpt = (bltcpt & 0x0000FFFF) | ((value & 0x000F) << 16); break;
+            case 0x048: bltcpt = (bltcpt & 0x0000FFFF) | ((value << 16) & ptrHiMask()); break;
             case 0x04A: bltcpt = (bltcpt & 0xFFFF0000) | (value & 0xFFFF);         break;
-            case 0x04C: bltbpt = (bltbpt & 0x0000FFFF) | ((value & 0x000F) << 16); break;
+            case 0x04C: bltbpt = (bltbpt & 0x0000FFFF) | ((value << 16) & ptrHiMask()); break;
             case 0x04E: bltbpt = (bltbpt & 0xFFFF0000) | (value & 0xFFFF);         break;
-            case 0x050: bltapt = (bltapt & 0x0000FFFF) | ((value & 0x000F) << 16); break;
+            case 0x050: bltapt = (bltapt & 0x0000FFFF) | ((value << 16) & ptrHiMask()); break;
 
             // In Line Mode BLTAPTL è l'errore Bresenham (con segno, 16 bit), non forziamo pari!
             case 0x052: bltapt = (bltapt & 0xFFFF0000) | (value & 0xFFFF);         break;
 
-            case 0x054: bltdpt = (bltdpt & 0x0000FFFF) | ((value & 0x000F) << 16); break;
+            case 0x054: bltdpt = (bltdpt & 0x0000FFFF) | ((value << 16) & ptrHiMask()); break;
             case 0x056: bltdpt = (bltdpt & 0xFFFF0000) | (value & 0xFFFF);         break;
 
             case 0x058:
@@ -879,15 +880,34 @@ public final class Blitter {
     // Bus Cycle & Pointers
     // =========================================================================
 
-    private int getApt() { return bltapt & 0xFFFFE; }
-    private int getBpt() { return bltbpt & 0xFFFFE; }
-    private int getCpt() { return bltcpt & 0xFFFFE; }
-    private int getDpt() { return bltdpt & 0xFFFFE; }
+    /**
+     * Maschera dei puntatori DMA del blitter: word-allineata e larga quanto la Chip RAM
+     * installata, esattamente come gli altri canali di Agnus (bitplane/sprite/disco via
+     * {@code dmaPtrHiMask}, Copper via le stesse chiamate, audio a 21 bit).
+     *
+     * <p>Era cablata a 20 bit (1 MB): con 2 MB di Chip RAM ogni indirizzo sopra
+     * {@code $0FFFFF} rientrava dal basso, e un blit diretto oltre il megabyte scriveva
+     * sui vettori di eccezione. È il caso di WHDLoad, che usa il profilo a 2 MB: il blit
+     * azzerava ExecBase in {@code $000004} e la macchina moriva subito dopo.
+     *
+     * <p>Oracolo WinUAE: i registri BLT?PT sono tenuti interi e mascherati all'accesso da
+     * {@code chipmem_full_mask} = dimensione della Chip RAM − 1 ({@code memory.cpp},
+     * {@code chipmem_agnus_wget}); qui il mascheramento è sul puntatore, equivalente
+     * perché la maschera è una potenza di due e gli incrementi sono additivi.
+     */
+    private int ptrMask()   { return agnus.getChipMask() & ~1; }
+    /** Parte alta (bit 16-20) di {@link #ptrMask()}, per le scritture BLT?PTH. */
+    private int ptrHiMask() { return agnus.getDmaPtrHiMask(); }
 
-    private void setApt(int v) { bltapt = v & 0xFFFFE; }
-    private void setBpt(int v) { bltbpt = v & 0xFFFFF; bltbpt &= 0xFFFFE; }
-    private void setCpt(int v) { bltcpt = v & 0xFFFFF; bltcpt &= 0xFFFFE; }
-    private void setDpt(int v) { bltdpt = v & 0xFFFFF; bltdpt &= 0xFFFFE; }
+    private int getApt() { return bltapt & ptrMask(); }
+    private int getBpt() { return bltbpt & ptrMask(); }
+    private int getCpt() { return bltcpt & ptrMask(); }
+    private int getDpt() { return bltdpt & ptrMask(); }
+
+    private void setApt(int v) { bltapt = v & ptrMask(); }
+    private void setBpt(int v) { bltbpt = v & ptrMask(); }
+    private void setCpt(int v) { bltcpt = v & ptrMask(); }
+    private void setDpt(int v) { bltdpt = v & ptrMask(); }
 
     // =========================================================================
     // Accessori pubblici
