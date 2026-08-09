@@ -447,8 +447,17 @@ public final class Paula {
     public int calculateIPL() {
         if ((intena & 0x4000) != 0) {
             int mask = intreq & intena;
-            // EXTER (bit 13) only — IPL 6
-            if ((mask & 0x2000) != 0) return 6;
+            // EXTER (bit 13) + bit 14 — IPL 6.
+            // Il bit 14 di INTREQ non ha una sorgente hardware e i manuali non lo
+            // elencano, ma è un bit scrivibile e Paula lo include nel gruppo di
+            // priorità più alto insieme a EXTER: con il master enable acceso,
+            // scrivere INTREQ=$C000 solleva un IPL 6 a tutti gli effetti.
+            // Oracolo: WinUAE custom.cpp intlev(), "if (imask & (0x4000 | 0x2000))".
+            // Adrenalynn (Loriciel) se ne serve per far ripartire la copper list:
+            // la lista scrive INTREQ=$C000 a fine frame e l'handler di livello 6
+            // ricarica COP1LC e azzera il bit con INTREQ=$4000. Senza questo,
+            // la copper list resta parcheggiata e il gioco attende all'infinito.
+            if ((mask & 0x6000) != 0) return 6;
             // DSKSYN (bit 12) + RBF (bit 11) — IPL 5
             if ((mask & 0x1800) != 0) return 5;
             // AUD3-AUD0 (bits 10-7) — IPL 4
