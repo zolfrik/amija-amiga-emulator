@@ -840,7 +840,8 @@ public abstract class AbstractAgnus {
     // reference (niente card-marking) ed è eseguito ~15.600 volte/s (eolHandler).
     // 0 == BusOwner.NONE.ordinal(), quindi il default int 0 coincide con NONE.
     // Il confronto per ordinali è equivalente al confronto per reference enum.
-    private final int[] busOwners = new int[227];
+    // 228 e non 227: la riga lunga NTSC (LOL) ha un CCK in più, indice 227.
+    private final int[] busOwners = new int[228];
 
 
     /** DIAG (audit floppy 2b): logga le letture CPU di registri custom/CIA con PC e
@@ -998,10 +999,36 @@ public abstract class AbstractAgnus {
     private final int maxVpos;
 
     /**
-     * Numero massimo di system clock per riga.
-     * PAL/NTSC A500: 454 SC = 227 CCK.
+     * Numero di system clock della riga <b>corta</b>: 454 SC = 227 CCK.
+     * È la lunghezza di ogni riga in PAL e della riga corta in NTSC.
      */
-    private final int maxHpos = 454;
+    private static final int MAXHPOS_SHORT = 454;
+
+    /**
+     * Numero massimo di system clock della riga corrente: {@link #MAXHPOS_SHORT},
+     * più un CCK (2 SC) sulle righe lunghe NTSC (vedi {@link #lol}).
+     */
+    private int maxHpos = MAXHPOS_SHORT;
+
+    /**
+     * LOL — <i>long line</i>. Su Agnus NTSC la lunghezza della riga <b>alterna</b> fra
+     * 227 e 228 CCK: è così che il frame NTSC vale in media 227,5 CCK per riga (la
+     * "mezza riga" del segnale NTSC). In PAL non esiste e resta sempre {@code false}.
+     *
+     * <p>Oracolo WinUAE {@code custom.cpp}: {@code lol = lol ? false : true} a ogni
+     * riga quando {@code !(new_beamcon0 & BEAMCON0_PAL) && !(… & BEAMCON0_LOLDIS)},
+     * seguito da {@code setmaxhpos()} → {@code maxhpos = maxhpos_short + lol}. Il
+     * toggle avviene a fine riga e vale per la riga SUCCESSIVA.
+     *
+     * <p>Senza questo, la riga NTSC era fissa a 227 CCK: il frame durava 263×227 CCK
+     * invece di 262,5×227,5 e la fase fra CPU e pennello restava bloccata su un unico
+     * valore per tutta la partita. Un gioco che attende il VBLANK leggendo INTREQR in
+     * polling (Out of This World via WHDLoad: {@code move.w #$7FFF,INTREQ} +
+     * {@code btst #5,INTREQR}) perdeva così SEMPRE la corsa contro il gestore di
+     * interrupt di Exec, che azzerava il bit prima che il polling potesse vederlo →
+     * schermo nero all'infinito dopo lo splash WHDLoad.
+     */
+    private boolean lol = false;
 
     protected final VideoMode mode;
 
@@ -1131,7 +1158,9 @@ public abstract class AbstractAgnus {
     private static final byte[] DMA_SLOT_TABLE = buildDmaSlotTable();
 
     private static byte[] buildDmaSlotTable() {
-        byte[] t = new byte[227]; // un CCK per posizione (maxHpos/2)
+        // 228 posizioni: 227 CCK della riga corta più il CCK extra della riga lunga
+        // NTSC (LOL), che non ospita alcuno slot DMA fisso e resta DMASLOT_NONE.
+        byte[] t = new byte[228];
         t[SLOT_REFRESH_1] = DMASLOT_REFRESH;
         t[SLOT_REFRESH_2] = DMASLOT_REFRESH;
         t[SLOT_REFRESH_3] = DMASLOT_REFRESH;
@@ -2040,6 +2069,10 @@ public abstract class AbstractAgnus {
         // ── Fine riga ──────────────────────────────────────────────────────
         scheduleSyncEvent(EVFL_HSYNC);
         scheduleSyncEvent(EVFL_EOL);
+
+        // LOL: su Agnus NTSC la riga alterna 227/228 CCK. Il toggle vale per la riga
+        // che sta per iniziare (WinUAE: toggle nell'hsync handler, poi setmaxhpos()).
+        updateLineLength(mode == VideoMode.NTSC && !lol);
 
         hpos = 0;
         fetchWindowOpened = false;   // riarma il latch della finestra di fetch per la nuova riga
@@ -3317,9 +3350,18 @@ public abstract class AbstractAgnus {
     private static final int BEAM_AHEAD_CCK =
             Integer.getInteger("amiga.beamahead", 5);
 
+    /**
+     * Imposta LOL e con esso la lunghezza della riga corrente (WinUAE
+     * {@code setmaxhpos}: {@code maxhpos = maxhpos_short + lol}).
+     */
+    private void updateLineLength(boolean longLine) {
+        lol = longLine;
+        maxHpos = longLine ? MAXHPOS_SHORT + 2 : MAXHPOS_SHORT;   // +1 CCK = +2 SC
+    }
+
     /** Posizione H (in CCK) restituita da VHPOSR: hpos corrente + BEAM_AHEAD_CCK, con wrap di riga. */
     private int beamPosHAhead(int hLores) {
-        int lineCck = maxHpos >> 1;                 // 227 (PAL) / NTSC analogo
+        int lineCck = maxHpos >> 1;                 // 227, o 228 sulla riga lunga NTSC
         int cck = (hLores >> 1) + BEAM_AHEAD_CCK;
         if (cck >= lineCck) cck -= lineCck;
         return cck;
@@ -3644,6 +3686,10 @@ public abstract class AbstractAgnus {
                 // Bit 15 = LOF
                 if ((value & 0x8000) != 0) field = 0; else field = 1;
                 vpos = (vpos & 0xFF) | ((value & 1) << 8);
+                // "LOL is always reset when VPOSW is written to. Implemented in all
+                // NTSC Agnus versions and ECS/AGA Agnus in NTSC mode" (WinUAE
+                // custom.cpp, VPOSW): la riga corrente torna corta.
+                if (lol) updateLineLength(false);
                 break;
             case 0x02C: // VHPOSW
                 vpos = (vpos & 0x100) | ((value >> 8) & 0xFF);
@@ -3795,6 +3841,7 @@ public abstract class AbstractAgnus {
         bitplaneDmaEnabledLateThisFrame = false;
         lastCompletedFrameHadLateBitplaneDma = false;
         field = 0;
+        updateLineLength(false);             // LOL: si riparte sempre da riga corta
         vposFrozen = false; frozenVpos = 0; frozenHpos = 0;
         beamReadLatchVpos = -1; beamReadLatchHpos = -1;
         cpuAccessTransferred = false; copperBusProcessed = false;
