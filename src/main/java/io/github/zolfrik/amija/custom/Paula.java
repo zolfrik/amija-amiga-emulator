@@ -1158,6 +1158,14 @@ public final class Paula {
         private boolean currentWordValid;
         private boolean currentWordEndsBlock;
         private boolean dmaPriming;
+        /**
+         * Il canale sta suonando una word scritta dalla CPU in AUDxDAT con il DMA
+         * spento — gli stati 2/3 di WinUAE, contro lo stato 0 di riposo. Distingue
+         * la scrittura che <i>avvia</i> il canale (che chiede l'interrupt) da tutte
+         * quelle successive, che sono solo il rifornimento chiesto dall'interrupt
+         * precedente e non ne devono chiedere un altro. Vedi {@link #writeData}.
+         */
+        private boolean cpuDriven;
         private int bytePhase;
         private int periodCounter;
         private int periodClocks;
@@ -1180,6 +1188,7 @@ public final class Paula {
             currentWordValid = false;
             currentWordEndsBlock = false;
             dmaPriming = false;
+            cpuDriven = false;
             bytePhase = 0;
             periodClocks = computePeriodClocks();
             periodCounter = periodClocks;
@@ -1192,6 +1201,7 @@ public final class Paula {
             if (dmaEnabled == enabled) return;
             dmaEnabled = enabled;
             if (enabled) {
+                cpuDriven = false;      // il DMA prende il posto del modo a interrupt
                 reloadDmaBlock();
                 dmaPriming = true;
                 requestNextWord();
@@ -1211,6 +1221,7 @@ public final class Paula {
             currentWordValid = false;
             currentWordEndsBlock = false;
             dmaPriming = false;
+            cpuDriven = false;
             bytePhase = 0;
             currentSample = 0;
         }
@@ -1227,16 +1238,52 @@ public final class Paula {
             return currentSample * volumeScale;
         }
 
+        /**
+         * Scrittura della CPU in AUDxDAT. Con il DMA acceso rifornisce e basta;
+         * con il DMA spento è il modo "a interrupt", ed è l'unico punto in cui la
+         * scrittura può chiedere un interrupt — <b>solo</b> quella che trova il
+         * canale fermo.
+         *
+         * <p>Alzare AUDxIR a <i>ogni</i> scrittura è il modo di non far partire
+         * mai più nulla: il gestore di livello 4 che rifornisce il campione si
+         * ri-arma da solo prima della propria RTE, rientra subito, e gli interrupt
+         * di livello più basso — VERTB in testa — non vengono serviti mai più.
+         * Il gioco resta a schermo nero con INTREQ fermo su AUD0+VERTB e la CPU
+         * al 100% dentro il gestore audio. In modo a interrupt il ritmo lo detta
+         * il periodo: la word successiva la chiede {@link #advanceSampleByte()}
+         * quando i due byte sono stati suonati.
+         *
+         * <p>Oracolo: WinUAE {@code audio.cpp}, {@code audio_state_channel2} stato
+         * 0 — {@code else if (cdp->dat_written && !isirq(nr))}, che passa allo
+         * stato 2 con {@code setirq}. Con l'interrupt già pendente la scrittura
+         * non fa nulla e il canale resta fermo ({@code zerostate}).
+         */
         private void writeData(int value) {
             nextWord = value & 0xFFFF;
             nextWordValid = true;
             nextWordEndsBlock = false;
-            if (!currentWordValid) {
-                loadCurrentWord();
+            if (dmaEnabled) {
+                if (!currentWordValid) {
+                    loadCurrentWord();
+                }
+                refreshActiveMask();
+                return;
             }
-            if (!dmaEnabled) {
-                raiseInterrupt(0x0080 << index);
+            if (cpuDriven) {
+                // Rifornimento chiesto dall'interrupt precedente: la word resta in
+                // attesa, la prende advanceSampleByte() a fine periodo.
+                refreshActiveMask();
+                return;
             }
+            if ((intreq & (0x0080 << index)) != 0) {
+                // Interrupt del canale ancora pendente: il canale non riparte.
+                refreshActiveMask();
+                return;
+            }
+            cpuDriven = true;
+            raiseInterrupt(0x0080 << index);
+            loadCurrentWord();
+            periodCounter = periodClocks;   // WinUAE: loadper all'ingresso nello stato 2
             refreshActiveMask();
         }
 
@@ -1274,10 +1321,36 @@ public final class Paula {
         }
 
         private void advanceSampleByte() {
+            if (!currentWordValid && cpuDriven && !dmaEnabled) {
+                // I due byte della word sono stati suonati: è QUI che il modo a
+                // interrupt chiede il rifornimento, un periodo dopo il byte basso
+                // (WinUAE stato 3 con perfin e canale non in DMA). Se l'interrupt
+                // precedente è ancora pendente la CPU non ha rifornito in tempo e
+                // il canale si ferma, esattamente come lo zerostate di WinUAE.
+                boolean stillPending = (intreq & (0x0080 << index)) != 0;
+                raiseInterrupt(0x0080 << index);
+                if (stillPending) {
+                    cpuDriven = false;
+                    nextWordValid = false;
+                    currentSample = 0;
+                    refreshActiveMask();
+                    return;
+                }
+            }
             if (!currentWordValid && !loadCurrentWord()) {
-                currentSample = 0;
-                refreshActiveMask();
-                return;
+                if (!cpuDriven) {
+                    currentSample = 0;
+                    refreshActiveMask();
+                    return;
+                }
+                // WinUAE fa loaddat() incondizionato: senza rifornimento il canale
+                // risuona l'ultima word scritta invece di zittirsi, e si ferma al
+                // primo interrupt non servito (il controllo qui sopra). Tenerlo
+                // conserva la cadenza di un interrupt ogni due periodi.
+                currentWord = audDAT[index] & 0xFFFF;
+                currentWordValid = true;
+                currentWordEndsBlock = false;
+                bytePhase = 0;
             }
 
             if (applyModulationWord()) {
@@ -1387,7 +1460,11 @@ public final class Paula {
         }
 
         private void refreshActiveMask() {
-            boolean active = dmaEnabled || dmaRequest || nextWordValid || currentWordValid || currentSample != 0;
+            // cpuDriven entra nella condizione perché il modo a interrupt vive sul
+            // period-counter: un canale che uscisse dalla maschera smetterebbe di
+            // contare e non chiederebbe mai più la word successiva.
+            boolean active = dmaEnabled || dmaRequest || nextWordValid || currentWordValid
+                    || cpuDriven || currentSample != 0;
             if (active) activeAudioMask |= (1 << index);
             else        activeAudioMask &= ~(1 << index);
         }
