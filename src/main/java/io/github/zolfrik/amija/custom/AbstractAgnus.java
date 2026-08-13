@@ -2105,6 +2105,23 @@ public abstract class AbstractAgnus {
             }
         }
 
+        // ERSY (BPLCON0 bit 1) senza genlock: il generatore di sync di Agnus aspetta un
+        // sync esterno che non arriva e il CONTATORE VERTICALE SI FERMA. In WinUAE è
+        // `custom_trigger_start()` — la funzione che contiene `vpos++` — a non essere
+        // chiamata affatto mentre `syncs_stopped` (custom.cpp, "if (!syncs_stopped)"),
+        // mentre `fakehsync_handler` continua a generare hsync così che le righe, e con
+        // loro il resto della macchina, non si fermino. Qui è la stessa cosa: la fine
+        // riga fa tutto il suo lavoro, solo vpos non avanza e il frame non si chiude.
+        //
+        // Non è un dettaglio da poco: la graphics.library 1.3 accende ERSY per il
+        // rilevamento genlock ($FCAF96) e lo tiene su ~4881 CCK, cioè 21,5 righe. Senza
+        // il freeze il nostro pennello si portava avanti di altrettanto rispetto
+        // all'oracolo, e da lì in poi ogni attesa del Kickstart agganciata al raster
+        // cadeva altrove. Misurato in docs/vamigats-paula-audio-plan.md §13.6.
+        if (ersyActive()) {
+            return;
+        }
+
         vpos++;
 
         // Numero di righe del frame dipendente da LOF (Long Frame), come hardware:
