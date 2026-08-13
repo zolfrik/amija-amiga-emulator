@@ -140,6 +140,8 @@ public final class Paula {
     private int pendingAudioCycles;
     /** min(periodCounter) sui canali attivi; -1 = da ricalcolare. */
     private int audioMinCounter = -1;
+    /** Master-cycle trascorsi dall'ultimo sample di output: divisore dell'integrazione. */
+    private int mixIntervalCycles;
     private static final boolean AUDIO_VERIFY =
             Boolean.getBoolean("amiga.audioverify");
 
@@ -228,6 +230,7 @@ public final class Paula {
         activeAudioMask = 0;
         pendingAudioCycles = 0;
         audioMinCounter = -1;
+        mixIntervalCycles = 0;
         audioRingBuffer.clear();
     }
 
@@ -241,6 +244,11 @@ public final class Paula {
      * {@link #activeAudioMask} rende questo metodo quasi gratuito quando non c'è audio.
      */
     public void tick(int cycles) {
+        // Lunghezza dell'intervallo di integrazione del prossimo sample di output.
+        // Va contata SEMPRE, anche senza canali attivi: un canale che si spegne a metà
+        // intervallo ha accumulato solo la propria parte, e il divisore deve restare
+        // l'intervallo intero perché la media venga giusta (il resto vale zero).
+        mixIntervalCycles += cycles;
         if (activeAudioMask == 0) {
             // Nessun canale attivo: nulla da accumulare (i contatori sono già allineati).
             pendingAudioCycles = 0;
@@ -317,6 +325,10 @@ public final class Paula {
      * che girava in {@link #tick(int)}.
      */
     public void serviceAudioSampleEvent() {
+        // I cicli tenuti in sospeso da tick() sono già contati in mixIntervalCycles ma
+        // non ancora negli accumulatori dei canali: senza questa sync il numeratore
+        // coprirebbe meno tempo del denominatore e il livello uscirebbe basso.
+        syncAudioChannels();
         mixAudioSample();
         updateSampleRateCorrection();
         scheduleNextAudioSample();
@@ -717,6 +729,8 @@ public final class Paula {
     // Register Access
     // =========================================================================
 
+    public static long diagIntreqrReads = 0, diagIntreqrBit5 = 0;
+
     public int readRegister(int address) {
         address &= 0x1FE;
         switch (address) {
@@ -728,7 +742,7 @@ public final class Paula {
             case 0x018: return buildSerdatr();
             case 0x01A: return buildDskbytr();
             case 0x01C: return intena & 0x7FFF; // INTENAR: bit 15 is always 0 on OCS/ECS.
-            case 0x01E: return intreq & 0x7FFF;
+            case 0x01E: { int v = intreq & 0x7FFF; diagIntreqrReads++; if ((v & 0x20) != 0) diagIntreqrBit5++; return v; }
             default:
                 if (address >= 0x0A0 && address <= 0x0DE) return readAudioRegister(address);
                 return 0xFFFF;
@@ -971,17 +985,44 @@ public final class Paula {
         }
     }
 
+    /**
+     * Produce un sample di output facendo la <b>media pesata nel tempo</b> dell'uscita
+     * di ciascun canale sull'intervallo appena trascorso, invece di leggerne il valore
+     * istantaneo.
+     *
+     * <p>Oracolo: WinUAE {@code audio.cpp}, modo di interpolazione <i>anti</i>
+     * ({@code sound_interpol = 1}, il DEFAULT) — {@code anti_prehandler} accumula
+     * {@code current_sample * vol * dt} ad ogni passo dell'emulazione e
+     * {@code samplexx_anti_handler} divide per il tempo accumulato.
+     *
+     * <p>Leggere il valore istantaneo (quello che si faceva prima) equivale a un
+     * ricampionamento a vicino-più-prossimo: i fronti dell'uscita di Paula, che cadono
+     * su una griglia da 7,09 MHz, vengono spostati fino a 22,7 µs per finire sulla
+     * griglia a 44,1 kHz. Quel jitter è un rumore a banda larga con righe fortissime
+     * accanto alla fondamentale. Misurato sul banco (una sinusoide da 500 Hz generata
+     * come la genera Amiga Test Kit): <b>SNR 20,8 dB</b> col campionamento istantaneo
+     * contro i <b>28,8 dB</b> del riferimento ideale, che l'integrazione raggiunge esatto.
+     * Su un'onda quadra da 10 kHz il divario era ancora più largo, ma lì il grosso lo
+     * faceva un secondo difetto — vedi {@code loadCurrentWord()}.
+     *
+     * <p>Il residuo a 28,8 dB non è nostro: sono le immagini della scaletta a 8 bit di
+     * Paula (15,5 e 16,5 kHz per questo segnale), che ci sono anche in WinUAE e che il
+     * filtro fisso dell'A500 attenua a valle. La misura vive in {@code PaulaAudioQualityTest}.
+     */
     private void mixAudioSample() {
-        float left = 0.0f;
-        float right = 0.0f;
+        int interval = mixIntervalCycles;
+        mixIntervalCycles = 0;
+
+        double left = 0.0;
+        double right = 0.0;
 
         for (AudioChannel ch : audioChannels) {
-            float sample = ch.outputSample();
+            double sample = ch.takeAverageSample(interval);
             if (ch.index == 0 || ch.index == 3) left += sample;
             else                                right += sample;
         }
 
-        audioRingBuffer.write(left * 0.5f, right * 0.5f);
+        audioRingBuffer.write((float) (left * 0.5), (float) (right * 0.5));
     }
 
     // =========================================================================
@@ -1171,6 +1212,8 @@ public final class Paula {
         private int periodClocks;
         private float volumeScale;
         private int currentSample;
+        /** Integrale di {@code currentSample * volumeScale} sui cicli dell'intervallo. */
+        private double sampleAccum;
 
         private AudioChannel(int index) {
             this.index = index;
@@ -1194,6 +1237,7 @@ public final class Paula {
             periodCounter = periodClocks;
             volumeScale = computeVolumeScale();
             currentSample = 0;
+            sampleAccum = 0.0;
             refreshActiveMask();
         }
 
@@ -1226,16 +1270,42 @@ public final class Paula {
             currentSample = 0;
         }
 
+        /**
+         * Avanza il canale di {@code cycles} master-cycle <b>integrando</b> l'uscita.
+         *
+         * <p>Fra due scadenze del period-counter l'uscita del canale è costante, quindi
+         * l'integrale sull'intervallo è esatto: basta pesare ogni valore per il numero
+         * di cicli in cui è rimasto in uscita. È il {@code anti_prehandler} di WinUAE,
+         * che accumula {@code current_sample * vol * best_evtime} ad ogni passo.
+         *
+         * <p>Il conteggio dei passaggi di byte è identico a prima
+         * ({@code periodCounter -= cycles} seguito dai riarmi a {@code periodClocks}):
+         * qui si sottrae a pezzi per sapere <i>quanto a lungo</i> è valso ogni valore.
+         */
         private void tick(int cycles) {
-            periodCounter -= cycles;
-            while (periodCounter <= 0) {
-                periodCounter += periodClocks;
+            int remaining = cycles;
+            while (remaining >= periodCounter) {
+                int step = periodCounter;
+                sampleAccum += currentSample * (double) volumeScale * step;
+                remaining -= step;
+                periodCounter = periodClocks;   // >= 2: il ciclo termina sempre
                 advanceSampleByte();
             }
+            sampleAccum += currentSample * (double) volumeScale * remaining;
+            periodCounter -= remaining;
         }
 
-        private float outputSample() {
-            return currentSample * volumeScale;
+        /**
+         * Media dell'uscita sull'intervallo appena chiuso, e azzeramento
+         * dell'accumulatore. {@code intervalCycles} è la durata PIENA dell'intervallo:
+         * la parte in cui il canale è stato inattivo non è nell'accumulatore e vale
+         * zero, esattamente come in WinUAE, dove il prehandler gira comunque su tutti
+         * e quattro i canali e somma zero per quelli fermi.
+         */
+        private double takeAverageSample(int intervalCycles) {
+            double accum = sampleAccum;
+            sampleAccum = 0.0;
+            return intervalCycles > 0 ? accum / intervalCycles : 0.0;
         }
 
         /**
@@ -1338,7 +1408,12 @@ public final class Paula {
                 }
             }
             if (!currentWordValid && !loadCurrentWord()) {
-                if (!cpuDriven) {
+                // dmaPriming: il canale è appena stato acceso e la prima word (quella
+                // scartata) non è ancora arrivata. Non ha ancora suonato nulla, quindi
+                // AUDxDAT contiene roba vecchia e ripeterla sarebbe un clic. In WinUAE
+                // qui il canale è negli stati 1/5, dove evtime = MAX_EV e il period
+                // counter non gira affatto.
+                if ((!cpuDriven && !dmaEnabled) || dmaPriming) {
                     currentSample = 0;
                     refreshActiveMask();
                     return;
@@ -1347,6 +1422,12 @@ public final class Paula {
                 // risuona l'ultima word scritta invece di zittirsi, e si ferma al
                 // primo interrupt non servito (il controllo qui sopra). Tenerlo
                 // conserva la cadenza di un interrupt ogni due periodi.
+                //
+                // Vale anche col DMA ACCESO: se lo slot audio non ha ancora consegnato
+                // la word, Paula rimette in riproduzione il contenuto di AUDxDAT, non
+                // il silenzio. È la rete di sicurezza dietro la richiesta anticipata
+                // qui sotto in loadCurrentWord(): un periodo di zero è un buco udibile,
+                // una word ripetuta no.
                 currentWord = audDAT[index] & 0xFFFF;
                 currentWordValid = true;
                 currentWordEndsBlock = false;
@@ -1370,7 +1451,7 @@ public final class Paula {
                 currentWordEndsBlock = false;
             }
 
-            if (dmaEnabled && !currentWordEndsBlock && !nextWordValid && !dmaRequest) {
+            if (dmaEnabled && !nextWordValid && !dmaRequest) {
                 requestNextWord();
             }
             refreshActiveMask();
@@ -1390,7 +1471,22 @@ public final class Paula {
             if (currentWordEndsBlock) {
                 raiseInterrupt(0x0080 << index);
             }
-            if (dmaEnabled && !dmaRequest && !currentWordEndsBlock) {
+            // La richiesta della word successiva parte SEMPRE quando una word entra in
+            // riproduzione — anche per l'ultima del blocco. Oracolo: WinUAE audio.cpp,
+            // stato 3 con perfin e canale in DMA, dove `setdr(nr, false)` segue
+            // `loaddat(nr)` senza alcuna condizione sulla lunghezza residua; è `setdr`
+            // stessa a scegliere fra richiesta normale e richiesta con ricarica del
+            // puntatore (`dsr`, quando wlen == 1).
+            //
+            // Saltarla al confine del blocco — quello che si faceva prima — toglie al
+            // DMA un'intera word di anticipo: la richiesta partiva solo dopo che
+            // l'ultima word era stata suonata per intero, e lo slot DMA audio passa una
+            // volta per riga (454 cicli). Con un periodo corto la word arrivava tardi e
+            // il canale restava a ZERO per un periodo intero. Misurato sul banco con
+            // un'onda quadra da 10 kHz: 40 buchi al secondo, che nello spettro sono
+            // bande laterali distanti ~39,5 Hz dalla fondamentale, forti quanto la
+            // fondamentale stessa.
+            if (dmaEnabled && !dmaRequest) {
                 requestNextWord();
             }
             refreshActiveMask();

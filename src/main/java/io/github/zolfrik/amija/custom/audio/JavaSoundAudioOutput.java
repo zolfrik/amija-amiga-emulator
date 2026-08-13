@@ -38,11 +38,12 @@ public final class JavaSoundAudioOutput implements Runnable {
     // Tenuto poco sotto il livello target dell'ASR del produttore.
     private static final int PRIME_FRAMES = CHUNK_FRAMES * 3;
 
+    // Catena analogica dell'A500, una per lato. Prima qui c'era un singolo polo a
+    // 4,4 kHz più uno a 3,3 kHz per il LED: più cupo dell'oracolo (a 10 kHz, -7,9 dB
+    // contro i -6,5 dB di WinUAE) e con una pendenza sbagliata sopra il taglio.
     private final AudioRingBuffer ringBuffer;
-    private final LeakyIntegrator rcLeft = new LeakyIntegrator(4_400.0, OUTPUT_RATE);
-    private final LeakyIntegrator rcRight = new LeakyIntegrator(4_400.0, OUTPUT_RATE);
-    private final LeakyIntegrator ledLeft = new LeakyIntegrator(3_300.0, OUTPUT_RATE);
-    private final LeakyIntegrator ledRight = new LeakyIntegrator(3_300.0, OUTPUT_RATE);
+    private final A500AudioFilter filterLeft = new A500AudioFilter(OUTPUT_RATE);
+    private final A500AudioFilter filterRight = new A500AudioFilter(OUTPUT_RATE);
 
     private volatile boolean running;
     private volatile boolean ledFilterEnabled;
@@ -164,13 +165,10 @@ public final class JavaSoundAudioOutput implements Runnable {
                     }
                 }
 
+                boolean led = ledFilterEnabled;
                 for (int i = 0; i < CHUNK_FRAMES; i++) {
-                    float l = rcLeft.process(tmpL[i]);
-                    float r = rcRight.process(tmpR[i]);
-                    if (ledFilterEnabled) {
-                        l = ledLeft.process(l);
-                        r = ledRight.process(r);
-                    }
+                    float l = filterLeft.process(tmpL[i], led);
+                    float r = filterRight.process(tmpR[i], led);
                     int li = (int) (clamp(l) * 32767.0f);
                     int ri = (int) (clamp(r) * 32767.0f);
                     int off = i * 4;
