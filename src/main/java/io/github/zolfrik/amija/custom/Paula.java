@@ -1173,6 +1173,28 @@ public final class Paula {
         return chan >= 0 && chan < 4 ? audioChannels[chan].currentSample : 0;
     }
 
+    /**
+     * L'uscita del canale <b>verso il mixer</b>: {@code (current_sample * mixvol) & adk_mask}
+     * di WinUAE ({@code audio.cpp}, quel che {@code anti_prehandler} integra). Intervallo
+     * -8192..8128.
+     *
+     * <p>Non è {@code getAudioCurrentSample(chan) * AUDxVOL}, e le due differenze sono
+     * entrambe volute:
+     * <ul>
+     *   <li>il volume è quello <b>latchato</b> a {@code loadper()}, non il registro —
+     *       una scrittura di AUDxVOL entra nel mixer al confine di periodo successivo;</li>
+     *   <li>un canale che <b>modula</b> il successivo è muto: {@code adk_mask} vale 0
+     *       per ogni canale che compare in ADKCON come modulatore di volume o di periodo
+     *       ({@code audio_update_adkmasks}: {@code t = adkcon | (adkcon >> 4)}).</li>
+     * </ul>
+     */
+    public int getAudioMixerOutput(int chan) {
+        if (chan < 0 || chan > 3) return 0;
+        int t = adkcon | (adkcon >> 4);
+        if ((t & (1 << chan)) != 0) return 0;    // adk_mask = 0
+        return audioChannels[chan].currentSample * audioChannels[chan].mixVolume();
+    }
+
     private int readAudioRegister(int address) {
         int chan = (address - 0x0A0) >> 4;
         if (chan < 0 || chan > 3) return 0xFFFF;
@@ -1203,11 +1225,12 @@ public final class Paula {
                 break;
             case 0x6:
                 audPER[chan] = value & 0xFFFF;
-                audioChannels[chan].reloadPeriodCounter();
+                audioChannels[chan].reloadPeriodClocks();
                 break;
             case 0x8:
+                // Solo il registro (audvol): nel mixer ci entra al confine di periodo
+                // successivo, quando loadPeriod() latcha mixvol. Vedi AudioChannel.mixVolume.
                 audVOL[chan] = Math.min(value & 0x7F, 64);
-                audioChannels[chan].reloadVolumeScale();
                 break;
             case 0xA:
                 audDAT[chan] = value & 0xFFFF;
@@ -1244,6 +1267,17 @@ public final class Paula {
         private boolean currentWordEndsBlock;
         private boolean dmaPriming;
         /**
+         * La word di priming è arrivata e la <b>prossima</b> è la prima che suona: è lo
+         * stato 5 di WinUAE. Serve per una ragione sola — quella word <b>non scala la
+         * lunghezza residua</b>. WinUAE toglie uno a {@code wlen} nello stato 1 (la word
+         * scartata) e poi una volta per ogni word che arriva <i>mentre il canale è negli
+         * stati 2/3</i> ({@code event_audxdat_func}); l'arrivo che fa passare da 5 a 2 non
+         * cade in nessuno dei due casi, quindi non conta. Contarlo faceva suonare
+         * <b>LEN-1</b> word per blocco invece di LEN: il blocco si chiudeva una word
+         * prima e da lì in poi eravamo due campioni avanti all'oracolo.
+         */
+        private boolean dmaFirstWord;
+        /**
          * Il canale sta suonando una word scritta dalla CPU in AUDxDAT con il DMA
          * spento — gli stati 2/3 di WinUAE, contro lo stato 0 di riposo. Distingue
          * la scrittura che <i>avvia</i> il canale (che chiede l'interrupt) da tutte
@@ -1254,9 +1288,18 @@ public final class Paula {
         private int bytePhase;
         private int periodCounter;
         private int periodClocks;
-        private float volumeScale;
+        /**
+         * Volume <b>latchato</b>, cioè quello che entra davvero nel mixer: WinUAE
+         * {@code data.mixvol}. AUDxVOL (il registro, {@code data.audvol}) ci finisce
+         * dentro solo a {@code loadper()} — vedi {@link #loadPeriod()} — quindi una
+         * scrittura del volume ha effetto al <b>confine di periodo successivo</b>, non
+         * subito. Applicarlo all'istante ci metteva in anticipo sull'oracolo su tutta
+         * la modulazione di volume (docs/vamigats-paula-audio-plan.md §9.4).
+         */
+        private int mixVolume;
+        private float mixVolumeScale;
         private int currentSample;
-        /** Integrale di {@code currentSample * volumeScale} sui cicli dell'intervallo. */
+        /** Integrale di {@code currentSample * mixVolumeScale} sui cicli dell'intervallo. */
         private double sampleAccum;
 
         private AudioChannel(int index) {
@@ -1275,11 +1318,12 @@ public final class Paula {
             currentWordValid = false;
             currentWordEndsBlock = false;
             dmaPriming = false;
+            dmaFirstWord = false;
             cpuDriven = false;
             bytePhase = 0;
             periodClocks = computePeriodClocks();
             periodCounter = periodClocks;
-            volumeScale = computeVolumeScale();
+            latchMixVolume();
             currentSample = 0;
             sampleAccum = 0.0;
             refreshActiveMask();
@@ -1309,6 +1353,7 @@ public final class Paula {
             currentWordValid = false;
             currentWordEndsBlock = false;
             dmaPriming = false;
+            dmaFirstWord = false;
             cpuDriven = false;
             bytePhase = 0;
             currentSample = 0;
@@ -1327,16 +1372,56 @@ public final class Paula {
          * qui si sottrae a pezzi per sapere <i>quanto a lungo</i> è valso ogni valore.
          */
         private void tick(int cycles) {
+            if (dmaEnabled && (dmaPriming || dmaFirstWord)) {
+                // Stati 1 e 5 di WinUAE: entrambi mettono `evtime = MAX_EV`, cioè il
+                // period counter NON gira finché la prima word non entra davvero in
+                // riproduzione. Farlo girare durante l'avvio del DMA regala al canale
+                // uno o più confini di periodo prematuri, che consumano word: su
+                // dmamod3 bastava a scambiare volume e periodo per sempre, perché le
+                // parole della tabella si alternano.
+                sampleAccum += currentSample * (double) mixVolumeScale * cycles;
+                return;
+            }
             int remaining = cycles;
             while (remaining >= periodCounter) {
                 int step = periodCounter;
-                sampleAccum += currentSample * (double) volumeScale * step;
+                sampleAccum += currentSample * (double) mixVolumeScale * step;
                 remaining -= step;
-                periodCounter = periodClocks;   // >= 2: il ciclo termina sempre
+                loadPeriod();                   // periodClocks >= 2: il ciclo termina sempre
                 advanceSampleByte();
             }
-            sampleAccum += currentSample * (double) volumeScale * remaining;
+            sampleAccum += currentSample * (double) mixVolumeScale * remaining;
             periodCounter -= remaining;
+        }
+
+        /**
+         * Il {@code loadper()} di WinUAE: riarma il contatore di periodo <b>e latcha il
+         * volume</b>.
+         *
+         * <pre>
+         * static void loadper(int nr) {
+         *     cdp-&gt;evtime = cdp-&gt;per;
+         *     cdp-&gt;data.mixvol = cdp-&gt;data.audvol;
+         * }
+         * </pre>
+         *
+         * Le due cose stanno insieme perché sono la stessa cosa: il volume che il mixer
+         * userà per il campione che sta per uscire è quello che AUDxVOL aveva al confine
+         * di periodo. Vedi {@link #mixVolume}.
+         */
+        private void loadPeriod() {
+            periodCounter = periodClocks;
+            latchMixVolume();
+        }
+
+        private void latchMixVolume() {
+            mixVolume = Math.min(audVOL[index] & 0x7F, 64);
+            mixVolumeScale = mixVolume / (128.0f * 64.0f);
+        }
+
+        /** Il {@code mixvol} corrente, per {@link Paula#getAudioMixerOutput(int)}. */
+        private int mixVolume() {
+            return mixVolume;
         }
 
         /**
@@ -1377,7 +1462,9 @@ public final class Paula {
             nextWordValid = true;
             nextWordEndsBlock = false;
             if (dmaEnabled) {
-                if (!currentWordValid) {
+                // Un modulatore non manda mai la word in riproduzione: la legge da
+                // audDAT ai confini di periodo (vedi advanceModulator).
+                if (!currentWordValid && !isModulator()) {
                     loadCurrentWord();
                 }
                 refreshActiveMask();
@@ -1396,8 +1483,10 @@ public final class Paula {
             }
             cpuDriven = true;
             raiseAudioInterrupt(index);
-            loadCurrentWord();
-            periodCounter = periodClocks;   // WinUAE: loadper all'ingresso nello stato 2
+            if (!isModulator()) {
+                loadCurrentWord();
+            }
+            loadPeriod();   // WinUAE: loadper all'ingresso nello stato 2
             refreshActiveMask();
         }
 
@@ -1418,23 +1507,60 @@ public final class Paula {
                 }
                 reloadDmaPointer();
                 dmaPriming = false;
+                dmaFirstWord = true;
                 raiseAudioInterrupt(index);
                 requestNextWord();
                 refreshActiveMask();
                 return;
             }
-            if (remainingWords > 0) {
+            final boolean startsPlayback = dmaFirstWord;
+            if (dmaFirstWord) {
+                // Stato 5 -> 2: questa word entra in riproduzione ma non scala LEN,
+                // ed è QUI che il period counter riparte — WinUAE, case 5: loadper(nr).
+                dmaFirstWord = false;
+                loadPeriod();
+            } else if (remainingWords > 0) {
                 remainingWords--;
             }
             nextWordEndsBlock = remainingWords == 0;
 
-            if (!currentWordValid) {
+            // Un modulatore non manda mai la word in riproduzione: la legge da audDAT
+            // ai confini di periodo (advanceModulator). Mandarcela significherebbe anche
+            // far partire subito la richiesta successiva, e quindi consumare una word in
+            // piu' prima del primo confine — che e' come volume e periodo finivano
+            // scambiati su dmamod3.
+            if (!currentWordValid && !isModulator()) {
                 loadCurrentWord();
+            }
+            if (startsPlayback) {
+                // ...e il primo byte esce SUBITO, non al confine di periodo successivo:
+                // il case 5 di WinUAE mette `pbufldl = true` e richiama la macchina a
+                // stati, che entra nel case 2 e fa `newsample(dat2 >> 8)` nello stesso
+                // istante. Aspettare un periodo intero e' invisibile in una traccia
+                // (che e' riportata al proprio primo evento) ma non lo e' quando il
+                // canale viene spento prima: dmaonoff2 tiene il DMA acceso due righe
+                // sole, e cosi' non suonava affatto invece dei 486 eventi dell'oracolo.
+                advanceSampleByte();
             }
             refreshActiveMask();
         }
 
+        /**
+         * Il canale sta <b>modulando</b> il successivo: ADKCON gli ha assegnato il volume
+         * (bit {@code index}) o il periodo (bit {@code index+4}) del canale {@code index+1}.
+         * Il canale 3 non modula nessuno ({@code loaddat} esce con {@code if (nr >= 3)}),
+         * ma i suoi bit lo ammutoliscono lo stesso — quello lo fa {@code adk_mask}, non
+         * questo metodo.
+         */
+        private boolean isModulator() {
+            return index < 3 && (adkcon & (0x11 << index)) != 0;
+        }
+
         private void advanceSampleByte() {
+            if (isModulator()) {
+                advanceModulator();
+                return;
+            }
             if (!currentWordValid && cpuDriven && !dmaEnabled) {
                 // I due byte della word sono stati suonati: è QUI che il modo a
                 // interrupt chiede il rifornimento, un periodo dopo il byte basso
@@ -1476,14 +1602,6 @@ public final class Paula {
                 currentWordValid = true;
                 currentWordEndsBlock = false;
                 bytePhase = 0;
-            }
-
-            if (applyModulationWord()) {
-                if (dmaEnabled && !currentWordEndsBlock && !nextWordValid && !dmaRequest) {
-                    requestNextWord();
-                }
-                refreshActiveMask();
-                return;
             }
 
             int raw = bytePhase == 0 ? (currentWord >>> 8) & 0xFF : currentWord & 0xFF;
@@ -1537,25 +1655,128 @@ public final class Paula {
             return true;
         }
 
-        private boolean applyModulationWord() {
-            if (index >= 3) return false;
-            boolean volumeMod = (adkcon & (1 << index)) != 0;
-            boolean periodMod = (adkcon & (0x10 << index)) != 0;
-            if (!volumeMod && !periodMod) return false;
+        /**
+         * Un confine di periodo su un canale <b>modulatore</b>.
+         *
+         * <p>Oracolo: WinUAE {@code audio.cpp}, {@code loaddat(nr, modper)} e i suoi due
+         * punti di chiamata. Il modulatore percorre la stessa macchina a stati di un
+         * canale normale, ma i due confini di periodo <b>non fanno la stessa cosa</b>:
+         * <ul>
+         *   <li><b>confine alto</b> (stato 5→2 e 3→2), {@code loaddat(nr, false)}:
+         *       {@code update_volume(nr+1, cdp->dat)} se ADKCON chiede il volume;</li>
+         *   <li><b>confine basso</b> (stato 2→3), {@code loaddat(nr, true)}:
+         *       {@code cdp[1].per = cdp->dat} se ADKCON chiede il periodo.</li>
+         * </ul>
+         *
+         * <p>La word è sempre {@code cdp->dat}, cioè <b>l'ultima arrivata</b>
+         * ({@code audDAT[index]}), mai {@code dat2}: un modulatore non "suona" niente.
+         *
+         * <p>E la richiesta della word successiva parte a confini diversi —
+         * {@code setdr} al confine alto solo se {@code napnav = (!audav && !audap) || audav},
+         * e al confine basso solo se {@code audap}. Con <b>entrambe</b> le modulazioni
+         * attive parte a tutti e due, quindi il canale consuma <b>una word per periodo</b>
+         * invece che una ogni due: una alimenta il volume, la successiva il periodo, e le
+         * parole si alternano. È esattamente il modo in cui è scritta la tabella di
+         * {@code dmamod3} ({@code 0,0, 1,0, 0,2, 2,0, …}) e il motivo per cui
+         * {@code dmamod4}, che ne ha un numero dispari, «scambia volume e periodo a giri
+         * alterni».
+         *
+         * <p>Prendere volume <i>e</i> periodo dalla stessa word — quello che si faceva
+         * prima — infila in AUDxPER parole destinate al volume: {@code $0002} diventa un
+         * periodo di 2 CCK e il canale esplode. Misurato: 594169 eventi contro i 13996
+         * dell'oracolo.
+         */
+        private void advanceModulator() {
+            final boolean audav = (adkcon & (1 << index)) != 0;
+            final boolean audap = (adkcon & (0x10 << index)) != 0;
 
-            if (volumeMod) {
-                audVOL[index + 1] = Math.min(currentWord & 0x7F, 64);
-                audioChannels[index + 1].reloadVolumeScale();
+            currentSample = 0;      // adk_mask = 0: il modulatore e' muto
+            if (bytePhase == 0) {
+                if (audav) {
+                    audioChannels[index + 1].setModulatedVolume(audDAT[index]);
+                    consumeQueuedWord();
+                    askForNextWord(true);
+                }
+            } else {
+                if (audap) {
+                    audioChannels[index + 1].setModulatedPeriod(audDAT[index]);
+                    consumeQueuedWord();
+                    askForNextWord(false);
+                }
             }
-            if (periodMod) {
-                audPER[index + 1] = currentWord & 0xFFFF;
-                audioChannels[index + 1].reloadPeriodCounter();
+            bytePhase ^= 1;
+            refreshActiveMask();
+        }
+
+        /**
+         * Libera la word in coda. Il modulatore non la manda in riproduzione — legge
+         * sempre AUDxDAT — ma la coda va svuotata lo stesso, perché è
+         * {@code nextWordValid} a impedire che parta una seconda richiesta. Ed è qui che
+         * scatta l'interrupt di fine blocco, nello stesso punto in cui WinUAE controlla
+         * {@code cdp->intreq2}: accanto a {@code setdr}.
+         */
+        private void consumeQueuedWord() {
+            if (!nextWordValid) return;
+            nextWordValid = false;
+            if (nextWordEndsBlock) {
+                nextWordEndsBlock = false;
+                raiseAudioInterrupt(index);
             }
-            currentSample = 0;
-            currentWordValid = false;
-            currentWordEndsBlock = false;
-            bytePhase = 0;
-            return true;
+        }
+
+        /**
+         * Il {@code setdr}/{@code setirq} di WinUAE: chiedi la word successiva, per DMA
+         * se il canale è in DMA e per interrupt se sta girando in modo manuale
+         * ({@code irqmod*}).
+         *
+         * <p>{@code checkPendingIrq} distingue i due confini di periodo, e la distinzione
+         * è indispensabile. Il controllo «l'interrupt precedente è ancora pendente ⇒ la
+         * CPU non ha rifornito in tempo ⇒ il canale si ferma» ({@code zerostate}) vive
+         * <b>solo nello stato 3</b>, cioè al confine alto:
+         * <pre>
+         * case 3: ... else {
+         *     if (!cdp-&gt;irqcheck) cdp-&gt;irqcheck = isirq(nr);
+         *     if (napnav) setirq(nr, 32);
+         *     if (cdp-&gt;irqcheck &gt; 0) { zerostate(nr, false); return true; }
+         * </pre>
+         * Nello stato 2 c'è solo {@code if (audap) setirq(nr, 22);}, senza controllo.
+         * Applicarlo a tutti e due i confini ferma il canale al primo giro quando ADKCON
+         * chiede entrambe le modulazioni, perché i due interrupt cadono a mezzo periodo
+         * l'uno dall'altro e il secondo trova sempre pendente il primo: misurato,
+         * {@code irqmod3} passava da 13995 eventi a 61.
+         */
+        private void askForNextWord(boolean checkPendingIrq) {
+            if (dmaEnabled) {
+                if (!dmaRequest) requestNextWord();
+                return;
+            }
+            if (!cpuDriven) return;
+            boolean stillPending = checkPendingIrq && (intreq & (0x0080 << index)) != 0;
+            raiseAudioInterrupt(index);
+            if (stillPending) {
+                cpuDriven = false;
+                nextWordValid = false;
+            }
+        }
+
+        /**
+         * Volume imposto dal canale precedente. WinUAE {@code update_volume()} scrive
+         * {@code data.audvol}, <b>non</b> {@code mixvol}: il valore entra nel mixer al
+         * {@code loadper()} successivo, non subito. Vedi {@link #mixVolume}.
+         */
+        private void setModulatedVolume(int word) {
+            audVOL[index] = Math.min(word & 0x7F, 64);
+        }
+
+        /**
+         * Periodo imposto dal canale precedente. WinUAE scrive {@code cdp[1].per} e basta:
+         * il contatore in corso <b>non</b> viene riarmato, il periodo nuovo vale dal
+         * {@code loadper()} successivo. Riarmarlo subito accorcia o allunga il periodo che
+         * sta scorrendo, che è un errore anche quando il valore è quello giusto.
+         */
+        private void setModulatedPeriod(int word) {
+            audPER[index] = word & 0xFFFF;
+            periodClocks = computePeriodClocks();
         }
 
         private void requestNextWord() {
@@ -1585,18 +1806,14 @@ public final class Paula {
             return Math.max(2, per * 2);
         }
 
-        private float computeVolumeScale() {
-            int volume = Math.min(audVOL[index] & 0x7F, 64);
-            return volume / (128.0f * 64.0f);
-        }
-
-        private void reloadVolumeScale() {
-            volumeScale = computeVolumeScale();
-        }
-
-        private void reloadPeriodCounter() {
+        /**
+         * Scrittura della CPU in AUDxPER. Come {@link #setModulatedPeriod}, aggiorna solo
+         * la durata del periodo: WinUAE {@code AUDxPER()} assegna {@code cdp->per} e
+         * lascia stare {@code cdp->evtime}, quindi il periodo in corso finisce con la
+         * durata vecchia.
+         */
+        private void reloadPeriodClocks() {
             periodClocks = computePeriodClocks();
-            periodCounter = periodClocks;
         }
 
         private void refreshActiveMask() {
