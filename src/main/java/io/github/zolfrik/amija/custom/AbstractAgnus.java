@@ -2154,11 +2154,11 @@ public abstract class AbstractAgnus {
         // Notifica il Copper del VBlank (Copper restarts from COP1LC at beam 0,0)
         copper.onVBlank(isCopperEnabled());
 
-        // LOF (Long Frame) alterna SOLO in interlace, esattamente come vAmiga
-        // (Beam: `if (lofToggle) lof = !lof`, con lofToggle = bit LACE di BPLCON0;
-        // lof inizializzato a true → frame lungo, 313 righe PAL). In non-interlace
-        // il bit NON alterna: field resta costante al suo valore (default 0 =
-        // frame lungo; modificabile solo via scrittura software di VPOSW).
+        // LOF (Long Frame) alterna SOLO in interlace, come WinUAE, che lo tocca
+        // unicamente dentro `if (bplcon0 & 4)` a fine frame (custom.cpp). In
+        // non-interlace il bit NON alterna: field resta al suo valore, che dal reset
+        // è 1 (LOF=0, frame CORTO — vedi reset()) e diventa 0 quando il software
+        // scrive VPOSW con il bit 15.
         // PRIMA alternavamo field a ogni frame anche in non-interlace ("media
         // 312,5"): ciò faceva variare la lunghezza del frame 313/312 a frame
         // alterni e quindi la fase CPU↔raster, producendo uno sfarfallio a
@@ -3840,7 +3840,14 @@ public abstract class AbstractAgnus {
         updateDmaFlags();
         bitplaneDmaEnabledLateThisFrame = false;
         lastCompletedFrameHadLateBitplaneDma = false;
-        field = 0;
+        // LOF=0 al reset, cioè frame CORTO (312 righe PAL, 262 NTSC): WinUAE
+        // `custom_reset` fa `lof_store = lof_display = 0;`. Il frame diventa lungo quando
+        // il software scrive VPOSW con il bit 15, ed è così che il bootblock del Kickstart
+        // ci passa. Partivamo invece dal frame lungo — il default di vAmiga — e finché
+        // nessuno scriveva VPOSW l'intera fase CPU↔pennello del boot era spostata:
+        // misurato fotogramma per fotogramma contro l'oracolo in
+        // docs/vamigats-paula-audio-plan.md §13.3.
+        field = 1;
         updateLineLength(false);             // LOL: si riparte sempre da riga corta
         vposFrozen = false; frozenVpos = 0; frozenHpos = 0;
         beamReadLatchVpos = -1; beamReadLatchHpos = -1;
