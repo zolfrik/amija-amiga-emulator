@@ -1329,6 +1329,20 @@ public final class Paula {
             refreshActiveMask();
         }
 
+        /**
+         * DMACON ha acceso o spento il canale.
+         *
+         * <p>Lo <b>spegnimento non ferma il canale</b>, e non è un dettaglio: in WinUAE
+         * ({@code audio_state_channel2}) solo gli stati 1 e 5 — l'avvio del DMA, prima che
+         * la prima word entri in riproduzione — controllano {@code chan_ena} e vanno in
+         * {@code zerostate}. Negli stati 2 e 3, cioè a canale che suona, {@code chan_ena}
+         * cambia soltanto <i>chi rifornisce</i>: il canale prosegue in modo a interrupt,
+         * ripete l'ultima AUDxDAT ({@code loaddat} incondizionato) e si ferma solo quando
+         * la CPU smette di acknowledgare. È esattamente ciò che {@code simple/dmaaud2}
+         * misura — «the frequency changes, because no samples are fed into AUD0DAT any
+         * more» — e ciò che il gemello {@code dmaaud1} mostra sullo schermo, dove il
+         * gestore di livello 4 è ancora invocato sette secondi dopo lo spegnimento.
+         */
         private void setDmaEnabled(boolean enabled) {
             if (dmaEnabled == enabled) return;
             dmaEnabled = enabled;
@@ -1337,8 +1351,19 @@ public final class Paula {
                 reloadDmaBlock();
                 dmaPriming = true;
                 requestNextWord();
-            } else {
+            } else if (dmaPriming || dmaFirstWord) {
+                // Stati 1 e 5: "if (!chan_ena) { zerostate(nr, false); return true; }".
+                // Il canale non ha ancora suonato niente e non suonerà: dmaonoff1.
                 clearDmaPipeline();
+            } else {
+                // Stati 2/3: il canale sopravvive. Cade solo la pipeline DMA — la word
+                // in coda non si perde davvero, perché AUDxDAT la contiene ed è da lì
+                // che loaddat() ripesca (advanceSampleByte, ramo di fallback).
+                dmaRequest = false;
+                nextWord = 0;
+                nextWordValid = false;
+                nextWordEndsBlock = false;
+                cpuDriven = true;
             }
             refreshActiveMask();
         }
@@ -1356,7 +1381,24 @@ public final class Paula {
             dmaFirstWord = false;
             cpuDriven = false;
             bytePhase = 0;
-            currentSample = 0;
+            // currentSample NON si azzera: zerostate() di WinUAE non tocca
+            // data.current_sample. Un canale che si ferma resta all'ultimo valore
+            // uscito, non torna a zero — vedi advanceSampleByte(), stesso motivo.
+        }
+
+        /**
+         * Il canale è in riproduzione, cioè negli stati <b>2/3</b> di WinUAE — gli unici
+         * in cui il period counter gira ({@code evtime != MAX_EV}).
+         *
+         * <p>Gli altri tre si riconoscono da qui: {@code dmaPriming}/{@code dmaFirstWord}
+         * sono gli stati 1 e 5 (avvio del DMA, prima word non ancora in riproduzione),
+         * e «né DMA né modo a interrupt» è lo stato 0, il canale fermo.
+         */
+        private boolean isPlaying() {
+            if (dmaEnabled) {
+                return !dmaPriming && !dmaFirstWord;
+            }
+            return cpuDriven;
         }
 
         /**
@@ -1372,13 +1414,17 @@ public final class Paula {
          * qui si sottrae a pezzi per sapere <i>quanto a lungo</i> è valso ogni valore.
          */
         private void tick(int cycles) {
-            if (dmaEnabled && (dmaPriming || dmaFirstWord)) {
-                // Stati 1 e 5 di WinUAE: entrambi mettono `evtime = MAX_EV`, cioè il
-                // period counter NON gira finché la prima word non entra davvero in
-                // riproduzione. Farlo girare durante l'avvio del DMA regala al canale
-                // uno o più confini di periodo prematuri, che consumano word: su
-                // dmamod3 bastava a scambiare volume e periodo per sempre, perché le
-                // parole della tabella si alternano.
+            if (!isPlaying()) {
+                // Stati 0, 1 e 5 di WinUAE: tutti e tre mettono `evtime = MAX_EV`, cioè
+                // il period counter NON gira. Per gli stati 1/5 (avvio del DMA) farlo
+                // girare regala al canale confini di periodo prematuri, che consumano
+                // word: su dmamod3 bastava a scambiare volume e periodo per sempre,
+                // perché le parole della tabella si alternano. Per lo stato 0 (il canale
+                // fermo, zerostate) sono confini che chiedono interrupt di rifornimento
+                // a un canale che non sta suonando.
+                //
+                // L'uscita continua a essere integrata: il campione resta quello, e
+                // toglierlo dalla maschera attiva lo conterebbe come zero.
                 sampleAccum += currentSample * (double) mixVolumeScale * cycles;
                 return;
             }
@@ -1408,10 +1454,28 @@ public final class Paula {
          * Le due cose stanno insieme perché sono la stessa cosa: il volume che il mixer
          * userà per il campione che sta per uscire è quello che AUDxVOL aveva al confine
          * di periodo. Vedi {@link #mixVolume}.
+         *
+         * <p><b>Con il DMA spento il confine basso non latcha.</b> WinUAE ci chiama
+         * {@code loadperm1()} invece di {@code loadper()}:
+         * <pre>
+         * case 3: if (cdp-&gt;pbufldl) { newsample(nr, dat2 &amp; 0xff);
+         *             if (chan_ena) loadper(nr); else loadperm1(nr); ... }
+         * </pre>
+         * e {@code loadperm1} riarma il contatore <i>senza</i> toccare {@code mixvol}. Un
+         * canale in modo a interrupt latcha quindi il volume <b>una volta per word</b>, al
+         * confine alto, non due. Si vede su tutta la modulazione di volume manuale
+         * ({@code irqmod1}, {@code irqmod3}), dove un latch di troppo anticipa di mezzo
+         * periodo ogni gradino della rampa.
+         *
+         * <p>({@code loadperm1} spezza anche il periodo in {@code per-1} + {@code 1} CCK
+         * per campionare {@code isirq} un CCK prima del confine: la durata totale non
+         * cambia, e quel CCK di anticipo non è modellato qui.)
          */
         private void loadPeriod() {
             periodCounter = periodClocks;
-            latchMixVolume();
+            if (dmaEnabled || bytePhase == 0) {
+                latchMixVolume();
+            }
         }
 
         private void latchMixVolume() {
@@ -1482,11 +1546,35 @@ public final class Paula {
                 return;
             }
             cpuDriven = true;
-            raiseAudioInterrupt(index);
-            if (!isModulator()) {
-                loadCurrentWord();
+            raiseAudioInterrupt(index);         // WinUAE: setirq(nr, 1)
+            if (isModulator()) {
+                // `loaddat(nr)` su un modulatore non manda in riproduzione niente:
+                // applica la modulazione di VOLUME, e la applica QUI, all'ingresso
+                // nello stato 2 — non al primo confine di periodo. Il primo confine
+                // e' percio' il 2->3, cioe' quello del PERIODO: bytePhase parte da 1.
+                //
+                // Farlo partire da 0 sfasa di mezzo periodo l'intera tabella di
+                // modulazione, e su una tabella che alterna volume e periodo
+                // (irqmod3/4) scambia i due per sempre: le parole del volume
+                // finivano in AUDxPER, il canale modulato si fermava al primo giro
+                // e la traccia si chiudeva a 61 eventi contro i 13995 dell'oracolo.
+                if ((adkcon & (1 << index)) != 0) {
+                    audioChannels[index + 1].setModulatedVolume(audDAT[index]);
+                }
+                consumeQueuedWord();
+                loadPeriod();                   // WinUAE: loadper nel case 2 (pbufldl)
+                bytePhase = 1;
+            } else {
+                loadCurrentWord();              // loaddat(nr): dat2 = dat
+                loadPeriod();
+                // ...e `newsample(nr, dat2 >> 8)` nello STESSO istante: il case 0
+                // mette pbufldl = true e richiama subito la macchina a stati. Il byte
+                // alto esce alla scrittura di AUDxDAT, non un periodo dopo. In una
+                // traccia riportata al proprio primo evento lo sfasamento e'
+                // invisibile, ma sposta di un periodo intero le bande gialle del
+                // gestore rispetto al suono — che e' cio' che lo screenshot vede.
+                advanceSampleByte();
             }
-            loadPeriod();   // WinUAE: loadper all'ingresso nello stato 2
             refreshActiveMask();
         }
 
@@ -1570,24 +1658,18 @@ public final class Paula {
                 boolean stillPending = (intreq & (0x0080 << index)) != 0;
                 raiseAudioInterrupt(index);
                 if (stillPending) {
+                    // zerostate(): il canale esce dagli stati 2/3 e il period counter
+                    // si ferma (isPlaying() diventa falsa). currentSample NON si tocca —
+                    // WinUAE non lo azzera, e l'uscita resta congelata all'ultimo byte
+                    // suonato. Azzerarla aggiungeva a dmaonoff2 un evento "-> 0" per
+                    // giro che nell'oracolo non c'è: 728 eventi contro 486.
                     cpuDriven = false;
                     nextWordValid = false;
-                    currentSample = 0;
                     refreshActiveMask();
                     return;
                 }
             }
             if (!currentWordValid && !loadCurrentWord()) {
-                // dmaPriming: il canale è appena stato acceso e la prima word (quella
-                // scartata) non è ancora arrivata. Non ha ancora suonato nulla, quindi
-                // AUDxDAT contiene roba vecchia e ripeterla sarebbe un clic. In WinUAE
-                // qui il canale è negli stati 1/5, dove evtime = MAX_EV e il period
-                // counter non gira affatto.
-                if ((!cpuDriven && !dmaEnabled) || dmaPriming) {
-                    currentSample = 0;
-                    refreshActiveMask();
-                    return;
-                }
                 // WinUAE fa loaddat() incondizionato: senza rifornimento il canale
                 // risuona l'ultima word scritta invece di zittirsi, e si ferma al
                 // primo interrupt non servito (il controllo qui sopra). Tenerlo
