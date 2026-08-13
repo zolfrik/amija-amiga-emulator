@@ -1005,6 +1005,28 @@ public abstract class AbstractAgnus {
     private static final int MAXHPOS_SHORT = 454;
 
     /**
+     * Posizione orizzontale all'accensione: <b>un CCK prima della fine della riga</b>,
+     * cioè la prima riga della macchina dura 1 CCK e non 227.
+     *
+     * <p>Non è una scelta arbitraria, è ciò che fa l'oracolo, e il perché sta in
+     * {@code HARDWIRED_DMA_TRIGGER_HPOS 1} (WinUAE {@code custom.cpp}): là il
+     * {@code vpos++} non vive nel wrap di hpos ma in {@code do_cck()} —
+     * {@code if (agnus_hpos == HARDWIRED_DMA_TRIGGER_HPOS) custom_trigger_start();} —
+     * cioè un CCK <i>dentro</i> la riga. Al reset {@code agnus_hpos} vale 0 e
+     * {@code vpos} pure, quindi il primo incremento arriva un solo CCK dopo e da lì in
+     * poi ogni riga ne vale 227. Misurato con {@code WINUAE_VPOSLOG}, che stampa
+     * {@code cck=1 vpos=1}, {@code cck=228 vpos=2}, {@code cck=455 vpos=3}, …
+     *
+     * <p>Da noi il vpos avanza al wrap di hpos, quindi la stessa cronologia si ottiene
+     * partendo a 1 CCK dalla fine della riga. Senza, il nostro vpos restava indietro di
+     * <b>226 CCK</b> rispetto all'oracolo per tutta la vita della macchina — e ogni
+     * attesa del Kickstart agganciata al pennello cadeva altrove. Il residuo è che
+     * l'hpos resta sfasato di 1 CCK (il wrap dell'oracolo è a cck≡0, il nostro a
+     * cck≡1): un CCK invece di 226. Vedi {@code docs/vamigats-paula-audio-plan.md} §13.9.
+     */
+    private static final int INITIAL_HPOS = MAXHPOS_SHORT - 2;
+
+    /**
      * Numero massimo di system clock della riga corrente: {@link #MAXHPOS_SHORT},
      * più un CCK (2 SC) sulle righe lunghe NTSC (vedi {@link #lol}).
      */
@@ -1457,7 +1479,7 @@ public abstract class AbstractAgnus {
         df3.setWriteBitSource(this::nextDiskWriteBit);
 
         this.vpos = 0;
-        this.hpos = 0;
+        this.hpos = INITIAL_HPOS;
 
         // Arma il tick E-clock delle CIA come evento (Step 1, event-driven). I test
         // non chiamano agnus.reset(): l'arm in costruzione garantisce che SLOT_CIAA
@@ -3832,7 +3854,7 @@ public abstract class AbstractAgnus {
         if (hardware) {
             masterClock = 0;
             vpos = 0;
-            hpos = 0;
+            hpos = INITIAL_HPOS;         // la prima riga dura 1 CCK: vedi INITIAL_HPOS
             frameCount = 1;
         }
         Arrays.fill(trigger, NEVER);
