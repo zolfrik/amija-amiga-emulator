@@ -977,6 +977,50 @@ public final class Paula {
         setINTREQ(true, mask);
     }
 
+    /**
+     * Ritardo, in master-cycle, fra il momento in cui la macchina a stati di un canale
+     * decide l'interrupt e il momento in cui AUDxIR compare in INTREQ: <b>2 CCK</b>.
+     *
+     * <p>Oracolo: WinUAE {@code audio.cpp}
+     * <pre>
+     * static void setirq(int nr, int which) {
+     *     // audio interrupts are delayed by 1 CCK
+     *     INTREQ_INT(nr + 7, CYCLE_UNIT);
+     * }
+     * </pre>
+     * e {@code custom.cpp}, {@code INTREQ_INT}, che in modo cycle-exact
+     * ({@code m68k_interrupt_delay}) accoda l'evento a <b>{@code delay + CYCLE_UNIT}</b>:
+     * il commento dice 1 CCK ma il ritardo effettivo e' quello passato PIU' uno, cioe' 2.
+     * Solo dopo l'evento {@code intreq} viene aggiornato e {@code doint()} chiamato.
+     */
+    private static final int AUDIO_IRQ_DELAY_CYCLES = 4;   // 2 CCK = 4 master cycle
+
+    /**
+     * Alza AUDxIR come WinUAE: non subito, ma {@link #AUDIO_IRQ_DELAY_CYCLES} dopo.
+     * Sollevarlo nello stesso ciclo ci metteva in anticipo sull'oracolo su tutta la
+     * cartella vAmigaTS {@code Paula/Audio} (vedi {@code docs/vamigats-paula-audio-plan.md}).
+     */
+    private void raiseAudioInterrupt(int channel) {
+        scheduleIntreq(7 + channel, AUDIO_IRQ_DELAY_CYCLES);
+    }
+
+    /**
+     * Programma il set di un bit di INTREQ fra {@code delayCycles} master-cycle.
+     * Se per quel bit c'e' gia' una richiesta in coda <b>prima</b>, quella vince: due
+     * eventi ravvicinati sullo stesso bit collassano in uno, come in WinUAE dove il
+     * secondo {@code setclr(&intreq, ...)} trova il bit gia' alzato.
+     */
+    private void scheduleIntreq(int bit, int delayCycles) {
+        long when = agnus.getMasterClock() + delayCycles;
+        if (setIntreq[bit] <= when) return;
+        setIntreq[bit] = when;
+        long next = AbstractAgnus.NEVER;
+        for (long t : setIntreq) {
+            if (t < next) next = t;
+        }
+        agnus.scheduleAbs(EventSlot.SLOT_IRQ, next, EventID.IRQ_CHECK);
+    }
+
     public void setAudioDmaEnabledMask(int dmacon) {
         syncAudioChannels();
         boolean master = (dmacon & 0x0200) != 0;
@@ -1351,7 +1395,7 @@ public final class Paula {
                 return;
             }
             cpuDriven = true;
-            raiseInterrupt(0x0080 << index);
+            raiseAudioInterrupt(index);
             loadCurrentWord();
             periodCounter = periodClocks;   // WinUAE: loadper all'ingresso nello stato 2
             refreshActiveMask();
@@ -1374,7 +1418,7 @@ public final class Paula {
                 }
                 reloadDmaPointer();
                 dmaPriming = false;
-                raiseInterrupt(0x0080 << index);
+                raiseAudioInterrupt(index);
                 requestNextWord();
                 refreshActiveMask();
                 return;
@@ -1398,7 +1442,7 @@ public final class Paula {
                 // precedente è ancora pendente la CPU non ha rifornito in tempo e
                 // il canale si ferma, esattamente come lo zerostate di WinUAE.
                 boolean stillPending = (intreq & (0x0080 << index)) != 0;
-                raiseInterrupt(0x0080 << index);
+                raiseAudioInterrupt(index);
                 if (stillPending) {
                     cpuDriven = false;
                     nextWordValid = false;
@@ -1469,7 +1513,7 @@ public final class Paula {
             nextWordEndsBlock = false;
             bytePhase = 0;
             if (currentWordEndsBlock) {
-                raiseInterrupt(0x0080 << index);
+                raiseAudioInterrupt(index);
             }
             // La richiesta della word successiva parte SEMPRE quando una word entra in
             // riproduzione — anche per l'ultima del blocco. Oracolo: WinUAE audio.cpp,
