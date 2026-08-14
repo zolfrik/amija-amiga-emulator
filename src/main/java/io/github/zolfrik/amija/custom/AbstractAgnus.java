@@ -599,7 +599,31 @@ public abstract class AbstractAgnus {
     }
 
     private void setBPLCON0(int value, int pc) {
+        boolean ersyWasActive = ersyActive();
         if (denise != null) denise.writeRegister(0x100, value);
+        if (ersyWasActive && !ersyActive()) {
+            // ERSY che CADE: la riga riparte da capo.
+            //
+            // In WinUAE, per tutta la durata del freeze, `setsyncstoppos()` azzera
+            // `agnus_hpos` a OGNI cck (custom.cpp, do_cck: "if (syncs_stopped) {
+            // setsyncstoppos(); set_fakehsync_handler(); }"), quindi quando la scrittura
+            // di BPLCON0 spegne ERSY il pennello è a inizio riga e la riga corrente dura
+            // per intero. Da noi le righe hanno continuato a scorrere: senza questo
+            // azzeramento il fotogramma del freeze si allunga di un multiplo di riga
+            // invece che della durata del freeze, ed è la causa dei 126 CCK di fase che
+            // restavano dopo il §13.8 (docs/vamigats-paula-audio-plan.md §13.10.4).
+            //
+            // Il resto di `setsyncstoppos()` — hpos inchiodato *durante* il freeze, e
+            // quindi nessuno slot DMA fisso per quelle ~21 righe — non è modellato: da
+            // noi il DMA di refresh/disco/audio continua. Non è osservabile qui (il
+            // rilevamento genlock della graphics.library gira senza disco né audio), e
+            // costerebbe mandare ogni ciclo nello slot 0.
+            hpos = 0;
+            // `resetfulllinestate()`: la riga che riparte non eredita i latch di quella
+            // interrotta.
+            fetchWindowOpened = false;
+            bpuRelatchCck = -1;
+        }
         // Una scrittura di BPLCON0 a finestra di fetch già aperta diventa efficace
         // sul fetch da write+4 CCK: WinUAE pipelinea la write di +2
         // (`pipelined_custom_write(BPLCON0_delayed, v, 2)`, custom.cpp:3585) e la
