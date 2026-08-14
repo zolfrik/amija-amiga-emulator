@@ -1725,12 +1725,27 @@ public final class Paula {
             }
             nextWordEndsBlock = remainingWords == 0;
 
-            // Un modulatore non manda mai la word in riproduzione: la legge da audDAT
-            // ai confini di periodo (advanceModulator). Mandarcela significherebbe anche
-            // far partire subito la richiesta successiva, e quindi consumare una word in
-            // piu' prima del primo confine — che e' come volume e periodo finivano
-            // scambiati su dmamod3.
-            if (!currentWordValid && !isModulator()) {
+            // Una word che arriva a un canale GIA' in riproduzione non entra in
+            // riproduzione allo slot DMA. Oracolo: WinUAE audio.cpp, event_audxdat_func —
+            // negli stati 2 e 3 con il canale in DMA aggiorna soltanto `wlen` (e
+            // `intreq2`, che AUDxDAT ha gia' alzato subito) e NON chiama ne' loaddat()
+            // ne' newsample(). La word entra al confine di periodo successivo, ed e' li'
+            // che nasce l'interrupt di fine blocco: `case 3: ... loaddat(nr); if
+            // (cdp->intreq2 && napnav) setirq(nr, 31);`.
+            //
+            // Misurato su vAmigaTS timing/dmatim5 (docs/vamigats-paula-audio-plan.md
+            // §21): lo slot DMA del canale 0 cade a hpos 17 su ENTRAMBI i lati — quindi
+            // l'arbitraggio e' esatto — ma l'oracolo chiede l'interrupt 1 o 2 CCK dopo,
+            // secondo la fase 2/3 in cui si trova il canale, mentre noi lo chiedevamo
+            // nello stesso ciclo dello slot. Con AUD0PER=1 quei 2 CCK fanno mancare al
+            // gestore di livello 4 il confine del `dbra` del main loop, e la banda gialla
+            // si sposta di 6 CCK: e' l'unica riga sbagliata dello screenshot.
+            //
+            // Resta immediato il solo avvio (stato 5 -> 2), che in WinUAE passa dall'altro
+            // ramo di event_audxdat_func e chiama la macchina a stati subito. Il
+            // modulatore non manda mai la word in riproduzione: la legge da audDAT ai
+            // confini di periodo (advanceModulator).
+            if (startsPlayback && !currentWordValid && !isModulator()) {
                 loadCurrentWord();
             }
             if (startsPlayback) {
