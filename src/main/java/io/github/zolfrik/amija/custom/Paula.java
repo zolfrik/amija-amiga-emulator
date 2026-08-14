@@ -1179,9 +1179,34 @@ public final class Paula {
     public void assertExterInterrupt() { raiseInterrupt(0x2000); }
     public boolean isPortsInterruptAsserted() { return (intreq & 0x0008) != 0; }
     public boolean isExterInterruptAsserted() { return (intreq & 0x2000) != 0; }
+    /**
+     * VERTB non si alza all'istante in cui vpos torna a 0, ma <b>3 CCK dopo</b>.
+     *
+     * <p>In WinUAE non c'è nessuna chiamata legata al contatore verticale: l'interrupt
+     * nasce dalla <b>transizione dello strobe</b> nello slot DMA 0 della riga —
+     * {@code if (prev_strobe == 0x3c && r->reg != 0x3c) INTREQ_INT(5, 0);}
+     * (`custom.cpp`, gestione dei registri strobe $38/$3A/$3C) — cioè quando lo strobe
+     * passa da STRHOR a STRVBL/STREQU perché è cominciato il blanking verticale. Lo slot
+     * cade a hpos 3 e {@code INTREQ_INT(5, 0)} accoda l'aggiornamento di INTREQ di
+     * <b>1 CCK</b>, quindi il bit diventa visibile a hpos 4.
+     *
+     * <p>Misurato con {@code WINUAE_CHIPIRQLOG}, che timbra l'istante in cui le due copie
+     * di INTREQ si alzano: {@code cck=70601}, {@code 141425}, {@code 212249}, … cioè
+     * sempre <b>origine del fotogramma + 3 CCK</b> (le origini sono 70598, 141422,
+     * 212246). Noi lo alzavamo all'origine esatta, 3 CCK in anticipo; il valore vecchio
+     * veniva da vAmiga ({@code serviceVBLEvent}, {@code pos.v==0 pos.h==0}), che dal
+     * 2026-08-07 non è più un oracolo.
+     *
+     * <p>Resta vero ciò per cui il vecchio commento esisteva: la VERTB <b>non</b> va
+     * anticipata alla riga 311 — un main-loop che attende in polling {@code vpos==312}
+     * (la protezione di Future Wars) non la osserverebbe mai.
+     */
     public void assertVertbInterrupt() {
-        raiseInterrupt(0x0020);
+        scheduleIntreq(5, VERTB_DELAY_CYCLES);
     }
+
+    /** 3 CCK: slot dello strobe a hpos 3 più il CCK di {@code INTREQ_INT(5, 0)}. */
+    private static final int VERTB_DELAY_CYCLES = 6;   // 3 CCK = 6 master cycle
     public void assertCoperInterrupt() { raiseInterrupt(0x0010); }
     public void assertBlitInterrupt() { raiseInterrupt(0x0040); }
 
