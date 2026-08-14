@@ -361,7 +361,7 @@ public abstract class AbstractAgnus {
         SPR0CTL, SPR1CTL, SPR2CTL, SPR3CTL, SPR4CTL, SPR5CTL, SPR6CTL, SPR7CTL,
         SPR0PTH, SPR1PTH, SPR2PTH, SPR3PTH, SPR4PTH, SPR5PTH, SPR6PTH, SPR7PTH,
         SPR0PTL, SPR1PTL, SPR2PTL, SPR3PTL, SPR4PTL, SPR5PTL, SPR6PTL, SPR7PTL,
-        DSKPTH, DSKPTL, COPCON, INTREQ, INTENA
+        DSKPTH, DSKPTL, COPCON
     }
 
     public void recordRegisterChange(long delay, AgnusReg reg, int value) {
@@ -499,10 +499,6 @@ public abstract class AbstractAgnus {
                 if (paula != null) paula.setDiskDmaPointer(dskpt);
                 break;
             case COPCON: copper.writeRegister(0x02E, value); break;
-            // vAmiga: pokeINTREQ/pokeINTENA sempre recordRegisterChange(DMA_CYCLES(1)).
-            // Applica il write registro (CPU o Copper) 1 CCK dopo, via il path immediato.
-            case INTREQ: if (paula != null) paula.writeRegister(0x09C, value); break;
-            case INTENA: if (paula != null) paula.writeRegister(0x09A, value); break;
         }
     }
 
@@ -863,21 +859,14 @@ public abstract class AbstractAgnus {
     public static final long[] diagBlk = new long[25];
     public static long diagBlkOdd = 0, diagBlkTot = 0;
 
-    /** EXPERIMENT (Step 2): differisce i write CPU/Copper a INTREQ/INTENA di 1 CCK,
-     *  come vAmiga pokeINTREQ/pokeINTENA (recordRegisterChange(DMA_CYCLES(1))).
-     *  Ritardo in master-cycle override via -Damiga.intreqdelaymc (1 CCK = 2 mc). */
-    // FIX #24 (§S4 stop1/stop5): default ON. vAmiga differisce i poke INTREQ/INTENA di
-    // 1 CCK (Paula::pokeINTREQ/pokeINTENA → recordRegisterChange(DMA_CYCLES(1))); noi li
-    // applicavamo subito → pin IPL 2 CCK in anticipo (misurato con oracolo [IPL]:
-    // pin 0→3 a cck 64 vs 66 di vAmiga; col delay: push dell'interrupt-entry a cck 71
-    // = vAmiga bit-exact). La vecchia nota "leva falsificata" era pre-FIX#19/23 e
-    // senza misura del pin: superata dall'evidenza per-accesso.
-    // 2026-07-31 (§6.7 del report): default 2 mc → 1 mc. L'oracolo è WinUAE, che
-    // differisce il poke di 1 CCK (`doint_delay_intreq`: "INTREQ or INTENA write: IPL
-    // line changes 0.5 CCKs later. 68000 needs one more CPU clock (0.5 CCK) before it
-    // detects it"). Il secondo mezzo CCK il nostro modello lo spende già nel latch del
-    // pin in `Motorola68000.fallingEdge()`, quindi qui ne resta uno solo.
-    private static final int INTREQ_DELAY_MC = 1;
+    // Il ritardo dei poke a INTREQ/INTENA non sta più qui (2026-08-14). Stava, come
+    // `INTREQ_DELAY_MC = 1`, e differiva l'INTERA scrittura: il valore riletto da
+    // INTREQR/INTENAR cambiava un mezzo CCK dopo insieme alla linea IPL. Nell'oracolo le
+    // due cose sono separate — `intreq` cambia subito, `intreq2` (da cui si calcola l'IPL)
+    // un CCK dopo — e la differenza non è cosmetica: è l'unica via per cui un interrupt
+    // può risultare pendente in lettura e mai consegnato. Ora vive in Paula, su quella
+    // sola copia (`Paula.INTREQ_SHADOW_DELAY_MC`, stesso mezzo CCK, stessa misura del pin
+    // che l'aveva fissato col FIX #24 della §S4 di vAmigaTS cpu/timing).
 
     /** DIAG: cattura raster-keyed degli eventi che posizionano le barre bbusy
      *  (COLOR00 $180, INTREQ $09C, BLTSIZE $058). hpos loggato in CCK (hpos>>1).
@@ -3698,9 +3687,9 @@ public abstract class AbstractAgnus {
                 || regAddr == 0x07E
                 || regAddr == 0x09A || regAddr == 0x09C || regAddr == 0x09E
                 || (regAddr >= 0x0A0 && regAddr <= 0x0DF)) {
-            // EXPERIMENT (Step 2): INTENA ($09A) / INTREQ ($09C) differiti 1 CCK come vAmiga.
-            if (regAddr == 0x09C) { recordRegisterChange(INTREQ_DELAY_MC, AgnusReg.INTREQ, value); return; }
-            if (regAddr == 0x09A) { recordRegisterChange(INTREQ_DELAY_MC, AgnusReg.INTENA, value); return; }
+            // INTENA ($09A) / INTREQ ($09C) arrivano a Paula SUBITO: il mezzo CCK di
+            // ritardo non è della scrittura, è della sola copia da cui si calcola l'IPL,
+            // e vive in Paula (INTREQ_SHADOW_DELAY_MC). Vedi Paula.intreq2.
             if (paula != null) paula.writeRegister(regAddr, value);
             return;
         }

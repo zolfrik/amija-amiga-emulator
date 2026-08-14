@@ -55,8 +55,34 @@ public final class Paula {
     // Interrupts
     // =========================================================================
 
+    /**
+     * INTREQ e INTENA <b>come li rilegge la CPU</b> (INTREQR/INTENAR). WinUAE
+     * {@code intreq}/{@code intena}, e {@code INTREQR()} restituisce proprio questo.
+     */
     private int intreq;
     private int intena;
+    /**
+     * Le <b>copie da cui si calcola la linea IPL</b>, e solo quelle: WinUAE
+     * {@code intreq2}/{@code intena2}, con {@code doint()} che fa
+     * {@code uae_u16 imask = intreq2 & intena2} (custom.cpp:3146). Non sono un duplicato
+     * ridondante: le due coppie si aggiornano in momenti diversi e <b>possono restare
+     * disallineate per sempre</b>.
+     *
+     * <p>Una scrittura di CPU/Copper cambia la copia letta <b>subito</b> e quella dell'IPL
+     * un CCK dopo (WinUAE {@code doint_delay_intreq}: «INTREQ or INTENA write: IPL line
+     * changes 0.5 CCKs later. 68000 needs one more CPU clock (0.5 CCK) before it detects
+     * it»); un interrupt generato da un chip le alza <b>entrambe insieme</b>
+     * ({@code event_doint_delay_do_ext}).
+     *
+     * <p>Da qui nasce uno stato che con una copia sola non esiste: bit alto in
+     * {@code intreq} e basso in {@code intreq2}, cioè un interrupt che la CPU
+     * <i>rilegge come pendente</i> ma che <i>non viene mai consegnato</i>. È lo stallo che
+     * i test vAmigaTS {@code Paula/Audio/timing/audtim*} misurano — l'oracolo invoca il
+     * gestore sei volte e poi si ferma per sempre, noi lo servivamo all'infinito. Vedi
+     * {@code docs/vamigats-paula-audio-plan.md} §14.5.
+     */
+    private int intreq2;
+    private int intena2;
     private final long[] setIntreq = new long[16];
     private long iplPipe;
 
@@ -193,6 +219,11 @@ public final class Paula {
     public void reset() {
         intena = 0;
         intreq = 0;
+        intena2 = 0;
+        intreq2 = 0;
+        shadowPokeAt = AbstractAgnus.NEVER;
+        shadowPokeValue = 0;
+        shadowPokeIsIntena = false;
         adkcon = 0;
         potgo = 0;
         Arrays.fill(setIntreq, AbstractAgnus.NEVER);
@@ -396,15 +427,31 @@ public final class Paula {
 
     public void serviceIrqEvent() {
         long clock = agnus.getMasterClock();
-        long next = AbstractAgnus.NEVER;
 
+        // ORDINE: prima gli interrupt dei chip, poi il poke differito. Non è
+        // indifferente, ed è ciò che decide lo stallo del §14.5 del piano audio: in
+        // WinUAE, a parità di ciclo, scatta prima l'evento accodato prima, e un
+        // interrupt audio è accodato con 2 CCK di anticipo (AUDIO_IRQ_DELAY_CYCLES)
+        // contro il mezzo CCK del poke. Applicando prima il poke, l'ack del gestore
+        // finirebbe SOTTO la richiesta del canale invece che sopra, e le due copie
+        // resterebbero allineate: lo stallo non si formerebbe mai.
         for (int i = 0; i < 16; i++) {
             if (clock >= setIntreq[i]) {
                 setINTREQ(true, (1 << i));
                 setIntreq[i] = AbstractAgnus.NEVER;
-            } else {
-                next = Math.min(next, setIntreq[i]);
             }
+        }
+        if (clock >= shadowPokeAt) {
+            applyShadowPoke();
+        }
+        rescheduleIrqEvent();
+    }
+
+    /** Riprogramma SLOT_IRQ alla prima scadenza fra i set differiti e il poke differito. */
+    private void rescheduleIrqEvent() {
+        long next = shadowPokeAt;
+        for (long t : setIntreq) {
+            if (t < next) next = t;
         }
         agnus.scheduleAbs(EventSlot.SLOT_IRQ, next, EventID.IRQ_CHECK);
     }
@@ -456,9 +503,10 @@ public final class Paula {
         }
     }
 
+    /** La linea IPL si calcola dalle copie ritardate, mai da quelle lette. Vedi {@link #intreq2}. */
     public int calculateIPL() {
-        if ((intena & 0x4000) != 0) {
-            int mask = intreq & intena;
+        if ((intena2 & 0x4000) != 0) {
+            int mask = intreq2 & intena2;
             // EXTER (bit 13) + bit 14 — IPL 6.
             // Il bit 14 di INTREQ non ha una sorgente hardware e i manuali non lo
             // elencano, ma è un bit scrivibile e Paula lo include nel gruppo di
@@ -942,28 +990,85 @@ public final class Paula {
         }
     }
 
+    /** Scrittura di CPU/Copper a INTENA: copia letta subito, copia IPL un CCK dopo. */
     private void setINTENA(int value) {
         boolean set = (value & 0x8000) != 0;
         int bits = value & 0x7FFF;
         if (set) intena |= bits; else intena &= ~bits;
-
-        checkInterrupt();
+        scheduleShadowPoke(value, true);
     }
 
+    /** Scrittura di CPU/Copper a INTREQ: copia letta subito, copia IPL un CCK dopo. */
     private void setINTREQ(int value) {
         boolean set = (value & 0x8000) != 0;
         int bits = value & 0x7FFF;
-
-        setINTREQ(set, bits);
+        if (set) intreq |= bits; else intreq &= ~bits;
+        scheduleShadowPoke(value, false);
     }
 
+    /**
+     * Interrupt <b>generato da un chip</b> (audio, disco, Copper, blitter, CIA, seriale):
+     * alza o abbassa <b>entrambe</b> le copie nello stesso istante, come WinUAE
+     * {@code event_doint_delay_do_ext}, che fa {@code setclr(&intreq, ...)} e
+     * {@code setclr(&intreq2, ...)} di seguito e poi chiama {@code doint()}.
+     *
+     * <p>Non è la stessa cosa di una scrittura del programma a INTREQ: quella passa da
+     * {@link #setINTREQ(int)} e differisce la copia dell'IPL. Vedi {@link #intreq2}.
+     */
     public void setINTREQ(boolean setclr, int value) {
-        if (setclr) intreq |= value; else intreq &= ~value;
+        if (setclr) {
+            intreq  |= value;
+            intreq2 |= value;
+        } else {
+            intreq  &= ~value;
+            intreq2 &= ~value;
+        }
 
         // In a real Amiga, INTREQ bit 3 (PORTS) and 13 (EXTER) are set by the falling edge
         // of the CIA IRQ pins. Agnus handles this edge detection and calls assertPortsInterrupt/assertExterInterrupt.
         // Forcing them here based on level could prevent the software from clearing the interrupt.
 
+        checkInterrupt();
+    }
+
+    /**
+     * Ritardo, in master-cycle, con cui una scrittura di CPU/Copper raggiunge le copie
+     * dell'IPL. WinUAE differisce di <b>1 CCK</b> («IPL line changes 0.5 CCKs later.
+     * 68000 needs one more CPU clock (0.5 CCK) before it detects it»): il secondo mezzo
+     * CCK il nostro modello lo spende già nel latch del pin in
+     * {@code Motorola68000.fallingEdge()}, quindi qui ne resta uno solo. È lo stesso
+     * valore che prima differiva l'<i>intera</i> scrittura in
+     * {@code AbstractAgnus.INTREQ_DELAY_MC} — la misura del pin che l'aveva fissato
+     * (FIX #24, §S4 di vAmigaTS {@code cpu/timing}) resta quindi valida.
+     */
+    private static final int INTREQ_SHADOW_DELAY_MC = 1;
+
+    /** Poke di CPU/Copper in attesa di raggiungere {@link #intreq2}/{@link #intena2}. */
+    private long    shadowPokeAt = AbstractAgnus.NEVER;
+    private int     shadowPokeValue;
+    private boolean shadowPokeIsIntena;
+
+    private void scheduleShadowPoke(int value, boolean isIntena) {
+        if (shadowPokeAt != AbstractAgnus.NEVER) {
+            // Due poke entro un CCK: in WinUAE sono due eventi distinti e il primo scade
+            // comunque per primo, quindi lo si applica qui invece di perderlo.
+            applyShadowPoke();
+        }
+        shadowPokeValue = value;
+        shadowPokeIsIntena = isIntena;
+        shadowPokeAt = agnus.getMasterClock() + INTREQ_SHADOW_DELAY_MC;
+        rescheduleIrqEvent();
+    }
+
+    private void applyShadowPoke() {
+        boolean set = (shadowPokeValue & 0x8000) != 0;
+        int bits = shadowPokeValue & 0x7FFF;
+        if (shadowPokeIsIntena) {
+            if (set) intena2 |= bits; else intena2 &= ~bits;
+        } else {
+            if (set) intreq2 |= bits; else intreq2 &= ~bits;
+        }
+        shadowPokeAt = AbstractAgnus.NEVER;
         checkInterrupt();
     }
 
@@ -1015,11 +1120,7 @@ public final class Paula {
         long when = agnus.getMasterClock() + delayCycles;
         if (setIntreq[bit] <= when) return;
         setIntreq[bit] = when;
-        long next = AbstractAgnus.NEVER;
-        for (long t : setIntreq) {
-            if (t < next) next = t;
-        }
-        agnus.scheduleAbs(EventSlot.SLOT_IRQ, next, EventID.IRQ_CHECK);
+        rescheduleIrqEvent();
     }
 
     public void setAudioDmaEnabledMask(int dmacon) {
