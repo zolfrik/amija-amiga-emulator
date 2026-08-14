@@ -1479,9 +1479,25 @@ public final class Paula {
             if (dmaEnabled == enabled) return;
             dmaEnabled = enabled;
             if (enabled) {
+                // Stato 0 -> 1. Se il canale era FERMO e si porta dietro un fine-blocco
+                // non ancora consegnato, l'accensione del DMA lo <b>scarica subito</b>:
+                //
+                //   case 0: if (chan_ena) { ... cdp->dsr = true;
+                //       if (cdp->intreq2) { setirq(nr, 0); cdp->intreq2 = false; } }
+                //
+                // È l'unico interrupt audio che nasce da una scrittura di DMACON invece
+                // che da uno slot o da un confine di periodo, e senza di esso su
+                // vAmigaTS timing/dmatim2 mancava un'invocazione intera del gestore alle
+                // righe 112 e 160 (piano §23). Vive solo perché `intreq2` SOPRAVVIVE allo
+                // spegnimento: vedi clearDmaPipeline().
+                final boolean wasIdle = !cpuDriven;
                 cpuDriven = false;      // il DMA prende il posto del modo a interrupt
                 reloadDmaBlock();
                 dmaPriming = true;
+                if (wasIdle && nextWordEndsBlock) {
+                    nextWordEndsBlock = false;
+                    raiseAudioInterrupt(index);     // WinUAE: setirq(nr, 0)
+                }
                 requestNextWord();
             } else if (dmaPriming || dmaFirstWord) {
                 // Stati 1 e 5: "if (!chan_ena) { zerostate(nr, false); return true; }".
@@ -1494,18 +1510,33 @@ public final class Paula {
                 dmaRequest = false;
                 nextWord = 0;
                 nextWordValid = false;
-                nextWordEndsBlock = false;
+                // `nextWordEndsBlock` (l'`intreq2` di WinUAE) NON si azzera: vedi
+                // clearDmaPipeline(). Tenerlo è inerte finché il DMA resta spento —
+                // lo consumano solo loadCurrentWord() e consumeQueuedWord(), entrambi
+                // dietro `nextWordValid` — e diventa osservabile alla riaccensione.
                 cpuDriven = true;
             }
             refreshActiveMask();
         }
 
+        /**
+         * Il {@code zerostate(nr, false)} di WinUAE: il canale esce dalla macchina a stati.
+         *
+         * <p>⚠️ <b>Non azzera il fine-blocco pendente.</b> In modo cycle-exact — quello
+         * dell'oracolo — {@code zerostate} lascia stare {@code intreq2}:
+         * <pre>
+         * if (!currprefs.cpu_memory_cycle_exact || reset) { cdp-&gt;intreq2 = false; }
+         * </pre>
+         * Il flag sopravvive quindi allo spegnimento del DMA e resta lì finché la
+         * riaccensione non lo scarica ({@link #setDmaEnabled}, {@code setirq(nr, 0)}).
+         * Solo il <b>reset</b> vero (l'unico {@code zerostate(nr, true)}) lo cancella, ed è
+         * infatti quel che fa {@link #reset()}.
+         */
         private void clearDmaPipeline() {
             dmaRequest = false;
             remainingWords = 0;
             nextWord = 0;
             nextWordValid = false;
-            nextWordEndsBlock = false;
             currentWord = 0;
             currentWordValid = false;
             currentWordEndsBlock = false;
