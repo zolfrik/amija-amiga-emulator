@@ -732,15 +732,34 @@ public final class Motorola68000 {
         // potenza di 2) eseguita ~7M volte/s. eClockCounter è invariante in [0,9],
         // quindi l'incremento con reset condizionale è identico a (x+1) % 10 ma
         // sostituisce un IDIV (20-90 cicli host) con un confronto+branch.
+        //
+        // `pinChangeAt` è il clock a cui APPARTIENE questo fronte, cioè quello che il
+        // risingEdge appena trascorso ha usato: `totalCycles` viene incrementato qui
+        // sotto e da lì in poi nomina il ciclo che il fallingEdge sta eseguendo, ma gli
+        // ancoraggi del POLL (pollIpl → recordIplFetchNext) lo leggono dentro
+        // advanceBusCycleRising(), cioè PRIMA dell'incremento.
+        final long pinChangeAt = totalCycles;
         totalCycles++; if (++eClockCounter >= 10) eClockCounter = 0;
         latchedIpl = busResp.ipl & 0x7;
         if (latchedIpl != iplPin) {
             // WinUAE update_ipl(): memorizza valore e istante del cambio PRECEDENTE
             // (ipl_pin_p / ipl_pin_change_evt_p) prima di registrare quello nuovo.
+            // L'istante è quello del ciclo in cui il chip ha pilotato la linea — in
+            // WinUAE `update_ipl()` è chiamata da `doint()` e timbra `get_cycles()` lì,
+            // dentro il ciclo del chip. Timbrare col valore già incrementato faceva
+            // risultare il cambio un clock più giovane di quanto è, e le soglie 4/2 di
+            // ipl_fetch_next() maturavano un clock più tardi. Misurato su vAmigaTS
+            // Paula/Audio: la latenza minima bit-in-INTREQ → accettazione passa da 10
+            // clock a 8, che è quella dell'oracolo.
+            //
+            // ⚠️ Va insieme a Paula.INTREQ_SHADOW_DELAY_MC = 2: separate, ciascuna
+            // sposta di un clock il riconoscimento dell'interrupt e il banco vAmigaTS
+            // cpu/timing lo vede subito (245 rossi su 253 con la sola di queste due).
+            // Vedi docs/vamigats-paula-audio-plan.md §18.
             iplPinPrev = iplPin;
             iplPinChangeCycleP = iplPinChangeCycle;
             iplPin = latchedIpl;
-            iplPinChangeCycle = totalCycles;
+            iplPinChangeCycle = pinChangeAt;
         }
         // BUG FIX: edge detection per NMI livello 7 — quando IPL scende sotto 7
         // il meccanismo si ricarica, permettendo un nuovo NMI al prossimo fronte.
