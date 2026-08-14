@@ -86,7 +86,22 @@ public final class FloppyDrive {
     private static final long   CYCLES_SETTLE_DIR_CHG    =   127_688L;   // settle dopo inversione direzione (~18 ms)
     /** FIX #5: il cambio side ha un breve settle analogico (~2 ms). */
     private static final long   CYCLES_SETTLE_SIDE       =    14_188L;
-    private static final double CYCLES_PER_BIT           =    14.1876;   // DD: 2 µs/bit
+    /**
+     * Durata di una cella MFM a doppia densità, in master-cycle. È il
+     * {@code NORMAL_FLOPPY_SPEED} di WinUAE (disk.cpp), che vale {@code 7 * 256}
+     * dove l'unità è 1/256 di CCK ({@code DISK_update} accumula
+     * {@code (hpos << 8) - disk_hpos}): <b>7 CCK esatti = 14 master-cycle</b>.
+     *
+     * <p>Non è "2 µs": 1,9735 µs. I due modi di scriverlo differiscono dell'1,34%
+     * e il valore giusto è quello dell'oracolo anche fisicamente, perché è l'unico
+     * che fa durare un giro del piatto 200 ms tondi — la traccia nominale ha
+     * {@link #NOMINAL_TRACK_BITS} = 101344 celle e 101344 × 7 CCK = 709408 CCK =
+     * 200,0 ms, cioè i 300 giri/min di un drive Amiga. Con 2 µs il giro diventava
+     * 202,7 ms, cioè il piatto girava all'1,34% in meno: un errore invisibile su
+     * un singolo settore ma che sul caricamento del bootblock di Kickstart valeva
+     * 15112 CCK di ritardo (docs/vamigats-paula-audio-plan.md §13.9.4).
+     */
+    private static final double CYCLES_PER_BIT           =    14.0;
     /**
      * Bit per giro di una traccia DD di lunghezza nominale — WinUAE
      * {@code 2 * 8 * FLOPPY_WRITE_LEN} con {@code FLOPPY_WRITE_LEN_PAL/2 = 6334}.
@@ -96,7 +111,8 @@ public final class FloppyDrive {
     /** FIX #8: alcuni drive arrivano a traccia 83 (indice 0-based). */
     private static final int    MAX_TRACKS               = 84;
     private static final int    BIT_CLOCK_SCALE          = 10_000;
-    private static final int    ADF_CYCLES_PER_BIT_FIXED = 141_876;
+    /** {@link #CYCLES_PER_BIT} in virgola fissa ({@link #BIT_CLOCK_SCALE}), percorso ADF. */
+    private static final int    ADF_CYCLES_PER_BIT_FIXED = 140_000;
     private static final int    TRACK_BUFFER_SIZE        = DiskImage.TRACK_BUFFER_BYTES;
     private static final int    ID_SEQUENCE_BITS         = 32;
 
@@ -171,7 +187,7 @@ public final class FloppyDrive {
     //
     //     trackspeed = NORMAL_FLOPPY_SPEED * tracklen / (2 * 8 * FLOPPY_WRITE_LEN)
     //
-    // cioè la cella resta al rate DD nominale (2 µs) e una traccia più LUNGA fa
+    // cioè la cella resta al rate DD nominale (CYCLES_PER_BIT) e una traccia più LUNGA fa
     // durare di più il giro — l'impulso di INDEX nasce dall'avvolgimento del
     // bitstream, quindi una long track ha un "giro" più lungo di 200 ms. È così
     // che le protezioni "long track" (es. North &amp; South, sync custom $A144)
@@ -189,7 +205,7 @@ public final class FloppyDrive {
     // e il timing viene tutto dalla mappa per-byte.
     //
     // Per gli ADF il modello è BYPASSATO: si usa il rate DD nominale fisso
-    // (2 µs/bit), comportamento identico a prima e a costo zero.
+    // (CYCLES_PER_BIT, 7 CCK/cella), comportamento identico a prima e a costo zero.
     private       boolean densityModel        = false;
     // Durata di cella pre-calcolata per byte di traccia (solo tracce IPF a densità
     // variabile, es. Copylock); null = periodo costante cyclesPerBit.

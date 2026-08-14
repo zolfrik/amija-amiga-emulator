@@ -793,8 +793,9 @@ public final class Paula {
 
     /**
      * Durata del livello WORDEQUAL (DSKBYTR bit 12) dopo un match di DSKSYNC, in
-     * master-cycle. Vale 2 celle MFM (~4 µs): una cella a doppia densità dura
-     * 2 µs = 14,12 master-cycle.
+     * master-cycle. Vale 2 celle MFM (~3,95 µs): una cella a doppia densità dura
+     * 7 CCK = 14 master-cycle (WinUAE {@code NORMAL_FLOPPY_SPEED}, vedi
+     * {@code FloppyDrive.CYCLES_PER_BIT}).
      *
      * <p>vAmiga usa una cella sola ({@code agnus.clock - syncCycle <= USEC(2)}) e
      * WinUAE l'equivalente ({@code word == dsksync} sullo shift register vivo, vero
