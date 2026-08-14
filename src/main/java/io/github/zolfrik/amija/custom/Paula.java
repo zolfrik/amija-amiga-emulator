@@ -326,8 +326,12 @@ public final class Paula {
         int mask = activeAudioMask;
         while (mask != 0) {
             int chan = Integer.numberOfTrailingZeros(mask);
-            int counter = audioChannels[chan].periodCounter;
+            AudioChannel ch = audioChannels[chan];
+            int counter = ch.periodCounter;
             if (counter < min) min = counter;
+            // Δ2: anche l'elaborazione differita della word DMA è una scadenza, e se il
+            // salto la scavalcasse il gestore cadrebbe tardi (vedi AudioChannel.tick).
+            if (ch.dmaWordDelay > 0 && ch.dmaWordDelay < min) min = ch.dmaWordDelay;
             mask &= ~(1 << chan);
         }
         return min;
@@ -1054,6 +1058,14 @@ public final class Paula {
      */
     private static final int INTREQ_SHADOW_DELAY_MC = 2;
 
+    /**
+     * Δ2: quanto WinUAE aspetta prima di elaborare una word consegnata dal DMA audio —
+     * «{@code AUDxDAT is processed after 1 CCK delay}», {@code audio.cpp} {@code AUDxDAT()},
+     * cioè {@code cyc = 1 * CYCLE_UNIT}. Un CCK = due master-cycle. Vedi
+     * {@link AudioChannel#receiveDmaWord} e {@code docs/vamigats-paula-audio-plan.md} §22.
+     */
+    private static final int DMA_WORD_DELAY_MC = 2;
+
     /** Poke di CPU/Copper in attesa di raggiungere {@link #intreq2}/{@link #intena2}. */
     private long    shadowPokeAt = AbstractAgnus.NEVER;
     private int     shadowPokeValue;
@@ -1414,6 +1426,12 @@ public final class Paula {
         private int currentSample;
         /** Integrale di {@code currentSample * mixVolumeScale} sui cicli dell'intervallo. */
         private double sampleAccum;
+        /**
+         * Master-cycle che mancano a {@link #processDmaWord()}, cioè il ritardo di un CCK
+         * con cui WinUAE elabora una word consegnata dal DMA (Δ2, vedi
+         * {@link #receiveDmaWord}). 0 = niente in sospeso.
+         */
+        private int dmaWordDelay;
 
         private AudioChannel(int index) {
             this.index = index;
@@ -1439,6 +1457,7 @@ public final class Paula {
             latchMixVolume();
             currentSample = 0;
             sampleAccum = 0.0;
+            dmaWordDelay = 0;
             refreshActiveMask();
         }
 
@@ -1527,6 +1546,27 @@ public final class Paula {
          * qui si sottrae a pezzi per sapere <i>quanto a lungo</i> è valso ogni valore.
          */
         private void tick(int cycles) {
+            // Δ2: l'intervallo si spezza sulla scadenza della word DMA in sospeso, così il
+            // gestore differito cade nel master-cycle esatto e non a fine intervallo.
+            // computeAudioMinCounter() tiene conto della stessa scadenza, quindi qui il
+            // taglio è al più uno per chiamata — ma il ciclo lo gestisce comunque.
+            while (dmaWordDelay > 0 && dmaWordDelay <= cycles) {
+                int step = dmaWordDelay;
+                dmaWordDelay = 0;
+                advancePeriod(step);
+                cycles -= step;
+                processDmaWord();
+            }
+            if (dmaWordDelay > 0) {
+                dmaWordDelay -= cycles;
+            }
+            advancePeriod(cycles);
+        }
+
+        private void advancePeriod(int cycles) {
+            if (cycles == 0) {
+                return;
+            }
             if (!isPlaying()) {
                 // Stati 0, 1 e 5 di WinUAE: tutti e tre mettono `evtime = MAX_EV`, cioè
                 // il period counter NON gira. Per gli stati 1/5 (avvio del DMA) farlo
@@ -1691,6 +1731,38 @@ public final class Paula {
             refreshActiveMask();
         }
 
+        /**
+         * Lo slot DMA ha consegnato la word. <b>Δ2</b>: qui succede solo ciò che WinUAE fa
+         * dentro {@code AUDxDAT()} — il dato e, se il canale sta già suonando, {@code intreq2} —
+         * mentre tutto il resto è armato a {@link #DMA_WORD_DELAY_MC} master-cycle, cioè
+         * <b>un CCK dopo</b>:
+         *
+         * <pre>
+         * if (chan_ena) { cdp-&gt;dat = v; cdp-&gt;dat_written = true; }
+         * if (chan_ena) {
+         *     cyc = 1 * CYCLE_UNIT;                    // AUDxDAT is processed after 1 CCK delay
+         *     if ((cdp-&gt;state &amp; 15) == 2 || (cdp-&gt;state &amp; 15) == 3) {
+         *         if (cdp-&gt;wlen == 1) cdp-&gt;intreq2 = true;   // But INTREQ2 is set immediately
+         *     }
+         * }
+         * event2_newevent_xx(-1, cyc, vv, event_audxdat_func);
+         * </pre>
+         *
+         * <p>La condizione è attiva nella configurazione dell'oracolo: dipende da
+         * {@code cpu_compatible}, che {@code cycle_exact=full} non imposta ma che
+         * {@code default_prefs} mette a 1 (§9.2.1 del piano).
+         *
+         * <p>Misurato su `timing/dmalen0` (piano §22): lo slot cade a `hpos 17` su entrambi i
+         * lati e la richiesta d'interrupt dell'oracolo segue di 1 CCK esatto, su tutti i rami
+         * (`which=10` dello stato 1 come `which=31` dello stato 3) e su tutte le otto righe
+         * del blocco. Senza questo CCK il gestore prende il confine d'istruzione precedente
+         * e la banda si sposta di 5 CCK = 20 px.
+         *
+         * <p>⚠️ Il §9.2.1 aveva provato Δ2 e l'aveva revocata: differiva <i>tutto</i> il corpo,
+         * quando la word che arriva a un canale già in riproduzione non deve entrare in
+         * riproduzione affatto. Quella metà è il §21; questa è il ritardo vero e proprio, e le
+         * due insieme sono la trascrizione completa.
+         */
         private void receiveDmaWord(int value) {
             if (!dmaRequest) return;
             audDAT[index] = value & 0xFFFF;
@@ -1699,6 +1771,22 @@ public final class Paula {
             dmaRequest = false;
 
             dmaPointer = (dmaPointer + 2) & 0x1FFFFE;
+            if (!dmaPriming && !dmaFirstWord) {
+                // `intreq2` si alza SUBITO, prima del ritardo: è l'unica cosa che, negli
+                // stati 2/3, WinUAE non accoda. Il decremento di `wlen` che lo giustifica
+                // avviene invece nel gestore differito, quindi qui si anticipa il suo
+                // risultato: `<= 1` e non `== 1`, perché il decremento è clampato a zero e
+                // la lunghezza residua ci resta finché `requestNextWord()` non ricarica il
+                // blocco. Con `== 1` la word successiva a quella di fine blocco perdeva il
+                // proprio interrupt — misurato su dmalen0, una richiesta in meno per blocco.
+                nextWordEndsBlock = remainingWords <= 1;
+            }
+            dmaWordDelay = DMA_WORD_DELAY_MC;
+            refreshActiveMask();
+        }
+
+        /** Il corpo di {@code event_audxdat_func}: un CCK dopo lo slot. Vedi {@link #receiveDmaWord}. */
+        private void processDmaWord() {
             if (dmaPriming) {
                 nextWord = 0;
                 nextWordValid = false;
@@ -1720,10 +1808,10 @@ public final class Paula {
                 // ed è QUI che il period counter riparte — WinUAE, case 5: loadper(nr).
                 dmaFirstWord = false;
                 loadPeriod();
+                nextWordEndsBlock = remainingWords == 0;
             } else if (remainingWords > 0) {
                 remainingWords--;
             }
-            nextWordEndsBlock = remainingWords == 0;
 
             // Una word che arriva a un canale GIA' in riproduzione non entra in
             // riproduzione allo slot DMA. Oracolo: WinUAE audio.cpp, event_audxdat_func —
@@ -2031,7 +2119,7 @@ public final class Paula {
             // period-counter: un canale che uscisse dalla maschera smetterebbe di
             // contare e non chiederebbe mai più la word successiva.
             boolean active = dmaEnabled || dmaRequest || nextWordValid || currentWordValid
-                    || cpuDriven || currentSample != 0;
+                    || cpuDriven || currentSample != 0 || dmaWordDelay > 0;
             if (active) activeAudioMask |= (1 << index);
             else        activeAudioMask &= ~(1 << index);
         }
