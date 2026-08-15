@@ -944,9 +944,26 @@ public final class FloppyDrive {
      *
      * <p>Determinismo: i test che confrontano frame o CRC devono poter riprodurre la
      * stessa corsa, quindi il seme è fissabile con {@code -Damiga.diskseed=<n>}.
+     *
+     * <p>⚠️ Il seme <b>non basta</b> quando si confronta una corsa con quella di un altro
+     * emulatore: fissa la <i>sequenza</i>, non il valore, quindi l'angolo di una macchina
+     * dipende da quante ne sono state create prima nella stessa JVM. E l'angolo non è un
+     * dettaglio — da solo sposta l'istante in cui il bootblock è pronto di <b>±8000 CCK</b>
+     * (docs/vamigats-paula-audio-plan.md §6.3), cioè assai più di tutte le divergenze di
+     * timing che il banco vAmigaTS misura. Per questo esiste anche
+     * {@code -Damiga.diskangle=<bit>}, che <b>fissa la posizione</b> invece di estrarla:
+     * è il modo di mettere le due macchine allo stesso punto del piatto prima di
+     * confrontarle. L'unità è la stessa dell'oracolo — bit sulla traccia MFM, con
+     * {@code tracklen} 101344 su entrambi — quindi il valore si legge direttamente dal suo
+     * {@code drv->mfmpos} (hook {@code WINUAE_DISKLOG}).
      */
     private void randomiseAngularPosition() {
-        if (trackBitLen > 0) bitPointer = DISK_ANGLE_RNG.nextInt(trackBitLen);
+        if (trackBitLen > 0) {
+            Long fixed = Long.getLong("amiga.diskangle");
+            bitPointer = fixed != null
+                    ? (int) Math.floorMod(fixed, trackBitLen)
+                    : DISK_ANGLE_RNG.nextInt(trackBitLen);
+        }
         resetBitClock();
     }
 
