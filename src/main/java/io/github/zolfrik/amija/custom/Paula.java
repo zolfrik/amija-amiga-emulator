@@ -1474,10 +1474,42 @@ public final class Paula {
          * misura — «the frequency changes, because no samples are fed into AUD0DAT any
          * more» — e ciò che il gemello {@code dmaaud1} mostra sullo schermo, dove il
          * gestore di livello 4 è ancora invocato sette secondi dopo lo spegnimento.
+         *
+         * <p>E per lo stesso motivo <b>l'accensione dipende da dove il canale si trova</b>:
+         * la sequenza d'avvio (0→1→5) è del solo {@code case 0}, cioè del canale fermo. Un
+         * canale già negli stati 2/3 la scrittura di DMACON la vede soltanto come un cambio
+         * di rifornitore. Sono le due facce della stessa domanda, e finora ne rispondevamo
+         * una sola: {@code timing/dmatim2} è il canale fermo (che deve scaricare il
+         * fine-blocco pendente), {@code timing/dmatim3} il canale che suona (che non deve
+         * ricominciare da capo).
          */
         private void setDmaEnabled(boolean enabled) {
             if (dmaEnabled == enabled) return;
+            // Lo stato PRIMA della scrittura di DMACON: a DMA spento isPlaying() sono gli
+            // stati 2/3 di WinUAE (il canale suona in modo a interrupt), il resto è lo
+            // stato 0, il canale fermo. La sequenza d'avvio del DMA è del secondo caso e
+            // basta — vedi sotto.
+            final boolean wasPlaying = isPlaying();
             dmaEnabled = enabled;
+            if (enabled && wasPlaying) {
+                // Stati 2/3: DMACON accende il DMA su un canale che <b>sta ancora
+                // suonando</b>, e in WinUAE non succede niente. `audio_state_machine()`
+                // richiama `audio_state_channel2(nr, false)`, che nei case 2/3 aggiorna
+                // `dmaenstore` ed esce al `if (!perfin) return true;`: nessun priming,
+                // nessuna richiesta immediata. Il DMA riprende semplicemente a rifornire
+                // al confine di periodo successivo — `case 3: if (chan_ena) { loaddat(nr);
+                // setdr(nr, false); if (intreq2 && napnav) setirq(nr, 31); }` — che è la
+                // strada normale di advanceSampleByte()/loadCurrentWord().
+                //
+                // Ripartire dal priming (0->1->5) come si faceva prima costa tre errori in
+                // fila, tutti visibili su vAmigaTS timing/dmatim3 (piano §23.3): una
+                // richiesta d'interrupt di tipo sbagliato (l'avvio invece del fine-blocco),
+                // la lunghezza residua fuori fase e quindi nessun fine-blocco alla riga
+                // dopo, e il puntatore che avanza invece di ricaricarsi a ogni giro.
+                cpuDriven = false;      // il DMA prende il posto del modo a interrupt
+                refreshActiveMask();
+                return;
+            }
             if (enabled) {
                 // Stato 0 -> 1. Se il canale era FERMO e si porta dietro un fine-blocco
                 // non ancora consegnato, l'accensione del DMA lo <b>scarica subito</b>:
@@ -1490,11 +1522,12 @@ public final class Paula {
                 // vAmigaTS timing/dmatim2 mancava un'invocazione intera del gestore alle
                 // righe 112 e 160 (piano §23). Vive solo perché `intreq2` SOPRAVVIVE allo
                 // spegnimento: vedi clearDmaPipeline().
-                final boolean wasIdle = !cpuDriven;
-                cpuDriven = false;      // il DMA prende il posto del modo a interrupt
+                //
+                // Qui `cpuDriven` è già falso: il ramo si prende solo con `wasPlaying`
+                // falso, che a DMA spento è esattamente `!cpuDriven`.
                 reloadDmaBlock();
                 dmaPriming = true;
-                if (wasIdle && nextWordEndsBlock) {
+                if (nextWordEndsBlock) {
                     nextWordEndsBlock = false;
                     raiseAudioInterrupt(index);     // WinUAE: setirq(nr, 0)
                 }
@@ -1931,6 +1964,24 @@ public final class Paula {
                 currentWordValid = true;
                 currentWordEndsBlock = false;
                 bytePhase = 0;
+                if (dmaEnabled && nextWordEndsBlock) {
+                    // ...e il fine-blocco rimasto in sospeso si scarica QUI, anche se il
+                    // DMA non ha (ancora) consegnato niente. In WinUAE le due cose sono
+                    // separate: `loaddat(nr)` è incondizionato e il controllo che segue
+                    // guarda solo il flag —
+                    //
+                    //   case 3: if (chan_ena) { loaddat(nr); if (napnav) setdr(nr, false);
+                    //       if (cdp->intreq2 && napnav) { setirq(nr, 31); intreq2 = false; } }
+                    //
+                    // Da noi il flag viaggia con la word in coda, quindi senza questo ramo
+                    // un `intreq2` sopravvissuto allo spegnimento del DMA (§23.2) non
+                    // veniva scaricato mai: su timing/dmatim3 l'oracolo chiede l'interrupt
+                    // a vpos 144 e 160 — il primo confine di periodo dopo che DMACON ha
+                    // riacceso un canale che stava ancora suonando — e noi non chiedevamo
+                    // niente.
+                    nextWordEndsBlock = false;
+                    raiseAudioInterrupt(index);
+                }
             }
 
             int raw = bytePhase == 0 ? (currentWord >>> 8) & 0xFF : currentWord & 0xFF;
