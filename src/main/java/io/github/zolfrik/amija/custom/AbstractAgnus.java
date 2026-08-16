@@ -2059,6 +2059,26 @@ public abstract class AbstractAgnus {
         // path bus CPU (~7M/s in meno).
         cpu.fallingEdge(); // campiona latchedIpl = busResp.ipl qui
 
+        // Il trasferimento dati vive sullo slot che Agnus ha CONCESSO, non mezzo CCK dopo.
+        //
+        // Oracolo WinUAE `wait_cpu_cycle_write` (custom.cpp:12452): `dma_cycle()` attende lo
+        // slot di chip-bus e SUBITO DOPO fa `put_word(addr, v)` — la scrittura cade sul CCK
+        // concesso, e infatti ogni riga di WINUAE_COLORLOG ha `clk` PARI (multiplo di CCK)
+        // sia per le scritture della CPU sia per quelle del Copper.
+        //
+        // Da noi il DTACK matura in decideCpuDtack() a `hpos` PARI (confine di CCK) mentre
+        // la CPU e' in S4, ma il trasferimento veniva eseguito dalla handleCpuBusCycle() del
+        // risingEdge SUCCESSIVO, quando lo stato e' S6 e hpos e' gia' DISPARI: mezzo CCK
+        // dopo lo slot concesso. Il Copper e gli interrupt dei chip commitano invece sul
+        // confine, e da qui la fase misurata da CpuBeamPhaseTest — 48 phi su 48 dispari dove
+        // l'oracolo li ha tutti pari (piano vamigats-paula-audio §6.1.1).
+        //
+        // Chiamandolo qui, dopo cpu.fallingEdge() (che porta la FSM bus in S5) e PRIMA di
+        // updateBeam(), il trasferimento cade nello stesso master-cycle del DTACK. La FSM
+        // della CPU, l'arbitraggio e la contesa non si muovono di un ciclo: cambia solo
+        // l'istante in cui l'effetto del trasferimento diventa visibile.
+        handleCpuDataTransferPhase();
+
         if (!copperBusReq.as)  copperBusProcessed  = false;
 
         updateBeam();
@@ -2965,6 +2985,37 @@ public abstract class AbstractAgnus {
         cpuRouteCacheUds = uds;
         cpuRouteCacheLds = lds;
         cpuRouteCacheValid = true;
+    }
+
+    /**
+     * Esegue il trasferimento dati della CPU sullo slot appena concesso (fase di discesa,
+     * FSM bus in S5). Stessa condizione del ramo S5-S7 di {@link #handleCpuBusCycle()}, che
+     * resta come rete per i casi in cui la CPU arrivi in S5 senza passare di qui.
+     */
+    private void handleCpuDataTransferPhase() {
+        if (!cpuBusReq.as || cpuBusReq.iack || cpuAccessTransferred) {
+            return;
+        }
+        if (cpuCurrentRoute == null || !cpuCurrentRoute.ok) {
+            return;
+        }
+        switch (cpu.getBusCycleState()) {
+            // S4 con DTACK gia' concesso in questo stesso master-cycle: e' LO SLOT concesso.
+            // La CPU consuma l'ack solo al fronte di salita successivo (advanceBusCycleRising
+            // case S4 -> S5), quindi senza questo ramo il trasferimento scivolerebbe di un
+            // master-cycle, cioe' di mezzo CCK.
+            case S4 -> {
+                if (cpuBusResp.ack) {
+                    handleCpuDataTransfer();
+                    cpuAccessTransferred = true;
+                }
+            }
+            case S5, S6, S7 -> {
+                handleCpuDataTransfer();
+                cpuAccessTransferred = true;
+            }
+            default -> { /* non ancora concesso */ }
+        }
     }
 
     private void handleCpuDataTransfer() {
