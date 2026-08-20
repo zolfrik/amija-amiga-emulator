@@ -121,6 +121,10 @@ public class CmpaInstruction extends AbstractM68kInstruction {
                 }
                 case 10 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    // WinUAE `case i_CMPA`: `set_ipl_pre()` e' chiamata SUBITO PRIMA di
+                    // `fill_prefetch_next_*`, quindi l'ancora e' questa prefetch e non la
+                    // lettura dell'operando (op_b0d0/op_b1d0 _14_ff).
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     refillPipeline(cpu); // np
                     nextStep(cpu);
                     return false;

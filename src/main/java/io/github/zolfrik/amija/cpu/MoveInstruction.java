@@ -44,6 +44,175 @@ public class MoveInstruction extends AbstractM68kInstruction {
         return true;
     }
 
+    /**
+     * Dichiara l'ancora <b>a inizio istruzione</b>, prima di qualunque accesso. È il blocco
+     * di regole che gencpu esegue <b>prima</b> della {@code genamode} sorgente ({@code case
+     * i_MOVE}, gencpu.cpp ~6532) e che quindi finisce in cima alla funzione generata:
+     * <pre>
+     * if (size == sz_long) {
+     *     if (dmode == Apdi &amp;&amp; smode &lt;= Areg) set_ipl_pre();  // op_2100: ipl_fetch_next_pre()
+     * } else {
+     *     if (dmode == Aipi &amp;&amp; smode == imm)  set_ipl();      // op_10fc: ipl_fetch_now()
+     *     if (dmode == Apdi &amp;&amp; smode == imm)  set_ipl();      // op_113c, op_313c
+     *     if (dmode == Apdi &amp;&amp; smode &lt;= Areg) set_ipl_pre();  // op_1100: ipl_fetch_next_pre()
+     * }
+     * </pre>
+     *
+     * <p>Il ramo lo decide la solita {@code tc - ipl_fetch_cycles > 4}: qui l'ancora sta a 12
+     * clock o piu' dalla fine, quindi {@code set_ipl()} esce sempre come {@code now};
+     * {@code set_ipl_pre()} emette per costruzione {@code ipl_fetch_next_pre()}, cioe' il
+     * ramo {@code next} (il ri-campionamento retroattivo del suffisso {@code _pre} non e'
+     * modellato, come per tutte le altre {@code set_ipl_pre} — vedi §6.1.10).
+     *
+     * <p>⚠️ Senza queste quattro regole le stesse istruzioni finivano sul percorso di
+     * default, dove <b>la scrittura in coda si prendeva l'ancora</b>: la MOVE verso
+     * {@code -(An)} fa la prefetch PRIMA della scrittura, quindi l'ancora scivolava di 8
+     * clock (16 per la {@code .L}) e cambiava anche ramo.
+     *
+     * <p>⚠️ Il {@code -(An)} con sorgente in <b>memoria</b> non ci rientra: per la {@code .B}/
+     * {@code .W} l'ancora e' sulla lettura sorgente ({@link #declareIplAnchorBeforeSourceRead}),
+     * per la {@code .L} cade in mezzo alla lettura long ({@code GF_IPL | GF_IPLMID}), che non
+     * modelliamo — vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.13.
+     */
+    private static void declareIplAnchorAtStart(Motorola68000 cpu) {
+        int opcode = cpu.getIr();
+        int size = (opcode >> 12) & 3;
+        int destMode = (opcode >> 6) & 7;
+        if (destMode != 3 && destMode != 4) {       // solo (An)+ e -(An)
+            return;
+        }
+        int srcMode = (opcode >> 3) & 7, srcReg = opcode & 7;
+        boolean isLong = size == 2;
+        boolean srcIsImm = srcMode == 7 && srcReg == 4;
+        if (!isLong && srcIsImm) {
+            cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);          // set_ipl()
+        } else if (destMode == 4 && srcMode <= 1) {
+            cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);         // set_ipl_pre()
+        }
+    }
+
+    /**
+     * Dichiara l'ancora del POLL dell'IPL <b>subito dopo la scrittura</b> per le destinazioni
+     * assolute. Chiamata in cima a ogni passo post-scrittura; per gli altri modi non fa nulla
+     * e vale il percorso di default ({@code check_ipl()}, ancora sulla scrittura).
+     *
+     * <p>In WinUAE {@code case i_MOVE} chiama {@code set_ipl()} <b>dopo</b> {@code genastore}
+     * quando la destinazione e' {@code absw}/{@code absl}, e li' l'ancora si ferma:
+     * <pre>
+     * // op_11c0_14_ff (MOVE.B Dn,(xxx).W, 12 cicli)
+     * x_put_byte(dsta, src);          // la scrittura
+     * ipl_fetch_next();               // &lt;-- ANCORA, 4 clock dalla fine
+     * get_word_ce000_prefetch(2);
+     *
+     * // op_13d0_14_ff (MOVE.B (An),(xxx).L, 20 cicli) — caso `dualprefetch`
+     * x_put_byte(dsta, src);
+     * ipl_fetch_now();                // &lt;-- ANCORA, 8 clock dalla fine: DUE prefetch dopo
+     * get_word_ce000_prefetch(0);
+     * get_word_ce000_prefetch(2);
+     * </pre>
+     *
+     * <p>⚠️ <b>Quali destinazioni</b> e' una condizione che gencpu scrive per esteso, e va
+     * trascritta com'e' invece di generalizzarla — la {@code .L} verso {@code (xxx).W} NON ci
+     * rientra, e includerla per simmetria sposta l'ancora di 4 clock su 14 opcode:
+     * <pre>
+     * if (size == sz_long) {
+     *     if (dmode == Aind && smode == absl) set_ipl();
+     *     if (dmode == absl)                  set_ipl();
+     * } else {
+     *     if (dmode == absl || dmode == absw) set_ipl();
+     * }
+     * </pre>
+     *
+     * <p>Il ramo segue la regola di codegen {@code tc - ipl_fetch_cycles > 4}: una sola
+     * prefetch finale (4 clock) ⇒ {@code next}, due (8) ⇒ {@code now}. Le due prefetch le fa
+     * il ramo {@code dualprefetch} di gencpu, anch'esso trascritto letterale:
+     * {@code dmode == absl && smode != Dreg && smode != Areg && smode != imm}.
+     */
+    private static void declareIplAnchorAfterWrite(Motorola68000 cpu,
+                                                   int destMode, int destReg,
+                                                   int srcMode, int srcReg) {
+        boolean isLong = ((cpu.getIr() >> 12) & 3) == 2;
+        boolean destIsAbsW = destMode == 7 && destReg == 0;
+        boolean destIsAbsL = destMode == 7 && destReg == 1;
+        boolean srcIsAbsL = srcMode == 7 && srcReg == 1;
+        boolean declare = isLong
+                ? ((destMode == 2 && srcIsAbsL) || destIsAbsL)
+                : (destIsAbsW || destIsAbsL);
+        if (!declare) {
+            return;
+        }
+        boolean srcIsRegOrImm = srcMode == 0 || srcMode == 1 || (srcMode == 7 && srcReg == 4);
+        boolean dualPrefetch = destIsAbsL && !srcIsRegOrImm;
+        cpu.markIplAnchor(dualPrefetch ? Motorola68000.IplAnchor.NOW
+                                       : Motorola68000.IplAnchor.NEXT);
+    }
+
+    /**
+     * Dichiara l'ancora <b>prima della lettura sorgente</b>, che e' dove WinUAE la mette per
+     * le {@code .B}/{@code .W} con destinazione {@code (An)+}/{@code -(An)} e sorgente in
+     * memoria:
+     * <pre>
+     * // op_10d0_14_ff (MOVE.B (An),(An)+, 12 cicli)
+     * ipl_fetch_now();                // &lt;-- ANCORA, prima di TUTTO: 12 clock dalla fine
+     * uae_s8 src = x_get_byte(srca);
+     * x_put_byte(dsta, src);
+     * get_word_ce000_prefetch(2);
+     * </pre>
+     * Con sorgente {@code Dn}/{@code An} invece l'ancora resta sulla scrittura (vedi
+     * {@link #declareIplAnchorBeforeWrite}), e la {@code .L} ha una tabella sua — l'ancora
+     * cade <b>in mezzo</b> alla lettura long ({@code GF_IPL | GF_IPLMID}), che qui non e'
+     * modellata: vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.12.
+     */
+    private static void declareIplAnchorBeforeSourceRead(Motorola68000 cpu,
+                                                         int destMode, int srcMode) {
+        if (((cpu.getIr() >> 12) & 3) == 2) {
+            return;                                  // .L: tabella diversa, non modellata
+        }
+        if ((destMode != 3 && destMode != 4) || srcMode <= 1) {
+            return;
+        }
+        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+    }
+
+    /**
+     * Dichiara l'ancora <b>sulla (prima) scrittura</b>. Due casi distinti, entrambi letti dal
+     * codice generato:
+     *
+     * <ul>
+     *   <li><b>{@code .B}/{@code .W} verso {@code (An)+} con sorgente {@code Dn}/{@code An}</b>:
+     *       la posizione e' quella del default ma il <b>ramo</b> no — gencpu chiama
+     *       {@code set_ipl_pre()} ({@code dmode == Aipi && smode <= Areg}), quindi
+     *       {@code next} ({@code op_10c0}, {@code op_30c0}, {@code op_30c8});</li>
+     *   <li><b>{@code .L} verso memoria</b>: l'ancora sta prima della <b>prima delle due
+     *       word</b> scritte, non prima della seconda. Vale sempre per {@code (An)+} e, per
+     *       {@code (An)}/{@code (d16,An)}/{@code (d8,An,Xn)}, quando la sorgente e'
+     *       {@code Dn}/{@code An}/immediato — con sorgente in memoria l'oracolo torna alla
+     *       seconda word, che e' gia' il nostro default.</li>
+     * </ul>
+     *
+     * ⚠️ Il {@code -(An)} non passa da qui, ma per due motivi diversi secondo la sorgente:
+     * con {@code Dn}/{@code An}/immediato l'ancora e' a <b>inizio istruzione</b>
+     * ({@link #declareIplAnchorAtStart}); con sorgente in <b>memoria</b> e taglia {@code .L}
+     * cade <b>in mezzo alla lettura long</b> ({@code GF_IPL | GF_IPLMID}), una posizione che
+     * non modelliamo ancora — vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.13.
+     */
+    private static void declareIplAnchorBeforeWrite(Motorola68000 cpu,
+                                                    int destMode, int srcMode, int srcReg) {
+        boolean isLong = ((cpu.getIr() >> 12) & 3) == 2;
+        if (!isLong) {
+            if (destMode == 3 && srcMode <= 1) {
+                cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+            }
+            return;
+        }
+        boolean srcIsRegOrImm = srcMode <= 1 || (srcMode == 7 && srcReg == 4);
+        boolean declare = destMode == 3
+                || ((destMode == 2 || destMode == 5 || destMode == 6) && srcIsRegOrImm);
+        if (declare) {
+            cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+        }
+    }
+
     private int decodeSize(int opcode) {
         int s = (opcode >> 12) & 3;
         return switch (s) {
@@ -58,6 +227,9 @@ public class MoveInstruction extends AbstractM68kInstruction {
     public void prepareInstruction(Motorola68000 cpu) {
         // MOVE consumes opcode word from pipeline.
         cpu.consumeIRC();
+        // Prima di qualunque accesso: e' la posizione delle set_ipl*() che gencpu emette in
+        // cima al `case i_MOVE`, e questo metodo e' chiamato una volta sola per istruzione.
+        declareIplAnchorAtStart(cpu);
     }
 
     @Override
@@ -138,6 +310,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     } else {
                         int ea = calculateEA(cpu, srcMode, srcReg, 2, cpu.getOpcodeAddress() + 2, getTemp(cpu, SRC_EXT1), getTemp(cpu, SRC_EXT2), true, false);
                         setTemp(cpu, SRC_EA, ea);
+                        declareIplAnchorBeforeSourceRead(cpu, destMode, srcMode);
                         cpu.scheduleRead(ea, 2);
                         setStep(cpu, 7);
                         return false;
@@ -201,12 +374,14 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 }
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
                     cpu.scheduleWrite(getTemp(cpu, DST_EA), getTemp(cpu, OPERAND), 2);
                     setStep(cpu, 18);
                     return false;
                 }
                 case 18 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorAfterWrite(cpu, destMode, destReg, srcMode, srcReg);
                     if (destMode == 3) cpu.setA(destReg, cpu.getA(destReg, 4) + 2);
                     if (destMode != 4) refillPipeline(cpu);
                     if (hasExt2(destMode, destReg, 2)) { nextStep(cpu); return false; }
@@ -281,6 +456,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     } else {
                         int ea = calculateEA(cpu, srcMode, srcReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, SRC_EXT1), getTemp(cpu, SRC_EXT2), true, false);
                         setTemp(cpu, SRC_EA, ea);
+                        declareIplAnchorBeforeSourceRead(cpu, destMode, srcMode);
                         cpu.scheduleRead(ea, 2);
                         nextStep(cpu);
                         return false;
@@ -357,6 +533,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 }
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
                     int val = getTemp(cpu, OPERAND);
                     int ea = getTemp(cpu, DST_EA);
                     if (destMode == 4) { cpu.scheduleWrite(ea + 2, val & 0xFFFF, 2); }
@@ -375,6 +552,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 }
                 case 18 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorAfterWrite(cpu, destMode, destReg, srcMode, srcReg);
                     if (destMode == 3) cpu.setA(destReg, cpu.getA(destReg, 4) + 4);
                     if (destMode != 4) {
                         cpu.setGroup0PushedPC(cpu.getOpcodeAddress() + (cpu.extensionsConsumed * 2));
@@ -453,6 +631,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     } else {
                         int ea = calculateEA(cpu, srcMode, srcReg, 1, cpu.getOpcodeAddress() + 2, getTemp(cpu, SRC_EXT1), getTemp(cpu, SRC_EXT2), true, false);
                         setTemp(cpu, SRC_EA, ea);
+                        declareIplAnchorBeforeSourceRead(cpu, destMode, srcMode);
                         cpu.scheduleRead(ea, 1);
                         setStep(cpu, 7);
                         return false;
@@ -516,12 +695,14 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 }
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
                     cpu.scheduleWrite(getTemp(cpu, DST_EA), getTemp(cpu, OPERAND), 1);
                     setStep(cpu, 18);
                     return false;
                 }
                 case 18 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorAfterWrite(cpu, destMode, destReg, srcMode, srcReg);
                     if (destMode == 3) {
                         int inc = (destReg == 7) ? 2 : 1;
                         cpu.setA(destReg, cpu.getA(destReg, 4) + inc);
@@ -599,6 +780,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     } else {
                         int ea = calculateEA(cpu, srcMode, srcReg, 2, cpu.getOpcodeAddress() + 2, getTemp(cpu, SRC_EXT1), getTemp(cpu, SRC_EXT2), true, false);
                         setTemp(cpu, SRC_EA, ea);
+                        declareIplAnchorBeforeSourceRead(cpu, destMode, srcMode);
                         cpu.scheduleRead(ea, 2);
                         setStep(cpu, 7);
                         return false;
@@ -671,12 +853,14 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 }
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
                     cpu.scheduleWrite(getTemp(cpu, DST_EA), getTemp(cpu, OPERAND), 2);
                     setStep(cpu, 18);
                     return false;
                 }
                 case 18 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorAfterWrite(cpu, destMode, destReg, srcMode, srcReg);
                     if (destMode == 3) cpu.setA(destReg, cpu.getA(destReg, 4) + 2);
                     if (destMode != 4) {
                         cpu.setGroup0PushedPC(cpu.getOpcodeAddress() + (cpu.extensionsConsumed * 2));
@@ -775,6 +959,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     } else {
                         int ea = calculateEA(cpu, srcMode, srcReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, SRC_EXT1), getTemp(cpu, SRC_EXT2), true, false);
                         setTemp(cpu, SRC_EA, ea);
+                        declareIplAnchorBeforeSourceRead(cpu, destMode, srcMode);
                         cpu.scheduleRead(ea, 2);
                         nextStep(cpu);
                         return false;
@@ -869,6 +1054,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 //   predecrement     -> LSW at (original_An - 2)
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
                     int val = getTemp(cpu, OPERAND);
                     if (destMode == 4) {
                         // Update flags here so triggerAddressError captures the correct post-MOVE SR.
@@ -908,6 +1094,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 //                       post-write prefetch; abs.l needs a second prefetch -> 22.
                 case 18 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    declareIplAnchorAfterWrite(cpu, destMode, destReg, srcMode, srcReg);
                     if (destMode == 4) {
                         return finalizeInstructionSafe(cpu);
                     }

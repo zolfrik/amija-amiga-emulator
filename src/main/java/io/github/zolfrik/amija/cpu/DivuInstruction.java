@@ -186,6 +186,10 @@ public class DivuInstruction extends AbstractM68kInstruction {
                 }
                 case 8 -> {
                     if (cpu.isBusCycleIdle()) {
+                        // WinUAE op_80d0_14_ff: fra la lettura dell'operando e la prefetch
+                        // finale corrono i cicli della divisione, e `ipl_fetch_next()` sta
+                        // subito prima della prefetch — l'ancora e' lei, non la lettura.
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         refillPipeline(cpu);
                         // Overlapped prefetch (Phase 4): the terminal np is the last bus cycle —
                         // finalize in this same step (seam 0). See

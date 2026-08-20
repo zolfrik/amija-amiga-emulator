@@ -119,6 +119,15 @@ public class CmpInstruction extends AbstractM68kInstruction {
                 }
                 case 10 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    // WinUAE `case i_CMP`: `set_ipl_pre()` e' chiamata SOLO per la .L con
+                    // destinazione Dn (`if (dmode == Dreg && size == sz_long)`), e sta subito
+                    // prima di `fill_prefetch_next_after` — quindi li' l'ancora e' questa
+                    // prefetch e non la lettura (op_b090..op_b0bb _14_ff). Per .b/.w gencpu
+                    // usa `fill_prefetch_next_t()` senza `set_ipl_pre()`, cioe' il percorso di
+                    // default: l'ancora resta la lettura, ed e' quello che facciamo gia'.
+                    if (size == 4) {
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    }
                     refillPipeline(cpu); // np (the last bus cycle for .b/.w)
                     // Overlapped prefetch (Phase 2): finalize in the SAME step that issues the
                     // terminal np so the next instruction decodes the instant the np drains

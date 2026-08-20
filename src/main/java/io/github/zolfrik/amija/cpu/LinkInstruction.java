@@ -36,6 +36,17 @@ public class LinkInstruction extends AbstractM68kInstruction {
         return true;
     }
 
+    /**
+     * WinUAE emette qui `ipl_fetch_now()`, al PRIMO ciclo dell'istruzione e prima di
+     * qualunque accesso (`set_ipl_now()`, `ipl_fetched = 3`): il pin vale quello di adesso e
+     * nessun accesso successivo sposta l'ancora.
+     */
+    @Override
+    public void prepareInstruction(Motorola68000 cpu) {
+        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+        super.prepareInstruction(cpu);
+    }
+
     @Override
     public boolean executeStep(Motorola68000 cpu) {
         int op = cpu.getIr();

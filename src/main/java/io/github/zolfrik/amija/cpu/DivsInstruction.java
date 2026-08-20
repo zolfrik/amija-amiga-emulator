@@ -240,18 +240,12 @@ public class DivsInstruction extends AbstractM68kInstruction {
                     // Overlapped prefetch (Phase 4): the terminal np is the last bus cycle —
                     // finalize in this same step (seam 0) instead of a separate step 8. See
                     // docs/cpu-overlapped-prefetch-rework-plan.md §Phase 4.
-                    cpu.startPrefetchCycle();
-                    return finalizeInstructionSafe(cpu);
-                }
-                case 8 -> { // Success Path Finish
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT); // WinUAE op_81d0_14_ff
                     cpu.startPrefetchCycle();
                     return finalizeInstructionSafe(cpu);
                 }
                 case 11 -> { // Overflow Path Finish (overlapped: finalize with the np)
-                    cpu.startPrefetchCycle();
-                    return finalizeInstructionSafe(cpu);
-                }
-                case 12 -> { // Overflow Path Finalize
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT); // WinUAE op_81d0_14_ff
                     cpu.startPrefetchCycle();
                     return finalizeInstructionSafe(cpu);
                 }

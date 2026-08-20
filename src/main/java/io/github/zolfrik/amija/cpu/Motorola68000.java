@@ -211,8 +211,33 @@ public final class Motorola68000 {
     // applicate a 4 clock dalla fine. Dal 2026-07-31 l'ancora è `ipl_fetch_next()`
     // in coda all'entry, come WinUAE.
     private boolean iplAnchorIsCurrentOp = false, iplAnchorHadWait = false;
+    /**
+     * Su quale campione scrive l'override dei wait-state: il CANDIDATO di
+     * {@code check_ipl()} (accesso dati del percorso di default) oppure l'ancora già
+     * decisa (dichiarazione {@code ipl_fetch_now()} nello stesso ciclo dell'accesso).
+     */
+    private boolean iplWaitOnCandidate = false;
     private int iplWaitIpl0 = 0, iplWaitIpl1 = 0;
-    private boolean iplHadDataAccess = false;
+    /**
+     * Candidato di {@code check_ipl()}: l'ULTIMO accesso dati emesso finora, cioè
+     * {@code last_access_offset_ipl_prev} di gencpu. <b>Non è ancora l'ancora</b> — lo
+     * diventa alla prima prefetch che lo segue, ed è tutta la differenza: dopo l'ultima
+     * prefetch non c'è più nessuna {@code check_ipl()} a leggerlo.
+     */
+    private boolean iplCandValid = false;
+    private int iplCandNow = 0;
+    /**
+     * L'istruzione ha dichiarato la sua ancora con {@link #markIplAnchor}: equivale a
+     * {@code ipl_fetched >= 2} di gencpu, che fa uscire subito {@code check_ipl()}.
+     */
+    private boolean iplAnchorDeclared = false;
+    /**
+     * Ciclo in cui l'ultima dichiarazione ha emesso {@code ipl_fetch_now()}, cioè in cui
+     * WinUAE scrive {@code regs.ipl_evt}. Serve solo a riconoscere l'accesso dati che
+     * comincia NELLO STESSO ciclo: è l'unico a cui si applica l'override dei wait-state
+     * di {@code wait_cpu_cycle_read/write} ({@code if (now == regs.ipl_evt)}).
+     */
+    private long iplNowDeclaredCycle = Long.MIN_VALUE;
     private int iplPin = 0, iplPinPrev = 0, pendingIpl = 0;
     private long iplPinChangeCycle = -1000, iplPinChangeCycleP = -1000;
     // Candidati registrati all'ultimo POLL dell'istruzione corrente (modo iplcond).
@@ -924,7 +949,9 @@ public final class Motorola68000 {
             // ipl[1] = 0`. Qui = avvio della successiva, dopo il checkInterrupts del
             // boundary e prima che i prefetch di questa istruzione ri-campionino.
             polledIpl = pendingIpl; pendingIpl = 0;
-            iplHadDataAccess = false;
+            iplCandValid = false;
+            iplAnchorDeclared = false;
+            iplNowDeclaredCycle = Long.MIN_VALUE;
             iplPollValid = false;
 
             ir = ird & 0xFFFF;
@@ -1026,38 +1053,116 @@ public final class Motorola68000 {
      */
     private void commitIplWaitOverride() {
         int v = iplWaitIpl0;
-        iplNowIpl = v;
+        if (iplWaitOnCandidate) iplCandNow = v; else iplNowIpl = v;
         iplAnchorHadWait = false; iplAnchorIsCurrentOp = false;
     }
+    /**
+     * Semantica dell'ancora, con i nomi delle due funzioni di WinUAE
+     * ({@code newcpu.cpp}) che l'istruzione può emettere.
+     */
+    public enum IplAnchor {
+        /** {@code ipl_fetch_now()}: il pin vale così com'è in questo istante. */
+        NOW,
+        /**
+         * {@code ipl_fetch_next()}: valgono le soglie 4/2 sull'anzianità del cambio di pin,
+         * quindi l'interrupt è preso a fine istruzione solo se il pin era già cambiato
+         * 4 clock prima di qui; altrimenti scivola all'istruzione successiva.
+         */
+        NEXT
+    }
+
+    /**
+     * <b>L'istruzione dichiara che il pin IPL si campiona QUI.</b>
+     *
+     * <p>È il modello di WinUAE trascritto dov'è: gencpu non ha una regola sola per tutte le
+     * istruzioni — emette {@code ipl_fetch_now()}/{@code ipl_fetch_next()} in un punto
+     * <b>scelto dentro il {@code case} della singola istruzione</b> ({@code set_ipl()},
+     * {@code set_ipl_now()}, {@code check_ipl_next()}, …). Da noi la controparte naturale è
+     * la macchina a passi dell'istruzione, che è la stessa sequenza: chi conosce il punto è
+     * la classe, e lo dice chiamando questo metodo lì.
+     *
+     * <p>Dichiarare <b>congela</b> l'ancora — equivale a {@code ipl_fetched >= 2}, che fa
+     * uscire subito {@code check_ipl()}: nessun accesso successivo dell'istruzione la sposta
+     * più. Le istruzioni che <b>non</b> dichiarano nulla ricadono sul percorso di default di
+     * gencpu, {@code check_ipl()} chiamata da {@code irc2ir()} — vedi {@link #pollIpl}.
+     *
+     * @param mode {@link IplAnchor#NOW} o {@link IplAnchor#NEXT}, cioè quale delle due
+     *             funzioni WinUAE emette in quel punto.
+     */
+    public void markIplAnchor(IplAnchor mode) {
+        iplAnchorDeclared = true;
+        iplAnchorIsCurrentOp = false;
+        iplAnchorHadWait = false;
+        // `ipl_fetch_now()` scrive regs.ipl_evt, `ipl_fetch_next()` no: solo la prima
+        // apre la finestra dell'override sui wait-state, e solo per l'accesso che
+        // comincia in QUESTO ciclo. Vedi pollIpl().
+        iplNowDeclaredCycle = (mode == IplAnchor.NOW) ? totalCycles : Long.MIN_VALUE;
+        iplPollValid = true;
+        iplPollOnFetch = (mode == IplAnchor.NEXT);
+        iplNowIpl = iplPin;                                   // ipl_fetch_now()
+        recordIplFetchNext();                                 // ipl_fetch_next()
+    }
+
     /** Campiona il pin IPL se questo è lo stato-bus configurato come punto di POLL. */
     private void pollIpl(BusOp op, int state) {
         boolean fetch = op.type == BusOpType.INSTRUCTION_FETCH;
         if (state != IPL_POLL_STATE) return;
-        // WinUAE gencpu.cpp check_ipl(): il POLL è ancorato alla parte dati
-        // dell'ULTIMO accesso in memoria dell'istruzione ("memory cycle data part
-        // followed by prefetch cycle"); solo se l'istruzione non ha accessi dati
-        // (nop, bra, …) resta ancorato al prefetch. Qui: ogni accesso dati
-        // ricampiona e marca l'istruzione; i prefetch campionano solo finché non
-        // è arrivato un accesso dati. Il flag si azzera all'avvio dell'istruzione.
         if (op.type == BusOpType.INTERRUPT_ACK) return;
-        if (fetch) { if (iplHadDataAccess) return; }
-        else iplHadDataAccess = true;
-        // WinUAE: `ipl_fetch_now()` è emesso subito prima dell'accesso DATI, quindi
-        // `regs.ipl_evt == now` e l'override sui wait-state di wait_cpu_cycle_*
-        // riguarda solo questo caso (un'ancora-prefetch usa ipl_fetch_next, che non
-        // aggiorna ipl_evt).
-        if (!fetch && state == 0) {
-            iplAnchorIsCurrentOp = true;
-            iplWaitIpl0 = iplWaitIpl1 = busResp.ipl & 0x7;
+        // L'istruzione ha già dichiarato la sua ancora (markIplAnchor): in WinUAE è
+        // `ipl_fetched >= 2` e check_ipl() esce subito. Nessun accesso la muove più —
+        // tranne l'override sui wait-state, che WinUAE applica in coda all'accesso
+        // (`wait_cpu_cycle_read/write`: `if (now == regs.ipl_evt) regs.ipl[0] = ipl;`) e
+        // che quindi vale anche qui, purché `ipl_fetch_now()` sia stata emessa nello
+        // STESSO ciclo in cui l'accesso comincia — com'è in `op_9108_14_ff`
+        // (`ipl_fetch_now(); x_get_byte(srca);`).
+        if (iplAnchorDeclared) {
+            if (!fetch && iplNowDeclaredCycle == totalCycles) {
+                iplAnchorIsCurrentOp = true;
+                iplWaitOnCandidate = false;
+                iplWaitIpl0 = iplWaitIpl1 = busResp.ipl & 0x7;
+            }
+            return;
         }
-        // Registra i due esiti possibili; la scelta è al boundary. `state` è lo
-        // scostamento in clock dall'S0 del ciclo bus ancora: normalizzandolo
-        // otteniamo l'equivalente di `ipl_fetch_cycles` di WinUAE, che è preso
-        // PRIMA dell'accesso (get_current_cycles() precede count_readw++).
-        iplPollValid = true;
-        iplPollOnFetch = fetch;
-        iplNowIpl = iplPin;                                   // ipl_fetch_now()
-        recordIplFetchNext();                                 // ipl_fetch_next()
+        // ── Percorso di DEFAULT: check_ipl(), che gencpu chiama da irc2ir() ──────────
+        // `irc2ir()` è il «IR ← IRC» che precede una prefetch di REFILL, non una fetch di
+        // parola d'estensione, e la sua guardia `ir2irc` la rende una sola per refill.
+        // L'ancora è quindi decisa **alla prefetch di refill** ed è:
+        //   • l'ultimo accesso dati emesso prima di lei (`last_access_offset_ipl_prev`,
+        //     ramo `now`);
+        //   • se non ce n'è, la prefetch stessa (`set_last_access_ipl()`, ramo `next`).
+        // Quale prefetch sia la terminale si sa solo alla fine, quindi qui si ridecide a
+        // ogni prefetch e vince l'ultima: è lo stesso risultato, perché una decisione
+        // presa a una prefetch intermedia viene comunque riscritta da quella finale.
+        //
+        // ⛔ Le due proprietà che ne discendono, ed entrambe sono state un bug:
+        //   1. una fetch di ESTENSIONE non decide niente e soprattutto non congela nulla.
+        //      `op_1150_14_ff` (`MOVE.B (An),(d16,An)`) è nr np(ext) nw np: l'ancora è la
+        //      SCRITTURA, a 8 clock dalla fine, non la lettura a 16;
+        //   2. dopo l'ultima prefetch non c'è più nessuna check_ipl(), quindi una
+        //      scrittura in coda aggiorna il candidato ma NON si prende l'ancora — è il
+        //      caso degli ALU con destinazione in memoria, `op_0010_14_ff`
+        //      (`OR.B #imm,(An)`) = np nr np nw, dove l'ancora resta sulla lettura.
+        if (fetch) {
+            iplPollValid = true;
+            if (iplCandValid) {
+                iplPollOnFetch = false;                       // ramo `now`
+                iplNowIpl = iplCandNow;
+            } else {
+                iplPollOnFetch = true;                        // ramo `next`
+                iplNowIpl = iplPin;                           // ipl_fetch_now()
+                recordIplFetchNext();                         // ipl_fetch_next()
+            }
+            return;
+        }
+        // Accesso DATI = `set_last_access_ipl_prev()`: solo un candidato. WinUAE inserisce
+        // `ipl_fetch_now()` SUBITO PRIMA dell'accesso, quindi `regs.ipl_evt == now` e
+        // l'override sui wait-state riguarda questo caso (un'ancora-prefetch usa
+        // ipl_fetch_next, che non tocca ipl_evt).
+        iplAnchorIsCurrentOp = true;
+        iplWaitOnCandidate = true;
+        iplWaitIpl0 = iplWaitIpl1 = busResp.ipl & 0x7;
+        iplCandValid = true;
+        iplCandNow = iplPin;
     }
     /**
      * Esito di `ipl_fetch_next()` (WinUAE newcpu.cpp): confronta l'anzianità del
@@ -1091,6 +1196,10 @@ public final class Motorola68000 {
         // L'ancora non è più un accesso dati: l'override sui wait-state
         // (wait_cpu_cycle_*) non si applica a `ipl_fetch_next`, che non tocca ipl_evt.
         iplAnchorIsCurrentOp = false; iplAnchorHadWait = false;
+        // È una DICHIARAZIONE come quelle di markIplAnchor: la seconda prefetch di refill,
+        // che segue subito, non deve ridecidere l'ancora sul percorso di default.
+        iplAnchorDeclared = true;
+        iplNowDeclaredCycle = Long.MIN_VALUE;
         iplPollValid = true;
         iplPollOnFetch = true;            // ancora-prefetch → ramo `next`
         iplNowIpl = iplPin;

@@ -73,6 +73,10 @@ public abstract class AbstractM68kInstruction {
         return false;
     }
 
+    // DOVE SI CAMPIONA IL PIN IPL: se questa istruzione ha un punto suo, lo dichiara
+    // chiamando cpu.markIplAnchor(...) NEL PASSO GIUSTO; altrimenti vale il default.
+    // Il modello e' scritto una volta sola, in Motorola68000.markIplAnchor/pollIpl.
+
     public void prepareInstruction(Motorola68000 cpu) {
         cpu.consumeIRC();
         if (!shouldInhibitPrefetch()) {

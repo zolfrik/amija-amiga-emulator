@@ -70,6 +70,9 @@ public class PeaInstruction extends AbstractM68kInstruction {
                 case 4 -> {
                     // Pipeline refill (np) for non-absolute modes
                     if (eaMode == 2 || eaMode == 5 || eaMode == 6 || (eaMode == 7 && eaReg == 2) || (eaMode == 7 && eaReg == 3)) {
+                        // WinUAE op_4850_14_ff: qui la prefetch finale precede le push, e
+                        // l'ancora e' lei (`ipl_fetch_next_pre()`); le push non ancorano.
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         refillPipeline(cpu);
                         nextStep(cpu);
                         return false;
@@ -99,6 +102,9 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     // Pipeline refill (np) for absolute modes
                     if (eaMode == 7 && (eaReg == 0 || eaReg == 1)) {
+                        // WinUAE op_4878_14_ff: qui le push PRECEDONO la prefetch finale, e
+                        // `ipl_fetch_next()` sta fra le due — l'ancora e' la prefetch.
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         refillPipeline(cpu);
                     }
                     return finalizeInstructionSafe(cpu);
@@ -112,6 +118,7 @@ public class PeaInstruction extends AbstractM68kInstruction {
     public boolean shouldInhibitPrefetch() {
         return true;
     }
+
     @Override public String getDisassembly(Motorola68000 cpu) {
         int op = cpu.getIr(); return "PEA " + Disassembly.formatEA((op >> 3) & 0x7, op & 0x7, 4, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4));
     }

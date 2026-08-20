@@ -187,6 +187,10 @@ public class MovemInstruction extends AbstractM68kInstruction {
             case 9: // Final refill
                 if (!cpu.isBusCycleIdle()) return false;
                 if (mode == 3 || mode == 4) cpu.setA(reg, getTemp(cpu, CURRENT_ADDR));
+                // WinUAE op_48d0_14_ff / op_4c90_14_ff: genmovemle_ce/genmovemel_ce
+                // registrano l'ancora subito prima della prefetch finale (gencpu.cpp 4629,
+                // 4818), quindi i trasferimenti non la muovono.
+                cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                 cpu.startPrefetchCycle(); // Refill IRC
                 return finalizeInstructionSafe(cpu);
 

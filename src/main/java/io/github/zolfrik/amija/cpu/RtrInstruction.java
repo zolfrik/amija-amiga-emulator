@@ -90,6 +90,9 @@ public class RtrInstruction extends AbstractM68kInstruction {
                 case 4 -> {
                     // np: Second prefetch refill
                     if (!cpu.isBusCycleIdle()) return false;
+                    // WinUAE op_4e77_14_ff: `ipl_fetch_next()` sta FRA le due prefetch di
+                    // refill; le letture dello stack non passano dalla macchina EA.
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     refillPipeline(cpu); // np 2
                     return finalizeInstructionSafe(cpu);
                 }

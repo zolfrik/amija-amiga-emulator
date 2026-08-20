@@ -111,6 +111,11 @@ public class AddaInstruction extends AbstractM68kInstruction {
                     continue;
                 }
                 case 5 -> {
+                    // WinUAE `case i_SUBA`/`i_ADDA`: `set_ipl_pre()` e' chiamata SUBITO PRIMA di
+                    // `fill_prefetch_next_after`, quindi l'ancora e' questa prefetch e non la
+                    // lettura dell'operando (op_90d0/op_91d0/op_d0d0/op_d1d0 _14_ff:
+                    // `ipl_fetch_next_pre()` sta fra la lettura e la prefetch).
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     refillPipeline(cpu);
                     int srcVal = getTemp(cpu, SRC_VAL);
                     int dstVal = cpu.getA(dstReg, 4);

@@ -151,6 +151,11 @@ public class ChkInstruction extends AbstractM68kInstruction {
                         // match the Tom Harte serialization convention (trailing idle after
                         // the terminating prefetch). Behaviour is bit-identical to the old
                         // path; the physical reorder above only applies to the real machine.
+                        // L'ancora e' la stessa dell'altro ordine (case 6): la prefetch
+                        // terminale, non la lettura dell'operando. Va dichiarata anche qui, o
+                        // i due ordini della stessa istruzione campionerebbero il pin in due
+                        // punti diversi (WinUAE op_4190_14_ff).
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         cpu.startPrefetchCycle(); // np
                         setStep(cpu, 9);
                         return false;
@@ -159,6 +164,10 @@ public class ChkInstruction extends AbstractM68kInstruction {
                 case 6 -> {
                     // Success path (run): terminating prefetch, AFTER the internal cycles.
                     if (!cpu.isBusCycleIdle()) return false;
+                    // WinUAE op_4190_14_ff: fra la lettura dell'operando e la prefetch finale
+                    // corrono i cicli interni, e `ipl_fetch_next()` sta subito prima della
+                    // prefetch — l'ancora e' lei, non la lettura.
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     cpu.startPrefetchCycle(); // np
                     setStep(cpu, 7);
                     return false;

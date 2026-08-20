@@ -69,6 +69,12 @@ public class AddxInstruction extends AbstractM68kInstruction {
                     cpu.setA(regY, cpu.getA(regY, 4) - dec);
                     int addrY = cpu.getA(regY, 4);
                     setTemp(cpu, ADDR_Y, addrY);
+                    // WinUAE op_9108/op_d108 _14_ff (.B/.W -(An),-(An)): `ipl_fetch_now()` sta
+                    // PRIMA della lettura sorgente, non sulla lettura destinazione. Per la .L
+                    // invece cade in mezzo alla lettura long della destinazione (case 4).
+                    if (size != 4) {
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                    }
                     cpu.scheduleRead(addrY, size == 4 ? 2 : size);
                     nextStep(cpu);
                     return false;
@@ -109,6 +115,10 @@ public class AddxInstruction extends AbstractM68kInstruction {
                         cpu.setA(regX, cpu.getA(regX, 4) - 2);
                         int addrX = cpu.getA(regX, 4);
                         setTemp(cpu, ADDR_X, addrX);
+                        // WinUAE op_9188/op_d188 _14_ff: `ipl_fetch_now()` sta FRA le due word
+                        // della lettura destinazione — l'unica ancora del modello che cade
+                        // dentro un accesso long.
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                         cpu.scheduleRead(addrX, 2);
                         nextStep(cpu);
                         return false;

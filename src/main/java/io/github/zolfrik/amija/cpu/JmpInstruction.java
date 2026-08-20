@@ -58,6 +58,15 @@ public class JmpInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                 }
                 case 2 -> {
+                    // ⛔ NIENTE markIplAnchor QUI. WinUAE emette `ipl_fetch_now()` subito dopo
+                    // il calcolo dell'EA anche per JMP (op_4ed0/op_4ef9 _14_ff), esattamente
+                    // come per JSR — ma portarlo manda in ROSSO vAmigaTS CPU/Timing/JMP3
+                    // (4060 px su 204060), che e' un riferimento generato da WinUAE e il cui
+                    // loop `.mainLoop: jmp (a6)` misura proprio questo. JSR e LINK, portati
+                    // nello stesso passo, restano verdi. Falsificazione registrata in
+                    // docs/vamigats-paula-audio-plan.md §6.1.9: prima di riprovarci serve
+                    // misurare l'istante di accettazione nel loop di JMP3 sui due lati
+                    // (WINUAE_DOINTLOG contro una sonda a master-cycle), non dedurlo.
                     int targetPC = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);
                     setTemp(cpu, TEMP_TARGET_PC, targetPC);
 

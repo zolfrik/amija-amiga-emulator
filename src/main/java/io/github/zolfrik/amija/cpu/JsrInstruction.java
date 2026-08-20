@@ -58,6 +58,12 @@ public class JsrInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                 }
                 case 2 -> {
+                    // WinUAE (op_4ed0/op_4ef9/op_4ea8/op_4eb9 _14_ff): `ipl_fetch_now()` e'
+                    // emessa SUBITO DOPO il calcolo dell'EA — cioe' al ciclo 0 per i modi che
+                    // leggono l'estensione gia' in IRC, e dopo la sua prefetch per (xxx).L.
+                    // `set_ipl_now()` forza il ramo `now` e congela l'ancora: le push di JSR
+                    // e le due prefetch al target non la spostano.
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                     int targetPC = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);
                     setTemp(cpu, TARGET_PC, targetPC);
                     setTemp(cpu, RETURN_ADDR, cpu.getOpcodeAddress() + (cpu.extensionsConsumed * 2));

@@ -97,6 +97,10 @@ public class RteInstruction extends AbstractM68kInstruction {
                         cpu.startPrefetchCycle();
                         return false;
                     }
+                    // WinUAE op_4e73_14_ff: `ipl_fetch_next()` sta FRA le due prefetch di
+                    // refill. Le tre letture del frame non passano dalla macchina EA,
+                    // quindi non sono un'ancora: lo e' questa prefetch, a 4 clock dalla fine.
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     cpu.startPrefetchCycle();
                     return finalizeInstructionSafe(cpu);
                 }

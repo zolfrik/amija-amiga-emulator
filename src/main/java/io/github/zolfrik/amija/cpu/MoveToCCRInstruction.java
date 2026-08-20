@@ -114,6 +114,9 @@ public class MoveToCCRInstruction extends AbstractM68kInstruction {
                 }
                 case 7 -> { // refill 2 + finalize
                     if (!cpu.isBusCycleIdle()) return false;
+                    // WinUAE op_44d0_14_ff (MV2SR.B, cioe' MOVE to CCR): `ipl_fetch_next()` sta FRA le due
+                    // prefetch di refill, non sulla lettura dell'operando.
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     cpu.startPrefetchCycle(); // np 2
                     // Finalizza SUBITO dopo aver avviato np2 (come AndiToCCRInstruction),
                     // senza un ulteriore step che attende `isBusCycleIdle`. Quello step

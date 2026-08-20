@@ -97,6 +97,9 @@ public class BsrInstruction extends AbstractM68kInstruction {
                 }
                 case 4 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    // WinUAE op_6100_14_ff: `ipl_fetch_next()` sta FRA le due prefetch al
+                    // target; le due push dell'indirizzo di ritorno non sono un'ancora.
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     cpu.startPrefetchCycle(); // Second 'np' at target+2
                     return finalizeInstructionSafe(cpu);
                 }

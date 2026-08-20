@@ -121,6 +121,10 @@ public abstract class AbcdInstruction extends AbstractM68kInstruction {
                         setTemp(cpu, 1, cpu.getLatchedByte());
                         int decX = (regX == 7) ? 2 : 1;
                         cpu.setA(regX, cpu.getA(regX, 4) - decX);
+                        // WinUAE op_8108/op_c108 _14_ff: `ipl_fetch_next_pre()` sta qui, prima
+                        // della lettura destinazione. La posizione e' quella del default, il
+                        // ramo no: `next` invece di `now`.
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         cpu.scheduleRead(cpu.getA(regX, 4), 1);
                         nextStep(cpu);
                         return false;
