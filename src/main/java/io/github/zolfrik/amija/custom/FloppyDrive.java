@@ -260,6 +260,7 @@ public final class FloppyDrive {
     public FloppyDrive(String id, DriveType driveType) {
         this.id        = id;
         this.driveType = driveType;
+        this.angleRng  = newAngleRng(id);
         reset();
     }
 
@@ -962,15 +963,34 @@ public final class FloppyDrive {
             Long fixed = Long.getLong("amiga.diskangle");
             bitPointer = fixed != null
                     ? (int) Math.floorMod(fixed, trackBitLen)
-                    : DISK_ANGLE_RNG.nextInt(trackBitLen);
+                    : angleRng.nextInt(trackBitLen);
         }
         resetBitClock();
     }
 
-    private static final java.util.Random DISK_ANGLE_RNG =
-            Long.getLong("amiga.diskseed") != null
-                    ? new java.util.Random(Long.getLong("amiga.diskseed"))
-                    : new java.util.Random();
+    /**
+     * ⛔ <b>Il generatore è PER DRIVE, non statico.</b> Con un {@code Random} condiviso da
+     * tutta la JVM l'<i>n</i>-esimo inserimento prendeva l'<i>n</i>-esimo valore della
+     * sequenza, quindi <b>l'angolo di partenza di un test dipendeva da quanti test erano
+     * girati prima</b>: la stessa classe poteva essere verde da sola e rossa dentro una
+     * suite, ed è il motivo per cui
+     * {@code docs/vamigats-paula-audio-plan.md} §2.5 prescriveva di riprodurre ogni rosso
+     * "da solo" prima di attribuirlo a una modifica.
+     *
+     * <p>Con un generatore per drive la sequenza <b>riparte con la macchina</b>: ogni test
+     * riceve esattamente l'angolo che riceve quando gira <b>da solo</b>, che è la condizione
+     * in cui tutti i riferimenti sono stati validati. Il seme resta fissabile con
+     * {@code -Damiga.diskseed=<n>} (il {@code pom.xml} lo mette a 0 per i test); l'offset per
+     * {@code id} serve a non dare lo stesso piatto a due drive diversi, e
+     * {@code String.hashCode()} è specificato dal linguaggio, quindi è riproducibile.
+     */
+    private final java.util.Random angleRng;
+
+    private static java.util.Random newAngleRng(String id) {
+        Long seed = Long.getLong("amiga.diskseed");
+        return seed == null ? new java.util.Random()
+                            : new java.util.Random(seed * 31 + (id == null ? 0 : id.hashCode()));
+    }
 
     /**
      * Compatibilità con codice esistente: carica un file ADF creando
