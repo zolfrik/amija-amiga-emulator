@@ -62,7 +62,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
      * clock o piu' dalla fine, quindi {@code set_ipl()} esce sempre come {@code now};
      * {@code set_ipl_pre()} emette per costruzione {@code ipl_fetch_next_pre()}, cioe' il
      * ramo {@code next} (il ri-campionamento retroattivo del suffisso {@code _pre} non e'
-     * modellato, come per tutte le altre {@code set_ipl_pre} — vedi §6.1.10).
+     * modellato, come per tutte le altre {@code set_ipl_pre} — vedi §6.1.3).
      *
      * <p>⚠️ Senza queste quattro regole le stesse istruzioni finivano sul percorso di
      * default, dove <b>la scrittura in coda si prendeva l'ancora</b>: la MOVE verso
@@ -72,7 +72,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
      * <p>⚠️ Il {@code -(An)} con sorgente in <b>memoria</b> non ci rientra: per la {@code .B}/
      * {@code .W} l'ancora e' sulla lettura sorgente ({@link #declareIplAnchorBeforeSourceRead}),
      * per la {@code .L} cade in mezzo alla lettura long ({@code GF_IPL | GF_IPLMID}), che non
-     * modelliamo — vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.13.
+     * modelliamo — vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.3.
      */
     private static void declareIplAnchorAtStart(Motorola68000 cpu) {
         int opcode = cpu.getIr();
@@ -161,7 +161,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
      * Con sorgente {@code Dn}/{@code An} invece l'ancora resta sulla scrittura (vedi
      * {@link #declareIplAnchorBeforeWrite}), e la {@code .L} ha una tabella sua — l'ancora
      * cade <b>in mezzo</b> alla lettura long ({@code GF_IPL | GF_IPLMID}), che qui non e'
-     * modellata: vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.12.
+     * modellata: vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.3.
      */
     private static void declareIplAnchorBeforeSourceRead(Motorola68000 cpu,
                                                          int destMode, int srcMode) {
@@ -194,7 +194,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
      * con {@code Dn}/{@code An}/immediato l'ancora e' a <b>inizio istruzione</b>
      * ({@link #declareIplAnchorAtStart}); con sorgente in <b>memoria</b> e taglia {@code .L}
      * cade <b>in mezzo alla lettura long</b> ({@code GF_IPL | GF_IPLMID}), una posizione che
-     * non modelliamo ancora — vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.13.
+     * non modelliamo ancora — vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.3.
      */
     private static void declareIplAnchorBeforeWrite(Motorola68000 cpu,
                                                     int destMode, int srcMode, int srcReg) {

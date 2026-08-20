@@ -64,7 +64,7 @@ public class JmpInstruction extends AbstractM68kInstruction {
                     // (4060 px su 204060), che e' un riferimento generato da WinUAE e il cui
                     // loop `.mainLoop: jmp (a6)` misura proprio questo. JSR e LINK, portati
                     // nello stesso passo, restano verdi. Falsificazione registrata in
-                    // docs/vamigats-paula-audio-plan.md §6.1.9: prima di riprovarci serve
+                    // docs/vamigats-paula-audio-plan.md §6.1.4: prima di riprovarci serve
                     // misurare l'istante di accettazione nel loop di JMP3 sui due lati
                     // (WINUAE_DOINTLOG contro una sonda a master-cycle), non dedurlo.
                     int targetPC = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);

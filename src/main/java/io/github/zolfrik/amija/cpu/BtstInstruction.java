@@ -37,6 +37,21 @@ public class BtstInstruction extends AbstractM68kInstruction {
         return true;
     }
 
+    /**
+     * WinUAE {@code op_0800_14_ff} (BTST {@code #imm,Dn}): {@code ipl_fetch_now()} è la prima
+     * riga della funzione, <b>prima</b> della prefetch dell'immediato — 10 clock dalla fine,
+     * dove il default ancorerebbe la prefetch finale a 6. Vale solo per la forma statica con
+     * destinazione {@code Dn}: le altre non hanno ancora dichiarata e passano dal default.
+     */
+    @Override
+    public void prepareInstruction(Motorola68000 cpu) {
+        int op = cpu.getIr();
+        if ((op & 0x0100) == 0 && ((op >> 3) & 0x7) == 0) {
+            cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+        }
+        super.prepareInstruction(cpu);
+    }
+
     @Override
     public boolean executeStep(Motorola68000 cpu) {
         int op = cpu.getIr();

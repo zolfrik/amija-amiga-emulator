@@ -190,7 +190,11 @@ public class MovemInstruction extends AbstractM68kInstruction {
                 // WinUAE op_48d0_14_ff / op_4c90_14_ff: genmovemle_ce/genmovemel_ce
                 // registrano l'ancora subito prima della prefetch finale (gencpu.cpp 4629,
                 // 4818), quindi i trasferimenti non la muovono.
-                cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                // ⚠️ Tranne la memoria→registro con (An)+, che l'ha dichiarata a inizio
+                // istruzione (prepareInstruction) e qui non va sovrascritta.
+                if (!(dr == 1 && mode == 3)) {
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                }
                 cpu.startPrefetchCycle(); // Refill IRC
                 return finalizeInstructionSafe(cpu);
 
@@ -237,6 +241,23 @@ public class MovemInstruction extends AbstractM68kInstruction {
     private boolean hasEAExt1(int m, int r) { return m == 5 || m == 6 || (m == 7 && r <= 3); }
     private boolean hasEAExt2(int m, int r) { return m == 7 && r == 1; }
     @Override public boolean shouldInhibitPrefetch() { return true; }
+
+    /**
+     * ⚠️ La sola <b>memoria→registro con {@code (An)+}</b> ancora a <b>inizio istruzione</b>:
+     * WinUAE {@code op_4c98_14_ff}/{@code op_4cd8_14_ff} aprono con {@code ipl_fetch_now()},
+     * prima ancora della prefetch della maschera, mentre ogni altra forma — {@code (An)},
+     * {@code (d16,An)}, e tutte le registro→memoria — mette {@code ipl_fetch_next()} prima
+     * della prefetch finale (case 9). La condizione è quella, non una generalizzazione:
+     * {@code op_4c90} (`(An)`) ancora alla prefetch finale come le altre.
+     */
+    @Override
+    public void prepareInstruction(Motorola68000 cpu) {
+        int op = cpu.getIr();
+        if (((op >> 10) & 1) == 1 && ((op >> 3) & 7) == 3) {
+            cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+        }
+        super.prepareInstruction(cpu);
+    }
 
     @Override
     public String getDisassembly(Motorola68000 cpu) {

@@ -65,6 +65,12 @@ public class MovepInstruction extends AbstractM68kInstruction {
                         int data = cpu.getD(dataReg, 4);
                         cpu.scheduleWrite(base, (data >> (isLong ? 24 : 8)) & 0xFF, 1);
                     } else {
+                        // Verso il registro l'ancora sta prima della coppia di byte
+                        // dell'ULTIMA word: per la .W è questa (WinUAE op_0108_14_ff,
+                        // `ipl_fetch_now()` a 12 clock dalla fine), per la .L è al passo 3.
+                        if (!isLong) {
+                            cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                        }
                         cpu.scheduleRead(base, 1);
                     }
                     nextStep(cpu);
@@ -99,6 +105,9 @@ public class MovepInstruction extends AbstractM68kInstruction {
                     } else {
                         int b = cpu.getLatchedByte() & 0xFF;
                         setTemp(cpu, DATA, getTemp(cpu, DATA) | (b << 16));
+                        // .L verso il registro: la coppia dell'ultima word comincia qui
+                        // (WinUAE op_0148_14_ff, di nuovo 12 clock dalla fine).
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                         cpu.scheduleRead(base + 4, 1);
                     }
                     nextStep(cpu);
@@ -126,6 +135,12 @@ public class MovepInstruction extends AbstractM68kInstruction {
                     continue;
                 }
                 case 6 -> {
+                    if (regToMem) {
+                        // Verso la memoria l'ancora è la prefetch finale, ramo `next`
+                        // (WinUAE op_0188/op_01c8 _14_ff: `ipl_fetch_next()` DOPO tutte le
+                        // scritture), non l'ultima scrittura come vorrebbe il default.
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    }
                     cpu.startPrefetchCycle(); // Final np — last bus cycle → finalize with it (seam 0)
                     return finalizeInstructionSafe(cpu);
                 }

@@ -50,6 +50,12 @@ public class CmpmInstruction extends AbstractM68kInstruction {
             switch (getStep(cpu)) {
                 case 0 -> {
                     int addrSrc = cpu.getA(regY, 4);
+                    if (size != 4) {
+                        // WinUAE op_b108/op_b148 _14_ff: `ipl_fetch_now()` sta prima della
+                        // lettura SORGENTE, non sull'ultimo accesso. La .L ha l'ancora fra le
+                        // due word della sorgente (case 1), come ADDX/SUBX .L (§6.1.3).
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                    }
                     cpu.scheduleRead(addrSrc, (size == 4) ? 2 : size);
                     cpu.setA(regY, addrSrc + (regY == 7 && size == 1 ? 2 : size));
                     nextStep(cpu);
@@ -59,6 +65,9 @@ public class CmpmInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     if (size == 4) {
                         setTemp(cpu, SRC_VAL, (cpu.getLatchedBusData() & 0xFFFF) << 16);
+                        // WinUAE op_b188_14_ff: `ipl_fetch_now()` sta FRA le due word della
+                        // lettura sorgente, a 16 clock dalla fine.
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                         cpu.scheduleRead(cpu.getA(regY, 4) - 2, 2);
                         nextStep(cpu);
                         return false;
