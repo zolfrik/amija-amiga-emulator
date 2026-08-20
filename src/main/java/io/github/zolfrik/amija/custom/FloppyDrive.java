@@ -151,6 +151,14 @@ public final class FloppyDrive {
 
     /** Latch cambio disco: true = segnale /CHNG LOW (attivo). */
     private boolean dskchange = false;
+    /**
+     * Vero da quando la macchina ha cominciato a girare (primo {@link #tick}). Serve a
+     * distinguere l'inserimento <b>a freddo</b> — quello del config, prima dell'accensione,
+     * che per WinUAE non è un cambio — da quello <b>a caldo</b>, che latcha {@code /CHNG}.
+     * ⚠️ Il reset NON lo azzera: un Ctrl-Amiga-Amiga non rimette la macchina nello stato
+     * «spenta col disco già dentro».
+     */
+    private boolean machineRunning = false;
 
     /** true = unità fisicamente connessa al bus; false = drive assente (DF1-DF3 non collegati). */
     private boolean connected = true;
@@ -292,6 +300,7 @@ public final class FloppyDrive {
 
     public void tick(int cycles, IntConsumer bitConsumer) {
         totalCycles += cycles;
+        machineRunning = true;   // vedi insertDisk: distingue il freddo dal caldo
 
         // Flush periodico dell'immagine disco (cheap: esce subito se non ci sono
         // tracce dirty da scrivere — caso normale in gioco con disco di sola lettura).
@@ -910,6 +919,26 @@ public final class FloppyDrive {
      * Inserisce un'immagine disco file-backed. Chiude e sostituisce l'eventuale
      * immagine precedente. Passare {@code null} equivale a chiamare
      * {@link #ejectDisk()}.
+     *
+     * <p>⛔ <b>Un disco che c'è già all'accensione NON è un cambio.</b> {@code /CHNG} è un
+     * latch che va basso a ogni inserimento o estrazione <i>mentre la macchina gira</i>; se
+     * il disco è nel drive da prima che si accendesse, non è successo niente da latchare.
+     * È il modello di WinUAE alla lettera: {@code disk.cpp}, {@code drive_insert()} — che è
+     * la strada del config, cioè del freddo — chiude con {@code drv->dskchange = false},
+     * mentre l'inserimento a caldo passa da {@code disk_insert()} → {@code dskeject_time} →
+     * espulsione (che asserisce) e solo dopo {@code drive_insert()}.
+     *
+     * <p>⚠️ <b>A caldo si asserisce, e va tenuto così</b>: l'HRM dice «/CHNG goes low on
+     * every insertion or removal, and is reset by a STEP pulse when there is a disk in the
+     * drive», ed è su questo che si regge il rilevamento del disco infilato a emulatore
+     * acceso (la nostra ROM, {@code rom/floppy.asm} {@code probeDisk}, e i giochi che
+     * chiedono di cambiare disco). Il discrimine è {@link #machineRunning}, che diventa vero
+     * al primo {@link #tick}: prima di quello siamo nel config, dopo siamo a caldo.
+     *
+     * <p>⚠️ Asserirla <b>anche a freddo</b> costava <b>11 102 CCK</b> di boot: `trackdisk`
+     * vedeva un cambio pendente e ricalibrava la testina <b>prima</b> di accendere il
+     * motore, con i suoi 3 ms di settle. Vedi {@code docs/vamigats-paula-audio-plan.md}
+     * §7.1.5, dove la controprova è misurata contro l'oracolo.
      */
     public void insertDisk(DiskImage image) {
         statusDirty = true;
@@ -919,7 +948,8 @@ public final class FloppyDrive {
         diskImage      = image;
         diskInserted   = (image != null);
         writeProtected = (image != null) && image.isReadOnly();
-        dskchange      = true;
+        // A caldo ogni inserimento/estrazione latcha; a freddo (config) no.
+        dskchange      = machineRunning || (image == null);
         // Modello FDC attivo solo per gli IPF; per gli ADF è bypassato (rate fisso).
         densityModel   = (image != null) && image.getFormat() == DiskImage.Format.IPF;
         if (diskInserted) { loadCurrentTrack(); randomiseAngularPosition(); }
