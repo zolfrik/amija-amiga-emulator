@@ -67,6 +67,22 @@ public class JmpInstruction extends AbstractM68kInstruction {
                     // docs/vamigats-paula-audio-plan.md §6.1.4: prima di riprovarci serve
                     // misurare l'istante di accettazione nel loop di JMP3 sui due lati
                     // (WINUAE_DOINTLOG contro una sonda a master-cycle), non dedurlo.
+                    //
+                    // AGGIORNAMENTO 2026-08-21 (import di vAmigaTS CPU/IPL). Tre fatti nuovi,
+                    // tutti misurati, che RESTRINGONO la domanda senza risolverla:
+                    //  1. ⛔ La via d'uscita «il riferimento di JMP3 e' di vAmiga» e' CHIUSA:
+                    //     rigenerato JMP3 con winuae-regdump.sh, esce BYTE-IDENTICO al .raw
+                    //     versionato. La contraddizione e' interna a WinUAE, non fra emulatori.
+                    //  2. `CPU/IPL/JMP1` (un jmp per modo, riferimento generato da WinUAE)
+                    //     diverge su UNA riga su 285: un solo modo sbaglia, non tutti.
+                    //  3. Dichiarare NOW per tutti i modi TRANNE il 2 rende verdi sia JMP1 sia
+                    //     JMP3. ⛔ NON adottato: `op_4ed0_14_ff` emette `ipl_fetch_now()` anche
+                    //     per il modo 2, quindi «regola + deroga» sarebbe una pezza
+                    //     ([[timing-accuracy-priority]]) e passerebbe per il motivo sbagliato.
+                    // Resta da capire perche' il modo 2 si comporti diversamente da noi: la
+                    // semantica del nostro ramo NOW e' gia' incondizionata come quella di
+                    // WinUAE, quindi il sospetto e' il CICLO in cui timbriamo l'ancora — la
+                    // stessa trappola costata due giri su PEA (vedi PeaInstruction step 1).
                     int targetPC = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);
                     setTemp(cpu, TEMP_TARGET_PC, targetPC);
 

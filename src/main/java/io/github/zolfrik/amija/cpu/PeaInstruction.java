@@ -44,6 +44,16 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                 }
                 case 1 -> {
+                    // WinUAE op_4870/op_487b _14_ff: `do_cycles_ce000_internal(2)` e SUBITO
+                    // DOPO `ipl_fetch_now()`, prima del calcolo dell'EA. L'ancora di PEA e'
+                    // PER MODO, come in gencpu: solo i due modi INDICIZZATI ancorano NOW,
+                    // gli altri quattro NEXT alla prefetch finale (step 4).
+                    // ⚠️ Va dichiarata QUI e non allo step 0: markIplAnchor timbra il ciclo
+                    // CORRENTE, e allo step 0 i 2 cicli interni non sono ancora trascorsi —
+                    // l'ancora finirebbe 2 clock in anticipo, che si misura (PEA3/PEA6).
+                    if (eaMode == 6 || (eaMode == 7 && eaReg == 3)) {
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                    }
                     if (hasExt1(eaMode, eaReg)) {
                         if (!fetchExtension(cpu, EXT1)) return false;
                         if (eaMode == 6 || (eaMode == 7 && eaReg == 3)) {
@@ -72,7 +82,12 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     if (eaMode == 2 || eaMode == 5 || eaMode == 6 || (eaMode == 7 && eaReg == 2) || (eaMode == 7 && eaReg == 3)) {
                         // WinUAE op_4850_14_ff: qui la prefetch finale precede le push, e
                         // l'ancora e' lei (`ipl_fetch_next_pre()`); le push non ancorano.
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                        // ⛔ NON per i due modi INDICIZZATI: op_4870/op_487b emettono
+                        // `ipl_fetch_now()` in testa e l'hanno gia' dichiarata allo step 0.
+                        // Ri-dichiarare qui la sovrascriverebbe (markIplAnchor riazzera).
+                        if (eaMode != 6 && !(eaMode == 7 && eaReg == 3)) {
+                            cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                        }
                         refillPipeline(cpu);
                         nextStep(cpu);
                         return false;
