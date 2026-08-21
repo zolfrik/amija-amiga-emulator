@@ -1503,8 +1503,21 @@ public abstract class AbstractAgnus {
 
         // Arma il tick E-clock delle CIA come evento (Step 1, event-driven). I test
         // non chiamano agnus.reset(): l'arm in costruzione garantisce che SLOT_CIAA
-        // scatti dal primo E-clock (masterClock==10). internalReset lo ri-arma.
-        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + 10, EventID.CIA_EXECUTE);
+        // scatti dal primo E-clock. internalReset lo ri-arma.
+        //
+        // ⛔ L'ancora è +8, NON +10, e i 2 master-cycle sono una FASE, non un ritardo.
+        // Il clock delle CIA e la fase E a cui si sincronizza un accesso della CPU sono
+        // lo stesso segnale (φ2/10) — è per questo che la macchina VMA esiste — ma nel
+        // modello sono due contatori mod-10 separati: questo evento e
+        // Motorola68000.eClockCounter. Con +10 il tick cadeva a eClockCounter == 2
+        // mentre il ciclo VMA si chiude a 0, quindi una scrittura a un registro CIA
+        // cadeva 1 CCK PRIMA del fronte del chip invece che sopra, e il primo clock di
+        // CIA dopo la scrittura arrivava a write+1 invece che a write+5 come
+        // nell'oracolo (WinUAE ri-ancora `eventtab[ev_cia].oldcycles` all'istante
+        // dell'accesso in CIA_calctimers): 4 CCK su ogni armamento di timer.
+        // Con +8 `scrittura TBHI → INTREQ` è bit-exact, 327 696 CCK.
+        // L'invariante è congelata da CiaEClockPhaseTest; piano §7.1.18.
+        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + 8, EventID.CIA_EXECUTE);
 
         // Arma la produzione dei sample audio come evento (Step 2). L'evento
         // SLOT_CH0/AUDIO_MIX si auto-rischedula da solo; questo è solo il primo arm
@@ -3936,7 +3949,9 @@ public abstract class AbstractAgnus {
         // Ri-arma il tick E-clock CIA: lo scheduler è appena stato azzerato e l'evento
         // SLOT_CIAA non si auto-rischedula più (lo faceva il polling). Senza questo le
         // CIA si fermerebbero dopo un'istruzione CPU RESET (softReset).
-        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + 10, EventID.CIA_EXECUTE);
+        // ⛔ +8 e non +10: è la stessa fase dell'arm in costruzione, e va cambiata
+        // insieme a quella. Vedi la nota estesa lì e CiaEClockPhaseTest.
+        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + 8, EventID.CIA_EXECUTE);
         // Ri-arma la produzione dei sample audio (SLOT_CH0): come SLOT_CIAA, l'evento
         // si auto-rischedula ma lo scheduler è appena stato azzerato.
         if (paula != null) {
