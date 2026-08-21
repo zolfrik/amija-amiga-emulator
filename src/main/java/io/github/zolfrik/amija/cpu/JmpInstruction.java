@@ -58,31 +58,37 @@ public class JmpInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                 }
                 case 2 -> {
-                    // ⛔ NIENTE markIplAnchor QUI. WinUAE emette `ipl_fetch_now()` subito dopo
-                    // il calcolo dell'EA anche per JMP (op_4ed0/op_4ef9 _14_ff), esattamente
-                    // come per JSR — ma portarlo manda in ROSSO vAmigaTS CPU/Timing/JMP3
-                    // (4060 px su 204060), che e' un riferimento generato da WinUAE e il cui
-                    // loop `.mainLoop: jmp (a6)` misura proprio questo. JSR e LINK, portati
-                    // nello stesso passo, restano verdi. Falsificazione registrata in
-                    // docs/vamigats-paula-audio-plan.md §6.1.4: prima di riprovarci serve
-                    // misurare l'istante di accettazione nel loop di JMP3 sui due lati
-                    // (WINUAE_DOINTLOG contro una sonda a master-cycle), non dedurlo.
+                    // Ancora IPL di JMP. gencpu emette `ipl_fetch_now()` per TUTTI e sette i
+                    // modi, ma a distanze diverse dalla fine: -8 per (An) e (xxx).L, -12 per
+                    // (d16,An)/(xxx).W/(d16,PC), -20 per i due INDICIZZATI, che hanno 6 cicli
+                    // interni fra l'ancora e le prefetch. Noi la dichiariamo SOLO per i due
+                    // indicizzati, e la ragione e' MISURATA, non dedotta.
                     //
-                    // AGGIORNAMENTO 2026-08-21 (import di vAmigaTS CPU/IPL). Tre fatti nuovi,
-                    // tutti misurati, che RESTRINGONO la domanda senza risolverla:
-                    //  1. ⛔ La via d'uscita «il riferimento di JMP3 e' di vAmiga» e' CHIUSA:
-                    //     rigenerato JMP3 con winuae-regdump.sh, esce BYTE-IDENTICO al .raw
-                    //     versionato. La contraddizione e' interna a WinUAE, non fra emulatori.
-                    //  2. `CPU/IPL/JMP1` (un jmp per modo, riferimento generato da WinUAE)
-                    //     diverge su UNA riga su 285: un solo modo sbaglia, non tutti.
-                    //  3. Dichiarare NOW per tutti i modi TRANNE il 2 rende verdi sia JMP1 sia
-                    //     JMP3. ⛔ NON adottato: `op_4ed0_14_ff` emette `ipl_fetch_now()` anche
-                    //     per il modo 2, quindi «regola + deroga» sarebbe una pezza
-                    //     ([[timing-accuracy-priority]]) e passerebbe per il motivo sbagliato.
-                    // Resta da capire perche' il modo 2 si comporti diversamente da noi: la
-                    // semantica del nostro ramo NOW e' gia' incondizionata come quella di
-                    // WinUAE, quindi il sospetto e' il CICLO in cui timbriamo l'ancora — la
-                    // stessa trappola costata due giri su PEA (vedi PeaInstruction step 1).
+                    // La misura (2026-08-21, il passo che il piano §6.1.4 prescriveva): istante
+                    // di accettazione dell'interrupt nel loop `.mainLoop: jmp (a6)` di
+                    // CPU/Timing/JMP3, `WINUAE_DOINTLOG` contro la sonda gemella, avvio e
+                    // angolo fissati, 3096 interrupt confrontati uno per uno:
+                    //   • senza ancora: Δ = **46 cck costanti su 3095 su 3096** — cioe' solo la
+                    //     fase di boot. Per il modo 2 il nostro default RIPRODUCE ESATTAMENTE
+                    //     l'oracolo, benche' l'audit lo descriva come `next @-4` contro `now @-8`;
+                    //   • con l'ancora su tutti i modi: Δ = 46/48/50/51/52, cioe' da 2 a 6 cck
+                    //     di RITARDO, variabile. Il nostro `markIplAnchor(NOW)` in questo punto
+                    //     NON e' la `ipl_fetch_now()` di WinUAE.
+                    // Da cui: sui modi corti la dichiarazione non serve (il default e' gia'
+                    // esatto) e per giunta fa danno; sugli indicizzati serve, ed e' la stessa
+                    // struttura di PEA (op_4870/op_487b, vedi PeaInstruction step 1).
+                    //
+                    // ⚠️ RESIDUO APERTO, e non e' il modo 2: e' che il nostro ramo NOW timbra
+                    // l'ancora in un istante che non coincide con quello dell'oracolo sui modi
+                    // corti. Finche' resta cosi', questa dichiarazione per-modo e' la forma piu'
+                    // fedele che sappiamo scrivere, non la trascrizione di gencpu.
+                    // ⛔ Altri due fatti gia' stabiliti, per non rifare la strada: il .raw di
+                    // JMP3 rigenerato con WinUAE e' BYTE-IDENTICO a quello distribuito (la
+                    // contraddizione non era fra emulatori), e il POLL a S0 e' load-bearing
+                    // (spostarlo manda 245 test su 253 in rosso, piano §6.1.4).
+                    if (eaMode == 6 || (eaMode == 7 && eaReg == 3)) {
+                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                    }
                     int targetPC = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);
                     setTemp(cpu, TEMP_TARGET_PC, targetPC);
 
