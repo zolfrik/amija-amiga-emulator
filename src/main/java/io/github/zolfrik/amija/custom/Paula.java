@@ -1198,8 +1198,25 @@ public final class Paula {
     // Public API
     // =========================================================================
 
-    public void assertPortsInterrupt() { raiseInterrupt(0x0008); }
-    public void assertExterInterrupt() { raiseInterrupt(0x2000); }
+    /**
+     * Ritardo, in master-cycle, fra la discesa della linea /IRQ di un CIA e la comparsa di
+     * PORTS/EXTER in INTREQ: <b>1 CCK</b>.
+     *
+     * <p>Oracolo: {@code cia.cpp} {@code ICR()} → {@code ICRIRQ()} →
+     * {@code safe_interrupt_set()}, che in modo cycle-exact chiama
+     * {@code INTREQ_INT(inum, 0)}; e {@code INTREQ_INT} accoda l'evento a
+     * {@code delay + CYCLE_UNIT}, cioè a <b>un CCK</b> con {@code delay = 0}. È lo stesso
+     * meccanismo del ritardo audio ({@link #AUDIO_IRQ_DELAY_CYCLES}), che parte da
+     * {@code delay = CYCLE_UNIT} e quindi vale il doppio.
+     *
+     * <p>Misura (piano §7.1.17): underflow del Timer B → INTREQ bit 3 vale <b>+6 CCK</b>
+     * sull'oracolo — 5 per il clock di CIA che la CIA stessa si prende
+     * ({@code MOS8520.triggerIrq}) e 1 per questo evento. Prima erano 0 + 0.
+     */
+    private static final int CIA_IRQ_DELAY_CYCLES = 2;   // 1 CCK = 2 master cycle
+
+    public void assertPortsInterrupt() { scheduleIntreq(3, CIA_IRQ_DELAY_CYCLES); }
+    public void assertExterInterrupt() { scheduleIntreq(13, CIA_IRQ_DELAY_CYCLES); }
     public boolean isPortsInterruptAsserted() { return (intreq & 0x0008) != 0; }
     public boolean isExterInterruptAsserted() { return (intreq & 0x2000) != 0; }
     public void assertVertbInterrupt() {

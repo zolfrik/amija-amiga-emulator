@@ -54,7 +54,6 @@ public class MOS8520 {
     private boolean cachedSpDirection;
     private boolean cachedSpDrive;
     private boolean specialPinCacheValid;
-    private static final int TIMER_START_DELAY = 8;
 
     // ── Action flags (Delay Pipeline) ─────────────────────────────────────────
     // These bits represent events scheduled to happen in future cycles.
@@ -160,7 +159,6 @@ public class MOS8520 {
     private int pb67TimerMode; // 0 = port register, 1 = timer mode
     private int pb67TimerOut;  // PB output level when in timer mode
     private int pb67Toggle;    // Internal flip-flop for toggle mode
-    private int timerAStartDelay, timerBStartDelay;
 
     private boolean sp, cnt, irq; // Pin state signals
 
@@ -214,8 +212,6 @@ public class MOS8520 {
         pb67TimerMode = 0;
         pb67TimerOut = 0;
         pb67Toggle = 0;
-        timerAStartDelay = 0;
-        timerBStartDelay = 0;
 
         cnt = true;
         sp = true;
@@ -264,25 +260,31 @@ public class MOS8520 {
         counterB = latchB;
     }
 
-    private void triggerTimerIrq() {
-        // Delayed interrupt propagation
-        delay |= ((delay & CIAReadIcr0) != 0) ? CIASetInt0 : CIASetInt1;
-        delay |= ((delay & CIAReadIcr0) != 0) ? CIASetIcr0 : CIASetIcr1;
-    }
-
-    private void triggerTodIrq() {
-        delay |= ((delay & CIAReadIcr0) != 0) ? CIASetInt0 : CIASetInt1;
-        delay |= ((delay & CIAReadIcr0) != 0) ? CIASetIcr0 : CIASetIcr1;
-    }
-
-    private void triggerFlagPinIrq() {
-        delay |= ((delay & CIAReadIcr0) != 0) ? CIASetInt0 : CIASetInt1;
-        delay |= ((delay & CIAReadIcr0) != 0) ? CIASetIcr0 : CIASetIcr1;
-    }
-
-    private void triggerSerialIrq() {
-        delay |= ((delay & CIAReadIcr0) != 0) ? CIASetInt0 : CIASetInt1;
-        delay |= ((delay & CIAReadIcr0) != 0) ? CIASetIcr0 : CIASetIcr1;
+    /**
+     * Arma l'assertion della linea /IRQ e del bit master dell'ICR <b>un clock di CIA dopo</b>
+     * l'evento che li ha causati — stadio 0 del pipeline, che diventa stadio 1 al tick
+     * successivo.
+     *
+     * <p>È la forma di WinUAE, e vale per <b>tutte e quattro</b> le sorgenti dell'ICR, senza
+     * deroghe: il timer A/B e il seriale mettono il bit in {@code c->icr2} dentro
+     * {@code CIA_update_check}, che lo travasa in {@code c->icr1} in cima al ciclo del clock
+     * <b>successivo</b> ({@code c->icr1 |= c->icr2}); FLAG e allarme del TOD passano da
+     * {@code CIA_sync_interrupt}, che accoda l'evento a {@code DIV10 + syncdelay}, cioè anche
+     * loro un clock di CIA. Solo dopo il travaso {@code RethinkICR} alza {@code 0x80|0x40} e
+     * chiama {@code ICR()}, che è ciò che porta giù la linea.
+     *
+     * <p>Misura (piano §7.1.17): underflow → INTREQ bit 3 vale <b>+6 CCK</b> sull'oracolo, di
+     * cui 5 sono questo clock di CIA e 1 è l'evento {@code INTREQ_INT} dal lato di Paula.
+     * Prima di questa cura la linea scendeva nello <b>stesso</b> tick dell'evento.
+     *
+     * <p>⚠️ Quel che <b>non</b> è portato: il bit di <i>sorgente</i> dell'ICR (0x01…0x10)
+     * resta visibile a una lettura nel tick dell'evento, mentre in WinUAE è staged anche lui
+     * (vive in {@code icr2} fino al travaso). Serve un {@code icr} differito e tocca il
+     * pipeline di lettura/ack (CIAReadIcr/CIAClearIcr/CIAAckIcr): non c'è misura che oggi lo
+     * chieda, e finché non c'è non si tocca.
+     */
+    private void triggerIrq() {
+        delay |= CIASetInt0 | CIASetIcr0;
     }
 
     // ── TOD Helpers ───────────────────────────────────────────────────────────
@@ -336,7 +338,7 @@ public class MOS8520 {
     private void checkTodIrq() {
         if (!todMatching && todCounter == todAlarm) {
             icr |= 0x04; // TOD source bit — ROM reads this to identify the interrupt
-            if ((imr & 0x04) != 0) triggerTodIrq();
+            if ((imr & 0x04) != 0) triggerIrq();
         }
         todMatching = (todCounter == todAlarm);
     }
@@ -446,7 +448,7 @@ public class MOS8520 {
     public void emulateFallingEdgeOnFlagPin() {
         icr |= 0x10;
         if ((imr & 0x10) != 0) {
-            triggerFlagPinIrq();
+            triggerIrq();
         }
     }
 
@@ -483,13 +485,20 @@ public class MOS8520 {
 
         // ── Timer A Pipeline Processing ───────────────────────────────────────
 
+        // (0) Un caricamento dal latch cancella il decremento del PROPRIO clock.
+        // È la regola di WinUAE `t->inputpipe &= ~CIA_PIPE_CLR1` (cia.cpp): il bit di
+        // uscita del pipe di conteggio viene azzerato sia dal caricamento schedulato da
+        // una scrittura (`t->loaddelay`, blocco «CIA special cases») sia dal ricarico
+        // che segue un underflow in modo continuo (blocco `ovfl`). Vale per tutti e due
+        // i timer e per tutte le modalità: non è una deroga.
+        // Vedi la nota estesa sul timer B e docs/vamigats-paula-audio-plan.md §7.1.16.
+        boolean loadA = (delay & (CIALoadA1 | CIALoadA2)) != 0;
+        if (loadA) {
+            delay &= ~CIACountA3;
+        }
+
         // (1) Decrement counter.
-        // Il ritardo di avvio è un fenomeno del clock interno del CIA (~8 E-clock),
-        // NON un numero di eventi di conteggio: va consumato ad ogni tick. Vedi la
-        // nota estesa sul timer B, dove la differenza è macroscopica.
-        if (timerAStartDelay > 0) {
-            timerAStartDelay--;
-        } else if ((delay & CIACountA3) != 0) {
+        if ((delay & CIACountA3) != 0) {
             counterA = (counterA - 1) & 0xFFFF;
         }
 
@@ -509,28 +518,44 @@ public class MOS8520 {
             }
             delay |= CIALoadA1;
         }
-        // (4) Delayed reload
-        if ((delay & CIALoadA1) != 0) reloadTimerA();
+        // (4) Delayed reload. Due stadi, come i due bit `0x00000001 << 1` e
+        // `<< 2` che WinUAE arma insieme quando il timer è fermo: il caricamento
+        // avviene al clock 2 E al clock 3 dopo la scrittura.
+        if ((delay & (CIALoadA1 | CIALoadA2)) != 0) reloadTimerA();
 
         // ── Timer B Pipeline Processing ───────────────────────────────────────
 
-        // Come per il timer A, il ritardo di avvio si consuma sul clock del CIA e non
-        // sugli eventi di conteggio.
+        // ⛔ Qui NON c'è (più) un ritardo d'avvio aggiuntivo. Dal 2026-06 al 2026-08 il
+        // codice aspettava 8 tick di E-clock in più prima del primo decremento
+        // (TIMER_START_DELAY): era nato nello stesso commit del detune 19/200 dei timer
+        // CIA, messo per far quadrare il test "New Test CIAs" di DiagROM. Il detune è
+        // stato revocato a favore del rate hardware CLK/10 (memoria
+        // cia-timer-eclock-5pct) e la costante è rimasta indietro, senza più il suo
+        // gemello. Non ha nessun corrispondente né in WinUAE (che al posto suo ha i due
+        // caricamenti di `t->loaddelay`, cia.cpp) né sull'8520, dove il ritardo fra la
+        // scrittura di CRA/CRB e il primo decremento è quello del pipeline
+        // CIACountB0→B1→B2→B3 qui sotto più i caricamenti.
         //
-        // Contarlo in eventi era corretto solo in modalità φ2 (INMODE=00), dove c'è
-        // un evento per E-clock. In modalità CASCATA (INMODE=10: il timer B conta gli
-        // underflow del timer A) gli eventi sono rarissimi, e i primi 8 underflow di A
-        // venivano mangiati dal delay invece di decrementare il contatore: con
-        // latchA=7160 sono 8 × 71 600 = 572 800 cicli ≈ 4 frame di ritardo su un
-        // periodo nominale di 51 — un errore dell'8%.
+        // ⚠️ Costava 8 E-clock a OGNI armamento, cioè lo 0,012% su un timer da 65 536
+        // tick ma l'8% su uno da 100 — ed è esattamente il bug che il ritardo aveva
+        // reso visibile: Dragon's Lair (latchA=7160, latchB=100, CRB=$49) usa la
+        // CASCATA (INMODE=10) come sveglia e verifica che l'attesa non superi 53 frame
+        // ($003D1E: SUB.b #$35,D0); con gli 8 tick contati sugli EVENTI di conteggio
+        // invece che sul clock, i primi 8 underflow del timer A venivano mangiati e i
+        // 51 frame nominali diventavano 56. `CiaCascadeTimerTest` è la regressione, e
+        // senza il ritardo l'asserzione è soddisfatta a maggior ragione.
         //
-        // Dragon's Lair usa esattamente questa configurazione (latchA=7160,
-        // latchB=100, CRB=$49) come sveglia e verifica che l'attesa non superi 53
-        // frame ($003D1E: SUB.b #$35,D0): 51 nominali passavano a 56 e il controllo
-        // falliva, mandando il gioco in stallo con schermo nero.
-        if (timerBStartDelay > 0) {
-            timerBStartDelay--;
-        } else if ((delay & CIACountB3) != 0) {
+        // Il ritardo d'avvio è quello del pipeline `CIALoadB0→B1→B2` più la regola che
+        // un caricamento cancella il conteggio del proprio clock (vedi il timer A).
+        // Misurato contro l'oracolo (piano §7.1.16, armamento di timer.device a
+        // $FE94AC): il primo decremento cade al clock **4** dopo la scrittura di TBHI,
+        // perché il latch viene caricato ai clock 2 e 3 e ognuno dei due toglie il
+        // decremento del proprio clock. Con un caricamento solo cadeva al clock 3.
+        boolean loadB = (delay & (CIALoadB1 | CIALoadB2)) != 0;
+        if (loadB) {
+            delay &= ~CIACountB3;
+        }
+        if ((delay & CIACountB3) != 0) {
             counterB = (counterB - 1) & 0xFFFF;
         }
 
@@ -544,7 +569,7 @@ public class MOS8520 {
             }
             delay |= CIALoadB1;
         }
-        if ((delay & CIALoadB1) != 0) reloadTimerB();
+        if ((delay & (CIALoadB1 | CIALoadB2)) != 0) reloadTimerB();
 
         // ── Serial Port Processing ───────────────────────────────────────────
 
@@ -609,15 +634,15 @@ public class MOS8520 {
         if (timerAOutput) { icr |= 0x01; }
         if (timerBOutput) { icr |= 0x02; diagTimerBUnderflows++; }
         if ((timerAOutput && (imr & 0x01) != 0) || (timerBOutput && (imr & 0x02) != 0)) {
-            triggerTimerIrq();
+            triggerIrq();
         }
         if ((delay & CIATODInt0) != 0) {
             icr |= 0x04;
-            if ((imr & 0x04) != 0) triggerTodIrq();
+            if ((imr & 0x04) != 0) triggerIrq();
         }
         if ((delay & CIASerInt2) != 0) {
             icr |= 0x08;
-            if ((imr & 0x08) != 0) triggerSerialIrq();
+            if ((imr & 0x08) != 0) triggerIrq();
         }
         // Scheduled ICR status clearing and IRQ line release
         if ((delay & (CIAClearIcr1 | CIAAckIcr1 | CIASetIcr1 | CIASetInt1 | CIAClearInt0)) != 0) {
@@ -789,7 +814,6 @@ public class MOS8520 {
                     if ((cra & 0x20) == 0) {
                         delay |= CIACountA1 | CIALoadA0 | CIACountA0;
                         feed |= CIACountA0;
-                        timerAStartDelay = TIMER_START_DELAY;
                     }
                     cra |= 0x01;
                 }
@@ -808,7 +832,6 @@ public class MOS8520 {
                     if ((crb & 0x60) == 0) {
                         delay |= CIACountB1 | CIALoadB0 | CIACountB0;
                         feed |= CIACountB0;
-                        timerBStartDelay = TIMER_START_DELAY;
                     }
                     crb |= 0x01;
                 }
@@ -835,13 +858,9 @@ public class MOS8520 {
             case 0xE:
                 if ((val & 0x01) != 0) {
                     delay |= CIACountA0; feed |= CIACountA0;
-                    if ((cra & 0x01) == 0) {
-                        pb67Toggle |= 0x40;
-                        timerAStartDelay = TIMER_START_DELAY;
-                    }
+                    if ((cra & 0x01) == 0) pb67Toggle |= 0x40;
                 } else {
                     delay &= ~(CIACountA1 | CIACountA0); feed &= ~CIACountA0;
-                    timerAStartDelay = 0;
                 }
                 if ((val & 0x02) != 0) {
                     pb67TimerMode |= 0x40;
@@ -868,13 +887,9 @@ public class MOS8520 {
             case 0xF:
                 if ((val & 0x01) != 0) {
                     delay |= CIACountB0; feed |= CIACountB0;
-                    if ((crb & 0x01) == 0) {
-                        pb67Toggle |= 0x80;
-                        timerBStartDelay = TIMER_START_DELAY;
-                    }
+                    if ((crb & 0x01) == 0) pb67Toggle |= 0x80;
                 } else {
                     delay &= ~(CIACountB1 | CIACountB0); feed &= ~CIACountB0;
-                    timerBStartDelay = 0;
                 }
                 if ((val & 0x02) != 0) {
                     pb67TimerMode |= 0x80;
