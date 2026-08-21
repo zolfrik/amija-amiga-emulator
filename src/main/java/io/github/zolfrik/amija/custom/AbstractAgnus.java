@@ -618,7 +618,14 @@ public abstract class AbstractAgnus {
             // noi il DMA di refresh/disco/audio continua. Non è osservabile qui (il
             // rilevamento genlock della graphics.library gira senza disco né audio), e
             // costerebbe mandare ogni ciclo nello slot 0.
-            hpos = 0;
+            // ⚠️ `maxHpos - 2`, non 0: il nostro `vpos++` vive nel WRAP della riga mentre
+            // quello di WinUAE (`custom_trigger_start`) sta un CCK DENTRO — la stessa
+            // convenzione di INITIAL_HPOS (piano §5.2). Tradotto in questa scala,
+            // «il pennello è a inizio riga» si scrive maxHpos-2. Con `hpos = 0` il primo
+            // `vpos++` dopo il rilascio cadeva a R+226 invece che a R+3 (misurato sui due
+            // lati a ritardo d'avvio e drive fissati, piano §7.1.13): 223 CCK che si
+            // propagavano a tutto il resto del boot.
+            hpos = maxHpos - 2;
             // `resetfulllinestate()`: la riga che riparte non eredita i latch di quella
             // interrotta.
             fetchWindowOpened = false;
