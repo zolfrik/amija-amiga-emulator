@@ -134,6 +134,11 @@ public abstract class AbstractM68kInstruction {
     }
 
     protected int calculateEA(Motorola68000 cpu, int mode, int reg, int size, int basePC, int ext1, int ext2, boolean updateAn, boolean includeGap) {
+        // Questo e' il nostro genamode: l'EA appena calcolata e' quella su cui l'eventuale
+        // address error scattera', e il suo modo decide l'offset del PC nel frame di
+        // gruppo 0 (Motorola68000.group0DataFaultPcOffset). Le istruzioni che invece
+        // falliscono sullo STACK e non sull'EA (PEA, JSR, LINK, BSR) dichiarano da se'.
+        cpu.noteGroup0Ea(mode, reg, size);
         int inc = (reg == 7 && size == 1) ? 2 : size;
         return switch (mode) {
             case 2 -> cpu.getA(reg, 4);

@@ -49,6 +49,10 @@ public class AddxInstruction extends AbstractM68kInstruction {
             switch (getStep(cpu)) {
                 case 0 -> {
                     if (isMemory) {
+                        // Le forme memoria-memoria dichiarano il proprio offset del PC di gruppo 0:
+                        // nel generato di WinUAE il ramo di guasto porta sempre due byte in piu'
+                        // della regola generale, per entrambe le taglie (op_9188/op_d188 _14_ff).
+                        cpu.markGroup0EaDelta(2);
                         indexedGap2(cpu); // n
                         nextStep(cpu);
                         continue;

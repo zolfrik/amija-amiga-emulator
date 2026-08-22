@@ -196,6 +196,63 @@ public class MoveInstruction extends AbstractM68kInstruction {
      * cade <b>in mezzo alla lettura long</b> ({@code GF_IPL | GF_IPLMID}), una posizione che
      * non modelliamo ancora — vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.3.
      */
+    /**
+     * MOVE dichiara il proprio offset del PC di gruppo 0 per il guasto in <b>scrittura</b>.
+     *
+     * <p>Per le MOVE gencpu non applica il delta del modo di destinazione ma una regola
+     * sua, {@code pcextra} ({@code gencpu.cpp:3262-3269}, commento «adjust MOVE write
+     * address error stacked PC»), che dipende da <b>entrambi</b> i modi:
+     * <pre>
+     * sorgente >= (An) e non immediata, destinazione (xxx).L  -> -2
+     * destinazione >= (d16,An)                                ->  0
+     * altrimenti (destinazione (An), (An)+, -(An))            -> +2
+     * </pre>
+     *
+     * <p>Va chiamata dopo il calcolo dell'EA di destinazione e prima della scrittura.
+     */
+    private static void declareGroup0WritePc(Motorola68000 cpu, int srcMode, int srcReg,
+                                             int destMode, int destReg) {
+        boolean srcGeAind = srcMode >= 2;                 // da (An) in poi, immediato incluso
+        boolean srcImm = srcMode == 7 && srcReg == 4;
+        boolean dstAbsL = destMode == 7 && destReg == 1;
+        boolean dstGeAd16 = destMode == 5 || destMode == 6 || (destMode == 7 && destReg <= 1);
+        int pcextra = (srcGeAind && !srcImm && dstAbsL) ? -2 : (dstGeAd16 ? 0 : 2);
+        cpu.markGroup0PcOffset(2 + ((cpu.extensionsConsumed - 1) * 2) + pcextra);
+    }
+
+    /**
+     * MOVE verso {@code -(An)} fa la <b>prefetch prima</b> della scrittura: quando quella
+     * scrittura fallisce, l'IR e' gia' stato ricaricato e nel frame di gruppo 0 finisce
+     * l'opcode dell'istruzione <b>successiva</b>, non il proprio.
+     *
+     * <p>Trascritto dal generato ({@code op_313c_14_ff}: {@code regs.ir = regs.irc;} prima
+     * della scrittura, poi {@code opcode = regs.ir} passato a {@code exception3_write_access}).
+     * ⚠️ La condizione va presa com'e': le 11 funzioni {@code _14_ff} che ricaricano l'IR
+     * prima del ramo di guasto sono le MOVE {@code .W}/{@code .L} verso {@code -(An)} con
+     * sorgente {@code Dn}/{@code An}/immediata — la {@code .B} non c'e' (la scrittura di un
+     * byte non fallisce mai) e con sorgente in memoria l'ordine e' diverso — piu' le cinque
+     * PEA. E' lo stesso insieme di {@link #declareIplAnchorAtStart}, non per caso: e' il
+     * ramo in cui la prefetch precede l'accesso.
+     *
+     * <p>Osservabile: vAmigaTS {@code CPU/Exceptions/StackFrame/addrerr4}
+     * ({@code move.w #$68,-(a2)}) attende IR {@code $337C}, che e' l'opcode della
+     * {@code move.w #$7FFF,DMACON(a1)} che segue.
+     */
+    private static void declareGroup0IrAfterPrefetch(Motorola68000 cpu, int srcMode, int srcReg,
+                                                     int destMode) {
+        if (destMode != 4) {
+            return;
+        }
+        int size = (cpu.getIr() >> 12) & 3;      // 1 = .B, 3 = .W, 2 = .L
+        if (size == 1) {
+            return;
+        }
+        boolean srcIsRegOrImm = srcMode <= 1 || (srcMode == 7 && srcReg == 4);
+        if (srcIsRegOrImm) {
+            cpu.markGroup0Ir(cpu.getIRD());
+        }
+    }
+
     private static void declareIplAnchorBeforeWrite(Motorola68000 cpu,
                                                     int destMode, int srcMode, int srcReg) {
         boolean isLong = ((cpu.getIr() >> 12) & 3) == 2;
@@ -368,6 +425,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     boolean updateNow = (destMode == 4);
                     int ea = calculateEA(cpu, destMode, destReg, 2, basePC, getTemp(cpu, DST_EXT1), getTemp(cpu, DST_EXT2), updateNow, false);
                     setTemp(cpu, DST_EA, ea);
+                    declareGroup0WritePc(cpu, srcMode, srcReg, destMode, destReg);
 
                     if (destMode == 4) { refillPipeline(cpu); nextStep(cpu); return false; }
                     nextStep(cpu);
@@ -375,6 +433,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
                     declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
+                    declareGroup0IrAfterPrefetch(cpu, srcMode, srcReg, destMode);
                     cpu.scheduleWrite(getTemp(cpu, DST_EA), getTemp(cpu, OPERAND), 2);
                     setStep(cpu, 18);
                     return false;
@@ -518,22 +577,22 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     boolean updateNow = (destMode == 4);
                     int ea = calculateEA(cpu, destMode, destReg, 4, basePC, getTemp(cpu, DST_EXT1), getTemp(cpu, DST_EXT2), updateNow, false);
                     setTemp(cpu, DST_EA, ea);
+                    declareGroup0WritePc(cpu, srcMode, srcReg, destMode, destReg);
 
                     if (destMode == 4) {
-                        cpu.setGroup0PushedPC(cpu.getOpcodeAddress() + (cpu.extensionsConsumed * 2));
                         cpu.startPrefetchCycle();
                         nextStep(cpu);
                         return false;
                     }
                     boolean srcIsRegOrImm = (srcMode <= 1) || (srcMode == 7 && srcReg == 4);
                     if (destMode == 7 && destReg == 1 && !srcIsRegOrImm) {
-                        cpu.setGroup0PushedPC(basePC);
                     }
                     nextStep(cpu);
                 }
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
                     declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
+                    declareGroup0IrAfterPrefetch(cpu, srcMode, srcReg, destMode);
                     int val = getTemp(cpu, OPERAND);
                     int ea = getTemp(cpu, DST_EA);
                     if (destMode == 4) { cpu.scheduleWrite(ea + 2, val & 0xFFFF, 2); }
@@ -689,6 +748,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     boolean updateNow = (destMode == 4);
                     int ea = calculateEA(cpu, destMode, destReg, 1, basePC, getTemp(cpu, DST_EXT1), getTemp(cpu, DST_EXT2), updateNow, false);
                     setTemp(cpu, DST_EA, ea);
+                    declareGroup0WritePc(cpu, srcMode, srcReg, destMode, destReg);
 
                     if (destMode == 4) { refillPipeline(cpu); nextStep(cpu); return false; }
                     nextStep(cpu);
@@ -696,6 +756,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
                     declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
+                    declareGroup0IrAfterPrefetch(cpu, srcMode, srcReg, destMode);
                     cpu.scheduleWrite(getTemp(cpu, DST_EA), getTemp(cpu, OPERAND), 1);
                     setStep(cpu, 18);
                     return false;
@@ -838,22 +899,22 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     boolean updateNow = (destMode == 4);
                     int ea = calculateEA(cpu, destMode, destReg, 2, basePC, getTemp(cpu, DST_EXT1), getTemp(cpu, DST_EXT2), updateNow, false);
                     setTemp(cpu, DST_EA, ea);
+                    declareGroup0WritePc(cpu, srcMode, srcReg, destMode, destReg);
 
                     if (destMode == 4) {
-                        cpu.setGroup0PushedPC(cpu.getOpcodeAddress() + (cpu.extensionsConsumed * 2));
                         cpu.startPrefetchCycle();
                         nextStep(cpu);
                         return false;
                     }
                     boolean srcIsRegOrImm = (srcMode <= 1) || (srcMode == 7 && srcReg == 4);
                     if (destMode == 7 && destReg == 1 && !srcIsRegOrImm) {
-                        cpu.setGroup0PushedPC(basePC);
                     }
                     nextStep(cpu);
                 }
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
                     declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
+                    declareGroup0IrAfterPrefetch(cpu, srcMode, srcReg, destMode);
                     cpu.scheduleWrite(getTemp(cpu, DST_EA), getTemp(cpu, OPERAND), 2);
                     setStep(cpu, 18);
                     return false;
@@ -1034,17 +1095,17 @@ public class MoveInstruction extends AbstractM68kInstruction {
                         int ea = an - 2;  // first word: LSW at (An-2)
                         cpu.setA(destReg, ea);
                         setTemp(cpu, DST_EA, ea - 2); // full long EA = An - 4 (MSW address)
-                        cpu.setGroup0PushedPC(cpu.getOpcodeAddress() + (cpu.extensionsConsumed * 2));
+                        declareGroup0WritePc(cpu, srcMode, srcReg, destMode, destReg);
                         cpu.startPrefetchCycle();
                         nextStep(cpu);
                         return false;
                     }
                     int ea = calculateEA(cpu, destMode, destReg, 4, basePC, getTemp(cpu, DST_EXT1), getTemp(cpu, DST_EXT2), false, false);
                     setTemp(cpu, DST_EA, ea);
+                    declareGroup0WritePc(cpu, srcMode, srcReg, destMode, destReg);
                     calculateAndSetFlags(cpu, val, 4);
                     boolean srcIsRegOrImm = (srcMode <= 1) || (srcMode == 7 && srcReg == 4);
                     if (destMode == 7 && destReg == 1 && !srcIsRegOrImm) {
-                        cpu.setGroup0PushedPC(basePC);
                     }
                     nextStep(cpu);
                 }
@@ -1055,6 +1116,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
                     declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
+                    declareGroup0IrAfterPrefetch(cpu, srcMode, srcReg, destMode);
                     int val = getTemp(cpu, OPERAND);
                     if (destMode == 4) {
                         // Update flags here so triggerAddressError captures the correct post-MOVE SR.

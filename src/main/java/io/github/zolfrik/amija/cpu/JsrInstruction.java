@@ -102,6 +102,9 @@ public class JsrInstruction extends AbstractM68kInstruction {
                 case 4 -> {
                     if (!cpu.isIRDValid()) return false;
                     int returnAddress = getTemp(cpu, RETURN_ADDR);
+                    // Il guasto e' sulla PUSH, non sull'EA: per JSR il generato non applica il
+                    // delta del modo (op_4ea8/4eba: incpci(4), non 2). Delta zero.
+                    cpu.markGroup0EaDelta(0);
                     cpu.setA7(cpu.getA7() - 4);
                     cpu.scheduleWriteWord(cpu.getA7(), (returnAddress >>> 16) & 0xFFFF); // nS (Push MSW)
                     nextStep(cpu);

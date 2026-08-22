@@ -98,6 +98,13 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     // Push High Word (MSW) - nS
                     if (!cpu.isBusCycleIdle()) return false;
                     int addr = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);
+                    // Il guasto e' sulla PUSH, non sull'EA: PEA dichiara il proprio offset del PC
+                    // di gruppo 0 (+2 tranne i modi assoluti, op_4850/4868/4870/487a/487b contro
+                    // op_4878/4879). E per gli stessi modi la prefetch finale e' gia' passata
+                    // (case 4), quindi nel frame finisce l'opcode dell'istruzione SUCCESSIVA.
+                    boolean eaIsAbsolute = eaMode == 7 && eaReg <= 1;
+                    cpu.markGroup0EaDelta(eaIsAbsolute ? 0 : 2);
+                    if (!eaIsAbsolute) cpu.markGroup0Ir(cpu.getIRD());
                     setTemp(cpu, 2, addr);
                     int ssp = cpu.getA7();
                     cpu.setA7(ssp - 4);

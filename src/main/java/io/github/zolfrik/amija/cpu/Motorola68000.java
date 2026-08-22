@@ -320,6 +320,21 @@ public final class Motorola68000 {
     private boolean faultIsWrite, faultIsInstruction, addressErrorFault, group0PushedPCValid, processingReset, iackInProgress = false, vmaStartedHigh = false;
     private int group0PushedPC;
 
+    /**
+     * Modo di indirizzamento dell'ultima EA calcolata, codificato come {@code mode} 0..6 e
+     * {@code 8 + reg} per il modo 7 (8 = {@code (xxx).W}, 9 = {@code (xxx).L},
+     * 10 = {@code (d16,PC)}, 11 = {@code (d8,PC,Xn)}, 12 = immediato); -1 = nessuna.
+     * Lo registra {@link AbstractM68kInstruction#calculateEA} — che è il nostro
+     * {@code genamode} — perché è quella l'EA su cui l'accesso sta per fallire.
+     */
+    int group0EaMode = -1;
+    /** Taglia in byte dell'ultima EA calcolata (1/2/4). */
+    int group0EaSize = 2;
+    /** {@code +2}/{@code -2}/{@code 0} imposto dall'istruzione, o {@link Integer#MIN_VALUE}. */
+    int group0EaDeltaOverride = Integer.MIN_VALUE;
+    /** IR dichiarato per il frame di gruppo 0, o -1 = usa l'opcode corrente. */
+    int group0IrOverride = -1;
+
     static final class BusOp { int address, size, dataOut, fc, flushTag; boolean read, uds, lds, rmwLocked; BusOpType type; OpPurpose purpose; }
     public enum BusOpType { NORMAL_READ, NORMAL_WRITE, INSTRUCTION_FETCH, RMW_READ, RMW_WRITE, INTERRUPT_ACK }
     public enum OpPurpose { PREFETCH_IRC, PREFETCH_IRD, DATA_READ, DATA_READ_LONG, DATA_WRITE, STACK_PUSH, STACK_PULL, EXCEPTION_VECTOR, RESET_VECTOR }
@@ -984,6 +999,10 @@ public final class Motorola68000 {
             inInstructionBoundary = false;
             group0PushedPC = 0;
             group0PushedPCValid = false;
+            group0EaMode = -1;
+            group0EaSize = 2;
+            group0EaDeltaOverride = Integer.MIN_VALUE;
+            group0IrOverride = -1;
             group0PreFaultSR = -1;
             group0SavedSRValid = false;
             group0PreFaultAnReg = -1;
@@ -1275,7 +1294,7 @@ public final class Motorola68000 {
             savedSR = getSR();
         }
         faultAddress = addr;
-        faultIR = ir;
+        faultIR = group0IrOverride >= 0 ? group0IrOverride : ir;
         faultIsWrite = isWrite;
         faultIsInstruction = isInstruction;
         addressErrorFault = true;
@@ -1296,9 +1315,7 @@ public final class Motorola68000 {
                 // For instruction fetch faults (opcode or extensions), use the faulting address
                 group0PushedPC = faultAddress;
             } else {
-                // For data access faults, tests expect PC to be opcodeAddress + (extensions-1)*2
-                // (extensionsConsumed includes the opcode)
-                group0PushedPC = opcodeAddress + ((extensionsConsumed - 1) * 2);
+                group0PushedPC = opcodeAddress + group0DataFaultPcOffset();
             }
             group0PushedPCValid = true;
         }
@@ -1836,6 +1853,78 @@ public final class Motorola68000 {
     public void forceBusWait() { idleCycles(2); }
     public void triggerDoubleFault() { haltCPU(); }
     public void setGroup0PushedPC(int pushedPC) { this.group0PushedPC = pushedPC; this.group0PushedPCValid = true; }
+
+    /**
+     * Dichiarazione, da parte dell'istruzione, dell'offset in byte — dall'indirizzo
+     * dell'opcode — del PC che il 68000 impila nel frame di gruppo 0.
+     *
+     * <p>È la controparte di {@link #markIplAnchor}: in WinUAE il valore non è una regola
+     * ma un {@code m68k_incpci(N)} che <b>gencpu emette dentro il singolo ramo di guasto</b>
+     * ({@code gencpu.cpp:3262-3276}, {@code exception_pc_offset + exception_pc_offset_extra_000
+     * + pcextra}), quindi l'unica forma fedele è che sia l'istruzione a dichiararlo.
+     * Chi non dichiara ricade su {@link #group0DataFaultPcOffset()}.
+     *
+     * <p>Va chiamata <b>prima</b> dell'accesso che può fallire.
+     */
+    public void markGroup0PcOffset(int bytesFromOpcode) {
+        this.group0PushedPC = opcodeAddress + bytesFromOpcode;
+        this.group0PushedPCValid = true;
+    }
+
+    /**
+     * Registra il modo/taglia dell'EA appena calcolata: è quella su cui l'accesso sta per
+     * fallire, ed è l'unico dato che la regola generale non ha già.
+     */
+    public void noteGroup0Ea(int mode, int reg, int size) {
+        group0EaMode = (mode == 7) ? 8 + reg : mode;
+        group0EaSize = size;
+        group0EaDeltaOverride = Integer.MIN_VALUE;
+    }
+
+    /** Impone il delta della regola generale senza calcolare l'offset a mano (MOVEM, ADDX/SUBX/CMPM). */
+    public void markGroup0EaDelta(int delta) { group0EaDeltaOverride = delta; }
+
+    /**
+     * Dichiara l'IR che finira' nel frame di gruppo 0 al posto dell'opcode corrente.
+     *
+     * <p>Serve alle istruzioni che rifanno la <b>prefetch prima</b> dell'accesso che
+     * fallisce: sul 68000 l'IR e' gia' stato ricaricato, e nel frame finisce l'opcode
+     * dell'istruzione <b>successiva</b>. Il generato lo scrive per esteso — in
+     * {@code op_313c_14_ff} (MOVE.W #imm,-(An)) c'e' {@code regs.ir = regs.irc;} prima
+     * della scrittura, e {@code exception3_write} impila {@code regs.ir}
+     * ({@code newcpu.cpp:7975}). Ne segue anche la SSW, i cui bit alti sono
+     * {@code opcode & ~31} ({@code newcpu_common.cpp:1654}).
+     */
+    public void markGroup0Ir(int irValue) { group0IrOverride = irValue & 0xFFFF; }
+
+    /**
+     * Offset del PC di gruppo 0 per un guasto su <b>accesso a dati</b>.
+     *
+     * <p>{@code 2 + 2*(parole d'estensione consumate) + delta}, dove il delta dipende dal
+     * modo dell'EA che fallisce. Trascritto dal generato di WinUAE
+     * ({@code cpuemu_13.cpp}, funzioni {@code _14_ff} = 68000) e verificato su
+     * <b>902 dei 906</b> siti {@code exception3_*_access} dell'albero; i 4 residui sono
+     * MOVEM verso registri con modo indicizzato, che dichiara da sé.
+     *
+     * <p>⚠️ I vettori JSON di SingleStepTests danno invece {@code 2*(estensioni)}, cioè
+     * questo valore meno {@code 2 + delta}: divergono da WinUAE su 3 modi su 5. Arbitra
+     * l'hardware — gli {@code expected000} di vAmigaTS {@code CPU/Exceptions/StackFrame},
+     * misurati su un A500 vero, coincidono con WinUAE. Stessa arbitrazione del Bcc in
+     * {@code docs/castle-master-copylock-investigation.md} §Causa 6.
+     */
+    private int group0DataFaultPcOffset() {
+        int delta = group0EaDeltaOverride != Integer.MIN_VALUE
+                ? group0EaDeltaOverride
+                : switch (group0EaMode) {
+                    // (d16,An), (d8,An,Xn), (d16,PC), (d8,PC,Xn): la parola d'estensione
+                    // dell'EA che fallisce non è ancora contata
+                    case 5, 6, 10, 11 -> -2;
+                    // -(An): byte e word contano una parola in più, il long no
+                    case 4 -> group0EaSize == 4 ? 0 : 2;
+                    default -> 0;
+                };
+        return 2 + ((extensionsConsumed - 1) * 2) + delta;
+    }
     /** Allow an instruction to pre-set the SR value that will be pushed in the Group-0 exception frame,
      *  without modifying the CPU's current sr field.  Must be called before the faulting bus operation. */
     public void setGroup0SavedSR(int sr) { this.savedSR = sr; this.group0SavedSRValid = true; }

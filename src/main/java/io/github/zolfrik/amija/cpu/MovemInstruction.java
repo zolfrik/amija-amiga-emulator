@@ -97,6 +97,16 @@ public class MovemInstruction extends AbstractM68kInstruction {
                 //    The reported fault address is the decremented address (firstAddr).
 
                 if ((firstAddr & 1) != 0) {
+                    // MOVEM dichiara il proprio offset del PC di gruppo 0: la regola generale
+                    // (Motorola68000.group0DataFaultPcOffset) qui non vale. Nel generato di
+                    // WinUAE (cpuemu_13.cpp, op_48xx/op_4cxx _14_ff) il ramo di guasto porta
+                    // sempre due byte in piu' della parola di maschera gia' contata — tranne
+                    // MOVEM verso i registri con modo INDICIZZATO, dove sono due in meno
+                    // (op_4cb0/op_4cbb: incpci(4), contro incpci(8) di op_4ca8 (d16,An)).
+                    // L'asimmetria e' del generato, non nostra.
+                    boolean indexedLoad = dr == 1 && (mode == 6 || (mode == 7 && reg == 3));
+                    cpu.noteGroup0Ea(mode, reg, sz == 1 ? 4 : 2);
+                    cpu.markGroup0EaDelta(indexedLoad ? -2 : 2);
                     cpu.triggerAddressError(firstAddr, dr == 0, cpu.currentFCForData(), false);
                     return finalizeInstructionSafe(cpu);
                 }

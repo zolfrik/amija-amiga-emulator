@@ -49,6 +49,10 @@ public class CmpmInstruction extends AbstractM68kInstruction {
             if (cpu.isRisingEdgeConsumed()) return false;
             switch (getStep(cpu)) {
                 case 0 -> {
+                    // CMPM dichiara il proprio offset del PC di gruppo 0: nel generato di WinUAE
+                    // (op_b148/op_b188 _14_ff) il ramo di guasto porta due byte in piu' della
+                    // regola generale, per entrambe le taglie.
+                    cpu.markGroup0EaDelta(2);
                     int addrSrc = cpu.getA(regY, 4);
                     if (size != 4) {
                         // WinUAE op_b108/op_b148 _14_ff: `ipl_fetch_now()` sta prima della
