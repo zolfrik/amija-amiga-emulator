@@ -42,10 +42,11 @@ import java.util.Objects;
  *   $100000 – $1FFFFF   Chip RAM espansione ECS (solo con Agnus "Fat")
  *   $200000 – $9FFFFF   Fast RAM (autoconfig, non presente di default su A500)
  *   $A00000 – $BFFFFF   Decodifica CIA (mirroring su tutto il range)
- *   $C00000 – $D7FFFF   Slow RAM / "Ranger" RAM (trapdoor A500; senza HW = open bus)
- *   $D80000 – $DEFFFF   Custom registers / RTC / Open Bus (dipende dal modello)
- *   $DF0000 – $DFFFFF   Custom registers (Agnus/Paula/Denise) — $DFF000–$DFF1FF
- *                       ma decodifica incompleta risponde su tutta la pagina $DFxxxx
+ *   $C00000 – $D7FFFF   Slow RAM / "Ranger" RAM (trapdoor A500); sopra la RAM
+ *                       installata rispondono i registri custom (mirror ogni 64 KB)
+ *   $D80000 – $DDFFFF   Non mappato su A500 (open bus), tranne l'orologio a $DC0000
+ *   $DE0000 – $DFFFFF   Custom registers (Agnus/Paula/Denise) — $DFF000–$DFF1FF
+ *                       ma decodifica incompleta risponde su tutte e due le pagine
  *   $E00000 – $E7FFFF   Kickstart ROM Mirror (A500)
  *   $E80000 – $EFFFFF   Autoconfig / Zorro II I/O
  *   $F00000 – $F7FFFF   Non decodificato (open bus) — mirror ROM su alcuni modelli
@@ -529,11 +530,32 @@ public final class Gary {
         g.addRegion(new Region(0x000000, 0x1FFFFF, Target.CHIP_RAM, "CS_CHIP", rrChip, 512 * 1024));
 
         
-        // Custom Registers: Gary decodifica l'intera pagina $DFxxxx
-        // (i registri veri sono $DFF000–$DFF1FF, ma la decodifica è incompleta)
+        // Custom Registers: $DE0000–$DFFFFF, mirrorati ogni 64 KB
+        // (i registri veri sono $DFF000–$DFF1FF, ma la decodifica è incompleta).
+        //
+        // La pagina $DE non è un di più: il chip-select dei custom copre l'intero
+        // $C00000–$DFFFFF e su A500 Gary ci apre UN SOLO buco, $D80000–$DDFFFF.
+        // Oracolo WinUAE (memory.cpp): `map_banks(&custom_bank, 0xC0, 0xE0-0xC0)`
+        // e subito dopo, per ogni macchina che non sia A1000-con-RAM o A2000-con-orologio,
+        //     /* D80000 - DDFFFF not mapped (A1000 or A2000 = custom chips) */
+        //     map_banks(&dummy_bank, 0xD8, 6);
+        // cioè SEI pagine da 64 KB, $D8..$DD: $DE e $DF restano custom.
+        // Fermando la regione a $DF0000 la pagina $DE finiva in open bus.
+        //
+        // Lo misura vAmigaTS Memory/Rom/mirror/custD, che scrive COLOR00 a passi di
+        // $200 da $D00180 in su e lampeggia dove i custom rispondono: il riferimento
+        // (e la foto dell'A500 vero accanto) mostra il buco lungo 768 iterazioni
+        // ($D80000–$DDFFFF) e la ripresa del lampeggio a $DE0000; senza questa pagina
+        // il nostro buco era lungo 896 iterazioni e il blocco finale partiva 12 righe
+        // dopo. Vedi docs/vamigats-import-order.md §Esiti Memory/Rom.
+        //
+        // physicalSize = 64 KB: l'offset che arriva ad AbstractAgnus resta quello
+        // dentro la pagina ($DFF180 → $F180) sia da qui sia dal ramo di fallback
+        // della finestra Slow RAM, che usa `addr & 0xFFFF`.
         RegionRules rrCustom = new RegionRules();
         rrCustom.generateAddressErrorOnOddWord = false; // Denise/Paula accettano word su dispari
-        g.addRegion(new Region(0xDF0000, 0xDFFFFF, Target.CUSTOM_REGS, "CS_CUSTOM", rrCustom));
+        g.addRegion(new Region(0xDE0000, 0xDFFFFF, Target.CUSTOM_REGS, "CS_CUSTOM", rrCustom,
+                64 * 1024));
 
         RegionRules rrRtc = new RegionRules();
         rrRtc.generateAddressErrorOnOddWord = false;
@@ -1000,26 +1022,58 @@ public final class Gary {
      * altri bit (A0, A4..A11 vengono ignorati o usati per il registro interno).
      */
     private Route routeCia(int addr, AccessType type, boolean uds, boolean lds, Route out) {
-        // Decodifica CIA hardware Amiga (Gary):
-        // Gary seleziona le CIA basandosi sui bit A12 e A13 dell'indirizzo.
+        // Decodifica CIA hardware Amiga (Gary): i due chip select sono attivi bassi e
+        // sono UNA LINEA D'INDIRIZZO CIASCUNO, indipendenti fra loro:
         //
-        // Segnali Chip Select (active LOW):
-        //   /CIAA_CS attivo se: A13=1, A12=0
-        //   /CIAB_CS attivo se: A13=0, A12=1
+        //   /CIAA_CS = A12      → CIA-A selezionata quando A12 = 0
+        //   /CIAB_CS = A13      → CIA-B selezionata quando A13 = 0
         //
-        // Indirizzi tipici ($BFxxxx):
-        //   $BFE001: A13=1, A12=0 -> /CIAA_CS attivo
-        //   $BFD000: A13=0, A12=1 -> /CIAB_CS attivo
-        //   $BFC000: A13=0, A12=0 -> Nessuna CIA attiva (open bus)
-        //   $BFF000: A13=1, A12=1 -> Nessuna CIA attiva (open bus)
+        // Le quattro combinazioni, e sono quattro, non due:
+        //   $BFE001: A12=0, A13=1 → solo CIA-A
+        //   $BFD000: A12=1, A13=0 → solo CIA-B
+        //   $BFC000: A12=0, A13=0 → ⛔ TUTTE E DUE (era: open bus)
+        //   $BFF000: A12=1, A13=1 → nessuna
+        //
+        // ⛔ Il caso "tutte e due" c'era e si era perso. Oracolo WinUAE, `cia_chipselect`
+        // (cia.cpp:2705) `cs = (addr >> 12) & 3` e lo switch di `cia_bget`/`cia_wget`:
+        // il `case 0` — cioè A12=A13=0 — non è affatto un buco, fa
+        // `cia_wait_pre(1|2)` e poi `v = (addr & 1) ? ReadCIAA(r) : ReadCIAB(r)`, cioè
+        // seleziona entrambi i chip e lascia decidere alla lane del bus quale dei due
+        // pilota il dato. È esattamente ciò che fanno {@code readCiaData}/{@code
+        // writeCiaData} di AbstractAgnus con `Target.CIA_BOTH`, che era rimasto cablato
+        // di là ma non veniva più emesso di qua.
+        //
+        // Lo misura vAmigaTS Memory/Ram/memtim/memtim1, che cronometra tre letture long
+        // in dieci regioni: le sue tre sonde nello spazio CIA ($A00000, $A80000,
+        // $BF0000) hanno tutte A12=A13=0, quindi da noi cadevano in open bus con DTACK
+        // immediato invece di pagare il ciclo sincrono E-clock. Le bande colorate di
+        // quelle tre regioni erano corte di 22 500 pixel su 61 000.
+        //
+        // ⚠️ Resta noto e NON toccato qui: nel `case 3` (A12=A13=1, nessuna CIA) WinUAE
+        // per un 68000 fa comunque `cia_wait_pre(0)`/`cia_wait_post(0)` e rende `irc` —
+        // cioè /VPA è generata su TUTTA la finestra $A00000-$BFFFFF, non solo dove un
+        // chip risponde. Da noi quel caso resta open bus con DTACK immediato. È un'altra
+        // proprietà (la generazione di /VPA, non il chip select), nessun test del banco
+        // la misura, e va fatta con la sua misura.
 
         // Address error: word su indirizzo dispari
         if (uds && lds && (addr & 1) != 0) {
             return out.fillAddressErr(null);
         }
 
-        boolean selectA = (addr & 0x1000) == 0 && (addr & 0x2000) != 0; // A12=0 AND A13=1 -> CIA-A
-        boolean selectB = (addr & 0x2000) == 0 && (addr & 0x1000) != 0; // A13=0 AND A12=1 -> CIA-B
+        boolean selectA = (addr & 0x1000) == 0; // /CIAA_CS = A12
+        boolean selectB = (addr & 0x2000) == 0; // /CIAB_CS = A13
+
+        if (selectA && selectB) {
+            // ─── Tutte e due ─── la lane del bus decide chi pilota il dato:
+            // CIA-A sul byte basso (LDS, indirizzi dispari), CIA-B sull'alto (UDS, pari).
+            Region ciaA = findFirstRegionByTarget(Target.CIA_A);
+            Region ciaB = findFirstRegionByTarget(Target.CIA_B);
+            if (ciaA == null && ciaB == null) return out.fillOpenBus(addr);
+            Region handle = ciaA != null ? ciaA : ciaB;
+            return out.set(true, Target.CIA_BOTH, handle.chipSelect,
+                    uds, lds, 0, false, false, handle, addr, false);
+        }
 
         if (selectA) {
             // ─── CIA-A ─── Byte basso D7-D0.
@@ -1041,7 +1095,8 @@ public final class Gary {
                     uds, lds, 0, false, false, ciaB, addr, false);
         }
 
-        // A12=1,A13=1 ($BFFxxx) oppure A12=0,A13=0 ($BFCxxx): nessun CS attivo → open bus
+        // A12=1, A13=1 ($BFFxxx): nessun chip select attivo → open bus.
+        // (⚠️ WinUAE qui paga comunque il ciclo sincrono: vedi la nota in testa al metodo.)
         return out.fillOpenBus(addr);
     }
 

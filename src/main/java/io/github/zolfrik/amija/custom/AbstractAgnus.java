@@ -2884,8 +2884,61 @@ public abstract class AbstractAgnus {
                     cpuAccessTransferred = true;
                 }
             }
-            default -> { /* IDLE/S0/S1/S_VMA: niente da decidere o trasferire qui */ }
+            default -> { /* IDLE/S0/S_VMA: niente da decidere o trasferire qui */ }
         }
+    }
+
+    /**
+     * {@code ce_banktype} di WinUAE: l'accesso è CHIP16 (contesa DMA + quantizzazione al
+     * CCK) o FAST16 (DTACK immediato). Vedi il commento esteso in {@link #decideCpuDtack()}.
+     */
+    private static boolean isChipBusSyncAddress(int physAddr, Gary.Target target) {
+        // $D00000-$DFFFFF: CHIP16 incondizionato, chiunque risponda (fill_ce_banks).
+        if (physAddr >= 0xD00000 && physAddr < 0xE00000) return true;
+        // $C00000-$CFFFFF: FAST16 di suo, ma la Slow RAM INSTALLATA se lo riprende
+        // (setmemorywidth + bogomem.chipramtiming). Il target lo dice già: Gary rende
+        // SLOW_RAM solo dove c'è RAM vera, e i mirror dei custom sopra di essa sono
+        // CUSTOM_REGS.
+        if (physAddr >= 0xC00000) return target == Gary.Target.SLOW_RAM;
+        return physAddr < 0x200000
+                && (target == Gary.Target.CHIP_RAM || target == Gary.Target.OPEN_BUS);
+    }
+
+    /**
+     * Scrittura su un banco <b>FAST16</b>: il dato lo prende il destinatario all'INIZIO del
+     * ciclo bus, non a metà.
+     *
+     * <p>Oracolo WinUAE, {@code mem_access_delay_word_write} (newcpu.cpp:8275): i due rami
+     * non differiscono solo per l'attesa, differiscono per l'ORDINE.
+     * <pre>
+     *   CHIP16: x_do_cycles_pre(CYCLE_UNIT); dma_cycle(); put_word(); x_do_cycles_post(CYCLE_UNIT);
+     *   FAST16: put_word();                                          x_do_cycles_post(4*cpucycleunit);
+     * </pre>
+     * Stessa durata (2 CCK), ma la {@code put_word} del ramo FAST16 cade <b>un CCK prima</b>.
+     * Su un banco senza effetti collaterali non si vede; sui mirror dei registri custom di
+     * {@code $C00000-$CFFFFF} (FAST16 per {@code fill_ce_banks}) si vede eccome, ed è il
+     * residuo che restava a vAmigaTS {@code Memory/Rom/mirror/custC}: misurato con la sonda
+     * gemella di {@code WINUAE_COLORLOG}, ogni COLOR00 del banco cadeva a −3 CCK dalla
+     * convenzione dell'oracolo invece che a −4, e tornava a −4 esattamente all'iterazione
+     * 1024, cioè dove l'indirizzo entra in {@code $D00000} ed è di nuovo CHIP16.
+     *
+     * <p>Il punto è <b>S2</b>, cioè il primo fronte in cui /AS è asserito: prima di lì
+     * {@code handleCpuBusCycle} esce sul ramo bus-idle, che azzera route e
+     * {@code cpuAccessTransferred}. È un {@code hpos} prima dell'S4 dove cade il
+     * trasferimento chip-bus, e l'{@code hpos} è ciò che Denise quantizza in CCK: basta a
+     * riportare la scrittura nel CCK precedente, che è dove l'oracolo la mette.
+     *
+     * <p>Solo le SCRITTURE: uds/lds a questo punto valgono per una scrittura
+     * ({@code applyBusSignalsS0} li ha copiati all'S0) e il dato letto lo latcha comunque
+     * la CPU al proprio S6 — anticipare una lettura non sposterebbe nulla di osservabile.
+     */
+    private void maybeTransferFastBankWrite() {
+        if (cpuAccessTransferred || cpuBusReq.read || cpuBusReq.iack) return;
+        routeCpuCurrentBusRequest();
+        if (cpuCurrentRoute == null || !cpuCurrentRoute.ok) return;
+        if (isChipBusSyncAddress(cpuBusReq.address & 0xFFFFFF, cpuCurrentRoute.target)) return;
+        handleCpuDataTransfer();
+        cpuAccessTransferred = true;
     }
 
     /**
@@ -2920,26 +2973,42 @@ public abstract class AbstractAgnus {
             return;
         }
 
-        // Chip RAM / Slow RAM / Custom: sincronizzazione al chip-bus (DMA + CCK).
+        // Sincronizzazione al chip-bus (contesa DMA + quantizzazione al CCK).
         //
-        // OPEN_BUS nelle finestre chip-decodificate: sull'A500 anche un accesso che
-        // non seleziona alcuna risorsa ma cade nelle aree decodificate dal chipset
-        // paga la sincronizzazione chip-bus (l'arbitro è comunque Agnus). Oracolo
-        // WinUAE `fill_ce_banks` (memory.cpp): $000000-$1FFFFF e $D00000-$DFFFFF
-        // sono CE_MEMBANK_CHIP16 INCONDIZIONATI — inclusi i mirror di chip RAM
-        // oltre la taglia fisica e la dummy-bank $D80000-$DDFFFF ("A500 = custom
-        // chips"). Le altre aree open-bus ($200000-$9FFFFF, $C80000-$CFFFFF) sono
-        // FAST16: DTACK immediato, nessuna contesa. Root di G1/NEG2l: l'handler
-        // irq6 fa `neg.l $DDF180` e da noi l'EA open-bus saltava la contesa →
-        // gli accessi comprimevano a passo 2 CCK invece di quantizzarsi sugli
-        // slot liberi (BPU=6) → marker bianco −8 CCK vs WinUAE.
+        // ⛔ La decide il BANCO, cioè `ce_banktype` di WinUAE, e non basta leggerne
+        // l'inizializzazione. `fill_ce_banks` (memory.cpp:2746) parte da tutto
+        // CE_MEMBANK_FAST16 e mette CHIP16 su $000000-$1FFFFF (solo se a 0 c'è davvero la
+        // chip RAM, cioè a overlay spento) e su $D00000-$DFFFFF, questa incondizionata —
+        // ma poi, in CODA alla stessa funzione, `setmemorywidth(&currprefs.bogomem, ...)`
+        // (memory.cpp:2720) riporta a `ce_banktype[0]`, cioè a CHIP16, le pagine della
+        // Slow RAM effettivamente INSTALLATA, perché `bogomem.chipramtiming` è `true` nei
+        // default (cfgfile.cpp:8767; lo spengono solo A1000 e Velvet).
+        //
+        // Quindi in $C00000-$CFFFFF convivono le due nature: dove c'è la trapdoor è
+        // CHIP16, e i mirror dei registri custom che stanno SOPRA di essa sono FAST16 —
+        // la CPU ci scrive senza pagare né contesa né allineamento. È il banco a
+        // decidere: `mem_access_delay_word_write` (newcpu.cpp:8275) chiama
+        // `wait_cpu_cycle_write` per CHIP16 e per FAST16 fa `put_word` + 4 cicli secchi.
+        //
+        // Legare la scelta al TARGET (SLOW_RAM/CUSTOM_REGS sempre sincronizzati) faceva
+        // pagare ai mirror una contesa che l'oracolo non paga: in vAmigaTS
+        // Memory/Rom/mirror/custC la deriva cresceva fino a 3 CCK verso il fondo dello
+        // schermo. ⚠️ Trattarli invece TUTTI come FAST16 — la lettura della sola
+        // `fill_ce_banks` — toglie la contesa anche alla Slow RAM vera e sposta la catena
+        // di boot: CpuTimingTestSuite passa da 253/0 a rosso su quasi tutti i test.
+        // Vedi docs/vamigats-import-order.md §Esiti Memory/Rom.
+        //
+        // ⚠️ L'overlay resta come prima: a OVL attivo WinUAE ha kickmem a 0 e quindi
+        // FAST16 anche lì, noi manteniamo CHIP16 sul target CHIP_RAM. È una
+        // divergenza nota, di un'altra materia (chi risponde a 0), non misurata da
+        // questo banco e non toccata qui.
+        //
+        // Root storica di G1/NEG2l: l'handler irq6 fa `neg.l $DDF180`, indirizzo
+        // open-bus ma dentro $D00000-$DFFFFF; saltando la contesa gli accessi
+        // comprimevano a passo 2 CCK invece di quantizzarsi sugli slot liberi
+        // (BPU=6) → marker bianco −8 CCK vs WinUAE.
         int physAddr = cpuBusReq.address & 0xFFFFFF;
-        boolean openBusChipWindow = cpuCurrentRoute.target == Gary.Target.OPEN_BUS
-                && (physAddr < 0x200000 || (physAddr >= 0xD00000 && physAddr < 0xE00000));
-        boolean needsChipBusSync = cpuCurrentRoute.target == Gary.Target.CHIP_RAM
-                || cpuCurrentRoute.target == Gary.Target.SLOW_RAM
-                || cpuCurrentRoute.target == Gary.Target.CUSTOM_REGS
-                || openBusChipWindow;
+        boolean needsChipBusSync = isChipBusSyncAddress(physAddr, cpuCurrentRoute.target);
 
         if (needsChipBusSync) {
             // Bloccato se: (a) il bus è preso da un DMA in questo CCK (incluso un fetch
@@ -3014,6 +3083,13 @@ public abstract class AbstractAgnus {
      */
     private void handleCpuDataTransferPhase() {
         if (!cpuBusReq.as || cpuBusReq.iack || cpuAccessTransferred) {
+            return;
+        }
+        // Banco FAST16: la scrittura cade all'inizio del ciclo bus, un CCK prima dello slot
+        // chip-bus. Sta PRIMA del controllo sulla route perché a S2 la route non c'è ancora:
+        // la calcola maybeTransferFastBankWrite(). Vedi il suo javadoc.
+        if (cpu.getBusCycleState() == Motorola68000.BusCycleState.S2) {
+            maybeTransferFastBankWrite();
             return;
         }
         if (cpuCurrentRoute == null || !cpuCurrentRoute.ok) {
