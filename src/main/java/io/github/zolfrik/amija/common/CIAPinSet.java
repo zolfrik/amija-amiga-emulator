@@ -273,6 +273,20 @@ public class CIAPinSet {
      * @param portIdx 0 = Porta A, 1 = Porta B
      * @return Stato corrente degli 8 pin della porta
      */
+    /**
+     * Livello imposto dall'ESTERNO sui pin di una porta, senza alcuna maschera di
+     * direzione: per la porta A di CIA-A sono le quattro linee di stato del drive
+     * (bit 2÷5) e i due pulsanti di fuoco (bit 6÷7).
+     *
+     * <p>Serve alla <b>rilettura del registro</b> ({@code MOS8520.readRegister} reg 0/1),
+     * che sul 8520 liscio <b>non</b> segue la DDR su quei bit — vedi il commento di
+     * {@code MOS8520.computePA}. Il livello del <i>pin</i>, che è un'altra cosa, resta
+     * {@link #readPortData}.
+     */
+    public int readExternal(int portIdx) {
+        return (portIdx == 0 ? aExt : bExt) & 0xFF;
+    }
+
     public byte readPortData(int portIdx) {
         int out, drive, ext;
         if (portIdx == 0) {

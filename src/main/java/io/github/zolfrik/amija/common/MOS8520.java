@@ -367,12 +367,77 @@ public class MOS8520 {
         writePortDataCached(1, drivenPrb);
     }
 
+    /**
+     * Rilettura di PRA ({@code $BFE001} / {@code $BFD000}).
+     *
+     * <p>⛔ <b>Sul 8520 la DDR non vale per tutti i bit.</b> Onorarla ovunque — cioè
+     * restituire il valore emesso per ogni pin configurato come uscita — è il
+     * comportamento della variante <b>391078-01</b>, che l'oracolo tiene dietro
+     * {@code currprefs.cs_ciatype[0]} e che la macchina di questo banco non attiva
+     * ({@code cia.cpp}, {@code ReadCIAA} case 0):
+     *
+     * <pre>
+     * v  = DISK_status_ciaa() &amp; 0x3c;            // bit 2..5: SEMPRE dal drive
+     * v |= handle_joystick_buttons(pra, dra);    // bit 6..7: pulsanti, ma vedi sotto
+     * v |= (pra | (dra ^ 3)) &amp; 0x03;             // bit 0..1: questi SI' seguono la DDR
+     * </pre>
+     *
+     * I bit 2÷5 (/CHNG, /WPRO, /TK0, /RDY) tornano il livello della linea anche a pin
+     * configurato in uscita. I bit 6÷7 sono <b>open collector</b>: il pulsante li tiene
+     * alti, ma un'uscita che pilota 0 vince — è la riga
+     * {@code if ((dra &amp; mask) &amp;&amp; !(pra &amp; mask)) but &amp;= ~mask;} di
+     * {@code handle_joystick_buttons} (inputdevice.cpp). Solo i bit 0÷1 (OVL, LED) sono
+     * uscite vere, e da input leggono 1.
+     *
+     * <p>Su <b>CIA-B</b> la porta A è invece la formula piena
+     * {@code (pra &amp; dra) | (dra ^ 0xFF)}: da input legge 1, non un livello esterno.
+     *
+     * <p>Misurato da {@code CIA/CIA/ciareg}: {@code aprab3} scrive {@code DDRA=$FF} e
+     * {@code PRA=$00}, e l'oracolo torna comunque alte le quattro linee del drive
+     * mentre noi tornavamo 0. {@code aprab4}, che scrive lo stesso {@code DDRA=$FF} ma
+     * {@code PRA=$FE}, coincideva <i>per combinazione</i>. Vedi
+     * {@code docs/vamigats-import-order.md} §Esiti {@code CIA/CIA}.
+     */
     private int computePA() {
-        return pinSet.readPortData(0) & 0xFF;
+        final int ext = pinSet.readExternal(0);
+        if (!isCIAA) {
+            return ((pra & ddra) | (ddra ^ 0xFF)) & 0xFF;
+        }
+        int v = ext & 0x3C;
+        // Pulsanti: alti se non premuti, ma un'uscita che pilota 0 li tira giu' lo stesso.
+        v |= (ext & 0xC0) & ~(ddra & ~pra);
+        v |= (pra | (ddra ^ 0x03)) & 0x03;
+        return v & 0xFF;
     }
 
+    /**
+     * Rilettura di PRB ({@code $BFE101} / {@code $BFD100}).
+     *
+     * <p>Le due porte B non hanno la stessa regola nell'oracolo:
+     * <ul>
+     *   <li><b>CIA-A</b>: {@code (prb & drb) | (drb ^ 0xFF)} — da input legge 1, che è
+     *       la porta parallela che flotta alta;</li>
+     *   <li>⛔ <b>CIA-B</b>: {@code tmp = c->prb} e basta — <b>la DDR è ignorata del
+     *       tutto</b>, la rilettura torna il registro di uscita anche per i bit
+     *       configurati come ingresso ({@code cia.cpp}, {@code ReadCIAB} case 1).</li>
+     * </ul>
+     * Poi entrambe passano da {@code CIA_PBON}, che <b>dopo</b> la maschera di direzione
+     * forza PB6/PB7 all'uscita del timer quando il bit PBON del registro di controllo è
+     * attivo. Noi lo ripiegavamo <i>prima</i>, dentro il valore pilotato
+     * ({@link #updatePB}), dove la DDR poteva ancora mascherarlo.
+     *
+     * <p>Misurato da {@code CIA/CIA/ciareg}: {@code bprab1} azzera PRB e DDRB di CIA-B e
+     * l'oracolo rilegge {@code $00} dove noi rileggevamo {@code $FF} — otto bit su otto.
+     */
     private int computePB() {
-        return pinSet.readPortData(1) & 0xFF;
+        int v = isCIAA ? ((prb & ddrb) | (ddrb ^ 0xFF)) : prb;
+        if ((pb67TimerMode & 0x40) != 0) {
+            v = (v & ~0x40) | (pb67TimerOut & 0x40);
+        }
+        if ((pb67TimerMode & 0x80) != 0) {
+            v = (v & ~0x80) | (pb67TimerOut & 0x80);
+        }
+        return v & 0xFF;
     }
 
     private void writeDdrCached(int portIdx, int value) {
@@ -682,9 +747,15 @@ public class MOS8520 {
             setSpDirectionCached(false);
 
             if (!isCIAA) {
-                // CIA-B specific internal connections: PA0 -> SP, PA1 -> CNT
-                boolean pa0 = (pra & 0x01) != 0;
-                boolean pa1 = (pra & 0x02) != 0;
+                // CIA-B specific internal connections: PA0 -> SP, PA1 -> CNT.
+                // ⛔ Il livello e' quello EFFETTIVAMENTE PILOTATO, pra & ddra: un pin
+                // configurato come ingresso non pilota niente, e prendere il solo pra
+                // fa comparire fronti di CNT che sulla scheda non esistono. L'oracolo
+                // apre write_ciab_serial() con `uae_u8 val = ndata & ndir;` e confronta
+                // il vecchio livello nello stesso modo (`(odata & odir) & 2`), cia.cpp.
+                final int drivenPa = pra & ddra;
+                boolean pa0 = (drivenPa & 0x01) != 0;
+                boolean pa1 = (drivenPa & 0x02) != 0;
                 setSpDriveCached(pa0);
                 if (pa1 != cnt) {
                     if (pa1) emulateRisingEdgeOnCntPin();
