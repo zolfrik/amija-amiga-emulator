@@ -60,7 +60,35 @@ public final class Motorola68000 {
     private int resetSignalCyclesRemaining = 0;
 
     private long totalCycles = 0;
-    private int eClockCounter = 0;
+    /**
+     * Fase dell'E-clock (&phi;2/10) che governa la macchina {@code S_VMA}.
+     *
+     * <p>⛔ <b>Parte da 9, non da 0, e il master-cycle di differenza è una FASE, non un
+     * ritardo.</b> Sul 68000 l'E-clock è generato dal processore stesso dividendo CLK per
+     * 10, e in WinUAE la sua griglia è ricavata dallo <b>stesso</b> contatore del chip-bus:
+     * {@code cia.cpp} misura tutto in {@code E_CYCLE_UNIT = CYCLE_UNIT / 2} (mezzo CCK) e le
+     * sue costanti sono <b>tutte pari</b> — {@code E_CLOCK_SYNC_N 2} (= 1 CCK),
+     * {@code START 4} (= 2 CCK), {@code END 6} (= 3 CCK), {@code DIV10 = 5 · CYCLE_UNIT}
+     * (= 5 CCK). Un ciclo sincrono comincia e finisce quindi <b>sempre</b> su un fronte di
+     * CCK, e dura un numero pari di master-cycle.
+     *
+     * <p>Con la partenza a 0 la fase 2 cadeva su un master-cycle di parità sbagliata
+     * rispetto alla griglia del chip-bus: il ciclo sincrono durava <b>15</b> master-cycle
+     * (mezzo CCK, una durata che l'hardware non può produrre) invece di 16, e il prefetch
+     * che lo segue ne pagava uno di riallineamento (5 invece di 4). I due errori si
+     * compensano quando il bus è libero — per questo il totale di una {@code MOVE.L} da
+     * spazio CIA restava giusto — ma non quando c'è contesa DMA: quel master-cycle sposta
+     * l'accesso in uno slot diverso. Misurato con la sonda {@code WINUAE_CIASYNCLOG} contro
+     * il nostro {@code BUSLOG} su vAmigaTS {@code Memory/Ram/memtim1}: le tre regioni CIA
+     * passano da +620/+80/+60 pixel a <b>bit-exact, iterazione per iterazione</b>.
+     *
+     * <p>⛔ <b>Va insieme all'ancora di {@code SLOT_CIAA}</b> in {@code AbstractAgnus}
+     * ({@code masterClock + 9}): sul silicio è un filo solo, e muovere un contatore senza
+     * l'altro riapre il doppione chiuso il 2026-08-21. L'invariante «la CIA ticka a
+     * {@code eClockCounter == 0}» è congelata da {@code CiaEClockPhaseTest}.
+     * Vedi {@code docs/vamigats-import-order.md} §Esiti {@code memtim1}.
+     */
+    private int eClockCounter = 9;
     int lastFinishedPC = 0;
     private int waitCycles = 0;
 
@@ -512,7 +540,7 @@ public final class Motorola68000 {
         this.currentMicroTask = InternalTask.NONE; this.microTaskStep = 0; this.currentBusOp = null; this.currentInstruction = null;
         this.instructionStep = 0; this.inInstructionBoundary = true; this.totalCycles = 0; this.processingReset = false;
         this.instructionFinishedThisCycle = false;
-        this.tracePending = false; this.iackInProgress = false; this.eClockCounter = 0; this.internalCyclesRemaining = 0;
+        this.tracePending = false; this.iackInProgress = false; this.eClockCounter = 9; this.internalCyclesRemaining = 0;
         this.resetSignalCyclesRemaining = 0; this.prefetchPending = false; this.busLocked = false; clearBusQueue();
         this.exceptionStartsPrefetch = false;
         this.level7EdgeArmed = true;
@@ -592,7 +620,7 @@ public final class Motorola68000 {
         busCycleState = BusCycleState.IDLE; currentMicroTask = InternalTask.RESET_SEQ; microTaskStep = 0; currentInstruction = null;
         instructionStep = 0; inInstructionBoundary = true; tracePending = false; irdValid = false; ircValid = false; prefetchPending = false;
         ssp = 0; usp = 0; opcodeAddress = 0; setA7(0); iackInProgress = false; busReq.clear(); currentBusOp = null; totalCycles = 0;
-        eClockCounter = 0; internalCyclesRemaining = 0; busLocked = false; addressErrorFault = false; group0PushedPC = 0; group0PushedPCValid = false; group0PreFaultSR = -1; group0SavedSRValid = false; group0PreFaultAnReg = -1;
+        eClockCounter = 9; internalCyclesRemaining = 0; busLocked = false; addressErrorFault = false; group0PushedPC = 0; group0PushedPCValid = false; group0PreFaultSR = -1; group0SavedSRValid = false; group0PreFaultAnReg = -1;
         exceptionStartsPrefetch = false;
         level7EdgeArmed = true; // Reset edge-detection NMI: pronto ad accettare il primo livello 7
         clearBusQueue(); Arrays.fill(tempRegs, 0); tempRegsWritten = 0;
