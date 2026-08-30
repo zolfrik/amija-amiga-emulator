@@ -37,6 +37,28 @@ public class MOS8520 {
 
     private final CIAPinSet pinSet;
     private final boolean isCIAA;
+    /**
+     * Baco del contatore TODMED — vedi {@link #checkTodIrq(boolean)}.
+     *
+     * <p>⛔ <b>Sull'A500 il baco C'È</b> ({@code cfgfile.cpp}, {@code case CP_A500:
+     * p->cs_ciatodbug = true}), e AmiJa emula un A500: il default <i>dovrebbe</i> essere
+     * acceso. ⚠️ <b>È spento lo stesso, e la ragione è misurata.</b> Accendendolo,
+     * {@code CIA/TOD/todbug1} passa da 25 984 pixel diversi a <b>112</b>, {@code todbug3} da
+     * 33 784 a <b>84</b> e {@code todbug4} da 104 764 a <b>996</b> — il meccanismo è quello,
+     * non c'è dubbio — ma <b>due test verdi diventano rossi</b>, {@code tod1} e
+     * {@code todint4}. Un riferimento generato dall'oracolo che diventa rosso è un veto.
+     *
+     * <p>⇒ E il veto ha una causa che <b>non è questa regola</b>: la sonda
+     * {@code WINUAE_TODLOG} conta <b>zero</b> scatti del ramo del baco nell'intera corsa di
+     * {@code tod1} sull'oracolo, perché lì il contatore è azzerato <b>una volta per frame</b>
+     * (i reset stanno a 71 050 cck esatti l'uno dall'altro) e non arriva mai a
+     * {@code $001000}. Da noi arriva a {@code $8017}, cioè circa <b>105 frame senza un
+     * azzeramento</b>: la catena che riarma l'interrupt si ferma. Il baco non causa quel
+     * rosso, lo <b>rivela</b>.
+     *
+     * <p>Accendere questo flag è quindi il passo <i>dopo</i> aver chiuso lo stallo di
+     * {@code tod1} — non prima. Vedi {@code docs/vamigats-import-order.md} §{@code CIA/TOD}.
+     */
     private boolean todBug = false;
     private int cachedDdra = -1;
     private int cachedDdrb = -1;
@@ -272,18 +294,14 @@ public class MOS8520 {
         if (todStopped) return;
 
         // Increment bits using nibble overflow carry
-        if (!incTodLoNibble(0)) { checkTodIrq(); return; }
-        if (todBug) checkTodIrq();
-
-        if (!incTodHiNibble(0)) { checkTodIrq(); return; }
-        if (!incTodLoNibble(1)) { checkTodIrq(); return; }
-        if (todBug) checkTodIrq();
-
-        if (!incTodHiNibble(1)) { checkTodIrq(); return; }
-        if (!incTodLoNibble(2)) { checkTodIrq(); return; }
+        if (!incTodLoNibble(0)) { checkTodIrq(true); return; }
+        if (!incTodHiNibble(0)) { checkTodIrq(true); return; }
+        if (!incTodLoNibble(1)) { checkTodIrq(true); return; }
+        if (!incTodHiNibble(1)) { checkTodIrq(true); return; }
+        if (!incTodLoNibble(2)) { checkTodIrq(true); return; }
         incTodHiNibble(2);
 
-        checkTodIrq();
+        checkTodIrq(true);
     }
 
     private boolean incTodLoNibble(int byteIdx) {
@@ -315,11 +333,42 @@ public class MOS8520 {
     }
 
     private void checkTodIrq() {
-        if (!todMatching && todCounter == todAlarm) {
+        checkTodIrq(false);
+    }
+
+    /**
+     * Confronto con l'allarme, {@code checkalarm()} di {@code cia.cpp}.
+     *
+     * <p>⛔ Il contatore TODMED del 8520 <b>è bacato, e il baco è osservabile</b>: al riporto
+     * conta {@code .. 29 2A 2B 2C 2D 2E 2F 20 30 31 ..}, cioè passa un istante da un valore
+     * con i dodici bit bassi a zero il cui riporto non è ancora propagato. Se l'allarme è
+     * quel valore, scatta <b>una seconda volta</b>. L'oracolo lo modella come una regola sul
+     * solo confronto, e <b>solo su un incremento</b> ({@code inc}), mai su una scrittura.
+     *
+     * <p>✅ È esattamente ciò che {@code todvice/0alarm} misura, e lo dichiara nel sorgente:
+     * disegna una banda verde solo se gli allarmi sono il <b>doppio</b> delle passate,
+     * <i>«because of the TOD bug»</i>. Con l'allarme a zero le due occasioni sono la
+     * scrittura di TODLO (contatore e allarme entrambi a 0) e l'incremento a
+     * {@code $001000}, dove {@code (tod-1) & $FFF000} vale ancora 0.
+     *
+     * <p>⚠️ Il modello precedente era un altro — due {@code checkTodIrq()} in più dentro
+     * {@link #incrementTod()}, ai riporti di nibble — e non è mai stato attivo, perché
+     * {@code todBug} era {@code false} e nessuno chiamava {@link #setTodBug(boolean)}.
+     * Sostituito dalla regola dell'oracolo; sull'A500 il baco c'è
+     * ({@code cfgfile.cpp}, {@code case CP_A500: cs_ciatodbug = true}).
+     */
+    private void checkTodIrq(boolean inc) {
+        boolean match = todCounter == todAlarm;
+        if (!match && todBug && inc
+                && (todCounter & 0x000FFF) == 0
+                && ((todCounter - 1) & 0xFFF000) == todAlarm) {
+            match = true;
+        }
+        if (!todMatching && match) {
             icr |= 0x04; // TOD source bit — ROM reads this to identify the interrupt
             if ((imr & 0x04) != 0) triggerIrq();
         }
-        todMatching = (todCounter == todAlarm);
+        todMatching = match;
     }
 
     // ── I/O Port Logic ───────────────────────────────────────────────────────
