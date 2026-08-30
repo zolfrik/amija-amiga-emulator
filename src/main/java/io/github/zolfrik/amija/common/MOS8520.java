@@ -1077,17 +1077,26 @@ public class MOS8520 {
                     delay |= CIALoadB0;
                 }
                 break;
+            // ⛔ Il confronto con l'allarme su una SCRITTURA lo fa UN SOLO registro: TODLO.
+            // Non è una regola generale con un'eccezione, è la tabella di `cia.cpp`
+            // 1872-1900 — `case 8` chiama `cia_checkalarm(false, true, num)` subito dopo
+            // aver alzato `todon`, i `case 9` e `case 10` fanno solo `setciatod`. La stessa
+            // forma della rilettura delle porte (§"quattro registri, quattro regole").
+            // Misura: `CIA/TOD/tod/todint4` rimette a mano contatore e allarme uguali
+            // scrivendo TODMID per ultimo e conta gli scatti — l'oracolo ne dà 0 su 81
+            // passaggi, noi ne davamo 80, uno per ogni scrittura di TODMID.
+            // ⚠️ La scrittura all'ALLARME (crb bit 7) non confronta su nessuno dei tre.
             case 0x8:
                 if ((crb & 0x80) != 0) todAlarm = (todAlarm & 0xFFFF00) | val;
                 else { todCounter = (todCounter & 0xFFFF00) | val; todStopped = false; checkTodIrq(); }
                 break;
             case 0x9:
                 if ((crb & 0x80) != 0) todAlarm = (todAlarm & 0xFF00FF) | (val << 8);
-                else { todCounter = (todCounter & 0xFF00FF) | (val << 8); checkTodIrq(); }
+                else todCounter = (todCounter & 0xFF00FF) | (val << 8);
                 break;
             case 0xA:
                 if ((crb & 0x80) != 0) todAlarm = (todAlarm & 0x00FFFF) | (val << 16);
-                else { todCounter = (todCounter & 0x00FFFF) | (val << 16); todStopped = true; checkTodIrq(); }
+                else { todCounter = (todCounter & 0x00FFFF) | (val << 16); todStopped = true; }
                 break;
             case 0xB: break;
             case 0xC: sdr = val; delay |= CIASdrToSsr0; feed |= CIASdrToSsr0; break;
