@@ -171,10 +171,6 @@ public class CIAPinSet {
         }
     }
 
-    // Identification and logging (Stubbed)
-    public void setClkSupplier(java.util.function.LongSupplier s) { }
-    public void setPcSupplier(java.util.function.IntSupplier s)   { }
-
     // ── Porte I/O da 8 bit, rappresentate come maschere di bit ────────────────
     // Default coerenti col vecchio modello a oggetti: internalDrive=true (drive=0xFF),
     // externalInput=true (ext=0xFF), isOutput=false (ddr=0). Il reset del MOS8520

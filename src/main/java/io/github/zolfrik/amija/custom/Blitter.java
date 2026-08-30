@@ -82,7 +82,9 @@ public final class Blitter {
     private static final int BLTCON0_USEA = 0x0800;
     private static final int BLTCON0_USEB = 0x0400;
     private static final int BLTCON0_USEC = 0x0200;
-    private static final int BLTCON0_USED = 0x0100;
+    // USED (0x0100) non compare: il canale D non è mai interrogato con isUsed() —
+    // la sua presenza è già codificata nei micro-programmi COPY_PROG, indicizzati
+    // sui quattro bit USEx di BLTCON0.
     private static final int BLTCON0_LF   = 0x00FF;
 
     private static final int BLTCON1_BSH     = 0xF000;
@@ -674,8 +676,6 @@ public final class Blitter {
         fillCarry = nextCarryIn[fillCarry][dataHi] & 0x1;
         dhold = (resHi << 8) | resLo;
     }
-
-    private void clearBusyFlag() { bbusy = false; }
 
     private void endBlit() {
         running = false;

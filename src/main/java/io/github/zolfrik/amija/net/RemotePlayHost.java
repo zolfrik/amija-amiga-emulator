@@ -35,6 +35,10 @@ import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -71,6 +75,15 @@ public final class RemotePlayHost implements AutoCloseable {
     /** Silenzio dell'ospite oltre il quale la sessione si considera persa. */
     private static final int SESSION_TIMEOUT_MS = 10_000;
 
+    /** Rifiuti che si accetta di chiudere con garbo in coda. Oltre, si chiude di schianto. */
+    private static final int REJECT_QUEUE = 16;
+
+    /**
+     * Tetto complessivo di un handshake, oltre il quale il socket si chiude e il posto
+     * dell'ospite torna libero. Vedi {@link #startHandshakeDeadline}.
+     */
+    static final int HANDSHAKE_BUDGET_MS = 12_000;
+
     private final int width;
     private final int height;
     private final String joinCode;
@@ -99,6 +112,45 @@ public final class RemotePlayHost implements AutoCloseable {
     private final FeedbackPacket pendingInput = new FeedbackPacket();
 
     private Thread acceptThread;
+    /**
+     * Il posto dell'unico ospite: occupato mentre una sessione e' viva <b>oppure</b>
+     * mentre un handshake e' in corso.
+     *
+     * <p>Serve da quando l'handshake non gira piu' sul thread di accettazione (vedi
+     * {@link #acceptLoop()}): li' «c'e' gia' un ospite?» e «prenditi il posto» erano lo
+     * stesso passo perche' avvenivano su un thread solo. Ora sono due, e devono tornare a
+     * essere un passo solo — altrimenti due connessioni arrivate insieme passerebbero
+     * entrambe il controllo e la seconda sovrascriverebbe la sessione della prima.
+     */
+    private final AtomicBoolean guestSlot = new AtomicBoolean();
+
+    /** Quanto in fretta si puo' sbagliare il join code, per indirizzo (§8). */
+    private final AuthThrottle throttle = new AuthThrottle();
+
+    /**
+     * Dove gira l'handshake. Un thread solo: il posto dell'ospite e' uno, quindi piu' di
+     * un handshake per volta non ha senso, e chi arriva mentre e' occupato riceve subito
+     * REJECT busy invece di mettersi in coda.
+     */
+    private ExecutorService handshakeExecutor;
+
+    /**
+     * Chi porta a termine i rifiuti rapidi, fuori dal thread di accettazione.
+     *
+     * <p>{@link ControlChannel#closeGracefully()} aspetta il peer per far arrivare il motivo
+     * del rifiuto invece di un RST che lo cancella — ed e' giusto cosi'. Ma quell'attesa,
+     * fatta <b>sul thread che accetta</b>, e' tempo in cui nessun altro puo' collegarsi: chi
+     * apre un socket, si prende il rifiuto e poi tace, lo paga in ritardo l'ospite legittimo
+     * che sta bussando. E i tre rifiuti rapidi — troppi errori, sessione occupata, solo rete
+     * locale — non passano dall'handshake, quindi non c'e' nemmeno il freno a fermare chi li
+     * ripete.
+     *
+     * <p>Qui l'attesa e' di qualcun altro. La coda e' corta di proposito: se si riempie —
+     * cioe' sotto raffica, l'unico caso in cui succede — il rifiuto successivo si chiude di
+     * schianto. Perdere la cortesia del motivo quando si e' sotto attacco e' esattamente il
+     * modo giusto di degradare; perdere l'ascolto no.
+     */
+    private ExecutorService rejectExecutor;
 
     // --- consegna dei frame dal thread di emulazione ---------------------------------
     private final Object frameLock = new Object();
@@ -191,6 +243,19 @@ public final class RemotePlayHost implements AutoCloseable {
 
     /** Comincia ad accettare. Torna subito: l'attesa vive sul suo thread. */
     public void start() {
+        handshakeExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "amija-remoteplay-handshake");
+            t.setDaemon(true);
+            return t;
+        });
+        rejectExecutor = new java.util.concurrent.ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS,
+                new java.util.concurrent.ArrayBlockingQueue<>(REJECT_QUEUE),
+                r -> {
+                    Thread t = new Thread(r, "amija-remoteplay-reject");
+                    t.setDaemon(true);
+                    return t;
+                });
         acceptThread = new Thread(this::acceptLoop, "amija-remoteplay-accept");
         acceptThread.setDaemon(true);
         acceptThread.start();
@@ -380,6 +445,19 @@ public final class RemotePlayHost implements AutoCloseable {
         if (acceptThread != null) {
             join(acceptThread);
         }
+        // Dopo il thread di accettazione, che e' chi gli consegna il lavoro: cosi' non
+        // resta un handshake appena messo in coda su un esecutore gia' spento.
+        if (handshakeExecutor != null) {
+            handshakeExecutor.shutdownNow();
+            try {
+                handshakeExecutor.awaitTermination(2, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (rejectExecutor != null) {
+            rejectExecutor.shutdownNow();
+        }
         // I thread di sessione prima dell'impairment, e l'ordine conta: il thread di
         // codifica potrebbe essere dentro una send, e chiudergli il link sotto i piedi
         // trasformerebbe una chiusura ordinata in una eccezione su un thread che nessuno
@@ -419,6 +497,7 @@ public final class RemotePlayHost implements AutoCloseable {
                 return;
             }
             ControlChannel channel = null;
+            boolean slotTaken = false;
             try {
                 channel = new ControlChannel(socket);
                 if (lanOnly && !isLocalNetwork(socket.getInetAddress())) {
@@ -427,21 +506,36 @@ public final class RemotePlayHost implements AutoCloseable {
                     // il punto: chi non e' sulla rete di casa non deve nemmeno poter
                     // provare il codice.
                     Handshake.reject(channel, RemotePlayProtocol.REJECT_LAN_ONLY);
-                    channel.closeGracefully();
+                    closeAside(channel);
                     RemotePlaySettings.say("rifiutato %s: solo rete locale",
                             socket.getRemoteSocketAddress());
                     continue;
                 }
-                if (hasGuest()) {
+                long wait = throttle.retryAfterMillis(socket.getInetAddress());
+                if (wait > 0) {
+                    // Prima del posto e prima della derivazione: chi ha appena sbagliato il
+                    // codice piu' volte non deve poter ne' occupare la sessione ne' far
+                    // spendere all'host i ~60 ms di PBKDF2 che il tentativo costa.
+                    Handshake.reject(channel, RemotePlayProtocol.REJECT_AUTH);
+                    closeAside(channel);
+                    RemotePlaySettings.say("rifiutato %s: troppi codici errati, riprovi fra %d ms",
+                            socket.getRemoteSocketAddress(), wait);
+                    continue;
+                }
+                if (!guestSlot.compareAndSet(false, true)) {
                     Handshake.reject(channel, RemotePlayProtocol.REJECT_BUSY);
-                    channel.closeGracefully();
+                    closeAside(channel);
                     RemotePlaySettings.say("rifiutato %s: c'e' gia' un ospite",
                             socket.getRemoteSocketAddress());
                     continue;
                 }
-                startSession(channel);
-            } catch (IOException e) {
-                RemotePlaySettings.say("handshake fallito con %s: %s",
+                slotTaken = true;
+                // Il posto e' preso: da qui in poi a restituirlo pensa handshake().
+                final ControlChannel accepted = channel;
+                handshakeExecutor.execute(() -> handshake(accepted));
+                slotTaken = false;   // consegnato: ora il posto e' suo
+            } catch (IOException | java.util.concurrent.RejectedExecutionException e) {
+                RemotePlaySettings.say("connessione da %s non accolta: %s",
                         socket.getRemoteSocketAddress(), e.getMessage());
                 // closeGracefully e non close: se il fallimento e' stato un REJECT, quel
                 // messaggio e' ancora in coda e una chiusura brusca lo cancellerebbe.
@@ -454,8 +548,140 @@ public final class RemotePlayHost implements AutoCloseable {
                         // idem
                     }
                 }
+            } finally {
+                // Il posto preso e mai consegnato va restituito qui, o resterebbe
+                // occupato da nessuno. Succede se la execute() viene rifiutata perche'
+                // l'esecutore sta chiudendo: raro, ma un posto perso non si riprende piu'.
+                if (slotTaken) {
+                    guestSlot.set(false);
+                }
             }
         }
+    }
+
+    /**
+     * Chiude con garbo altrove, o di schianto se non c'e' posto.
+     *
+     * <p>Il thread di accettazione non deve <b>mai</b> aspettare un peer: e' l'unico che
+     * puo' accogliere il prossimo, e chi e' appena stato rifiutato non ha titolo per
+     * trattenerlo.
+     */
+    private void closeAside(ControlChannel channel) {
+        ExecutorService pool = rejectExecutor;
+        if (pool != null) {
+            try {
+                pool.execute(channel::closeGracefully);
+                return;
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                // Coda piena o esecutore in chiusura: si chiude qui, subito.
+            }
+        }
+        channel.close();
+    }
+
+    /**
+     * L'handshake di una connessione gia' accolta, <b>sul suo thread</b>.
+     *
+     * <p>Prima stava dentro {@link #acceptLoop()}, e li' costava caro: ogni lettura di
+     * {@link Handshake#accept} attende fino a {@link Handshake#HANDSHAKE_TIMEOUT_MS}, e ce
+     * ne sono due, piu' la derivazione PBKDF2. Un peer che apriva il socket e poi taceva
+     * teneva fermo l'<b>ascolto</b> per una ventina di secondi: in quell'intervallo nessun
+     * altro poteva collegarsi, e nemmeno i due rifiuti rapidi — «solo rete locale» e «c'e'
+     * gia' un ospite» — venivano valutati, perche' stanno dopo la accept. Adesso il thread
+     * di accettazione fa solo quei due controlli e torna subito ad ascoltare.
+     *
+     * <p>Se l'handshake non arriva in fondo, il posto dell'ospite va restituito: e' l'unica
+     * cosa che questo metodo deve fare in piu' rispetto a prima, e senza di essa un codice
+     * sbagliato chiuderebbe l'ascolto a chiunque per sempre.
+     */
+    private void handshake(ControlChannel channel) {
+        boolean established = false;
+        java.net.InetAddress peer = channel.socket().getInetAddress();
+        // Chi fra l'handshake e la sua scadenza arriva primo: uno solo dei due CHIUDE il
+        // canale. Senza, una scadenza gia' scattata e ferma un istante prima della close()
+        // chiuderebbe quello di una sessione appena stabilita — microsecondi, ma sarebbe
+        // una sessione buona buttata via.
+        AtomicBoolean closing = new AtomicBoolean();
+        Thread deadline = startHandshakeDeadline(channel, closing);
+        try {
+            startSession(channel);
+            established = true;
+            throttle.recordSuccess(peer);
+        } catch (IOException e) {
+            RemotePlaySettings.say("handshake fallito con %s: %s",
+                    channel.socket().getRemoteSocketAddress(), e.getMessage());
+        } catch (RuntimeException e) {
+            RemotePlaySettings.say("handshake interrotto con %s: %s",
+                    channel.socket().getRemoteSocketAddress(), e);
+        } finally {
+            if (closing.compareAndSet(false, true)) {
+                deadline.interrupt();   // non deve dormire fino in fondo per nulla
+            }
+            // Il posto, invece, NON segue quella gara: lo restituisce sempre e solo chi
+            // non e' riuscito a consegnarlo a una sessione. Farlo restituire alla scadenza
+            // sarebbe sbagliato nel caso — raro ma possibile — in cui scatta subito dopo un
+            // handshake riuscito: il posto e' gia' della sessione, e liberarlo lo darebbe
+            // via a un secondo ospite mentre il primo e' ancora dentro. Se la scadenza ha
+            // chiuso il canale di una sessione viva, quella muore da se' e il posto lo
+            // restituisce stop(), che e' il suo proprietario.
+            if (!established) {
+                // Un handshake che non arriva in fondo conta come tentativo sbagliato. Non
+                // si distingue il codice errato dal socket caduto, ed e' voluto: la
+                // distinzione la conosce solo chi sta dall'altra parte, e chi prova a
+                // indovinare potrebbe fabbricarla a piacere staccando al momento giusto.
+                throttle.recordFailure(peer);
+                // Il posto PRIMA della chiusura, e non e' pignoleria: closeGracefully()
+                // svuota la coda del peer con un linger di mezzo secondo, e finche' dura
+                // il posto resterebbe occupato da una connessione gia' rifiutata. Chi
+                // ritenta subito — dopo aver sbagliato il codice, che e' il caso normale —
+                // si sentirebbe rispondere «c'e' gia' un ospite» invece di «codice
+                // errato»: il messaggio sbagliato, e per un motivo che non esiste.
+                // I due gesti sono indipendenti: il posto e' una prenotazione, la
+                // chiusura riguarda solo questo socket.
+                guestSlot.set(false);
+                channel.closeGracefully();   // idempotente: la scadenza puo' averlo gia' chiuso
+            }
+        }
+    }
+
+    /**
+     * Chiude il socket se l'handshake non arriva in fondo entro
+     * {@value #HANDSHAKE_BUDGET_MS} ms.
+     *
+     * <p>Il timeout di {@link Handshake} vale per <b>ogni lettura</b>, non per l'insieme:
+     * chi tace a ogni passo somma i timeout, e nel frattempo tiene occupato il posto — che
+     * e' uno solo — <i>senza essersi autenticato</i>. Il tetto complessivo e' quel che
+     * impedisce a una connessione muta di negare la sessione a chi il codice ce l'ha.
+     *
+     * <p>Chiudere il socket e' il modo giusto di svegliare il thread bloccato: una
+     * {@link Thread#interrupt()} non tocca una lettura su socket, mentre la chiusura la fa
+     * tornare subito con un'eccezione — che e' esattamente il percorso di fallimento gia'
+     * previsto, quindi il posto lo restituisce {@link #handshake} come in ogni altro
+     * fallimento, e questo thread non deve toccarlo.
+     *
+     * <p>Generoso di proposito: {@value #HANDSHAKE_BUDGET_MS} ms sono un'eternita' per un
+     * handshake che costa ~60 ms di PBKDF2 su una rete vera, e restano stretti abbastanza
+     * da non lasciare la sessione ostaggio di nessuno.
+     */
+    private Thread startHandshakeDeadline(ControlChannel channel, AtomicBoolean closing) {
+        Thread t = new Thread(() -> {
+            try {
+                Thread.sleep(HANDSHAKE_BUDGET_MS);
+            } catch (InterruptedException e) {
+                return;   // handshake finito in tempo: niente da fare
+            }
+            if (!closing.compareAndSet(false, true)) {
+                return;   // l'handshake e' arrivato in fondo per primo
+            }
+            RemotePlaySettings.say("handshake con %s oltre %d ms: chiudo",
+                    channel.socket().getRemoteSocketAddress(), HANDSHAKE_BUDGET_MS);
+            // Solo il canale. Il posto lo restituisce handshake(), che e' l'unico a sapere
+            // se una sessione se n'e' presa carico: vedi il commento li'.
+            channel.close();
+        }, "amija-remoteplay-handshake-deadline");
+        t.setDaemon(true);
+        t.start();
+        return t;
     }
 
     /**
@@ -554,6 +780,14 @@ public final class RemotePlayHost implements AutoCloseable {
         private final int sessionGen;
 
         private volatile boolean alive = true;
+        /**
+         * Che {@link #stop} sia gia' passato di qui. Non basta il controllo su
+         * {@code alive}: {@code encodeLoop}, {@code feedbackLoop} e {@code controlLoop}
+         * possono accorgersi della fine nello stesso istante e superarlo entrambi, e da
+         * quando la chiusura restituisce anche il posto dell'ospite una seconda passata
+         * lo libererebbe una seconda volta — dandolo via mentre e' gia' di qualcun altro.
+         */
+        private final AtomicBoolean stopping = new AtomicBoolean();
         private volatile long lastFeedbackNanos = System.nanoTime();
         private long lastFeedbackSeq = -1;
         private Thread encodeThread;
@@ -716,7 +950,7 @@ public final class RemotePlayHost implements AutoCloseable {
         }
 
         void stop(int rejectReason) {
-            if (!alive) {
+            if (!stopping.compareAndSet(false, true)) {
                 return;
             }
             alive = false;
@@ -734,9 +968,13 @@ public final class RemotePlayHost implements AutoCloseable {
             synchronized (frameLock) {
                 frameLock.notifyAll();
             }
+            // Prima si sgombera il campo, poi si libera il posto: nell'ordine opposto un
+            // nuovo ospite potrebbe prendere il posto e installarsi in `session` fra il
+            // confronto e l'azzeramento, e lo si cancellerebbe appena arrivato.
             if (session == this) {
                 session = null;
             }
+            guestSlot.set(false);
         }
     }
 }

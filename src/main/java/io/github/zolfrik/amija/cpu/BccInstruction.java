@@ -110,7 +110,8 @@ public class BccInstruction extends AbstractM68kInstruction {
                     // PC del frame = indirizzo dell'opcode + 2 (il PC interno al
                     // momento in cui il branch calcola la destinazione), NON
                     // target-4. Concordano i due riferimenti:
-                    //   WinUAE cpuemu_11.cpp op_6000_11/op_6001_11: ramo `src & 1`
+                    //   WinUAE op_6000_12_ff/op_6001_12_ff (cpuemu_11.cpp) e _14_ff (cpuemu_13.cpp),
+                    //   cioe' le varianti 68000: ramo `src & 1`
                     //     -> m68k_setpci_j(oldpc); m68k_incpci(2);
                     //        exception3_read_prefetch(...) usa m68k_getpc()
                     //   Moira MoiraExec_cpp.h execBra/execBcc:

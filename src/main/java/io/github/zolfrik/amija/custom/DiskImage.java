@@ -112,7 +112,23 @@ public final class DiskImage implements AutoCloseable {
     private final int[] adfSectorMfmScratch;
     private long cyclesSinceLastFlush = 0L;
     private volatile boolean closed = false;
-    private final Thread shutdownHook;
+    /**
+     * Rete di sicurezza per il flush a processo che muore. È registrato <b>pigramente</b>,
+     * alla prima traccia sporca ({@link #markDirty}), non nel costruttore.
+     *
+     * <p>⛔ Un hook registrato è una radice GC viva per tutta la vita del JVM, e veniva
+     * tolto solo da {@link #close()}. Registrandolo per OGNI immagine — comprese quelle
+     * di sola lettura e gli IPF, che non possono mai sporcarsi — ogni macchina smontata
+     * senza espellere i dischi lasciava dietro fino a quattro hook e con loro l'intera
+     * {@code DiskImage}: {@code sectorData} è ~900 KB per ADF, gli {@code ipfMfmTracks}
+     * di più. Su una collezione intera (il game sweep boota un'istanza per file) sono
+     * centinaia di MB che non tornano indietro, più centinaia di Thread da avviare
+     * all'uscita. Pigro, l'hook esiste solo se c'è davvero qualcosa da salvare.
+     *
+     * <p>Il difetto complementare — nessuno espelleva i dischi — è chiuso in
+     * {@code Amija.shutdownMachine()}, che ora chiude i quattro drive.
+     */
+    private Thread shutdownHook;
 
     // =========================================================================
     // Factory methods
@@ -291,10 +307,8 @@ public final class DiskImage implements AutoCloseable {
             adfSectorMfmScratch = null;
         }
 
-        dirtyTracks  = new boolean[PHYSICAL_TRACKS];
-        shutdownHook = new Thread(this::flushQuietly,
-                                  "DiskImage-flush-" + filePath.getFileName());
-        Runtime.getRuntime().addShutdownHook(shutdownHook);
+        dirtyTracks = new boolean[PHYSICAL_TRACKS];
+        // Lo shutdown hook NON si registra qui: vedi il campo shutdownHook.
     }
 
     // =========================================================================
@@ -578,7 +592,7 @@ public final class DiskImage implements AutoCloseable {
      * Scrive su disco solo le tracce dirty tramite accesso random al file,
      * senza riscrivere l'intera immagine. Operazione idempotente.
      */
-    public void flush() throws IOException {
+    public synchronized void flush() throws IOException {
         if (!anyDirty || readOnly || format != Format.ADF || closed) return;
         try (RandomAccessFile raf = new RandomAccessFile(filePath.toFile(), "rw")) {
             for (int t = 0; t < PHYSICAL_TRACKS; t++) {
@@ -598,7 +612,7 @@ public final class DiskImage implements AutoCloseable {
      * anche se questo metodo non viene invocato.
      */
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         if (!closed) {
             // Il flush DEVE precedere closed=true: flush() esce subito su immagine
             // chiusa, quindi invertendo l'ordine l'ultimo flush (eject, chiusura
@@ -606,8 +620,11 @@ public final class DiskImage implements AutoCloseable {
             // tracce dirty non ancora scaricate dal flush periodico andavano perse.
             flush();
             closed = true;
-            try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
-            catch (IllegalStateException ignored) {} // JVM già in shutdown
+            if (shutdownHook != null) {
+                try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
+                catch (IllegalStateException ignored) {} // JVM già in shutdown
+                shutdownHook = null;
+            }
         }
     }
 
@@ -615,11 +632,30 @@ public final class DiskImage implements AutoCloseable {
         try { flush(); } catch (IOException ignored) {}
     }
 
-    private void markDirty(int physicalTrack) {
+    private synchronized void markDirty(int physicalTrack) {
         dirtyTracks[physicalTrack] = true;
         anyDirty = true;
         // Invalida l'encoding MFM cachato: i dati del settore sono cambiati.
         if (mfmTrackCache != null) mfmTrackCache[physicalTrack] = null;
+        armShutdownHook();
+    }
+
+    /**
+     * Registra la rete di sicurezza del flush alla prima traccia sporca. Idempotente;
+     * non fa nulla su immagine di sola lettura, non-ADF o già chiusa — lì non c'è
+     * niente da salvare. Vedi il campo {@link #shutdownHook}.
+     */
+    private void armShutdownHook() {
+        if (shutdownHook != null || closed || readOnly || format != Format.ADF) return;
+        Thread hook = new Thread(this::flushQuietly,
+                                 "DiskImage-flush-" + filePath.getFileName());
+        try {
+            Runtime.getRuntime().addShutdownHook(hook);
+            shutdownHook = hook;
+        } catch (IllegalStateException ignored) {
+            // JVM già in shutdown: il flush finale lo fa comunque close(), e se non
+            // arriva non c'è più nessuno che possa registrare alcunché.
+        }
     }
 
     // =========================================================================

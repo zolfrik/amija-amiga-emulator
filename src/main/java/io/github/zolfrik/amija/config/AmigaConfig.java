@@ -31,9 +31,15 @@ import io.github.zolfrik.amija.input.KeyBinding;
 import io.github.zolfrik.amija.input.PortDevice;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.Writer;
+import java.nio.charset.MalformedInputException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 import java.util.Properties;
 
@@ -250,21 +256,40 @@ public final class AmigaConfig {
         // 1. File nella home dell'applicazione (di norma la directory di lavoro).
         Path homeFile = AppHome.resolve(FILE_NAME);
         if (Files.isRegularFile(homeFile)) {
-            try (InputStream in = Files.newInputStream(homeFile)) {
+            // UTF-8, e con un Reader: vedi il commento di save(). Con un InputStream
+            // Properties decodifica ISO-8859-1, che e' cio' che corrompeva i percorsi
+            // accentati a ogni giro di salvataggio e rilettura.
+            try (Reader in = Files.newBufferedReader(homeFile, StandardCharsets.UTF_8)) {
                 Properties p = new Properties();
                 p.load(in);
                 System.out.println("[CONFIG] Loaded " + homeFile.toAbsolutePath());
                 return new AmigaConfig(p);
+            } catch (MalformedInputException e) {
+                // File scritto prima che le due meta' fossero d'accordo, oppure a mano
+                // con l'editor di sistema: non e' UTF-8 valido. Si rilegge in Latin-1,
+                // che accetta qualunque byte, cosi' la configurazione non va persa; il
+                // primo salvataggio la riporta in UTF-8.
+                System.err.println("[CONFIG] " + homeFile + " non e' UTF-8 valido, "
+                        + "rileggo in ISO-8859-1 (sara' riscritto in UTF-8 al salvataggio)");
+                try (InputStream in = Files.newInputStream(homeFile)) {
+                    Properties p = new Properties();
+                    p.load(in);
+                    return new AmigaConfig(p);
+                } catch (IOException e2) {
+                    System.err.println("[CONFIG] Failed to read " + homeFile + ": " + e2.getMessage());
+                }
             } catch (IOException e) {
                 System.err.println("[CONFIG] Failed to read " + homeFile + ": " + e.getMessage());
             }
         }
 
-        // 2. File sul classpath (es. src/main/resources/amiga.properties).
+        // 2. File sul classpath (es. src/main/resources/amiga.properties). UTF-8 come
+        //    gli altri due percorsi: la charset di questo file dev'essere UNA, o si torna
+        //    al disaccordo che corrompeva i percorsi accentati.
         try (InputStream in = AmigaConfig.class.getResourceAsStream("/" + FILE_NAME)) {
             if (in != null) {
                 Properties p = new Properties();
-                p.load(in);
+                p.load(new InputStreamReader(in, StandardCharsets.UTF_8));
                 System.out.println("[CONFIG] Loaded from classpath /" + FILE_NAME);
                 return new AmigaConfig(p);
             }
@@ -274,7 +299,10 @@ public final class AmigaConfig {
 
         // 3. Nessun file: crea quello di default nella home.
         Properties defaults = defaultProperties();
-        try (OutputStream out = Files.newOutputStream(homeFile)) {
+        try (Writer out = Files.newBufferedWriter(homeFile, StandardCharsets.UTF_8)) {
+            // store(Writer) e non store(OutputStream): il secondo scrive ISO-8859-1 e
+            // rimetterebbe le due meta' in disaccordo appena un default smettesse di
+            // essere ASCII.
             defaults.store(out, "AmiJa configuration - Java Amiga emulator");
             System.out.println("[CONFIG] Created default file " + homeFile.toAbsolutePath());
         } catch (IOException e) {
@@ -771,7 +799,7 @@ public final class AmigaConfig {
     public VideoMode storedVideoMode() {
         String v = props.getProperty(K_VIDEO_MODE, VideoMode.PAL.name()).trim();
         try {
-            return VideoMode.valueOf(v.toUpperCase());
+            return VideoMode.valueOf(v.toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
             System.err.println("[CONFIG] Invalid video mode '" + v + "', using PAL");
             return VideoMode.PAL;
@@ -798,7 +826,7 @@ public final class AmigaConfig {
     private static Chipset parseChipset(String value, Chipset def) {
         if (value == null || value.trim().isEmpty()) return def;
         try {
-            return Chipset.valueOf(value.trim().toUpperCase());
+            return Chipset.valueOf(value.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
             System.err.println("[CONFIG] Invalid chipset '" + value.trim() + "', using " + def);
             return def;
@@ -1146,11 +1174,55 @@ public final class AmigaConfig {
      * Scrive la configurazione corrente in {@code amiga.properties} nella home
      * ({@link AppHome}), così da avere precedenza sull'eventuale copia nel classpath al
      * successivo avvio. Il file viene riscritto in forma ordinata e commentata.
+     *
+     * <p><b>UTF-8, dichiarato.</b> La charset va detta qui e in {@link #load()}, e deve
+     * essere la stessa: {@code Files.writeString} scrive UTF-8 per default, mentre
+     * {@code Properties.load(InputStream)} decodifica <i>ISO-8859-1</i> per contratto. Le
+     * due meta' non erano d'accordo, e ogni percorso con un accento — cioe' il caso
+     * normale su un'installazione italiana — si corrompeva alla rilettura, peggiorando a
+     * ogni giro perche' i byte sbagliati venivano riscritti come tali.
+     *
+     * <p><b>Prima su un temporaneo, poi uno spostamento atomico.</b> Il file si riscrive
+     * per intero a ogni conferma del popup: scrivendo direttamente sulla destinazione,
+     * un'interruzione a meta' (crash, disco pieno, la JVM che esce mentre lo shutdown hook
+     * gira) lascerebbe una configurazione troncata al posto di quella buona. Con lo
+     * spostamento atomico o si vede il file nuovo o si vede ancora il vecchio.
      */
     public void save() throws IOException {
         Path target = AppHome.resolve(FILE_NAME);
-        Files.writeString(target, toPropertiesText());
+        writeAtomically(target, toPropertiesText());
         System.out.println("[CONFIG] Saved " + target.toAbsolutePath());
+    }
+
+    /**
+     * Scrive {@code text} in {@code target} passando da un temporaneo nella stessa
+     * cartella — dev'essere la stessa, o lo spostamento attraverserebbe un file system e
+     * smetterebbe di essere atomico.
+     *
+     * <p>Se il sistema non offre {@code ATOMIC_MOVE} si ripiega su uno spostamento
+     * normale: resta molto meglio di una scrittura sul posto, perche' la finestra in cui
+     * la destinazione e' incompleta si riduce a quella della {@code move}.
+     */
+    private static void writeAtomically(Path target, String text) throws IOException {
+        // Il temporaneo DEVE stare nella stessa cartella della destinazione: altrove
+        // finirebbe su un altro file system e lo spostamento smetterebbe di essere
+        // atomico (o fallirebbe). Con AppHome il genitore c'e' sempre; il ripiego sulla
+        // cartella corrente e' per non dipendere da quel dettaglio.
+        Path dir = target.getParent() != null ? target.getParent() : Path.of(".");
+        Files.createDirectories(dir);
+        Path tmp = Files.createTempFile(dir, FILE_NAME, ".tmp");
+        try {
+            Files.writeString(tmp, text, StandardCharsets.UTF_8);
+            try {
+                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException e) {
+            Files.deleteIfExists(tmp);
+            throw e;
+        }
     }
 
     /** Configurazione coi soli valori di default, senza toccare il disco. */

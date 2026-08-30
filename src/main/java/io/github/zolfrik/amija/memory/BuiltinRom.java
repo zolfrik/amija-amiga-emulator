@@ -1,6 +1,6 @@
 /*
- * AmiJa - an Amiga 500 emulator
- * Copyright (C) 2026  zolfrik
+ * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

@@ -115,6 +115,12 @@ public final class Paula {
     private int dsklen;
     private int dsksync = 0x4489;
     private int dsk_syncMatches = 0; // diagnostica: sync trovati nella sessione DMA corrente
+    /**
+     * Latch del rilevatore di sync: l'interrupt DSKSYN e' <b>edge-triggered</b> e parte solo
+     * al primo bit in cui lo shifter combacia, non a ognuno. Si riarma quando lo shifter
+     * torna a non combaciare. E' il {@code dsksync_on} dell'oracolo (disk.cpp).
+     */
+    private boolean dsksyncOn = false;
     private int dskbytr_incoming;
     private long dsk_syncCycle;
     private int dsk_dataReg;
@@ -243,6 +249,7 @@ public final class Paula {
         dsk_writeShift = 0;
         dsk_writeBits = 0;
         dsk_syncCycle = 0;
+        dsksyncOn = false;
         dskbytr_incoming = 0;
 
         serper = 0;
@@ -713,11 +720,38 @@ public final class Paula {
             writeFifo(dsk_dataReg & 0xFFFF);
         }
 
-        // Sync detection is performed on every bit against the full 16-bit data register.
-        if (dsk_dataReg == dsksync) {
+        // ── Rilevamento del sync, un bit alla volta ──────────────────────────────
+        // ⛔ L'INTERRUPT E' EDGE-TRIGGERED, il rilevamento no. L'oracolo tiene un latch
+        // `dsksync_on`: lo alza al primo bit in cui lo shifter combacia e lo riarma solo
+        // quando torna a NON combaciare (`if (word != dsksync) dsksync_on = false;`,
+        // disk.cpp, tre siti identici). Noi alzavamo DSKSYN a OGNI bit di match: con un
+        // DSKSYNC che combacia per piu' bit di fila — il caso limite e' `dsksync == 0` con
+        // lo shifter a zero — era una raffica di interrupt invece di uno.
+        //
+        // ⚠️ Il RILEVAMENTO invece resta a ogni bit: `dsk_syncCycle`/`dsk_syncMatches` sono
+        // l'osservabile del comparatore (li legge WORDEQUAL in DSKBYTR), non dell'interrupt,
+        // e di la' il log `Sync match` sta in `wordsync_detected`, che il match lo chiama
+        // ogni volta. Anche il riallineamento da WORDSYNC sta li' dentro, cioe' fuori dal
+        // latch: su match ripetuti lo shifter si riallinea comunque.
+        //
+        // I due gate sono dell'oracolo anche loro:
+        //   - MSBSYNC (ADKCON bit 9): `!(adkcon & 0x200)` racchiude match E riallineamento;
+        //   - scrittura: `if (dskdmaen != DSKDMA_WRITE)` inibisce il solo interrupt.
+        // ⚠️ WORDSYNC (bit 10) NON entra nella condizione dell'interrupt in nessuno dei due:
+        // governa il riallineamento, e da noi era gia' cosi'.
+        // Vedi docs/vamigats-paula-audio-plan.md §7.1.21.
+        if (dsk_dataReg != dsksync) {
+            dsksyncOn = false;
+        }
+        if (dsk_dataReg == dsksync && (adkcon & 0x0200) == 0) {
             dsk_syncCycle = agnus.getMasterClock();
             dsk_syncMatches++;
-            raiseInterrupt(0x1000); // DSKSYN
+            if (!dsksyncOn) {
+                if (diskState != DriveDmaState.WRITE) {
+                    raiseInterrupt(0x1000); // DSKSYN
+                }
+                dsksyncOn = true;
+            }
 
             // "wordsync match resets read shifter" (WinUAE wordsync_detected):
             // con WORDSYNC attivo il match RIALLINEA SEMPRE lo shift register di
@@ -781,7 +815,44 @@ public final class Paula {
     // Register Access
     // =========================================================================
 
-    public static long diagIntreqrReads = 0, diagIntreqrBit5 = 0;
+    /**
+     * Variante di {@link #readRegister(int)} <b>priva di effetti collaterali</b>, per il
+     * debugger/disassemblatore. Tre registri di Paula mutano lo stato quando li si legge,
+     * ed è comportamento hardware voluto, non un difetto:
+     * <ul>
+     *   <li>{@code DSKDATR} ($008) estrae una word dalla FIFO del disco;</li>
+     *   <li>{@code SERDATR} ($018) azzera OVRUN;</li>
+     *   <li>{@code DSKBYTR} ($01A) azzera il bit DSKBYT.</li>
+     * </ul>
+     * Qui i primi due restituiscono lo stato <i>senza</i> consumarlo e il terzo lo
+     * ricostruisce col bit ancora alto. Tutto il resto passa da {@code readRegister}
+     * invariato. Vedi {@code AbstractAgnus.peekCustomRegister}.
+     */
+    public int peekRegister(int address) {
+        address &= 0x1FE;
+        switch (address) {
+            case 0x008: {
+                // Sbircia la word più vecchia della FIFO senza estrarla.
+                if (dsk_fifoCount == 0) return agnus != null ? agnus.getLastBusData() : 0xFFFF;
+                int shift = (dsk_fifoCount - 1) * 16;
+                return (int) ((dsk_fifo >>> shift) & 0xFFFF);
+            }
+            case 0x018: {
+                boolean savedOvrun = serOvrun;
+                int v = buildSerdatr();
+                serOvrun = savedOvrun;
+                return v;
+            }
+            case 0x01A: {
+                int savedIncoming = dskbytr_incoming;
+                int v = buildDskbytr();
+                dskbytr_incoming = savedIncoming;
+                return v;
+            }
+            default:
+                return readRegister(address);
+        }
+    }
 
     public int readRegister(int address) {
         address &= 0x1FE;
@@ -794,7 +865,7 @@ public final class Paula {
             case 0x018: return buildSerdatr();
             case 0x01A: return buildDskbytr();
             case 0x01C: return intena & 0x7FFF; // INTENAR: bit 15 is always 0 on OCS/ECS.
-            case 0x01E: { int v = intreq & 0x7FFF; diagIntreqrReads++; if ((v & 0x20) != 0) diagIntreqrBit5++; return v; }
+            case 0x01E: return intreq & 0x7FFF;   // INTREQR
             default:
                 if (address >= 0x0A0 && address <= 0x0DE) return readAudioRegister(address);
                 return 0xFFFF;

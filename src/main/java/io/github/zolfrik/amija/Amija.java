@@ -2260,6 +2260,17 @@ public class Amija implements RemotePlayControl {
             agnus.getDf1().setFloppySound(null);
             agnus.getDf2().setFloppySound(null);
             agnus.getDf3().setFloppySound(null);
+            // ⛔ I dischi vanno ESPULSI, non solo dimenticati. ejectDisk() riversa la
+            // traccia in corso di scrittura, fa il flush finale e chiude la DiskImage —
+            // che è anche l'unico punto in cui il suo shutdown hook viene rimosso.
+            // Senza questo, ogni macchina smontata e ricostruita nello stesso processo
+            // (cambio ROM, cambio configurazione, load di uno stato incompatibile, e il
+            // game sweep che boota un'istanza per file) lasciava dietro fino a quattro
+            // hook, ciascuno radice GC dell'intera immagine.
+            agnus.getDf0().ejectDisk();
+            agnus.getDf1().ejectDisk();
+            agnus.getDf2().ejectDisk();
+            agnus.getDf3().ejectDisk();
         }
         closeFloppySounds();
         // Salva su disco le eventuali scritture agli hard disk montati.

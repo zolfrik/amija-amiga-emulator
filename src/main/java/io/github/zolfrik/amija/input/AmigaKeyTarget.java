@@ -57,4 +57,20 @@ public interface AmigaKeyTarget {
     default boolean isResetComboHeld() {
         return false;
     }
+
+    /**
+     * Vero se premere {@code rawKeyNum} <b>completerebbe adesso</b> CTRL+Amiga+Amiga, cioe'
+     * se gli altri due tasti della terna risultano gia' premuti sulla macchina.
+     *
+     * <p>La usa il filtro dell'ospite ({@code input.RemoteInputApplier}) per il caso che il
+     * suo solo pacchetto non puo' vedere: la terna formata <b>a cavallo delle due
+     * tastiere</b>, con l'host che ne tiene due e l'ospite che porta la terza.
+     *
+     * <p>Il default e' {@code false} ed e' la risposta giusta dove non c'e' una macchina
+     * dietro — l'ospite del gioco a distanza, i doppi di collaudo — perche' li' non c'e'
+     * nessuna terna da completare.
+     */
+    default boolean resetComboPendingOn(int rawKeyNum) {
+        return false;
+    }
 }

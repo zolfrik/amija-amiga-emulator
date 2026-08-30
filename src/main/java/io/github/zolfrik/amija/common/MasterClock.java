@@ -40,6 +40,19 @@ public final class MasterClock {
     /** Vero mentre il thread di clock è fermo nel ramo di pausa: vedi {@link #pauseAndWait}. */
     private volatile boolean idle = false;
     private Thread clockThread;
+    /**
+     * Generazione del thread di clock: {@link #start()} la incrementa e la consegna al
+     * thread che crea; {@link #run(int)} esce non appena non è più la propria.
+     *
+     * <p>⛔ Serve perché {@link #stop()} non può garantire che il thread uscente sia
+     * morto: la sua {@code join} ha un timeout, e allo scadere il riferimento veniva
+     * comunque azzerato. Una {@code start()} successiva rimette {@code running} a true
+     * PRIMA di creare il nuovo thread, quindi il vecchio — se non aveva ancora riletto
+     * il flag — lo rileggeva a true e proseguiva: due thread sullo stesso Agnus, che
+     * non è né idempotente né thread-safe. Il flag {@code running} da solo non può
+     * distinguere «fermati» da «riavviato», la generazione sì.
+     */
+    private volatile int generation = 0;
     private volatile java.util.function.Consumer<Throwable> failureHandler;
 
     /**
@@ -86,7 +99,8 @@ public final class MasterClock {
         running = true;
         paused = false;
         idle = false;
-        clockThread = new Thread(this::run, "MasterClock");
+        final int myGeneration = ++generation;
+        clockThread = new Thread(() -> run(myGeneration), "MasterClock");
         // MAX_PRIORITY: l'emulazione È il produttore dei campioni audio e deve restare a
         // real-time, altrimenti il ring buffer si svuota (underrun). Il thread audio
         // (consumer) usa pochissima CPU — sta quasi sempre bloccato su line.write — quindi
@@ -115,6 +129,10 @@ public final class MasterClock {
      */
     public synchronized void stop() {
         running = false;
+        // Invalida la generazione corrente: anche se la join qui sotto scade, il thread
+        // uscente si spegne da sé al prossimo giro invece di essere risvegliato da una
+        // start() successiva. Vedi {@link #generation}.
+        generation++;
         if (clockThread != null) {
             try {
                 clockThread.join(1000);
@@ -184,7 +202,7 @@ public final class MasterClock {
     /**
      * Loop principale del thread di clock.
      */
-    private void run() {
+    private void run(final int myGeneration) {
         final int batchSize = 1000;
         final double periodNs = mode.getPeriodNs();
 
@@ -210,7 +228,7 @@ public final class MasterClock {
         long logCycles = 0;
         long clampCount = 0;
 
-        while (running) {
+        while (running && generation == myGeneration) {
             if (paused) {
                 idle = true; // nessuno sta emulando: vedi pauseAndWait
                 try {

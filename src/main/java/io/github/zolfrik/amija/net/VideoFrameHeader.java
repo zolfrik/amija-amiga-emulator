@@ -121,6 +121,20 @@ public record VideoFrameHeader(
                 throw new ProtocolException("payload dichiarato " + payloadLength
                         + " byte, nel blob ce ne sono " + (blobLength - SIZE));
             }
+            // La finestra visibile non dimensiona buffer, ma esce da qui e finisce dentro
+            // FrameInfo, cioe' nella catena di presentazione locale, che la usa per centrare
+            // l'immagine. Sono quattro interi arbitrari che arrivano dalla rete: sommarli
+            // senza guardarli e' come minimo un'immagine spinta fuori dallo schermo, e i
+            // valori estremi fanno avvolgere l'aritmetica di chi li combina. Il tetto e' la
+            // geometria stessa del frame, che e' l'unica cosa di cui la finestra visibile
+            // possa parlare.
+            if (visX < 0 || visY < 0 || visW < 0 || visH < 0
+                    || visX > width || visY > height
+                    || visW > width || visH > height
+                    || visX + visW > width || visY + visH > height) {
+                throw new ProtocolException("finestra visibile " + visW + "x" + visH + " a ("
+                        + visX + "," + visY + ") fuori dal raster " + width + "x" + height);
+            }
             return new VideoFrameHeader(refFrameId, codec,
                     (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0,
                     width, height, visX, visY, visW, visH, frameCount, payloadLength);

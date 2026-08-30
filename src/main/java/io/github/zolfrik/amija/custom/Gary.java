@@ -670,7 +670,13 @@ public final class Gary {
     /**
      * Mappa la Fast RAM all'indirizzo base assegnato dall'AutoConfig. La regione è
      * dinamica: viene creata solo dopo che il Kickstart ha configurato la scheda.
-     * {@code sizeBytes} deve essere una potenza di due (wrap-around via maschera).
+     *
+     * <p>Con {@code sizeBytes} potenza di due il wrap è la maschera {@code size-1};
+     * altrimenti {@link #route} ripiega sul modulo. Le dimensioni AutoConfig valide
+     * sono comunque tutte potenze di due (vedi {@code FastRam.VALID_SIZES}), quindi
+     * il ramo col modulo non si percorre — a differenza di {@link #setRomSize} e
+     * {@link #setChipRamSize} qui non si rifiuta nulla, perché la dimensione non
+     * arriva dall'utente ma dalla scheda.
      */
     public void mapFastRam(int base, int sizeBytes) {
         removeRegionsByTarget(Target.FAST_RAM);

@@ -79,6 +79,16 @@ public final class SsdpDiscovery {
     private static final int RECEIVE_BUFFER = 2048;
 
     /**
+     * Quanti gateway distinti si accetta di tenere da parte.
+     *
+     * <p>Le risposte a un M-SEARCH arrivano da chiunque sia in ascolto sul multicast, e
+     * nessuno impedisce a una macchina della rete di risponderne diecimila con un
+     * {@code LOCATION} sempre diverso. La mappa che le deduplica crescerebbe con loro; un
+     * tetto costante la lascia dove deve stare. Le reti vere hanno un router, al massimo due.
+     */
+    private static final int MAX_GATEWAYS = 8;
+
+    /**
      * I bersagli della ricerca. Il dispositivo per primo — e' quello che risponde con la
      * descrizione completa — poi i due servizi, per i router che rispondono solo a quelli.
      */
@@ -139,7 +149,7 @@ public final class SsdpDiscovery {
     private static void collect(DatagramSocket socket, InetAddress local,
                                 Map<URI, Gateway> found) throws IOException {
         byte[] buffer = new byte[RECEIVE_BUFFER];
-        while (true) {
+        while (found.size() < MAX_GATEWAYS) {
             DatagramPacket response = new DatagramPacket(buffer, buffer.length);
             try {
                 socket.receive(response);
@@ -154,12 +164,88 @@ public final class SsdpDiscovery {
             }
             try {
                 URI url = new URI(location.trim());
-                if (url.getHost() != null) {
+                if (isTrustworthy(url, response.getAddress())) {
                     found.putIfAbsent(url, new Gateway(url, local));
                 }
             } catch (URISyntaxException e) {
                 RemotePlaySettings.log("LOCATION non interpretabile: %s", location);
             }
+        }
+    }
+
+    /**
+     * Se ci si puo' fidare abbastanza di un {@code LOCATION} da andarlo a leggere.
+     *
+     * <h2>Chi risponde a un M-SEARCH non e' necessariamente un router</h2>
+     * Il multicast lo riceve chiunque sia sulla rete, e a rispondere fa in tempo chiunque:
+     * non serve <i>essere</i> il gateway, basta arrivare prima. Il {@code LOCATION} e' quindi
+     * un URL scelto da un estraneo, e su quell'URL AmiJa poi fa una GET e — attraverso
+     * {@code URLBase} e {@code controlURL} — una POST di XML. Senza controlli, una macchina
+     * qualunque della rete potrebbe far parlare AmiJa con un indirizzo a sua scelta: un
+     * servizio in ascolto solo su {@code localhost}, un altro apparecchio della LAN, o un
+     * host su Internet. E' il classico <i>server-side request forgery</i>, e qui la vittima
+     * e' la macchina di casa di chi sta giocando.
+     *
+     * <p>Due condizioni lo chiudono, e nessuna delle due infastidisce un router vero:
+     * <ol>
+     *   <li>lo <b>schema</b> dev'essere {@code http} o {@code https}: un IGD non serve la
+     *       propria descrizione da nessun'altra parte, mentre {@code file:} e compagnia sono
+     *       solo modi di far leggere ad AmiJa qualcosa che non e' suo;</li>
+     *   <li>l'<b>host dev'essere chi ha risposto</b>. E' la condizione che conta: la
+     *       descrizione di un apparecchio sta <i>su</i> quell'apparecchio, quindi un
+     *       {@code LOCATION} che punta altrove non e' un router distratto, e' un rimbalzo.
+     *       Il confronto e' sull'indirizzo del datagramma, che non si puo' dichiarare.</li>
+     * </ol>
+     */
+    static boolean isTrustworthy(URI url, InetAddress responder) {
+        String scheme = url.getScheme();
+        if (scheme == null
+                || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+            RemotePlaySettings.log("LOCATION con schema non ammesso, ignorato: %s", url);
+            return false;
+        }
+        String host = url.getHost();
+        if (host == null || responder == null) {
+            return false;
+        }
+        if (!sameHost(host, responder)) {
+            RemotePlaySettings.log(
+                    "LOCATION %s non punta a chi ha risposto (%s): ignorato",
+                    url, responder.getHostAddress());
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Se il nome host di un URL designa proprio la macchina che ha spedito la risposta.
+     *
+     * <p>Si confrontano prima le forme testuali — i router mettono quasi sempre un indirizzo
+     * IP letterale, ed e' un confronto che non chiede niente a nessuno. Solo se non
+     * combaciano si risolve il nome, e si pretende che <b>ogni</b> indirizzo a cui risolve
+     * sia quello del mittente: un nome che ne porta anche uno solo di diverso e' esattamente
+     * il rimbalzo che si sta escludendo.
+     */
+    private static boolean sameHost(String host, InetAddress responder) {
+        String bare = host.startsWith("[") && host.endsWith("]")
+                ? host.substring(1, host.length() - 1)
+                : host;
+        if (bare.equalsIgnoreCase(responder.getHostAddress())) {
+            return true;
+        }
+        try {
+            InetAddress[] resolved = InetAddress.getAllByName(bare);
+            if (resolved.length == 0) {
+                return false;
+            }
+            for (InetAddress a : resolved) {
+                if (!a.equals(responder)) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (IOException e) {
+            return false;
         }
     }
 

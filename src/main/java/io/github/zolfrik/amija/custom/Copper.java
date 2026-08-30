@@ -305,9 +305,6 @@ public final class Copper {
             case 0x082: // COP1LCL — bit 15-0 (forzato pari)
                 cop1lc = (cop1lc & agnus.getDmaPtrHiMask()) | (value & 0xFFFE);
                 if (!activeInThisFrame && copList == 1) setPC(cop1lc);
-                if (io.github.zolfrik.amija.custom.AbstractDenise.DBG_COLOR)
-                    io.github.zolfrik.amija.custom.AbstractDenise.DBG_C00_VPOS.merge(
-                            "COP1LC=" + Integer.toHexString(cop1lc & 0xFFFFF), 1L, Long::sum);
                 break;
 
             // ── COP2LC ──────────────────────────────────────────────────────

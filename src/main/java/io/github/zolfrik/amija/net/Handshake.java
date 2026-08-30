@@ -67,6 +67,23 @@ public final class Handshake {
 
     private static final int MAX_APP_VERSION = 64;
 
+    /**
+     * Tetto sulla geometria che l'host puo' dichiarare nel WELCOME.
+     *
+     * <p>L'ospite dimensiona su quei due numeri i propri buffer — il raster, l'anello dei
+     * riferimenti, il corpo inflato del codec — e sono buffer grandi: a 65535x65535, che il
+     * formato del WELCOME permette di scrivere, sarebbero gigabyte chiesti in un colpo solo.
+     * L'host e' <b>autenticato</b> quando lo dice, quindi non e' un buco aperto a chiunque;
+     * ma il tetto costa un confronto ed e' proprio il caso in cui vale la regola del §8.2 —
+     * una lunghezza che arriva dalla rete non dimensiona niente prima di essere confrontata.
+     * Un raster Amiga non supera 912x628 nemmeno in interlace con tutto l'overscan: qui c'e'
+     * un ordine di grandezza di margine, e chi lo sfora non e' un host che gioca.
+     */
+    public static final int MAX_RASTER_SIDE = 4096;
+
+    /** Pixel totali ammessi: limita l'allocazione anche per una geometria molto sbilenca. */
+    public static final int MAX_RASTER_PIXELS = 4_000_000;
+
     /** Quel che l'host decide e comunica, piu' il materiale crittografico derivato. */
     public record Session(
             int sessionId,
@@ -290,6 +307,13 @@ public final class Handshake {
             crypto.destroy();
             throw new ProtocolException("parametri di sessione fuori range: " + width + "x"
                     + height + ", porta " + guestGamePort + ", " + audioChannels + " canali");
+        }
+        if (width > MAX_RASTER_SIDE || height > MAX_RASTER_SIDE
+                || (long) width * height > MAX_RASTER_PIXELS) {
+            crypto.destroy();
+            throw new ProtocolException("geometria " + width + "x" + height
+                    + " oltre il tetto di " + MAX_RASTER_SIDE + " per lato e "
+                    + MAX_RASTER_PIXELS + " pixel");
         }
 
         Session session = new Session(sessionId, sessionGen, mediaPort, width, height,

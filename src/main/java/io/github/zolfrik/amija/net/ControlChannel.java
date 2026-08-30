@@ -169,14 +169,35 @@ public final class ControlChannel implements AutoCloseable {
      *
      * <p>La cura e' la chiusura a meta': si annuncia la fine dell'invio, si consuma quel
      * che il peer aveva ancora in canna, e solo allora si chiude davvero.
+     *
+     * <h2>Svuotare non vuol dire ascoltare all'infinito</h2>
+     * Il timeout del socket limita <b>il silenzio</b>, non la durata: un peer che spedisce
+     * senza sosta fa tornare ogni {@code read} prima della scadenza, e il ciclo non finisce
+     * mai. Non e' una sottigliezza: chi chiama questo metodo sta chiudendo una connessione
+     * che ha appena <b>rifiutato</b>, quindi il peer dall'altra parte non si e' autenticato
+     * e non conosce il join code — e gli bastava parlare per tenersi un thread di
+     * {@code RemotePlayHost} finche' voleva.
+     *
+     * <p>Percio' la coda si svuota entro due tetti <i>costanti</i>: {@value #LINGER_MS} ms
+     * complessivi e {@value #LINGER_MAX_BYTES} byte. Oltre, il RST che si voleva evitare e'
+     * comunque preferibile a un thread che non torna. Chi chiama tiene comunque questa
+     * attesa fuori dai propri percorsi critici (vedi {@code RemotePlayHost.closeAside}):
+     * il tetto e' la seconda rete, non la prima.
      */
     public void closeGracefully() {
         try {
             socket.shutdownOutput();
             socket.setSoTimeout(LINGER_MS);
-            byte[] sink = new byte[64];
-            while (in.read(sink) >= 0) {
+            byte[] sink = new byte[512];
+            long deadline = System.nanoTime() + LINGER_MS * 1_000_000L;
+            int drained = 0;
+            int n;
+            while ((n = in.read(sink)) >= 0) {
                 // Si butta: serve solo a svuotare la coda, cosi' la chiusura non e' un RST.
+                drained += n;
+                if (drained >= LINGER_MAX_BYTES || System.nanoTime() - deadline >= 0) {
+                    break;   // il peer non sta salutando: sta parlando addosso
+                }
             }
         } catch (IOException ignored) {
             // Il peer se n'e' andato per conto suo: e' l'esito che si voleva comunque.
@@ -187,6 +208,9 @@ public final class ControlChannel implements AutoCloseable {
 
     /** Quanto si aspetta il peer prima di chiudere davvero, dopo un REJECT. */
     private static final int LINGER_MS = 500;
+
+    /** Quanti byte si accetta di buttare via, in tutto, mentre si svuota la coda. */
+    private static final int LINGER_MAX_BYTES = 64 * 1024;
 
     // =====================================================================
 

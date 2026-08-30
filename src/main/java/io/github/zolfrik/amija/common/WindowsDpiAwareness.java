@@ -74,7 +74,7 @@ public final class WindowsDpiAwareness {
      *         false se era già fissata o se la chiamata non è disponibile.
      */
     public static boolean ensurePerMonitorAware() {
-        String os = System.getProperty("os.name", "").toLowerCase();
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         if (!os.contains("win")) {
             return false;
         }

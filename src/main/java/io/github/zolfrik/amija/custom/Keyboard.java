@@ -346,6 +346,28 @@ public class Keyboard implements AmigaKeyTarget {
         return resetComboHeld;
     }
 
+    /**
+     * @return true se {@code rawKeyNum} e' uno dei tre tasti della combinazione di reset e
+     *         gli <b>altri due sono gia' premuti ora</b>: premere questo la completerebbe.
+     *
+     * <p>Serve al gioco a distanza, e serve per un motivo che la sola
+     * {@link #isResetComboHeld()} non copre: quella risponde a cose fatte, mentre il filtro
+     * dell'ospite deve decidere <i>prima</i> di consegnare un tasto. E soprattutto la terna
+     * puo' formarsi <b>a cavallo delle due tastiere</b> — l'host tiene CTRL e un'Amiga per
+     * i fatti suoi, l'ospite porta la terza — e li' guardare solo cio' che manda l'ospite
+     * non basta: nessuno dei suoi pacchetti contiene i tre tasti, eppure la macchina si
+     * resetterebbe. Questa e' l'unica domanda a cui la tastiera puo' rispondere e il
+     * filtro no, perche' lo stato dell'host il filtro non lo vede.
+     */
+    public boolean resetComboPendingOn(int rawKeyNum) {
+        return switch (rawKeyNum) {
+            case KEY_CTRL -> lAmigaDown && rAmigaDown;
+            case KEY_L_AMIGA -> ctrlDown && rAmigaDown;
+            case KEY_R_AMIGA -> ctrlDown && lAmigaDown;
+            default -> false;
+        };
+    }
+
     // =========================================================================
     // Tick principale — da chiamare ogni frame o a ogni gruppo di cicli
     // =========================================================================

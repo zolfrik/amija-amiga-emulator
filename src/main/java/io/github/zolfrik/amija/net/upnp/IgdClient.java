@@ -115,11 +115,21 @@ public final class IgdClient {
         // <URLBase>, se c'e', ha la precedenza sull'URL da cui e' arrivata la descrizione:
         // ci sono router che servono il documento su una porta e vogliono le azioni su
         // un'altra.
-        URI base = gateway.descriptionUrl();
+        URI deviceUrl = gateway.descriptionUrl();
+        URI base = deviceUrl;
         String urlBase = firstValue(document, "URLBase");
         if (urlBase != null && !urlBase.isBlank()) {
             try {
-                base = URI.create(urlBase.trim());
+                URI candidate = URI.create(urlBase.trim());
+                if (sameDevice(deviceUrl, candidate)) {
+                    base = candidate;
+                } else {
+                    // Un URLBase che porta altrove non e' una porta diversa: e' un altro
+                    // apparecchio. Si resta su quello che ha risposto.
+                    RemotePlaySettings.log(
+                            "URLBase %s non e' lo stesso apparecchio di %s: ignorato",
+                            candidate, deviceUrl);
+                }
             } catch (IllegalArgumentException e) {
                 RemotePlaySettings.log("URLBase non valido, si usa LOCATION: %s", urlBase);
             }
@@ -135,7 +145,21 @@ public final class IgdClient {
                 if (control == null || control.isBlank()) {
                     continue;
                 }
-                URI url = base.resolve(control.trim());
+                URI url;
+                try {
+                    url = base.resolve(control.trim());
+                } catch (IllegalArgumentException e) {
+                    RemotePlaySettings.log("controlURL non valido, ignorato: %s", control);
+                    continue;
+                }
+                if (!sameDevice(deviceUrl, url)) {
+                    // Il controlURL e' relativo nella stragrande maggioranza dei firmware;
+                    // quando e' assoluto deve comunque restare sull'apparecchio che ha
+                    // risposto, o sarebbe l'XML a scegliere con chi AmiJa parla SOAP.
+                    RemotePlaySettings.log(
+                            "controlURL %s fuori dall'apparecchio %s: ignorato", url, deviceUrl);
+                    continue;
+                }
                 RemotePlaySettings.log("IGD %s -> %s", type, url);
                 return new IgdClient(http, url, type, gateway.localAddress());
             }
@@ -229,6 +253,33 @@ public final class IgdClient {
         String code = firstValue(document, "errorCode");
         String detail = firstValue(document, "errorDescription");
         throw new UpnpException(action, parseInt(code), detail);
+    }
+
+    /**
+     * Se due URL stanno sullo <b>stesso apparecchio</b>: schema ammesso e host identico.
+     *
+     * <p>La descrizione del dispositivo e' XML scritto da chi ha risposto all'M-SEARCH, e
+     * dentro ci sono due campi — {@code URLBase} e {@code controlURL} — che decidono a quale
+     * indirizzo AmiJa spedira' poi le proprie POST SOAP. Lasciarli liberi vorrebbe dire che
+     * chi controlla quell'XML sceglie con chi AmiJa parla: un servizio su {@code localhost},
+     * un altro apparecchio della rete, un host qualunque su Internet. Vincolandoli all'host
+     * da cui la descrizione e' arrivata — che {@link SsdpDiscovery} ha gia' legato al
+     * mittente del datagramma — il documento puo' ancora scegliere <i>percorso e porta</i>,
+     * che e' tutto cio' di cui un router vero ha bisogno, ma non piu' la <i>macchina</i>.
+     *
+     * <p>La porta resta libera di proposito: ci sono firmware che servono la descrizione su
+     * una porta e vogliono le azioni su un'altra, ed e' il motivo per cui {@code URLBase}
+     * esiste. Una porta diversa sullo stesso apparecchio non allarga la superficie —
+     * l'apparecchio e' gia' raggiungibile — mentre un host diverso la cambia del tutto.
+     */
+    private static boolean sameDevice(URI deviceUrl, URI candidate) {
+        String scheme = candidate.getScheme();
+        if (scheme == null
+                || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+            return false;
+        }
+        String host = candidate.getHost();
+        return host != null && host.equalsIgnoreCase(deviceUrl.getHost());
     }
 
     private static String arg(String name, String value) {

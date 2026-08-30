@@ -262,9 +262,29 @@ public abstract class AbstractDenise {
     // sinistra col colore nuovo. È l'analogo di initialBplcon0 per i colori, e
     // corrisponde al colreg[] persistente di vAmiga (PixelEngine).
     private final int[] paletteLineStart = new int[32];
-    public static volatile boolean DBG_COLOR = false; // DEBUG TEMP
-    public static final java.util.HashMap<Integer,Long> DBG_C00 = new java.util.HashMap<>();
-    public static final java.util.HashMap<String,Long> DBG_C00_VPOS = new java.util.HashMap<>();
+
+    /**
+     * Snapshot d'inizio riga dei registri sprite — l'esatto gemello di
+     * {@link #paletteLineStart}, e per la stessa ragione.
+     *
+     * <p>⛔ {@link #drawSpritePair} rigioca i cambi di registro ai loro trigger in pixel,
+     * ma partiva dai valori <b>vivi</b>, che a fine riga contengono già TUTTE le
+     * scritture della riga: il segmento precedente alla prima change usava quindi lo
+     * stato posteriore a tutte le change. Una MOVE a SPRxDATA a metà riga armava lo
+     * sprite anche a sinistra del punto in cui è stato armato; una MOVE a SPRxCTL lo
+     * disarmava anche a sinistra, dove doveva ancora disegnare; e la posizione
+     * orizzontale di partenza (sprhppos, derivata da POS/CTL) e il bit di attach
+     * (SPRxCTL bit 7 dello sprite dispari) erano quelli di fine riga per l'intero
+     * chunk iniziale. È lo stesso difetto che paletteLineStart ha chiuso per i colori.
+     *
+     * <p>sprhppos non è nello snapshot perché è derivato: {@link #updateSprHCoords} lo
+     * ricalcola da POS/CTL al ripristino.
+     */
+    private int       armedLineStart;
+    private final int[] sprposLineStart  = new int[8];
+    private final int[] sprctlLineStart  = new int[8];
+    private final int[] sprdataLineStart = new int[8];
+    private final int[] sprdatbLineStart = new int[8];
     public int dbgPalette(int i) { return palette[i & 31]; }
 
     // =========================================================================
@@ -414,6 +434,11 @@ public abstract class AbstractDenise {
         Arrays.fill(ssra, 0);
         Arrays.fill(ssrb, 0);
         armed = 0;
+        armedLineStart = 0;
+        Arrays.fill(sprposLineStart,  0);
+        Arrays.fill(sprctlLineStart,  0);
+        Arrays.fill(sprdataLineStart, 0);
+        Arrays.fill(sprdatbLineStart, 0);
         spriteClipBegin = 0;
         spriteClipEnd   = HPIXELS + 32;
         Arrays.fill(dBuffer, (byte) 0);
@@ -483,8 +508,6 @@ public abstract class AbstractDenise {
 
             // --- BPLCON ---
             case 0x100: // BPLCON0
-                if (DBG_COLOR && ((bplcon0 >> 12) & 7) != ((value >> 12) & 7))
-                    System.out.printf("[BPLCON0] %04X -> %04X (BPU %d->%d)%n", bplcon0, value, (bplcon0 >> 12) & 7, (value >> 12) & 7);
                 conChanges.insert(pixel, address, value);
                 // Cambio modalità HAM: tracciato in colChanges per colorize
                 if (isHAM(bplcon0) != isHAM(value)) colChanges.insert(pixel, address, value);
@@ -541,9 +564,6 @@ public abstract class AbstractDenise {
                     int ci = (address - 0x180) / 2;
                     palette[ci] = value & 0xFFF;
                     colChanges.insert(pixel, address, value);
-                    if (DBG_COLOR && ci == 0) {
-                        DBG_C00.merge(value & 0xFFF, 1L, Long::sum);
-                    }
                 }
                 break;
         }
@@ -767,6 +787,15 @@ public abstract class AbstractDenise {
         // fine riga; nel ramo VBlank palette[] contiene già i valori live. In
         // entrambi i casi questo è lo stato ereditato dalla scanline successiva.
         System.arraycopy(palette, 0, paletteLineStart, 0, 32);
+        // Stesso ragionamento per i registri sprite: nel ramo visibile drawSprites() ha
+        // appena riportato i registri vivi allo stato di fine riga rigiocando le change,
+        // nel ramo VBlank sono già vivi. In entrambi i casi è lo stato ereditato dalla
+        // scanline successiva. Vedi armedLineStart.
+        armedLineStart = armed;
+        System.arraycopy(sprpos,  0, sprposLineStart,  0, 8);
+        System.arraycopy(sprctl,  0, sprctlLineStart,  0, 8);
+        System.arraycopy(sprdata, 0, sprdataLineStart, 0, 8);
+        System.arraycopy(sprdatb, 0, sprdatbLineStart, 0, 8);
 
         diwChanges.clear();
         conChanges.clear();
@@ -1039,6 +1068,18 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     private void drawSprites() {
+        // Riparti dallo stato EREDITATO dalla riga precedente: i write di questa riga
+        // hanno già aggiornato i registri vivi, ma il replay dei sprChanges deve
+        // applicarli ai loro trigger. Ripristinando lo snapshot di inizio riga il
+        // segmento prima della prima change usa i valori vecchi (corretti) e il replay
+        // riporta i registri allo stato di fine riga. Identico a colorize()/palette.
+        armed = armedLineStart;
+        System.arraycopy(sprposLineStart,  0, sprpos,  0, 8);
+        System.arraycopy(sprctlLineStart,  0, sprctl,  0, 8);
+        System.arraycopy(sprdataLineStart, 0, sprdata, 0, 8);
+        System.arraycopy(sprdatbLineStart, 0, sprdatb, 0, 8);
+        for (int i = 0; i < 8; i++) updateSprHCoords(i);
+
         for (int pair = 0; pair < 4; pair++) drawSpritePair(pair);
     }
 
@@ -1050,9 +1091,13 @@ public abstract class AbstractDenise {
         int     strt    = 0;
         int     strt1   = sprhppos[s1];
         int     strt2   = sprhppos[s2];
-        int     tmpArmed = armed;
-        boolean a1      = (tmpArmed & (1 << s1)) != 0;
-        boolean a2      = (tmpArmed & (1 << s2)) != 0;
+        // `armed` è già stato riportato allo stato d'inizio riga da drawSprites(); il
+        // replay qui sotto lo rialza/riabbassa ai trigger e lo lascia, a fine ciclo,
+        // allo stato di fine riga — che è quello che lo snapshot fotograferà per la
+        // riga successiva. (Prima si lavorava su una copia locale tmpArmed, mai
+        // riscritta: il valore di partenza era già quello di fine riga.)
+        boolean a1      = (armed & (1 << s1)) != 0;
+        boolean a2      = (armed & (1 << s2)) != 0;
 
 
         for (int recIdx = 0; recIdx < recorder.size(); ) {
@@ -1072,7 +1117,7 @@ public abstract class AbstractDenise {
             int sub = c.reg & 6;
             if (sub == 4) {                          // DATA
                 sprdata[sIdx] = c.value;
-                tmpArmed |= (1 << sIdx);
+                armed |= (1 << sIdx);
             } else if (sub == 6) {                   // DATB
                 sprdatb[sIdx] = c.value;
             } else if (sub == 0) {                   // POS
@@ -1085,10 +1130,10 @@ public abstract class AbstractDenise {
                 if (sIdx == s1) strt1 = sprhppos[s1]; else strt2 = sprhppos[s2];
                 // CTL write disarms the sprite for the remainder of this scanline.
                 // Matches vAmiga behavior: CLR_BIT(armed, sprite).
-                tmpArmed &= ~(1 << sIdx);
+                armed &= ~(1 << sIdx);
             }
-            a1 = (tmpArmed & (1 << s1)) != 0;
-            a2 = (tmpArmed & (1 << s2)) != 0;
+            a1 = (armed & (1 << s1)) != 0;
+            a2 = (armed & (1 << s2)) != 0;
         }
         renderSpriteChunk(strt, HPIXELS, pair, strt1, strt2, a1, a2);
         recorder.clear();
@@ -1487,7 +1532,7 @@ public abstract class AbstractDenise {
     /** Se true, {@link #amigaToRGB} usa la LUT esatta di vAmiga (test di
      *  regressione vAmigaTS). Default false: i giochi mantengono la LUT standard
      *  nibble*0x11 (nessuna regressione sul golden CRC). */
-    public static boolean useVAmigaColorLut = false;
+    public static volatile boolean useVAmigaColorLut = false;
 
     /** Converte il colore 12-bit Amiga (0x0RGB) in RGB a 24 bit (via LUT).
      *  Il mask & 0xFFF replica il comportamento originale (solo i 12 bit bassi
@@ -1531,8 +1576,12 @@ public abstract class AbstractDenise {
         if ((bplcon0 & 0x0008) != 0 && agnus != null) agnus.triggerLightPen();
     }
 
-    public void disarmAllSprites()          { armed = 0; }
-    public void disarmSprite(int idx)       { if (idx >= 0 && idx < 8) armed &= ~(1 << idx); }
+    // Disarmo esplicito (debug/harness). Tocca ANCHE lo snapshot d'inizio riga,
+    // altrimenti drawSprites() lo riporterebbe indietro al prossimo hsync.
+    public void disarmAllSprites()          { armed = 0; armedLineStart = 0; }
+    public void disarmSprite(int idx)       {
+        if (idx >= 0 && idx < 8) { armed &= ~(1 << idx); armedLineStart &= ~(1 << idx); }
+    }
     public void setJoy0dat(int v)           { joy0dat = v & 0xFFFF; }
     public void setJoy1dat(int v)           { joy1dat = v & 0xFFFF; }
     public void setGamePort1(GamePort p)    { gamePort1 = p; }

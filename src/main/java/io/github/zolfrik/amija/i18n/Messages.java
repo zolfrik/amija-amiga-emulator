@@ -90,12 +90,52 @@ public final class Messages {
     /**
      * Stringa localizzata con sostituzione dei segnaposto {@code {0}}, {@code {1}}, ...
      * (sostituzione testuale semplice, così gli apostrofi nelle stringhe restano letterali).
+     *
+     * <p>Una scansione sola, e i valori sostituiti <b>non</b> vengono riletti. Un ciclo di
+     * {@code String.replace}, uno per argomento, riscandiva ogni volta anche quel che
+     * aveva appena scritto: se {@code args[0]} conteneva la sequenza {@code {1}} — un
+     * percorso di file, o un messaggio d'errore che rimbalza da un altro componente — il
+     * giro successivo la sostituiva, e nel testo finale compariva un argomento al posto
+     * di un altro. Qui il segnaposto lo si cerca nel <i>modello</i>, e quel che si emette
+     * non viene piu' guardato.
      */
     public static String t(String key, Object... args) {
         String s = t(key);
-        for (int i = 0; i < args.length; i++) {
-            s = s.replace("{" + i + "}", String.valueOf(args[i]));
+        StringBuilder out = new StringBuilder(s.length() + 16 * args.length);
+        int i = 0;
+        while (i < s.length()) {
+            int open = s.indexOf('{', i);
+            if (open < 0) {
+                out.append(s, i, s.length());
+                break;
+            }
+            int close = s.indexOf('}', open + 1);
+            int index = close < 0 ? -1 : parseIndex(s, open + 1, close);
+            if (index < 0 || index >= args.length) {
+                // Non e' un segnaposto nostro (o non c'e' l'argomento): resta com'e'.
+                out.append(s, i, open + 1);
+                i = open + 1;
+                continue;
+            }
+            out.append(s, i, open).append(args[index]);
+            i = close + 1;
         }
-        return s;
+        return out.toString();
+    }
+
+    /** L'intero fra {@code from} incluso e {@code to} escluso, o {@code -1} se non lo e'. */
+    private static int parseIndex(String s, int from, int to) {
+        if (from >= to || to - from > 9) {
+            return -1;
+        }
+        int n = 0;
+        for (int i = from; i < to; i++) {
+            char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return -1;
+            }
+            n = n * 10 + (c - '0');
+        }
+        return n;
     }
 }

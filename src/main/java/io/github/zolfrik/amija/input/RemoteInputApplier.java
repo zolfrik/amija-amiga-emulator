@@ -78,6 +78,9 @@ public final class RemoteInputApplier implements GuestInputTarget {
     private static final int KEY_L_AMIGA = 0x66;
     private static final int KEY_R_AMIGA = 0x67;
 
+    /** La terna, per scorrerla quando si cerca il tasto che la completerebbe. */
+    private static final int[] RESET_KEYS = { KEY_CTRL, KEY_L_AMIGA, KEY_R_AMIGA };
+
     private final GamePortControls port;
     private final AmigaKeyTarget keyboard;
     private final boolean keyboardShared;
@@ -220,14 +223,14 @@ public final class RemoteInputApplier implements GuestInputTarget {
     // =====================================================================
 
     private void applyKeys(FeedbackPacket state) {
-        boolean blockReset = !allowReset && isResetCombo(state.keys);
-        if (blockReset) {
+        int blocked = allowReset ? -1 : keyToWithhold(state.keys);
+        if (blocked >= 0) {
             resetCombosBlocked++;
         }
         for (int b = 0; b < FeedbackPacket.KEY_BYTES; b++) {
             int now = state.keys[b] & 0xFF;
-            if (blockReset && b == (KEY_R_AMIGA >> 3)) {
-                now &= ~(1 << (KEY_R_AMIGA & 7));
+            if (blocked >= 0 && b == (blocked >> 3)) {
+                now &= ~(1 << (blocked & 7));
             }
             int diff = now ^ (lastKeys[b] & 0xFF);
             if (diff == 0) {
@@ -248,8 +251,37 @@ public final class RemoteInputApplier implements GuestInputTarget {
         }
     }
 
-    private static boolean isResetCombo(byte[] keys) {
-        return isSet(keys, KEY_CTRL) && isSet(keys, KEY_L_AMIGA) && isSet(keys, KEY_R_AMIGA);
+    /**
+     * Quale tasto della terna di reset non va consegnato, o {@code -1} se nessuno.
+     *
+     * <h2>Due modi di formare la terna, non uno</h2>
+     * Il caso ovvio e' l'ospite che tiene tutti e tre i tasti: li' si nega la <b>sola</b>
+     * Amiga destra, perche' vietare i tre tasti sarebbe mutilare la tastiera per prevenire
+     * una combinazione, e CTRL e l'Amiga sinistra servono da soli in mezzo mondo di
+     * programmi.
+     *
+     * <p>Il caso meno ovvio e' la terna <b>a cavallo delle due tastiere</b>: l'host tiene
+     * CTRL e un'Amiga per i fatti suoi — succede, sono modificatori di uso comune — e
+     * all'ospite basta portare il terzo tasto. Nessuno dei suoi pacchetti contiene la terna,
+     * quindi il controllo sulla sola bitmap ricevuta non vede niente di strano, eppure la
+     * macchina di qualcun altro si resetta. Il pezzo mancante e' lo stato dell'host, che
+     * questo oggetto non ha: lo si chiede alla tastiera, che e' l'unica a saperlo, e si
+     * trattiene il tasto che <b>completerebbe</b> la terna, qualunque dei tre sia.
+     *
+     * <p>Si guarda solo cio' che l'ospite <b>sta iniziando a premere</b>: un tasto che
+     * teneva gia' non completa niente che non sia gia' successo, e trattenerlo produrrebbe
+     * un rilascio che l'ospite non ha chiesto.
+     */
+    private int keyToWithhold(byte[] keys) {
+        if (isSet(keys, KEY_CTRL) && isSet(keys, KEY_L_AMIGA) && isSet(keys, KEY_R_AMIGA)) {
+            return KEY_R_AMIGA;
+        }
+        for (int raw : RESET_KEYS) {
+            if (isSet(keys, raw) && !isSet(lastKeys, raw) && keyboard.resetComboPendingOn(raw)) {
+                return raw;
+            }
+        }
+        return -1;
     }
 
     private static boolean isSet(byte[] keys, int raw) {

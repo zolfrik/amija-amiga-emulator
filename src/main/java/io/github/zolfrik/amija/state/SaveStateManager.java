@@ -37,10 +37,13 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -71,10 +74,12 @@ public final class SaveStateManager {
     private static final byte[] MAGIC = "A500SAVE".getBytes(StandardCharsets.US_ASCII);
     /**
      * Versione del formato. 2: aggiunge all'header l'istante del salvataggio e la copia
-     * di {@code amiga.properties}. Gli slot di versione 1 non si caricano più — sono
-     * un'istantanea sola e la si rifà premendo di nuovo "Save State".
+     * di {@code amiga.properties}. 3: aggiunge le schede AutoConfig (FastRam,
+     * HdController) fra i root, così la mappa di memoria dinamica si ricostruisce al
+     * load. Gli slot di versione precedente non si caricano più — sono un'istantanea
+     * sola e la si rifà premendo di nuovo "Save State".
      */
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
 
     /**
      * Nome file dello slot unico, dentro la cartella {@code savestate/} della home
@@ -125,21 +130,41 @@ public final class SaveStateManager {
         List<Object> roots = buildRoots(cpu, agnus, port1, port2);
         byte[] configBlob = encodeConfig(cfg.snapshot());
 
-        File dir = file.getParentFile();
-        if (dir != null) dir.mkdirs();
-        try (DataOutputStream out = new DataOutputStream(new GZIPOutputStream(
-                new BufferedOutputStream(new FileOutputStream(file))))) {
-            out.write(MAGIC);
-            out.writeInt(VERSION);
-            out.writeLong(System.currentTimeMillis());
-            out.writeUTF(fingerprint(cfg));
-            out.writeInt(configBlob.length);
-            out.write(configBlob);
-            out.writeInt(roots.size());
-            for (Object r : roots) {
-                out.writeUTF(r.getClass().getName());
-                ReflectiveState.write(out, r);
+        // Il temporaneo DEVE stare accanto alla destinazione: altrove finirebbe su un
+        // altro file system e lo spostamento smetterebbe di essere atomico.
+        Path target = file.toPath().toAbsolutePath();
+        Path dir = target.getParent() != null ? target.getParent() : Path.of(".");
+        Files.createDirectories(dir);
+        // Si scrive su un temporaneo accanto alla destinazione e lo si sposta alla fine.
+        // Lo slot e' unico: scrivendo direttamente su di esso, un'interruzione a meta' —
+        // crash, disco pieno, la JVM che esce — distruggerebbe la partita precedente
+        // senza averne salvata una nuova, cioe' perderebbe tutto il valore della funzione.
+        // Con lo spostamento o si vede lo slot nuovo o si vede ancora quello vecchio.
+        Path tmp = Files.createTempFile(dir, file.getName(), ".tmp");
+        try {
+            try (DataOutputStream out = new DataOutputStream(new GZIPOutputStream(
+                    new BufferedOutputStream(Files.newOutputStream(tmp))))) {
+                out.write(MAGIC);
+                out.writeInt(VERSION);
+                out.writeLong(System.currentTimeMillis());
+                out.writeUTF(fingerprint(cfg));
+                out.writeInt(configBlob.length);
+                out.write(configBlob);
+                out.writeInt(roots.size());
+                for (Object r : roots) {
+                    out.writeUTF(r.getClass().getName());
+                    ReflectiveState.write(out, r);
+                }
             }
+            try {
+                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException e) {
+            Files.deleteIfExists(tmp);
+            throw e;
         }
     }
 
@@ -173,6 +198,9 @@ public final class SaveStateManager {
                 }
                 ReflectiveState.read(in, r);
             }
+            // Le Region di Gary non stanno nello slot (sono oggetti): si riderivano
+            // dallo stato appena ripristinato delle schede. Vedi buildRoots().
+            agnus.rebuildAutoconfigMapping();
         }
     }
 
@@ -192,6 +220,13 @@ public final class SaveStateManager {
                 new BufferedInputStream(new FileInputStream(file))));
     }
 
+    /**
+     * Tetto alla fotografia di {@code amiga.properties} dentro lo slot. Il file vero sta
+     * sotto i 20 KB; 4 MB e' abbondante per qualunque crescita futura e lontano dal punto
+     * in cui allocare alla cieca fa danno.
+     */
+    private static final int MAX_CONFIG_BYTES = 4 << 20;
+
     /** Consuma magic, versione e intestazione, lasciando lo stream sui componenti. */
     private static SlotInfo readHeader(DataInputStream in) throws IOException {
         byte[] magic = new byte[MAGIC.length];
@@ -206,7 +241,14 @@ public final class SaveStateManager {
         }
         long savedAt = in.readLong();
         String fp = in.readUTF();
-        byte[] blob = new byte[in.readInt()];
+        // La lunghezza la dichiara il file: senza tetto, uno slot troncato o non-slot
+        // dava OutOfMemoryError (un Error, quindi fuori dal catch di chi carica) oppure
+        // NegativeArraySizeException, invece del messaggio «slot non compatibile».
+        int configBytes = in.readInt();
+        if (configBytes < 0 || configBytes > MAX_CONFIG_BYTES) {
+            throw new IncompatibleStateException(Messages.t("savestate.err.badfile"));
+        }
+        byte[] blob = new byte[configBytes];
         in.readFully(blob);
         return new SlotInfo(savedAt, fp, decodeConfig(blob));
     }
@@ -264,6 +306,14 @@ public final class SaveStateManager {
             RAM fr = ((FastRam) fast).ram();
             add(roots, fr); // null se nessuna Fast RAM
         }
+        // ⛔ Le SCHEDE AutoConfig, non solo la loro RAM. FastRam e HdController tengono
+        // in campi primitivi lo stato che il Kickstart ha scritto durante l'AutoConfig
+        // — a che punto della catena sono e a quale indirizzo base sono finite — e senza
+        // di loro uno stato salvato a macchina già configurata si ripristinava con le
+        // schede "da configurare" e la loro finestra di memoria sparita. La mappa di
+        // Gary, che è una List e quindi il walker non la vede proprio, viene ricostruita
+        // da questo stato in coda al load (agnus.rebuildAutoconfigMapping()).
+        for (Object dev : agnus.autoConfigDevicesForState()) add(roots, dev);
 
         add(roots, agnus.getDf0());
         add(roots, agnus.getDf1());

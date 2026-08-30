@@ -105,7 +105,7 @@ public final class FfsBuilder {
             kids = new ArrayList<>(s.toList());
         }
         // Ordine deterministico (directory e file insieme, per nome).
-        kids.sort(Comparator.comparing(p -> p.getFileName().toString().toLowerCase()));
+        kids.sort(Comparator.comparing(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT)));
         for (Path p : kids) {
             String cn = amigaName(p);
             if (cn == null) continue;          // sidecar .amiganames: non finisce nel FFS

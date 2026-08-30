@@ -35,14 +35,8 @@ package io.github.zolfrik.amija.common;
  */
 public class MOS8520 {
 
-    public enum Revision {
-        MOS_8520_DIP,
-        MOS_8520_PLCC
-    }
-
     private final CIAPinSet pinSet;
     private final boolean isCIAA;
-    private Revision revision = Revision.MOS_8520_DIP;
     private boolean todBug = false;
     private int cachedDdra = -1;
     private int cachedDdrb = -1;
@@ -107,11 +101,6 @@ public class MOS8520 {
     private static final long CIASdrToSsr0 = (1L << 36);
     private static final long CIASdrToSsr1 = (1L << 37);
 
-    private static final long CIASsrToSdr0 = (1L << 38);
-    private static final long CIASsrToSdr1 = (1L << 39);
-    private static final long CIASsrToSdr2 = (1L << 40);
-    private static final long CIASsrToSdr3 = (1L << 41);
-
     private static final long CIASerClk0   = (1L << 42);
     private static final long CIASerClk1   = (1L << 43);
     private static final long CIASerClk2   = (1L << 44);
@@ -121,14 +110,10 @@ public class MOS8520 {
             | CIACountA0 | CIACountB0 | CIALoadA0 | CIALoadB0 | CIAPB6Low0
             | CIAPB7Low0 | CIASetInt0 | CIAClearInt0 | CIAOneShotA0 | CIAOneShotB0
             | CIAReadIcr0 | CIAClearIcr0 | CIAAckIcr0 | CIASetIcr0 | CIATODInt0
-            | CIASerInt0 | CIASdrToSsr0 | CIASsrToSdr0 | CIASerClk0);
+            | CIASerInt0 | CIASdrToSsr0 | CIASerClk0);
 
     // ── Diagnostics ──────────────────────────────────────────────────────────
     public void setTodBug(boolean en) { this.todBug = en; }
-
-    public void setCpuPcSupplier(java.util.function.IntSupplier s) { }
-
-    public void setClkSupplier(java.util.function.LongSupplier s) { }
 
     // -------------------------------------------------------------------------
     // Internal registers and state
@@ -242,12 +227,6 @@ public class MOS8520 {
         setSpDirectionCached(false);
         setSpDriveCached(true);
         setCntDriveCached(true);
-    }
-
-    // ── Configuration ────────────────────────────────────────────────────────────
-
-    public void setRevision(Revision revision) {
-        this.revision = revision;
     }
 
     // ── Timer Helpers ─────────────────────────────────────────────────────────
@@ -519,16 +498,23 @@ public class MOS8520 {
 
     public void emulateRisingEdgeOnCntPin() {
         cnt = true;
-        // Timer events triggered by CNT pulse
-        if ((cra & 0x21) == 0x21) delay |= CIACountA1;
-        if ((crb & 0x61) == 0x21) delay |= CIACountB1;
+        countOnCntEdge();
 
-        // Serial Input logic
+        // ── Registro a scorrimento in INGRESSO ────────────────────────────────
+        // ⛔ Il travaso SSR → SDR e' IMMEDIATO, non ritardato di tre clock.
+        // Passava per il pipeline `CIASsrToSdr0→3`, e il pipeline era anche
+        // *cancellato* dal passaggio TX↔RX (`case 0xE`): in `ser/ser6`, che scorre
+        // quattro bit, commuta CRA a SP-uscita e torna in ingresso, il travaso
+        // dell'ottavo fronte veniva annullato dalla commutazione che arriva un paio
+        // di clock dopo, e SDR non si aggiornava mai. L'oracolo assegna sul posto
+        // (`c->sdr = c->sdr_buf` in `write_ciab_serial`, cia.cpp) e di pipeline non
+        // ne ha nessuno. ⚠️ L'INTERRUPT invece resta ritardato (`CIASerInt0`): quello
+        // l'oracolo lo passa a `CIA_sync_interrupt`, che non e' immediato.
         if ((cra & 0x40) == 0) {
             if (serCounter == 0) serCounter = 8;
             ssr = ((ssr << 1) | (sp ? 1 : 0)) & 0xFF;
             if (--serCounter == 0) {
-                delay |= CIASsrToSdr0;
+                sdr = ssr;
                 delay |= CIASerInt0;
             }
         }
@@ -536,6 +522,112 @@ public class MOS8520 {
 
     public void emulateFallingEdgeOnCntPin() {
         cnt = false;
+    }
+
+    /**
+     * Conteggio dei fronti di CNT: avviene <b>dentro il fronte</b>, non nel pipeline.
+     *
+     * <p>⛔ Prima il fronte si limitava a iniettare {@code CIACountA1}/{@code CIACountB1}
+     * nel pipeline di Lorenz: il controllo d'underflow (che chiede {@code CIACountx2})
+     * cadeva allora <b>due clock di CIA dopo</b> il fronte, e il decremento tre. Il conto
+     * dei fronti era giusto — l'underflow arriva comunque all'ennesimo fronte — ma
+     * <b>l'istante</b> no. ⚠️ Misurato sul banco: {@code cnt/cnt1} (timer A sui fronti,
+     * IRQ sull'underflow di A) aveva la banda dell'handler in ritardo di 48 pixel = 12 CCK
+     * e {@code oldcnt/cnt4} (timer B sui fronti) di 36 pixel = 9 — cioè due clock di CIA
+     * (10 CCK) quantizzati dal confine d'istruzione a cui la CPU prende l'interrupt.
+     * Il riferimento è a 4 pixel per CCK.
+     *
+     * <p>L'oracolo conta <b>nell'accesso</b>: {@code WriteCIAB} → {@code write_ciab_serial}
+     * → {@code cia_inmode_cnt} (cia.cpp), che decrementa e ricarica sul posto, senza
+     * passare da {@code inputpipe}. Questo metodo ne è la traduzione, ordine compreso:
+     * prima A, e se A va in underflow ed è B a contarne gli underflow ({@code INMODE=1x})
+     * il decremento di B avviene <b>nello stesso fronte</b>; B in modo CNT
+     * ({@code INMODE=01}) conta comunque, e le due strade danno <b>un solo</b> decremento
+     * di B, non due.
+     *
+     * <p>⚠️ La cascata da un timer A pilotato dal <b>clock di sistema</b> resta invece nel
+     * pipeline ({@code delay |= CIACountB1} in {@link #tick()}): è la stessa asimmetria
+     * dell'oracolo, che lì passa da {@code inputpipe |= CIA_PIPE_INPUT}.
+     */
+    private void countOnCntEdge() {
+        boolean decB = false;
+
+        // Timer A: INMODE=1 (fronti di CNT) e START.
+        if ((cra & 0x21) == 0x21) {
+            if (counterA == 0) {
+                timerAUnderflowOnCntEdge();
+                // B conta gli underflow di A (INMODE=10 o 11): sul fronte la condizione
+                // «CNT alto» dell'INMODE=11 è vera per costruzione.
+                if ((crb & 0x41) == 0x41) decB = true;
+            } else {
+                counterA = (counterA - 1) & 0xFFFF;
+            }
+        }
+        // Timer B: INMODE=01 (fronti di CNT) e START.
+        if ((crb & 0x61) == 0x21) decB = true;
+
+        if (decB) {
+            if (counterB == 0) timerBUnderflowOnCntEdge();
+            else counterB = (counterB - 1) & 0xFFFF;
+        }
+    }
+
+    /**
+     * Underflow del timer A provocato da un fronte di CNT. Fa le stesse cose del blocco
+     * {@code timerAOutput} di {@link #tick()}, ma <b>subito</b>: il ricarico dal latch è
+     * immediato (l'oracolo lo fa in {@code timer_reset}) e cancella l'eventuale decremento
+     * già in canna, che è il {@code inputpipe &= ~CIA_PIPE_CLR1} dell'oracolo.
+     *
+     * <p>La generazione del clock seriale non c'è perché non può esserci: con
+     * {@code CRA} bit 6 a 1 il pin CNT è un'<b>uscita</b> e nessun fronte esterno arriva
+     * qui — {@link #updatePins()} chiama questa strada solo a bit 6 azzerato.
+     */
+    private void timerAUnderflowOnCntEdge() {
+        icrAck &= ~0x01;
+        if (((delay | feed) & CIAOneShotA0) != 0) {
+            cra &= ~0x01;
+            delay &= ~(CIACountA2 | CIACountA1 | CIACountA0);
+            feed &= ~CIACountA0;
+        }
+        delay &= ~CIACountA3;
+        reloadTimerA();
+        pb67Toggle ^= 0x40;
+        if ((cra & 0x02) != 0) {
+            if ((cra & 0x04) == 0) {
+                pb67TimerOut |= 0x40;
+                delay |= CIAPB6Low0;
+                delay &= ~CIAPB6Low1;
+            } else {
+                pb67TimerOut ^= 0x40;
+            }
+        }
+        icr |= 0x01;
+        if ((imr & 0x01) != 0) triggerIrq();
+    }
+
+    /** Gemello di {@link #timerAUnderflowOnCntEdge()} per il timer B. */
+    private void timerBUnderflowOnCntEdge() {
+        icrAck &= ~0x02;
+        if (((delay | feed) & CIAOneShotB0) != 0) {
+            crb &= ~0x01;
+            delay &= ~(CIACountB2 | CIACountB1 | CIACountB0);
+            feed &= ~CIACountB0;
+        }
+        delay &= ~CIACountB3;
+        reloadTimerB();
+        diagTimerBUnderflows++;
+        pb67Toggle ^= 0x80;
+        if ((crb & 0x02) != 0) {
+            if ((crb & 0x04) == 0) {
+                pb67TimerOut |= 0x80;
+                delay |= CIAPB7Low0;
+                delay &= ~CIAPB7Low1;
+            } else {
+                pb67TimerOut ^= 0x80;
+            }
+        }
+        icr |= 0x02;
+        if ((imr & 0x02) != 0) triggerIrq();
     }
 
     /**
@@ -638,8 +730,6 @@ public class MOS8520 {
 
         // ── Serial Port Processing ───────────────────────────────────────────
 
-        if ((delay & CIASsrToSdr3) != 0) sdr = ssr;
-
         // Clock generation for Serial Output (using Timer A)
         if (timerAOutput && (cra & 0x40) != 0) {
             if (serCounter > 0) {
@@ -723,6 +813,44 @@ public class MOS8520 {
         updatePins();
     }
 
+    /**
+     * Collegamenti interni della sola CIA-B: PA0 &rarr; SP, PA1 &rarr; CNT.
+     *
+     * <p>⛔ Il livello e' quello EFFETTIVAMENTE PILOTATO, {@code pra & ddra}: un pin
+     * configurato come ingresso non pilota niente, e prendere il solo {@code pra} fa
+     * comparire fronti di CNT che sulla scheda non esistono. L'oracolo apre
+     * {@code write_ciab_serial()} con {@code uae_u8 val = ndata & ndir;} e confronta il
+     * vecchio livello nello stesso modo ({@code (odata & odir) & 2}), cia.cpp.
+     *
+     * <p>⛔ <b>Va valutato alla SCRITTURA, non al tick successivo.</b> In WinUAE
+     * {@code write_ciab_serial()} e' chiamata da {@code WriteCIAB} dentro l'accesso, e
+     * il fronte di CNT conta il timer li' ({@code cia_inmode_cnt}). Rimandarlo al tick
+     * successivo sposta il conteggio di un clock di CIA rispetto all'oracolo, e con
+     * {@code cnt/} il conteggio E' la misura.
+     *
+     * <p>⛔ <b>PA0 aggiorna anche {@link #sp}, non solo il pin.</b> Il registro a
+     * scorrimento in ingresso legge {@code sp} al fronte di CNT, e {@code sp} veniva
+     * riletto dal pin <b>solo dentro {@link #updatePins()}</b>, cioè al tick — mentre il
+     * fronte di CNT arriva qui, dentro l'accesso. Sul percorso della scrittura il livello
+     * era quindi quello vecchio: fermo a {@code true} dal reset, il che faceva entrare
+     * otto 1 e leggere {@code SDR = $FF} dove l'oracolo legge il dato vero.
+     * ⚠️ Misurato: {@code ser/ser1} riceve {@code $A5} (la sequenza 1,0,1,0,0,1,0,1
+     * scritta dal test), noi {@code $FF} — quattro barre su otto sbagliate, e lo stesso in
+     * {@code ser2÷4}, {@code ser6}, {@code ser7}. L'oracolo scorre {@code (val & 1)} del
+     * livello pilotato, senza inversioni ({@code write_ciab_serial}, cia.cpp).
+     */
+    private void updateCiabSerialLinks() {
+        final int drivenPa = pra & ddra;
+        boolean pa0 = (drivenPa & 0x01) != 0;
+        boolean pa1 = (drivenPa & 0x02) != 0;
+        setSpDriveCached(pa0);
+        sp = pa0;
+        if (pa1 != cnt) {
+            if (pa1) emulateRisingEdgeOnCntPin();
+            else emulateFallingEdgeOnCntPin();
+        }
+    }
+
     /** Updates the physical pin set based on internal state. */
     private void updatePins() {
         writeDdrCached(0, ddra);
@@ -747,20 +875,7 @@ public class MOS8520 {
             setSpDirectionCached(false);
 
             if (!isCIAA) {
-                // CIA-B specific internal connections: PA0 -> SP, PA1 -> CNT.
-                // ⛔ Il livello e' quello EFFETTIVAMENTE PILOTATO, pra & ddra: un pin
-                // configurato come ingresso non pilota niente, e prendere il solo pra
-                // fa comparire fronti di CNT che sulla scheda non esistono. L'oracolo
-                // apre write_ciab_serial() con `uae_u8 val = ndata & ndir;` e confronta
-                // il vecchio livello nello stesso modo (`(odata & odir) & 2`), cia.cpp.
-                final int drivenPa = pra & ddra;
-                boolean pa0 = (drivenPa & 0x01) != 0;
-                boolean pa1 = (drivenPa & 0x02) != 0;
-                setSpDriveCached(pa0);
-                if (pa1 != cnt) {
-                    if (pa1) emulateRisingEdgeOnCntPin();
-                    else emulateFallingEdgeOnCntPin();
-                }
+                updateCiabSerialLinks();
             } else {
                 setCntDriveCached(true);
                 setSpDriveCached(true);
@@ -784,6 +899,33 @@ public class MOS8520 {
     // -------------------------------------------------------------------------
     // Register Read Access
     // -------------------------------------------------------------------------
+
+    /**
+     * Lettura <b>priva di effetti collaterali</b> di un registro CIA, per il debugger e
+     * il disassemblatore.
+     *
+     * <p>⛔ Serve perché {@link #readRegister(int)} muta parecchio, ed è giusto che lo
+     * faccia: leggere l'ICR ($D) alza il bit 7, arma il pipeline di clear/ack e
+     * <b>rilascia la linea /IRQ</b>; leggere TODHI ($A) congela il latch del TOD e
+     * leggere TODLO ($8) lo scongela. Un dump di memoria che attraversi $BFExxx/$BFDxxx
+     * con {@code readRegister} cancella quindi un interrupt CIA pendente della macchina
+     * che sta osservando. Tutti gli altri registri sono già puri e passano di là.
+     */
+    public byte peekRegister(int reg) {
+        int addr = reg & 0x0F;
+        switch (addr) {
+            case 0x8: return (byte) getTodLo();
+            case 0xA: return (byte) (((crb & 0x80) == 0 && !todFrozen)
+                                     ? (todCounter >> 16) & 0xFF
+                                     : getTodHi());
+            case 0xD: {
+                int v = icr;
+                if ((delay & CIASetInt1) != 0 && (icr & 0x1F) != 0) v |= 0x80;
+                return (byte) v;
+            }
+            default:  return readRegister(addr);
+        }
+    }
 
     public byte readRegister(int reg) {
         int addr = reg & 0x0F;
@@ -854,9 +996,18 @@ public class MOS8520 {
         int val = value & 0xFF;
 
         switch (addr) {
+            // ⚠️ Porta A e porta B vanno trattate allo stesso modo: il valore che finisce
+            // sui pin è quello PILOTATO, non il registro grezzo. Su CIA-B updatePA()
+            // inverte i bit 6-7 (/RTS e /DTR, attivi bassi) per i soli pin configurati
+            // come uscita, quindi il valore dipende anche da DDRA: scrivere `pra` diretto
+            // — e non ricalcolare nulla alla scrittura di DDRA — lasciava il pin set col
+            // valore sbagliato fino al tick successivo, che poi correggeva da sé via
+            // updatePins(). Finestra breve e su due linee inerti nell'A500, ma era
+            // un'asimmetria gratuita rispetto a PRB/DDRB, che la forma giusta ce l'avevano.
             case 0x0:
                 pra = val;
-                writePortDataCached(0, pra);
+                updatePA();
+                if (!isCIAA && (cra & 0x40) == 0) updateCiabSerialLinks();
                 break;
             case 0x1:
                 prb = val;
@@ -865,6 +1016,8 @@ public class MOS8520 {
             case 0x2:
                 ddra = val;
                 writeDdrCached(0, ddra);
+                updatePA();
+                if (!isCIAA && (cra & 0x40) == 0) updateCiabSerialLinks();
                 break;
             case 0x3:
                 ddrb = val;
@@ -879,14 +1032,27 @@ public class MOS8520 {
                 latchA = (latchA & 0x00FF) | (val << 8);
                 if ((delay & CIALoadA2) != 0) counterA = (counterA & 0x00FF) | (val << 8);
                 if ((cra & 0x01) == 0) delay |= CIALoadA0;
-                // Auto-start on high write if one-shot AND stopped
-                if ((cra & 0x08) != 0 && (cra & 0x01) == 0) {
-                    pb67Toggle |= 0x40;
-                    if ((cra & 0x20) == 0) {
-                        delay |= CIACountA1 | CIALoadA0 | CIACountA0;
-                        feed |= CIACountA0;
+                // ⛔ Scrivere TAHI su un timer ONE-SHOT ricarica il contatore ANCHE se il
+                // timer e' GIA' IN CORSA. Il blocco di avvio automatico qui sotto era
+                // condizionato a «fermo», e cosi' la seconda scrittura di TAHI — quella
+                // che `Timer/timer5` e `timer5c` fanno apposta a timer avviato — non
+                // faceva assolutamente niente. L'oracolo separa le due cose
+                // (`CIA_thi_write`, cia.cpp): il caricamento doppio e' condizionato a
+                // `!(t->cr & CR_START)`, ma il ramo `if (t->cr & CR_RUNMODE)` — che alza
+                // START e arma un altro caricamento — non ha condizioni.
+                // ⚠️ `timer5b`, che riscrive il solo TALO e non TAHI, era ed e' verde:
+                // e' il banco stesso a isolare la variabile.
+                if ((cra & 0x08) != 0) {
+                    boolean wasStopped = (cra & 0x01) == 0;
+                    if (wasStopped) {
+                        pb67Toggle |= 0x40;
+                        if ((cra & 0x20) == 0) {
+                            delay |= CIACountA1 | CIACountA0;
+                            feed |= CIACountA0;
+                        }
+                        cra |= 0x01;
                     }
-                    cra |= 0x01;
+                    delay |= CIALoadA0;
                 }
                 break;
             case 0x6:
@@ -897,14 +1063,18 @@ public class MOS8520 {
                 latchB = (latchB & 0x00FF) | (val << 8);
                 if ((delay & CIALoadB2) != 0) counterB = (counterB & 0x00FF) | (val << 8);
                 if ((crb & 0x01) == 0) delay |= CIALoadB0;
-                // Auto-start on high write if one-shot AND stopped
-                if ((crb & 0x08) != 0 && (crb & 0x01) == 0) {
-                    pb67Toggle |= 0x80;
-                    if ((crb & 0x60) == 0) {
-                        delay |= CIACountB1 | CIALoadB0 | CIACountB0;
-                        feed |= CIACountB0;
+                // Gemello del case 0x5: vedi la nota sul ricarico a timer gia' in corsa.
+                if ((crb & 0x08) != 0) {
+                    boolean wasStopped = (crb & 0x01) == 0;
+                    if (wasStopped) {
+                        pb67Toggle |= 0x80;
+                        if ((crb & 0x60) == 0) {
+                            delay |= CIACountB1 | CIACountB0;
+                            feed |= CIACountB0;
+                        }
+                        crb |= 0x01;
                     }
-                    crb |= 0x01;
+                    delay |= CIALoadB0;
                 }
                 break;
             case 0x8:
@@ -927,8 +1097,25 @@ public class MOS8520 {
                 if ((imr & icr & 0x1F) != 0 && irq && (delay & CIAReadIcr1) == 0) delay |= (CIASetInt1 | CIASetIcr1);
                 break;
             case 0xE:
+                // ⚠️ L'avvio esplicito (START senza LOAD) inietta DUE stadi, non uno.
+                // Il pipe dell'oracolo è lungo 2 bit e `CIA_cr_write` non lo tocca
+                // affatto quando parte: `process_pipe` ci mette il bit d'ingresso al
+                // primo clock dopo la scrittura, lo fa scendere al secondo e lo tira
+                // fuori al TERZO, che è quindi il primo decremento. Iniettando il solo
+                // stadio 0 il nostro primo decremento cadeva al QUARTO: un clock di CIA
+                // (5 CCK, un periodo di E-clock) di ritardo a ogni avvio, che restava
+                // addosso a tutti gli
+                // underflow successivi. È la stessa preparazione che l'avvio automatico
+                // da TAHI (case 0x5) già faceva — `CIACountA1 | CIACountA0` — e che
+                // nessuno aveva riportato qui.
+                //
+                // ⛔ Non tocca l'avvio con LOAD (`$11`, quello di `Timer/cont*`): lì il
+                // caricamento dello stadio 2 cancella comunque il decremento del proprio
+                // clock, quindi il primo decremento resta al quarto in entrambe le forme.
+                // Ecco perché il difetto era invisibile a `Timer` e visibile a `cnt/cnt3`,
+                // `ciaa1`/`ciaa2`, `ciab1`/`ciab2`, che avviano con `$01`.
                 if ((val & 0x01) != 0) {
-                    delay |= CIACountA0; feed |= CIACountA0;
+                    delay |= CIACountA0 | CIACountA1; feed |= CIACountA0;
                     if ((cra & 0x01) == 0) pb67Toggle |= 0x40;
                 } else {
                     delay &= ~(CIACountA1 | CIACountA0); feed &= ~CIACountA0;
@@ -943,10 +1130,14 @@ public class MOS8520 {
                 if ((val & 0x08) != 0) feed |= CIAOneShotA0; else feed &= ~CIAOneShotA0;
                 if ((val & 0x10) != 0) delay |= CIALoadA0;
                 if ((val & 0x20) != 0) { delay &= ~(CIACountA1 | CIACountA0); feed &= ~CIACountA0; }
+                // ⛔ Commutare TX↔RX azzera anche il REGISTRO, non solo il contatore:
+                // `c->sdr_cnt = 0; c->sdr_load = 0; c->sdr_buf = 0;` (`CIA_cr_write`,
+                // cia.cpp). E' cio' che `ser/ser6` misura: quattro bit dentro, commuta,
+                // quattro bit dentro — e i quattro primi devono sparire.
                 if (((val ^ cra) & 0x40) != 0) {
                     if ((val & 0x40) != 0) sp = false; // Amiga ACK: drive line LOW
                     serCounter = 0;
-                    delay &= ~(CIASsrToSdr0 | CIASsrToSdr1 | CIASsrToSdr2 | CIASsrToSdr3);
+                    ssr = 0;
                     delay &= ~(CIASdrToSsr0 | CIASdrToSsr1);
                     feed &= ~CIASdrToSsr0;
                     delay &= ~(CIASerClk0 | CIASerClk1 | CIASerClk2);
@@ -956,8 +1147,9 @@ public class MOS8520 {
                 updatePB();
                 break;
             case 0xF:
+                // Gemello del case 0xE: vedi la nota sull'avvio a due stadi.
                 if ((val & 0x01) != 0) {
-                    delay |= CIACountB0; feed |= CIACountB0;
+                    delay |= CIACountB0 | CIACountB1; feed |= CIACountB0;
                     if ((crb & 0x01) == 0) pb67Toggle |= 0x80;
                 } else {
                     delay &= ~(CIACountB1 | CIACountB0); feed &= ~CIACountB0;

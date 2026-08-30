@@ -65,6 +65,13 @@ public final class LhaExtractor {
     /** Nome del file sidecar che trasporta i nomi Amiga originali a {@link FfsBuilder}. */
     static final String AMIGA_NAMES_SIDECAR = ".amiganames";
 
+    /**
+     * Tetto alla dimensione dichiarata di una singola voce (256 MB). Un gioco WHDLoad
+     * intero sta in poche decine di MB; oltre questa soglia il numero non descrive un
+     * file, descrive un'intestazione corrotta.
+     */
+    private static final long MAX_ENTRY_BYTES = 256L << 20;
+
     private LhaExtractor(byte[] archive) { this.archive = archive; }
 
     /**
@@ -79,6 +86,7 @@ public final class LhaExtractor {
     }
 
     private void run(Path destDir) throws IOException {
+        Path base = destDir.toAbsolutePath().normalize();
         int off = 0;
         while (off + 1 < archive.length) {
             int headerSize = archive[off] & 0xFF;
@@ -89,13 +97,13 @@ public final class LhaExtractor {
             String relPath = sanitize(h.name);
             if (h.isDirectory || h.method.equals("-lhd-")) {
                 if (!relPath.isEmpty()) {
-                    Path d = destDir.resolve(windowsSafePath(relPath));
+                    Path d = resolveInside(base, windowsSafePath(relPath));
                     Files.createDirectories(d);
                     entries.add(new Entry(relPath, true, 0));
                 }
             } else {
                 byte[] out = decode(h);
-                Path f = destDir.resolve(windowsSafePath(relPath));
+                Path f = resolveInside(base, windowsSafePath(relPath));
                 if (f.getParent() != null) Files.createDirectories(f.getParent());
                 Files.write(f, out);
                 entries.add(new Entry(relPath, false, out.length));
@@ -103,6 +111,39 @@ public final class LhaExtractor {
             off = h.nextOffset;
         }
         writeSidecar(destDir);
+    }
+
+    /**
+     * Risolve una voce dentro {@code base}, rifiutando tutto ciò che ne uscirebbe.
+     *
+     * <p>Il percorso di una voce lo dichiara l'<b>archivio</b>, e un archivio viene da
+     * fuori: quello di un gioco WHDLoad lo si scarica da Internet e lo si indica in F12, e
+     * {@code AssetInstaller} ne scompatta uno appena sceso dalla rete. Che nessuna voce
+     * possa scrivere fuori dalla cartella di lavoro non può quindi dipendere dalla buona
+     * fede di chi ha confezionato l'archivio.
+     *
+     * <p><b>Oggi nessun nome ci riesce, ma per un caso.</b> I {@code ..} li neutralizza
+     * {@link #windowsSafePath}: un componente fatto di soli punti finisce tutto nel
+     * percent-encoding dei punti finali e diventa il nome letterale {@code %2E%2E}. È un
+     * effetto collaterale di una funzione scritta per tutt'altro motivo — i nomi che
+     * Windows non sa rappresentare — e basterebbe restringerne il raggio d'azione (p.es.
+     * applicarla al solo Windows, che sarebbe una modifica ragionevole) per riaprire la
+     * strada senza che nulla lo segnali. Una garanzia va detta dove serve, non dedotta
+     * altrove.
+     *
+     * <p>Un caso invece si chiude davvero qui: su Windows un nome con il prefisso di
+     * unità ({@code C:\...}) è un percorso <b>assoluto</b>, e {@code Path.resolve}
+     * restituisce l'argomento tale e quale invece di risolverlo dentro {@code base}. Lo
+     * toglie già {@link #sanitize}; se dovesse sfuggirgli in qualche forma inattesa, è
+     * questo controllo a fermarlo.
+     */
+    private static Path resolveInside(Path base, String relPath) throws IOException {
+        Path resolved = base.resolve(relPath).normalize();
+        if (!resolved.startsWith(base)) {
+            throw new IOException("voce dell'archivio fuori dalla cartella di destinazione: "
+                    + relPath);
+        }
+        return resolved;
     }
 
     /**
@@ -261,15 +302,38 @@ public final class LhaExtractor {
             sb.append(c == 0xFF ? '/' : c);
         }
         s = sb.toString();
+        // Prefisso di unita' Windows (C:, D:, ...): va tolto, o su Windows il percorso
+        // sarebbe ASSOLUTO e Path.resolve restituirebbe l'argomento invece di risolverlo
+        // dentro la cartella di lavoro. Si toglie su tutte le piattaforme, cosi' cosa fa
+        // l'estrattore non dipende da dove gira.
+        if (s.length() >= 2 && s.charAt(1) == ':' && isDriveLetter(s.charAt(0))) {
+            s = s.substring(2);
+        }
         while (s.startsWith("/")) s = s.substring(1);
         return s;
+    }
+
+    private static boolean isDriveLetter(char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
     }
 
     // =========================================================================
     // Decodifica
     // =========================================================================
 
-    private byte[] decode(Header h) {
+    /**
+     * Il payload di una voce, decompresso.
+     *
+     * <p>{@code origSize} e {@code dataStart} vengono dall'<b>intestazione</b>, cioe' dal
+     * file: un archivio troncato a meta' download, o semplicemente non un archivio, dava
+     * {@code ArrayIndexOutOfBoundsException} dalla {@code arraycopy} oppure
+     * {@code OutOfMemoryError} dalla {@code new byte[]}. Nessuna delle due e' una
+     * {@code IOException}, quindi non le prendeva il {@code catch} di chi monta l'hard
+     * disk WHDLoad e l'errore risaliva fino all'avvio della macchina, invece di diventare
+     * la riga «archivio illeggibile» che l'utente puo' capire.
+     */
+    private byte[] decode(Header h) throws IOException {
+        checkPayload(h);
         if (h.method.equals("-lh0-") || h.method.equals("-lhd-") || h.method.equals("-lz4-")) {
             byte[] out = new byte[(int) h.origSize];
             System.arraycopy(archive, h.dataStart, out, 0, (int) h.origSize);
@@ -284,6 +348,27 @@ public final class LhaExtractor {
             default: throw new UnsupportedOperationException("Metodo LHA non supportato: " + h.method);
         }
         return new Lh5Decoder(archive, h.dataStart, (int) h.origSize, dicbit).decode();
+    }
+
+    /** Le dimensioni dichiarate devono stare dentro l'archivio che le dichiara. */
+    private void checkPayload(Header h) throws IOException {
+        if (h.origSize < 0 || h.origSize > MAX_ENTRY_BYTES) {
+            throw new IOException("voce di " + h.origSize + " byte dichiarati in '"
+                    + h.name + "': fuori scala, l'archivio e' corrotto");
+        }
+        if (h.dataStart < 0 || h.dataStart > archive.length) {
+            throw new IOException("voce '" + h.name + "': i dati iniziano fuori "
+                    + "dall'archivio, che e' troncato");
+        }
+        // Per i metodi memorizzati il payload e' lungo quanto l'originale; per gli altri
+        // e' compSize. In entrambi i casi deve stare dentro quel che si e' letto.
+        long needed = h.method.equals("-lh0-") || h.method.equals("-lhd-")
+                || h.method.equals("-lz4-") ? h.origSize : h.compSize;
+        if (needed < 0 || h.dataStart + needed > archive.length) {
+            throw new IOException("voce '" + h.name + "': dichiara " + needed
+                    + " byte di dati ma dopo l'inizio ne restano "
+                    + (archive.length - h.dataStart) + ": archivio troncato");
+        }
     }
 
     // =========================================================================

@@ -862,6 +862,13 @@ public abstract class AbstractAgnus {
      */
     private static final BusOwner[] OWNER_VALUES = BusOwner.values();
 
+    /**
+     * Fase (in master-cycle) a cui è ancorata la griglia del clock delle CIA. Vedi la
+     * nota estesa sull'arm di {@code SLOT_CIAA} nel costruttore: è una fase, e va
+     * insieme al punto in cui una scrittura CIA consegna il dato al chip.
+     */
+    private static final int CIA_ANCHOR = 5;
+
     // STEP 14/P-15 (PERFORMANCE_REPORT_FINAL): busOwners come int[] di ordinali
     // invece di BusOwner[]. Arrays.fill(int[]) è più veloce del fill di un array di
     // reference (niente card-marking) ed è eseguito ~15.600 volte/s (eolHandler).
@@ -870,18 +877,6 @@ public abstract class AbstractAgnus {
     // 228 e non 227: la riga lunga NTSC (LOL) ha un CCK in più, indice 227.
     private final int[] busOwners = new int[228];
 
-
-    /** DIAG (audit floppy 2b): logga le letture CPU di registri custom/CIA con PC e
-     *  valore, per trovare quale stato di timing (raster/CIA) il loader campiona in
-     *  modo diverso a velocità CPU diverse. Time-gated dall'harness. */
-    public static volatile boolean diagLogTiming = false;
-
-    /** DIAG (Fase A-ter): logga ogni cambio del bit /SIDE su CIA-B PRB (cosa SCRIVE
-     *  il loader) con master-cycle/raster, per distinguere se il side sbagliato alla
-     *  lettura #11 di IK+ è un wrong-write (loader calcola lato 0) o un wrong-latch
-     *  (scrive 1 ma latchiamo 0). Vedi docs/sae-dskr-sequence.md. */
-    public static volatile boolean diagLogSide = false;
-    private int prevSideBitLogged = -1;
 
     /** DIAG (Fase F): conta, per gli accessi del loop firework ($3000-$31FF), quante
      *  decisioni DTACK sono bloccate e da QUALE owner DMA (busOwners[]) o dall'odd-wait,
@@ -1457,19 +1452,6 @@ public abstract class AbstractAgnus {
 
         this.ciaA = ciaA;
         this.ciaB = ciaB;
-        if (this.ciaA != null) {
-            this.ciaA.setCpuPcSupplier(() -> cpu.getOpcodeAddress());
-            this.ciaA.setClkSupplier(() -> this.masterClock);
-            this.ciaA.getPinSet().setClkSupplier(() -> this.masterClock);
-            this.ciaA.getPinSet().setPcSupplier(() -> cpu.getOpcodeAddress());
-        }
-        if (this.ciaB != null) {
-            this.ciaB.setCpuPcSupplier(() -> cpu.getOpcodeAddress());
-            this.ciaB.setClkSupplier(() -> this.masterClock);
-            this.ciaB.getPinSet().setClkSupplier(() -> this.masterClock);
-            this.ciaB.getPinSet().setPcSupplier(() -> cpu.getOpcodeAddress());
-        }
-
         if (gary != null) {
             if (rom != null)  gary.setRomSize(rom.size());
             // La Chip RAM installata la conosce solo Agnus: è il banco che gli passa il
@@ -1505,28 +1487,35 @@ public abstract class AbstractAgnus {
         // non chiamano agnus.reset(): l'arm in costruzione garantisce che SLOT_CIAA
         // scatti dal primo E-clock. internalReset lo ri-arma.
         //
-        // ⛔ L'ancora è +9, NON +10, e i master-cycle sono una FASE, non un ritardo.
-        // Il clock delle CIA e la fase E a cui si sincronizza un accesso della CPU sono
-        // lo stesso segnale (φ2/10) — è per questo che la macchina VMA esiste — ma nel
-        // modello sono due contatori mod-10 separati: questo evento e
-        // Motorola68000.eClockCounter. Con +10 il tick cadeva a eClockCounter == 2
-        // mentre il ciclo VMA si chiude a 0, quindi una scrittura a un registro CIA
-        // cadeva 1 CCK PRIMA del fronte del chip invece che sopra, e il primo clock di
-        // CIA dopo la scrittura arrivava a write+1 invece che a write+5 come
-        // nell'oracolo (WinUAE ri-ancora `eventtab[ev_cia].oldcycles` all'istante
-        // dell'accesso in CIA_calctimers): 4 CCK su ogni armamento di timer.
-        // Con quell'allineamento `scrittura TBHI → INTREQ` è bit-exact, 327 696 CCK.
+        // ⛔ I master-cycle dell'ancora sono una FASE, non un ritardo, e la fase la
+        // decide DOVE cade la scrittura a un registro CIA. Il clock delle CIA e la fase
+        // E a cui si sincronizza un accesso della CPU sono lo stesso segnale (φ2/10) —
+        // è per questo che la macchina VMA esiste — ma nel modello sono due contatori
+        // mod-10 separati: questo evento e Motorola68000.eClockCounter.
         //
-        // ⛔ Il 2026-08-22 la coppia si è spostata di UN ALTRO master-cycle — da +8 a +9
-        // qui e da 0 a 9 il valore iniziale di eClockCounter — perché la griglia E era
-        // mezzo CCK fuori da quella del chip-bus: un ciclo sincrono durava 15 master-cycle
-        // invece di 16. La FASE RELATIVA fra i due contatori non cambia (la CIA ticka
-        // ancora a eClockCounter == 0): si muovono insieme, come il filo solo che sono.
+        // ⛔ Il 2026-08-24 l'ancora è passata da +9 a +5, INSIEME alla correzione che
+        // sposta il trasferimento del dato di una scrittura CIA da S2 alla fine del
+        // ciclo sincrono (vedi maybeTransferFastBankWrite). Le due cose sono una sola:
+        // finché la scrittura cadeva a S2 arrivava alla CIA a una fase QUALSIASI (fino
+        // a 9 master-cycle prima del punto giusto) e il +9 era la fase che compensava
+        // meglio quel disallineamento. Con la scrittura al posto suo la compensazione
+        // non serve più ed è diventata l'errore: misurata sui 25 test di classe 1 di
+        // vAmigaTS CIA/CIA, l'ancora ha un minimo netto a 5÷6 (7 rossi) contro 16 a 9 e
+        // 14 a 3/4/7 — un altopiano di due valori con le pareti su entrambi i lati.
+        // Fra 5 e 6 il banco non discrimina (esito identico test per test): si prende 5
+        // perché mette la scrittura a metà esatta fra due tick, cioè il punto di
+        // massimo margine. Vedi docs/vamigats-import-order.md §Esiti CIA/CIA classe 1.
+        //
+        // ⚠️ Non tocca il ciclo sincrono della CPU: Memory/Ram/memtim1, che misura
+        // proprio la temporizzazione degli accessi CIA, resta bit-exact.
+        //
+        // Il valore iniziale di eClockCounter (9) resta quello del 2026-08-22: serve a
+        // far durare 16 master-cycle il ciclo sincrono e non c'entra con questa fase.
         // Il perché sta nel javadoc di Motorola68000.eClockCounter e in
         // docs/vamigats-import-order.md §Esiti memtim1.
         //
-        // L'invariante è congelata da CiaEClockPhaseTest; piano §7.1.18.
-        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + 9, EventID.CIA_EXECUTE);
+        // L'invariante è congelata da CiaEClockPhaseTest.
+        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + CIA_ANCHOR, EventID.CIA_EXECUTE);
 
         // Arma la produzione dei sample audio come evento (Step 2). L'evento
         // SLOT_CH0/AUDIO_MIX si auto-rischedula da solo; questo è solo il primo arm
@@ -1601,6 +1590,46 @@ public abstract class AbstractAgnus {
             if (c.autoconfiguring()) return c;
         }
         return null;
+    }
+
+    /**
+     * Le schede AutoConfig di questa macchina, nell'ordine della catena: prima la Fast
+     * RAM (se c'è), poi i controller hard disk. Serve al save state, che deve
+     * fotografarne lo stato di configurazione — {@code state} e {@code baseAddr} — e non
+     * può arrivarci da solo: il walker riflessivo non segue riferimenti a oggetto.
+     */
+    public java.util.List<Object> autoConfigDevicesForState() {
+        java.util.List<Object> out = new java.util.ArrayList<>();
+        if (fastRam != null) out.add(fastRam);
+        out.addAll(hdControllers);
+        return out;
+    }
+
+    /**
+     * Ricostruisce le Region di Gary per le schede AutoConfig a partire dallo stato
+     * (già ripristinato) delle schede stesse.
+     *
+     * <p>⛔ Serve al load di uno save state. La mappa di memoria di Gary è una
+     * {@code List<Region>}, cioè un riferimento a oggetto, e lo snapshot per costruzione
+     * non ci entra: senza questo passo uno stato salvato DOPO l'AutoConfig si
+     * ripristinava in una macchina che ha la Fast RAM configurata a $200000 ma un Gary
+     * che a $200000 non ha nulla — quegli indirizzi rispondevano open bus, con il
+     * Kickstart convinto del contrario. Il fingerprint della configurazione non poteva
+     * intercettarlo: due macchine con la stessa {@code amiga.properties} differiscono
+     * comunque per <i>quando</i> si è salvato.
+     */
+    public void rebuildAutoconfigMapping() {
+        if (gary == null) return;
+        gary.unmapFastRam();
+        gary.unmapHdControllers();
+        if (fastRam != null && fastRam.configured()) {
+            gary.mapFastRam(fastRam.baseAddr(), fastRam.sizeBytes());
+        }
+        for (HdController c : hdControllers) {
+            if (!c.autoconfiguring()) gary.mapHdController(c.configuredBaseAddr());
+        }
+        updateAutoconfigPresence();
+        cpuRouteCacheValid = false; // la mappa di memoria è cambiata
     }
 
     /** Mappa una scheda appena configurata all'indirizzo base che ha ricevuto. */
@@ -2412,14 +2441,6 @@ public abstract class AbstractAgnus {
         boolean step = (ciab_prb & 0x01) == 0; // /STEP LOW = step
         boolean dir  = (ciab_prb & 0x02) != 0; // DIR: 0=INWARD (tk++), 1=OUTWARD (tk0)
         boolean side = (ciab_prb & 0x04) == 0; // /SIDE LOW = side 1
-        if (diagLogSide) {
-            int sb = side ? 1 : 0;
-            if (sb != prevSideBitLogged) {
-                prevSideBitLogged = sb;
-                System.out.printf("[SIDE] write side=%d (/SIDE=%s) prb=$%02X cyc=%d vpos=%d hpos=%d%n",
-                        sb, side ? "LOW" : "HIGH", ciab_prb & 0xFF, masterClock, vpos, hpos);
-            }
-        }
         boolean sel0 = (ciab_prb & 0x08) == 0; // /SELx LOW = selected
         boolean sel1 = (ciab_prb & 0x10) == 0;
         boolean sel2 = (ciab_prb & 0x20) == 0;
@@ -2945,6 +2966,26 @@ public abstract class AbstractAgnus {
         if (cpuAccessTransferred || cpuBusReq.read || cpuBusReq.iack) return;
         routeCpuCurrentBusRequest();
         if (cpuCurrentRoute == null || !cpuCurrentRoute.ok) return;
+        // ⛔ Una CIA NON è un banco FAST16: il suo è un ciclo SINCRONO (6800), e il dato
+        // lo latcha sul fronte dell'E-clock, in fondo al ciclo VMA — non all'inizio.
+        // Passando di qui la scrittura arrivava al chip a S2, cioè al primo fronte con
+        // /AS asserito e a una fase E QUALSIASI: misurato su vAmigaTS CIA/CIA, le quattro
+        // scritture di un handler cadevano a masterClock mod 10 = 2, 0, 4, 0, fino a 9
+        // master-cycle prima del punto in cui l'oracolo le consegna. Un timer armato lì
+        // parte fino a due E-clock in anticipo, e l'interrupt che ne segue arriva 5÷10 CCK
+        // prima: è tutta la «classe 1» del banco (21 rossi su 35).
+        //
+        // Oracolo, cia.cpp: `cia_bput` fa `cia_wait_pre()` — che con `get_cia_sync_cycles`
+        // porta il clock al punto di sync dell'E-clock e ci aggiunge `e_clock_start` —
+        // e SOLO DOPO chiama `WriteCIAA/WriteCIAB`; `cia_wait_post` paga il resto del
+        // ciclo. La scrittura cade quindi sempre alla stessa fase, ed è lì che
+        // `CIA_calctimers` ri-ancora la griglia del clock CIA.
+        //
+        // Le letture non passavano di qui (il ramo è per le sole scritture) ed erano già
+        // giuste: uscendo, le due direzioni tornano simmetriche.
+        if (cpuCurrentRoute.target == Gary.Target.CIA_A
+                || cpuCurrentRoute.target == Gary.Target.CIA_B
+                || cpuCurrentRoute.target == Gary.Target.CIA_BOTH) return;
         if (isChipBusSyncAddress(cpuBusReq.address & 0xFFFFFF, cpuCurrentRoute.target)) return;
         handleCpuDataTransfer();
         cpuAccessTransferred = true;
@@ -3135,14 +3176,6 @@ public abstract class AbstractAgnus {
         boolean isCia = (cpuCurrentRoute.target == Gary.Target.CIA_A
                 || cpuCurrentRoute.target == Gary.Target.CIA_B
                 || cpuCurrentRoute.target == Gary.Target.CIA_BOTH);
-
-        // DIAG (phase-lock cycle-exact): hpos di OGNI accesso chip-bus della CPU
-        // (una volta per accesso), per analizzare la fase rispetto al CCK.
-        if (diagLogTiming) {
-            System.out.printf("[ACC] pc=%06X tgt=%s a=%06X %s hpos=%d%n",
-                    cpu.getOpcodeAddress() & 0xFFFFFF, cpuCurrentRoute.target,
-                    addr & 0xFFFFFF, cpuBusReq.read ? "R" : "W", hpos);
-        }
         // Coerenza della lettura della posizione del pennello (VPOSR/VHPOSR).
         // Il 68000 legge `MOVE.L $DFF004` come DUE accessi word distinti ($004 poi $006).
         // Se vpos incrementa tra i due (al confine di riga, es. 255→256) la posizione
@@ -3184,20 +3217,6 @@ public abstract class AbstractAgnus {
 
             lastBusData = word;
             cpuBusResp.dataIn = word;
-
-            if (diagLogTiming && (isCia || cpuCurrentRoute.target == Gary.Target.CUSTOM_REGS)) {
-                System.out.printf("[TMRD] pc=%06X tgt=%s a=%03X v=%04X vpos=%d hpos=%d%n",
-                        cpu.getOpcodeAddress() & 0xFFFFFF, cpuCurrentRoute.target,
-                        cpuCurrentRoute.effectiveAddress & 0x1FE, word, vpos, hpos);
-            }
-            // DIAG (Fase D/E): valore delle DATA-read del loader IK+ nelle strutture
-            // in slow-RAM ($C08000-$C0A000), per trovare quale valore (derivato dal
-            // timing) diverge e fa prendere il branch di fallimento $C07BD4.
-            if (diagLogTiming && cpuCurrentRoute.target == Gary.Target.SLOW_RAM
-                    && (addr & 0xFFFFFF) >= 0xC08000 && (addr & 0xFFFFFF) < 0xC0A000) {
-                System.out.printf("[SDAT] pc=%06X a=%06X v=%04X%n",
-                        cpu.getOpcodeAddress() & 0xFFFFFF, addr & 0xFFFFFF, word);
-            }
 
         } else {
             // ── SCRITTURA ────────────────────────────────────────────────────────
@@ -3655,6 +3674,36 @@ public abstract class AbstractAgnus {
     }
 
     /**
+     * Vero mentre è in corso una {@link #peekCustomRegister(int)}: sopprime gli effetti
+     * collaterali che una lettura di registro custom ha sull'hardware vero.
+     *
+     * <p>⛔ Non è un dettaglio cosmetico. {@link #faultyCustomRead} — la lettura di un
+     * write-only OCS — <b>riscrive il registro</b> col valore del bus flottante, ed è
+     * comportamento voluto (vAmiga {@code peekCustomFaulty16}). Ma {@link #peekByte} e
+     * {@link #peekWord} sono gli accessori del disassemblatore e del debugger: un dump di
+     * memoria che attraversasse {@code $DFFxxx} riscriveva registri sprite e palette
+     * dell'immagine che stava osservando. Le CIA la promessa la mantenevano già
+     * ({@code peekCiaData}); i custom no.
+     */
+    private boolean peeking = false;
+
+    /**
+     * Lettura di un registro custom <b>priva di effetti collaterali</b>, per
+     * disassemblatore, debugger e harness d'indagine. Copre i tre siti che mutano:
+     * la lettura "faulty" dei write-only, i registri strobe e i tre registri di Paula
+     * che consumano stato ({@code Paula.peekRegister}).
+     */
+    public int peekCustomRegister(int regAddr) {
+        boolean saved = peeking;
+        peeking = true;
+        try {
+            return readCustomRegisterImpl(regAddr);
+        } finally {
+            peeking = saved;
+        }
+    }
+
+    /**
      * Lettura di un registro custom write-only OCS ("faulty"): riproduce
      * {@code Memory::peekCustomFaulty16} di vAmiga — la lettura restituisce
      * l'ultimo valore sul bus dati (floating) e, come effetto collaterale,
@@ -3671,11 +3720,11 @@ public abstract class AbstractAgnus {
      * <p>Default false: i giochi mantengono il floating bus reale (necessario, vedi
      * i fix storici su COPJMP1 / NBCD / ADDXb).
      */
-    public static boolean neutralFloatingBus = false;
+    public static volatile boolean neutralFloatingBus = false;
 
     private int faultyCustomRead(int regAddr) {
         int busVal = neutralFloatingBus ? 0 : (openBusLatch & 0xFFFF);
-        writeCustomRegister(regAddr, busVal);
+        if (!peeking) writeCustomRegister(regAddr, busVal);
         return busVal;
     }
 
@@ -3705,12 +3754,13 @@ public abstract class AbstractAgnus {
         // Paula
         if (regAddr == 0x008 || (regAddr >= 0x010 && regAddr <= 0x01E)
                 || (regAddr >= 0x0A0 && regAddr <= 0x0DF)) {
-            return paula != null ? paula.readRegister(regAddr) : 0xFFFF;
+            if (paula == null) return 0xFFFF;
+            return peeking ? paula.peekRegister(regAddr) : paula.readRegister(regAddr);
         }
 
         // Strobe Denise
         if (regAddr == 0x038 || regAddr == 0x03A || regAddr == 0x03C) {
-            if (denise != null) denise.readRegister(regAddr);
+            if (denise != null && !peeking) denise.readRegister(regAddr);
             return 0;
         }
 
@@ -3837,12 +3887,6 @@ public abstract class AbstractAgnus {
                 || regAddr == 0x104 || regAddr == 0x106 || regAddr == 0x10C
                 || (regAddr >= 0x110 && regAddr <= 0x11A)
                 || (regAddr >= 0x140 && regAddr <= 0x1BE)) {
-            if (io.github.zolfrik.amija.custom.AbstractDenise.DBG_COLOR && regAddr == 0x180) {
-                int v = value & 0xFFF;
-                boolean visible = vpos >= 30 && vpos < 300;
-                String k = (__inCopperWrite ? "COP-" : "CPU-") + (v == 0x80B ? "purple" : v == 0x000 ? "black" : "other") + (visible ? "/vis" : "/vbl");
-                io.github.zolfrik.amija.custom.AbstractDenise.DBG_C00_VPOS.merge(k, 1L, Long::sum);
-            }
             // SPRxPOS/SPRxCTL ($140-$17E) non riguardano solo Denise: VSTART/VSTOP
             // vivono in AGNUS e pilotano la macchina a stati del DMA sprite. Una
             // scrittura da Copper/CPU deve quindi aggiornare anche sprVStart/sprVStop
@@ -4036,7 +4080,7 @@ public abstract class AbstractAgnus {
         // CIA si fermerebbero dopo un'istruzione CPU RESET (softReset).
         // ⛔ +8 e non +10: è la stessa fase dell'arm in costruzione, e va cambiata
         // insieme a quella. Vedi la nota estesa lì e CiaEClockPhaseTest.
-        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + 9, EventID.CIA_EXECUTE);
+        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + CIA_ANCHOR, EventID.CIA_EXECUTE);
         // Ri-arma la produzione dei sample audio (SLOT_CH0): come SLOT_CIAA, l'evento
         // si auto-rischedula ma lo scheduler è appena stato azzerato.
         if (paula != null) {
@@ -4559,7 +4603,7 @@ public abstract class AbstractAgnus {
             case KICKSTART_ROM, OVERLAY_ROM     -> rom.readByte(eff);
             case SLOW_RAM                       -> slowRAM.readByte(eff);
             case FAST_RAM                       -> (fastRam != null) ? fastRam.ram().readByte(eff) : 0x00;
-            case CUSTOM_REGS                    -> (address % 2 == 0) ? (readCustomRegister(address) >> 8) & 0xFF : readCustomRegister(address) & 0xFF;
+            case CUSTOM_REGS                    -> (address % 2 == 0) ? (peekCustomRegister(address) >> 8) & 0xFF : peekCustomRegister(address) & 0xFF;
             case RTC                            -> batteryClock.readByte(address);
             case CIA_A, CIA_B, CIA_BOTH         -> {
                 int word = peekCiaData(route.target, address);
@@ -4578,21 +4622,27 @@ public abstract class AbstractAgnus {
             case KICKSTART_ROM, OVERLAY_ROM     -> rom.readWord(eff);
             case SLOW_RAM                       -> slowRAM.readWord(eff);
             case FAST_RAM                       -> (fastRam != null) ? fastRam.ram().readWord(eff) : 0x0000;
-            case CUSTOM_REGS                    -> readCustomRegister(address);
+            case CUSTOM_REGS                    -> peekCustomRegister(address);
             case RTC                            -> batteryClock.readWord(address);
             case CIA_A, CIA_B, CIA_BOTH         -> peekCiaData(route.target, address);
             default                             -> 0x0000;
         };
     }
 
+    /**
+     * Lettura di uno spazio CIA per il debugger. Passa da {@code MOS8520.peekRegister},
+     * non da {@code readRegister}: quest'ultima, sull'ICR, rilascia la linea /IRQ e arma
+     * il pipeline di ack — cioè un dump di memoria che attraversi $BFExxx cancellerebbe
+     * un interrupt pendente della macchina osservata.
+     */
     private int peekCiaData(Gary.Target target, int address) {
         int reg = (address >> 8) & 0x0F;
         int result = lastBusData;
         if (target == Gary.Target.CIA_A || target == Gary.Target.CIA_BOTH) {
-            result = (result & 0xFF00) | (ciaA.readRegister(reg) & 0xFF);
+            result = (result & 0xFF00) | (ciaA.peekRegister(reg) & 0xFF);
         }
         if (target == Gary.Target.CIA_B || target == Gary.Target.CIA_BOTH) {
-            result = (result & 0x00FF) | ((ciaB.readRegister(reg) & 0xFF) << 8);
+            result = (result & 0x00FF) | ((ciaB.peekRegister(reg) & 0xFF) << 8);
         }
         return result;
     }

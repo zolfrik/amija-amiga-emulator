@@ -23,6 +23,7 @@ package io.github.zolfrik.amija.common;
 import java.io.File;
 import java.net.URI;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.nio.file.Paths;
 import java.security.CodeSource;
 
@@ -127,7 +128,7 @@ public final class AppHome {
             }
             Path location = Paths.get(uri);
             // Solo un jar vero identifica una home; una cartella di classi no.
-            if (!location.getFileName().toString().toLowerCase().endsWith(".jar")) {
+            if (!location.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")) {
                 return null;
             }
             Path dir = location.getParent();
@@ -153,7 +154,7 @@ public final class AppHome {
             return jarDir;
         }
         if (!"app".equals(nameOf(jarDir)) || !"Contents".equals(nameOf(contents))
-                || !nameOf(bundle).toLowerCase().endsWith(".app")) {
+                || !nameOf(bundle).toLowerCase(Locale.ROOT).endsWith(".app")) {
             return jarDir;
         }
         Path outside = bundle.getParent();

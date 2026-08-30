@@ -189,9 +189,12 @@ public final class RAM {
     /**
      * Copia un blocco di byte nella RAM (es. caricamento dati iniziali).
      *
-     * Usa {@code System.arraycopy} quando possibile per massima efficienza.
-     * Se il range non attraversa il boundary di wrap, viene usato arraycopy diretto.
-     * In caso contrario, la copia avviene byte per byte con wrap corretto.
+     * <p><b>Non c'è wrap-around.</b> Il range deve stare per intero dentro la RAM: un
+     * blocco che sborda è un errore, non un blocco da avvolgere. (Il javadoc prometteva
+     * il contrario — «se il range attraversa il boundary la copia avviene byte per byte
+     * con wrap corretto» — ma di quel codice non c'è mai stata traccia: la copia è
+     * sempre stata un solo {@code System.arraycopy}. L'aliasing della Chip RAM lo fa
+     * Gary sull'indirizzo, non questa classe.)
      *
      * @param address Indirizzo di destinazione nella RAM
      * @param src     Array sorgente
@@ -203,8 +206,8 @@ public final class RAM {
         if (off < 0 || len < 0 || off + len > src.length)
             throw new IndexOutOfBoundsException(
                     "Invalid range: off=" + off + " len=" + len + " src.length=" + src.length);
-
-        System.arraycopy(src, off, mem, idx(address), len);
+        checkBlock(address, len);
+        System.arraycopy(src, off, mem, address, len);
     }
 
     /**
@@ -218,7 +221,8 @@ public final class RAM {
      * @param len     Numero di byte da copiare
      */
     public void copyTo(int address, byte[] dst, int dstOff, int len) {
-        System.arraycopy(mem, idx(address), dst, dstOff, len);
+        checkBlock(address, len);
+        System.arraycopy(mem, address, dst, dstOff, len);
     }
 
     /**
@@ -230,8 +234,9 @@ public final class RAM {
      */
     public byte[] dumpBlock(int address, int len) {
         if (len < 0) throw new IllegalArgumentException("len must be >= 0");
+        checkBlock(address, len);
         byte[] out = new byte[len];
-        System.arraycopy(mem, idx(address), out, 0, len);
+        System.arraycopy(mem, address, out, 0, len);
         return out;
     }
 
@@ -303,6 +308,18 @@ public final class RAM {
      * @return Indice valido in {@code mem[0..size-1]}
      * @throws IndexOutOfBoundsException se l'indirizzo è fuori range
      */
+    /**
+     * Verifica che l'intero blocco {@code [address, address+len)} stia dentro la RAM.
+     *
+     * <p>Prima solo l'indirizzo iniziale passava da {@link #idx}: la coda del range la
+     * controllava di fatto {@code System.arraycopy}, che sì la becca — ma con un
+     * messaggio che non dice né quale RAM né quale indirizzo, al contrario di tutto il
+     * resto della classe.
+     */
+    private void checkBlock(int address, int len) {
+        if (address < 0 || len < 0 || address > size - len) throwOob(address);
+    }
+
     private int idx(int address) {
         if (address < 0 || address >= size) {
             throwOob(address);

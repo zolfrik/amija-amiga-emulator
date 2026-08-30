@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Walker riflessivo <b>vincolato per tipo</b> per il salvataggio/ripristino dello stato
@@ -65,7 +66,15 @@ public final class ReflectiveState {
             T_ENUM = 'E', T_PARR = 'a', T_OARR = 'A';
 
     // Cache dei campi serializzabili per classe (setAccessible già applicato).
-    private static final Map<Class<?>, List<Field>> FIELD_CACHE = new HashMap<>();
+    //
+    // ⛔ ConcurrentHashMap e non HashMap: la cache è STATICA, quindi è condivisa fra
+    // tutte le macchine vive nello stesso JVM — e il game sweep ne fa girare tre in
+    // parallelo. Il resto della classe è dichiaratamente non thread-safe e va usato a
+    // macchina in pausa, ma "in pausa" è una proprietà PER MACCHINA: due macchine
+    // diverse, ciascuna correttamente in pausa, possono entrare qui insieme e su una
+    // HashMap in resize concorrente il danno non è un valore sbagliato, è la mappa
+    // corrotta (nel caso peggiore un ciclo infinito nel bucket).
+    private static final Map<Class<?>, List<Field>> FIELD_CACHE = new ConcurrentHashMap<>();
 
     // =========================================================================
     // API
@@ -187,6 +196,31 @@ public final class ReflectiveState {
     // Decode (auto-descrittivo: consuma sempre, mappa al campo solo se presente)
     // =========================================================================
 
+    /**
+     * Tetto al numero di elementi di un array letto dallo slot.
+     *
+     * <p>La lunghezza la dichiara il <b>file</b>, e un file puo' essere troncato, corrotto
+     * a meta' scrittura o semplicemente non essere uno slot. Senza tetto,
+     * {@code new int[in.readInt()]} su un valore qualunque dava {@code OutOfMemoryError} —
+     * che e' un {@code Error}, quindi sfuggiva al {@code catch (Exception)} di chi carica
+     * e arrivava all'EDT invece di diventare il messaggio «slot non compatibile».
+     *
+     * <p>Il tetto e' scelto largo: l'array piu' grande che una macchina emulata possa
+     * avere e' la Fast RAM al massimo, 8 MB in un {@code byte[]} (vedi {@code RAM.mem}),
+     * e 64 milioni di elementi lasciano otto volte quel margine — abbastanza da non
+     * doverci tornare se un domani le espansioni crescono. Serve a rifiutare i numeri
+     * assurdi di un file corrotto, non a fare da quota di memoria.
+     */
+    private static final int MAX_ARRAY_ELEMENTS = 1 << 26;
+
+    private static int checkedLength(int n) throws IOException {
+        if (n < -1 || n > MAX_ARRAY_ELEMENTS) {
+            throw new IOException("array di " + n + " elementi nello slot: fuori scala "
+                    + "(massimo " + MAX_ARRAY_ELEMENTS + "). Lo slot e' corrotto o troncato.");
+        }
+        return n;
+    }
+
     private static Object decode(DataInputStream in) throws IOException {
         byte tag = in.readByte();
         switch (tag) {
@@ -201,12 +235,12 @@ public final class ReflectiveState {
             case T_ENUM: return new EnumRef(in.readInt());
             case T_PARR: {
                 byte k = in.readByte();
-                int n = in.readInt();
+                int n = checkedLength(in.readInt());
                 if (n < 0) return null;
                 return readPrimArray(in, k, n);
             }
             case T_OARR: {
-                int n = in.readInt();
+                int n = checkedLength(in.readInt());
                 if (n < 0) return null;
                 Object[] a = new Object[n];
                 for (int i = 0; i < n; i++) a[i] = decode(in);
@@ -255,10 +289,14 @@ public final class ReflectiveState {
                 } else {
                     for (int i = 0; i < n; i++) Array.set(cur, i, Array.get(arr, i));
                 }
-            } else if (!isFinal) {
+            } else if (!isFinal && (arr == null || type.isInstance(arr))) {
                 f.set(root, arr);
             }
-            // array final di forma diversa: caso non atteso, si lascia com'è.
+            // Array final di forma diversa: caso non atteso, si lascia com'e'. Idem per un
+            // array il cui tipo non e' piu' quello di allora (un campo passato da short[] a
+            // int[], p.es.): assegnarlo darebbe IllegalArgumentException, che non e' fra le
+            // eccezioni che read() converte e farebbe fallire l'intero caricamento invece
+            // del solo campo. Si salta, come per un campo sconosciuto.
             return;
         }
 
@@ -273,8 +311,12 @@ public final class ReflectiveState {
         }
         if (type.isEnum()) {
             int ord = (val instanceof EnumRef) ? ((EnumRef) val).ordinal : ((Number) val).intValue();
-            Object[] consts = type.getEnumConstants();
-            f.set(root, ord < 0 ? null : consts[ord]);
+            Object constant = enumConstant(type, ord);
+            if (constant != NO_CONSTANT) {
+                f.set(root, constant);
+            }
+            // Ordinale fuori dalle costanti di oggi: si lascia il default, come per un
+            // campo assente. Vedi enumConstant().
             return;
         }
         f.set(root, coercePrim(type, val));
@@ -290,7 +332,8 @@ public final class ReflectiveState {
             if (src[i] == null) continue;
             if (ct.isEnum()) {
                 int ord = ((EnumRef) src[i]).ordinal;
-                Array.set(arr, i, ord < 0 ? null : ct.getEnumConstants()[ord]);
+                Object constant = enumConstant(ct, ord);
+                Array.set(arr, i, constant == NO_CONSTANT ? null : constant);
             } else if (ct.isArray()) {
                 Array.set(arr, i, buildArray(ct.getComponentType(), src[i]));
             }
@@ -320,6 +363,29 @@ public final class ReflectiveState {
         if (ct == long.class) return T_LONG;
         if (ct == float.class) return T_FLOAT;
         return T_DOUBLE;
+    }
+
+    /** Sentinella: l'ordinale letto non corrisponde ad alcuna costante di oggi. */
+    private static final Object NO_CONSTANT = new Object();
+
+    /**
+     * La costante di {@code type} con quell'ordinale, {@code null} per {@code -1}
+     * (che e' come si scrive un enum nullo), {@link #NO_CONSTANT} se l'ordinale non esiste.
+     *
+     * <p>Il caso non e' teorico ed e' proprio quello che questa classe dichiara di
+     * reggere: il formato e' auto-descrittivo perche' «lo slot sia resiliente
+     * all'evoluzione del codice», e togliere o riordinare una costante di un enum e'
+     * evoluzione del codice come le altre. Prima, un ordinale rimasto scoperto tirava
+     * {@code ArrayIndexOutOfBoundsException} e faceva fallire l'INTERO caricamento —
+     * esattamente nello scenario che la promessa copre. Ora si comporta come un campo
+     * sconosciuto: si salta e si lascia il default.
+     */
+    private static Object enumConstant(Class<?> type, int ordinal) {
+        if (ordinal < 0) {
+            return null;
+        }
+        Object[] consts = type.getEnumConstants();
+        return (consts == null || ordinal >= consts.length) ? NO_CONSTANT : consts[ordinal];
     }
 
     /** Holder dell'ordinale di un enum letto, risolto alla costante nota il tipo del campo. */

@@ -160,7 +160,8 @@ public class AsrInstruction extends AbstractM68kInstruction {
         // C = X = ULTIMO bit uscito, anche quando count supera la dimensione
         // dell'operando. Il 68000 non ha barrel shifter: shifta un bit alla volta
         // (di qui il costo 2*count cicli), quindi con un operando negativo continua
-        // a far uscire bit di segno e C resta 1. Cfr. WinUAE cpuemu_11 op_e020
+        // a far uscire bit di segno e C resta 1. Cfr. WinUAE op_e020_14_ff (cpuemu_13.cpp, 68000 cycle-exact;
+        // la variante _11 citata prima e' il 68010, stesso codice ma chip diverso)
         // ("if (cnt >= 8) { SET_CFLG(sign); COPY_CARRY(); }") e Moira
         // MoiraALU_cpp.h Instr::ASR (ciclo puro, nessun clamp).
         //

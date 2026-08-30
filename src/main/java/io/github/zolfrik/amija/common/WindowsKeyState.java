@@ -87,7 +87,7 @@ public final class WindowsKeyState {
     private WindowsKeyState() {}
 
     private static MethodHandle link(String symbol, FunctionDescriptor descriptor) {
-        String os = System.getProperty("os.name", "").toLowerCase();
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         if (!os.contains("win")) {
             return null;
         }

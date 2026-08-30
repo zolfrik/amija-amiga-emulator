@@ -1664,11 +1664,19 @@ public class AmigaDisplay {
         endDragOverlay();
     }
 
-    /** Primo file .adf/.ipf/.zip della lista trascinata, o null. */
+    /**
+     * Primo file .adf/.ipf/.zip della lista trascinata, o null.
+     *
+     * <p>{@code Locale.ROOT} e non la lingua del sistema: in turco {@code 'I'} minuscolo
+     * e' {@code 'i'} senza punto, quindi {@code "GIOCO.IPF"} diventerebbe
+     * {@code "gioco.ıpf"} e non corrisponderebbe a {@code ".ipf"} — un file trascinato
+     * che l'emulatore ignora in silenzio, e solo su alcune macchine. Le estensioni sono
+     * identificatori, non testo da mostrare: si confrontano nella locale neutra.
+     */
     private static File firstSupportedDisk(List<File> files) {
         if (files == null) return null;
         for (File f : files) {
-            String n = f.getName().toLowerCase();
+            String n = f.getName().toLowerCase(java.util.Locale.ROOT);
             if (n.endsWith(".adf") || n.endsWith(".ipf") || n.endsWith(".zip")) return f;
         }
         return null;
