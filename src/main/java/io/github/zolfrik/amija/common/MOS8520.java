@@ -40,26 +40,24 @@ public class MOS8520 {
     /**
      * Baco del contatore TODMED — vedi {@link #checkTodIrq(boolean)}.
      *
-     * <p>⛔ <b>Sull'A500 il baco C'È</b> ({@code cfgfile.cpp}, {@code case CP_A500:
-     * p->cs_ciatodbug = true}), e AmiJa emula un A500: il default <i>dovrebbe</i> essere
-     * acceso. ⚠️ <b>È spento lo stesso, e la ragione è misurata.</b> Accendendolo,
-     * {@code CIA/TOD/todbug1} passa da 25 984 pixel diversi a <b>112</b>, {@code todbug3} da
-     * 33 784 a <b>84</b> e {@code todbug4} da 104 764 a <b>996</b> — il meccanismo è quello,
-     * non c'è dubbio — ma <b>due test verdi diventano rossi</b>, {@code tod1} e
-     * {@code todint4}. Un riferimento generato dall'oracolo che diventa rosso è un veto.
+     * <p><b>Acceso</b>, com'è {@code cs_ciatodbug} sull'A500 ({@code cfgfile.cpp},
+     * {@code case CP_A500: p->cs_ciatodbug = true}), che è la macchina con cui i
+     * riferimenti del banco sono generati. Con il baco, {@code CIA/TOD/todbug1} passa da
+     * 25 984 pixel diversi a <b>112</b>, {@code todbug3} da 33 784 a <b>84</b>,
+     * {@code todbug4} da 104 764 a <b>996</b>, e {@code todvice/0alarm} e {@code 1alarm}
+     * — i due che pretendono il <b>doppio</b> conteggio di allarmi, ed è il baco a
+     * darglielo — diventano <b>verdi</b>.
      *
-     * <p>⇒ E il veto ha una causa che <b>non è questa regola</b>: la sonda
-     * {@code WINUAE_TODLOG} conta <b>zero</b> scatti del ramo del baco nell'intera corsa di
-     * {@code tod1} sull'oracolo, perché lì il contatore è azzerato <b>una volta per frame</b>
-     * (i reset stanno a 71 050 cck esatti l'uno dall'altro) e non arriva mai a
-     * {@code $001000}. Da noi arriva a {@code $8017}, cioè circa <b>105 frame senza un
-     * azzeramento</b>: la catena che riarma l'interrupt si ferma. Il baco non causa quel
-     * rosso, lo <b>rivela</b>.
-     *
-     * <p>Accendere questo flag è quindi il passo <i>dopo</i> aver chiuso lo stallo di
-     * {@code tod1} — non prima. Vedi {@code docs/vamigats-import-order.md} §{@code CIA/TOD}.
+     * <p>⚠️ <b>Accenderlo è stato possibile solo dopo aver corretto il {@code todon}</b>
+     * (vedi {@link #reset()}): finché il TOD contava già dal reset, il contatore di CIA-B
+     * arrivava a {@code $8017} <i>durante il boot</i>, passava per {@code $001000} e il
+     * ramo del baco scattava dove sull'oracolo non scatta mai — la sua sonda conta
+     * {@code BUGHITS 0} sull'intera corsa di {@code tod1}. In quello stato accendere
+     * questo flag faceva diventare rossi {@code tod1} e {@code todint4}, e l'attivazione
+     * era stata revocata. Il baco non causava quel rosso: lo <b>rivelava</b>.
+     * Vedi {@code docs/vamigats-import-order.md} §{@code CIA/TOD}.
      */
-    private boolean todBug = false;
+    private boolean todBug = true;
     private int cachedDdra = -1;
     private int cachedDdrb = -1;
     private int cachedPortA = -1;
@@ -232,7 +230,15 @@ public class MOS8520 {
         todLatch = 0;
         todAlarm = 0;
         todFrozen = false;
-        todStopped = false; // on real hardware TOD counts immediately after reset
+        // ⛔ Il TOD NON conta finché non gli si scrive TODLO. È il `todon` dell'oracolo:
+        // `CIA_reset` azzera l'intera struct (`memset(&cia, 0, sizeof(cia))`, cia.cpp) e
+        // `CIA_tod_inc` esce subito con `if (!c->todon) return;`. Solo la scrittura di
+        // TODLO in modo contatore lo accende (`case 8: ... c->todon = 1`), e TODHI lo
+        // rispegne. Qui valeva `false`, con la nota «su hardware reale il TOD conta
+        // subito dopo il reset»: era una deduzione, e la misura la smentisce — con il TOD
+        // acceso dal reset il contatore di CIA-B corre per tutto il boot e arriva a
+        // $8017, dove l'oracolo resta a 0 fino alla prima TODLO del programma.
+        todStopped = true;
         todMatching = (todCounter == todAlarm);
 
         // Initialize pin directions and drives
@@ -354,8 +360,8 @@ public class MOS8520 {
      * <p>⚠️ Il modello precedente era un altro — due {@code checkTodIrq()} in più dentro
      * {@link #incrementTod()}, ai riporti di nibble — e non è mai stato attivo, perché
      * {@code todBug} era {@code false} e nessuno chiamava {@link #setTodBug(boolean)}.
-     * Sostituito dalla regola dell'oracolo; sull'A500 il baco c'è
-     * ({@code cfgfile.cpp}, {@code case CP_A500: cs_ciatodbug = true}).
+     * Sostituito dalla regola dell'oracolo, che ora è anche <b>accesa</b>: vedi
+     * {@link #todBug}.
      */
     private void checkTodIrq(boolean inc) {
         boolean match = todCounter == todAlarm;
