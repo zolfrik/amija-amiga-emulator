@@ -1020,6 +1020,22 @@ public abstract class AbstractAgnus {
     private static final int MAXHPOS_SHORT = 454;
 
     /**
+     * Riga su cui cade l'impulso TOD di <b>CIA-A</b>, il «50 Hz di rete».
+     *
+     * <p>⛔ Non è l'inizio del frame: è la <b>fine dell'impulso di vsync</b>, e in PAL cade
+     * alla riga <b>5</b>. Oracolo, {@code custom.cpp}: <i>«CIA-A TOD counter increases when
+     * vsync pulse ends»</i>, {@code if (vpos == VSYNC_ENDLINE_PAL) CIAA_tod_handler(...)},
+     * con {@code VSYNC_ENDLINE_PAL 5} in {@code include/custom.h}. Qui l'impulso stava allo
+     * <b>wrap di vpos</b>, cinque righe prima.
+     *
+     * <p>⚠️ L'oracolo passa anche un {@code hoffset} ({@code lof_store ? 132 : 18}) che
+     * {@code tod_inc_delay()} trasforma in un ritardo dentro la riga; quello <b>non</b> è
+     * modellato, qui come per CIA-B, e per CIA-B lo sweep su 12 posizioni della riga ha
+     * misurato che non muove nessun test del banco. La riga sì.
+     */
+    private static final int CIAA_TOD_VPOS = 5;
+
+    /**
      * Posizione orizzontale all'accensione: <b>un CCK prima della fine della riga</b>,
      * cioè la prima riga della macchina dura 1 CCK e non 227.
      *
@@ -1816,14 +1832,8 @@ public abstract class AbstractAgnus {
             floppyBusy = isFloppyDriveBusy(df0) || isFloppyDriveBusy(df1)
                     || isFloppyDriveBusy(df2) || isFloppyDriveBusy(df3);
         }
-        // TOD CIA-A pin LOW: temporizzato sul raster (a inizio frame, dopo aver
-        // alzato il pin in updateBeam), quindi resta nel loop SC — NON è event-driven.
-        // La parte OVL/LED è ora in updateCiaOvlLed() (granularità E-clock,
-        // serviceCiaEvent). Il test vpos==0 corto-circuita su quasi tutti i cicli.
-        if (ciaA != null && vpos == 0 && hpos > 20) {
-            var todPinA = ciaA.getPinSet().getTodPin();
-            if (todPinA.getPinState()) todPinA.setExternalInput(false);
-        }
+        // (Il fronte di discesa del TOD di CIA-A è ora in updateBeam(), accanto a quello
+        // di salita: entrambi vivono sulla riga CIAA_TOD_VPOS.)
         // updateInterrupts(); // Moved to fallingEdge()
 
         // Reset della contention all'inizio di ogni CCK (hpos pari), così un DMA che
@@ -2174,6 +2184,20 @@ public abstract class AbstractAgnus {
             }
         }
 
+        // CIA-A TOD: il segnale di rete a 50 Hz NON è l'inizio del frame, è la FINE
+        // dell'impulso di vsync — che in PAL cade alla riga 5, non allo wrap di vpos.
+        // Oracolo, custom.cpp: «CIA-A TOD counter increases when vsync pulse ends»,
+        //   if (vpos == VSYNC_ENDLINE_PAL) CIAA_tod_handler(lof_store ? 132 : 18);
+        // con VSYNC_ENDLINE_PAL = 5 (include/custom.h). Qui valeva `vpos == maxVpos-1`,
+        // cioè CINQUE righe prima.
+        if (vpos == CIAA_TOD_VPOS && ciaA != null) {
+            if (nextHpos == 1) {
+                ciaA.getPinSet().getTodPin().setExternalInput(true);
+            } else if (nextHpos == 21) {
+                ciaA.getPinSet().getTodPin().setExternalInput(false);
+            }
+        }
+
         if (nextHpos < maxHpos) {
             // Ancora nella stessa riga — nessuna azione rilevante
             return;
@@ -2209,14 +2233,7 @@ public abstract class AbstractAgnus {
         // per-piano all'ULTIMO fetch della riga (handleBitplaneDMA, `domod`
         // WinUAE). Il gate lineDidFetch (Pinball Fantasies) è assorbito: una riga
         // senza fetch non raggiunge mai l'unità finale e non applica alcun modulo.
-        // --- CIA-A TOD Timing ---
-        // CIA-A TOD: pulse at start of VBlank (50 Hz PAL power signal).
-        // (La VERTB NON va qui: vedi assertVertbInterrupt() spostata a vpos==0.)
-        if (vpos == maxVpos - 1) {
-            if (ciaA != null) {
-                ciaA.getPinSet().getTodPin().setExternalInput(true);
-            }
-        }
+        // (L'impulso TOD di CIA-A non sta più qui: vedi CIAA_TOD_VPOS in updateBeam().)
 
         // ERSY (BPLCON0 bit 1) senza genlock: il generatore di sync di Agnus aspetta un
         // sync esterno che non arriva e il CONTATORE VERTICALE SI FERMA. In WinUAE è
