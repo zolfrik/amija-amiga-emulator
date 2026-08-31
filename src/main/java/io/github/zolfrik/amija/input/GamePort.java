@@ -170,7 +170,7 @@ public class GamePort implements GamePortControls {
 
     /**
      * Indica se il pulsante destro (o button2) è premuto.
-     * Usato da Paula nella simulazione di carica (POT_CHARGE).
+     * Usato da Paula in {@code capCheck}: il pulsante tiene la linea a massa.
      */
     public boolean isRightOrButton2Pressed() {
         return (device == GamePortDevice.MOUSE)    ? mouse.isRightPressed()
@@ -179,7 +179,7 @@ public class GamePort implements GamePortControls {
 
     /**
      * Indica se il pulsante medio (o button3) è premuto.
-     * Usato da Paula nella simulazione di carica (POT_CHARGE).
+     * Usato da Paula in {@code capCheck}: il pulsante tiene la linea a massa.
      */
     public boolean isMiddleOrButton3Pressed() {
         return (device == GamePortDevice.MOUSE)    ? mouse.isMiddlePressed()

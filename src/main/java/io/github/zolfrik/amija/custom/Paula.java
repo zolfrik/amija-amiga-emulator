@@ -25,6 +25,7 @@ import io.github.zolfrik.amija.custom.AbstractAgnus.EventSlot;
 import io.github.zolfrik.amija.custom.audio.AudioRingBuffer;
 import io.github.zolfrik.amija.custom.audio.JavaSoundAudioOutput;
 import io.github.zolfrik.amija.input.GamePort;
+import io.github.zolfrik.amija.input.GamePortDevice;
 
 import java.util.Arrays;
 import java.util.function.IntSupplier;
@@ -91,8 +92,17 @@ public final class Paula {
     // =========================================================================
 
     private int potgo;
-    private int potCntX0, potCntY0, potCntX1, potCntY1;
-    private double chargeX0, chargeY0, chargeX1, chargeY1;
+    /**
+     * Stato del potenziometro, indicizzato [porta][linea]: porta 0 = {@link #gamePort1}
+     * (sinistra), 1 = {@link #gamePort2} (destra); linea 0 = X (pulsante medio / button 3),
+     * 1 = Y (destro / button 2). @see #capCheck(boolean)
+     */
+    private final int[][] potCap = new int[2][2];
+    private final int[][] potDat = new int[2][2];
+    private final int[][] potDatAct = new int[2][2];
+
+    /** Righe di scarica veloce dopo START: {@code POTDAT_DELAY} dell'oracolo. */
+    private static final int POTDAT_DELAY = 8;
 
     // Game port 1 (mouse) e port 2 (joystick) per la gestione di POTINP
     private GamePort gamePort1 = null;
@@ -235,13 +245,14 @@ public final class Paula {
         Arrays.fill(setIntreq, AbstractAgnus.NEVER);
         iplPipe = 0;
 
-        potCntX0 = potCntY0 = potCntX1 = potCntY1 = 0;
         // ⛔ Al reset i condensatori delle linee POT sono SCARICHI. Partivano da 1.0, e
         // cosi' una porta senza niente attaccato leggeva il proprio bit DAT alto finche'
         // nessuno scriveva START (che e' l'unica cosa che fa girare il ciclo di carica).
         // Misurato su vAmigaTS Mainboard/Ports/POT/potgo0, potgo5, potgo6: nessuno dei tre
         // scrive START, e l'oracolo legge POTGOR $0500 dove leggevamo $5500.
-        chargeX0 = chargeY0 = chargeX1 = chargeY1 = 0.0;
+        for (int j = 0; j < 2; j++) {
+            for (int i = 0; i < 2; i++) { potCap[j][i] = 0; potDat[j][i] = 0; potDatAct[j][i] = 0; }
+        }
 
         dskpth = dskptl = dsklen = 0;
         dsksync = 0x4489;
@@ -552,73 +563,95 @@ public final class Paula {
     // Potentiometer Service Methods
     // =========================================================================
 
-    public void servicePotEvent(EventID id) {
-        boolean outry = (potgo & 0x8000) != 0;
-        boolean outrx = (potgo & 0x2000) != 0;
-        boolean outly = (potgo & 0x0800) != 0;
-        boolean outlx = (potgo & 0x0200) != 0;
+    /**
+     * Modello del potenziometro — porting di {@code cap_check()} dell'oracolo
+     * ({@code inputdevice.cpp}), chiamato una volta per riga da Agnus.
+     *
+     * <p>⛔ Qui prima non c'era un contatore: {@code POTGO[START]} programmava due eventi a
+     * intervallo fisso che <b>azzeravano</b> i quattro contatori, e POTxDAT leggeva sempre
+     * <b>0</b>. Misurato su {@code vAmigaTS Mainboard/Ports}: l'oracolo conta <b>4</b> o
+     * <b>10</b> a seconda della riga in cui il Copper rilegge, noi zero ovunque.
+     *
+     * <p>La macchina a stati, per ognuna delle quattro linee:
+     * <ol>
+     *   <li>{@code POTGO[START]} arma tutte e quattro: {@code act = 1}, {@code dat = 0};</li>
+     *   <li>finché {@code act == 1} il condensatore è <b>scaricato in fretta</b> e
+     *       {@code dat} conta le prime {@link #POTDAT_DELAY} righe; poi {@code act = 2} e
+     *       {@code dat} riparte da zero;</li>
+     *   <li>con {@code act == 2} {@code dat} conta una riga alla volta mentre il
+     *       condensatore si carica, e si <b>ferma</b> quando la carica supera 10 — a meno
+     *       che il pulsante non tenga la linea a massa, che è ciò che rende il conteggio
+     *       la misura di quel pulsante;</li>
+     *   <li>una linea programmata come <b>uscita</b> non misura: alta ferma il conteggio,
+     *       bassa lo lascia correre libero se il pulsante è premuto.</li>
+     * </ol>
+     *
+     * <p>⚠️ Il conteggio si ferma solo se alla porta c'è <b>qualcosa</b>: a porta vuota
+     * nessuno carica il condensatore e {@code dat} corre libero, come nell'oracolo
+     * ({@code digital_port[joy][i] || mouse_port[joy]}).
+     */
+    public void potHsync() {
+        capCheck(true);
+    }
 
-        if (id == EventID.POT_DISCHARGE) {
-            // Lines configured as outputs are driven by the CPU — no RC charge/discharge.
-            // Lines configured as inputs (OUTxy=0) are discharged to GND; the capacitor
-            // will then charge through the potentiometer resistance.
-            if (!outly) chargeY0 = 0.0;
-            if (!outlx) chargeX0 = 0.0;
-            if (!outry) chargeY1 = 0.0;
-            if (!outrx) chargeX1 = 0.0;
+    private void capCheck(boolean hsync) {
+        for (int joy = 0; joy < 2; joy++) {
+            final GamePort port = (joy == 0) ? gamePort1 : gamePort2;
+            final boolean connected = port != null && port.getDevice() != GamePortDevice.NONE;
+            final boolean pullup = port != null && port.pullsUpPotLines();
+            for (int i = 0; i < 2; i++) {
+                final int pdir = 0x0200 << (joy * 4 + i * 2);
+                final int pdat = 0x0100 << (joy * 4 + i * 2);
+                // i == 0 e' la linea X (pulsante medio / button 3), i == 1 la Y (destro /
+                // button 2). Oracolo: getbuttonstate(joy, i == 0 ? JOYBUTTON_3 : JOYBUTTON_2).
+                final boolean isButton = port != null
+                        && (i == 0 ? port.isMiddleOrButton3Pressed()
+                                   : port.isRightOrButton2Pressed());
 
-            // Per le linee configurate come OUTPUT la misura non si applica: il
-            // contatore resta 0 (come vAmiga Paula::servicePotEvent, che azzera i
-            // contatori delle linee output). Le linee INPUT partono anch'esse da 0.
-            // NB storica: prima le linee output venivano fissate a 0xFF; ciò
-            // faceva leggere POT0DAT/POT1DAT = $FFFF a giochi che pilotano i pin
-            // pot come output (POTGO=$FFFF, es. Gods), rompendone i controlli.
-            potCntY0 = 0;
-            potCntX0 = 0;
-            potCntY1 = 0;
-            potCntX1 = 0;
+                boolean canCharge = true;
+                int charge = pullup ? 1 : 0;   // carica lenta attraverso il pull-up del device
 
-            agnus.scheduleRel(EventSlot.SLOT_POT, 512, EventID.POT_CHARGE);
-        } else if (id == EventID.POT_CHARGE) {
-            // ⛔ La linea si carica SOLO se qualcosa la tira su, e a tirarla su è il
-            // DISPOSITIVO, non l'Amiga: Paula non ha pull-up sui pin POTX/POTY. A porta
-            // VUOTA il condensatore resta scarico e il bit DAT di POTGOR legge 0.
-            //
-            // Qui la carica era incondizionata — «carica massima di default (nessun
-            // dispositivo o pulsante rilasciato)» — quindi una macchina senza niente
-            // attaccato leggeva tutti e quattro i bit DAT alti. L'oracolo lo decide in
-            // `cap_check` (inputdevice.cpp):
-            //     if ((is_joystick_pullup(joy) && digital_port[joy][i]) ||
-            //         (is_mouse_pullup(joy)   && mouse_port[joy]))
-            //             charge = 1;  // slow charge via pull-up resistor
-            // e senza quel ramo `charge` resta 0, `pot_cap` sotto soglia, il bit a 0.
-            //
-            // Misurato su vAmigaTS Mainboard/Ports: a riposo l'oracolo legge POTGOR
-            // $0500 — alti i due bit della porta col MOUSE, bassi quelli della porta col
-            // joystick — dove noi leggevamo $5500, tutti e quattro alti.
-            // Vedi docs/vamigats-import-order.md §Esiti Mainboard/Ports, classe A.
-            chargeY0 = potLineCharge(gamePort1, true);
-            chargeX0 = potLineCharge(gamePort1, false);
-            chargeY1 = potLineCharge(gamePort2, true);
-            chargeX1 = potLineCharge(gamePort2, false);
+                if ((potgo & pdir) == 0) {                       // linea in INGRESSO
+                    if (potDatAct[joy][i] != 0 && hsync) {
+                        potDat[joy][i] = (potDat[joy][i] + 1) & 0xFF;
+                    }
+                    if (potDatAct[joy][i] == 1) {
+                        if (potDat[joy][i] < POTDAT_DELAY) {
+                            charge = -2;                          // scarica veloce
+                            canCharge = hsync;
+                        } else {
+                            potDatAct[joy][i] = 2;
+                            potDat[joy][i] = 0;
+                        }
+                    }
+                    if (connected && potDatAct[joy][i] == 2
+                            && potCap[joy][i] >= 10 && !isButton) {
+                        potDatAct[joy][i] = 0;
+                    }
+                } else {                                          // linea in USCITA
+                    boolean high = (potgo & pdat) != 0;
+                    charge = high ? 2 : -2;                       // (dis)carica immediata
+                    if (high) {
+                        potDatAct[joy][i] = 0;                    // alta: conteggio fermo
+                    } else if (isButton) {
+                        potDat[joy][i] = (potDat[joy][i] + 1) & 0xFF;  // "free running"
+                    }
+                }
+
+                if (isButton) {
+                    charge = -2;    // il pulsante a massa vince su tutto
+                }
+                if (canCharge) {
+                    chargeCap(joy, i, charge);
+                }
+            }
         }
     }
 
-    /**
-     * Carica di una linea POT: piena solo se il dispositivo attaccato la <b>tira su</b> e il
-     * pulsante corrispondente è rilasciato. Porta vuota ⇒ nessun pull-up ⇒ zero.
-     *
-     * @param port  la game port, o {@code null} se non ne è collegata nessuna
-     * @param yLine {@code true} per la linea Y (pulsante destro / button 2), {@code false}
-     *              per la X (pulsante medio / button 3)
-     */
-    private static double potLineCharge(GamePort port, boolean yLine) {
-        if (port == null || !port.pullsUpPotLines()) {
-            return 0.0;
-        }
-        boolean pressed = yLine ? port.isRightOrButton2Pressed()
-                                : port.isMiddleOrButton3Pressed();
-        return pressed ? 0.0 : 1.0;
+    /** {@code charge_cap()} dell'oracolo: |carica| &gt; 1 vale 80 volte tanto, e si satura a 511. */
+    private void chargeCap(int joy, int i, int charge) {
+        int c = (charge < -1 || charge > 1) ? charge * 80 : charge;
+        potCap[joy][i] = Math.max(0, Math.min(511, potCap[joy][i] + c));
     }
 
     // =========================================================================
@@ -895,8 +928,8 @@ public final class Paula {
         switch (address) {
             case 0x008: return dskdatr();
             case 0x010: return adkcon & 0x7FFF; // ADKCONR: bit 15 (SET/CLR strobe) always reads 0
-            case 0x012: return (potCntY0 << 8) | potCntX0;
-            case 0x014: return (potCntY1 << 8) | potCntX1;
+            case 0x012: return (potDat[0][1] << 8) | potDat[0][0];   // POT0DAT
+            case 0x014: return (potDat[1][1] << 8) | potDat[1][0];   // POT1DAT
             case 0x016: return buildPotinp();
             case 0x018: return buildSerdatr();
             case 0x01A: return buildDskbytr();
@@ -920,12 +953,12 @@ public final class Paula {
      *       — <i>fast (dis)charge if output</i>;</li>
      *   <li><b>ingresso</b>: il bit è alto solo se il condensatore è carico, e a caricarlo è
      *       il <b>pull-up del dispositivo</b> attaccato — porta vuota ⇒ 0. Vedi
-     *       {@link GamePort#pullsUpPotLines()} e {@link #potLineCharge}.</li>
+     *       {@link GamePort#pullsUpPotLines()} e {@link #capCheck(boolean)}.</li>
      * </ul>
      *
-     * <p>⚠️ Sul ramo d'ingresso lo stato del pulsante è letto <b>in diretta</b> invece che dal
-     * condensatore: è ciò che dà risposta immediata senza aspettare il ciclo POT_CHARGE, che
-     * gira solo dopo una scrittura di START.
+     * <p>⚠️ Sul ramo d'ingresso lo stato del pulsante è letto <b>in diretta</b> invece che
+     * dalla carica del condensatore: dà risposta immediata alla pressione senza aspettare le
+     * righe che servono al condensatore per riscendere sotto soglia.
      */
     private int buildPotinp() {
         return potinpBit(0x8000, 0x4000, gamePort2, true)    // OUTRY / DATRY
@@ -1113,16 +1146,35 @@ public final class Paula {
         // when the current word finishes (serviceTxdEvent checks serTxbFull).
     }
 
+    /**
+     * POTGO ($DFF034). Porting di {@code POTGO()} dell'oracolo ({@code inputdevice.cpp}).
+     *
+     * <p>⛔ Non è un assegnamento. I bit di <b>direzione</b> si prendono tutti dalla
+     * scrittura, ma il bit di <b>dato</b> di una linea si aggiorna <b>solo se in questa
+     * stessa scrittura</b> la sua direzione è messa a 1; altrimenti resta quello di prima.
+     * È il {@code potgo_value = potgo_value & 0x5500} dell'oracolo, <i>keep state of data
+     * bits</i>, seguito dal ciclo che copia il dato delle sole linee appena dichiarate
+     * uscite.
+     *
+     * <p>Il bit 0 (START) riarma tutte e quattro le linee: contatore a zero e condensatore
+     * da scaricare. Vedi {@link #capCheck(boolean)}.
+     */
     private void setPOTGO(int value) {
-        potgo = value;
-        if ((value & 0x0200) != 0) chargeX0 = ((value & 0x0100) != 0) ? 1.0 : 0.0;
-        if ((value & 0x0800) != 0) chargeY0 = ((value & 0x0400) != 0) ? 1.0 : 0.0;
-        if ((value & 0x2000) != 0) chargeX1 = ((value & 0x1000) != 0) ? 1.0 : 0.0;
-        if ((value & 0x8000) != 0) chargeY1 = ((value & 0x4000) != 0) ? 1.0 : 0.0;
-
+        potgo = (potgo & 0x5500) | (value & 0xAA00);
+        for (int i = 0; i < 8; i += 2) {
+            final int dir = 0x0200 << i;
+            if ((value & dir) != 0) {
+                final int data = 0x0100 << i;
+                potgo = (potgo & ~data) | (value & data);
+            }
+        }
         if ((value & 0x0001) != 0) {
-            potCntX0 = potCntY0 = potCntX1 = potCntY1 = 0;
-            agnus.scheduleRel(EventSlot.SLOT_POT, 8, EventID.POT_DISCHARGE);
+            for (int j = 0; j < 2; j++) {
+                for (int i = 0; i < 2; i++) {
+                    potDatAct[j][i] = 1;
+                    potDat[j][i] = 0;
+                }
+            }
         }
     }
 

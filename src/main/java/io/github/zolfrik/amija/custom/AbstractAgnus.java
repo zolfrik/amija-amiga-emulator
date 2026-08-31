@@ -179,7 +179,7 @@ public abstract class AbstractAgnus {
     public enum EventSlot {
         SLOT_REG, SLOT_CIAA, SLOT_CIAB, SLOT_BPL, SLOT_DAS, SLOT_COP, SLOT_BLT, SLOT_SEC,
         SLOT_CH0, SLOT_CH1, SLOT_CH2, SLOT_CH3, SLOT_DSK, SLOT_VBL, SLOT_IRQ, SLOT_IPL,
-        SLOT_KBD, SLOT_TXD, SLOT_RXD, SLOT_POT, SLOT_TER,
+        SLOT_KBD, SLOT_TXD, SLOT_RXD, SLOT_TER,
         SLOT_DC0, SLOT_DC1, SLOT_DC2, SLOT_DC3,
         SLOT_COUNT
     }
@@ -207,7 +207,6 @@ public abstract class AbstractAgnus {
         IPL_CHANGE,
         TXD_BIT,
         RXD_BIT,
-        POT_DISCHARGE, POT_CHARGE,
         DSK_ROTATE,
         AUDIO_MIX
     }
@@ -384,6 +383,9 @@ public abstract class AbstractAgnus {
 
     private void hsyncHandler() {
         // VirtualCRT consuma l'HSYNC osservando hpos/vpos dal MasterClock.
+        // Il modello del potenziometro invece l'HSYNC lo vuole: conta una riga alla volta
+        // (oracolo: cap_check(true) da CIA_hsync_posthandler). Vedi Paula.capCheck.
+        if (paula != null) paula.potHsync();
     }
 
     private void serviceRegEvent(long until) {
@@ -757,9 +759,6 @@ public abstract class AbstractAgnus {
                 break;
             case SLOT_IPL:
                 if (paula != null) paula.serviceIplEvent(data);
-                break;
-            case SLOT_POT:
-                if (paula != null) paula.servicePotEvent(id);
                 break;
             case SLOT_TXD:
                 if (paula != null) paula.serviceTxdEvent(id);
