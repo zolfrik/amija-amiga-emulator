@@ -236,7 +236,12 @@ public final class Paula {
         iplPipe = 0;
 
         potCntX0 = potCntY0 = potCntX1 = potCntY1 = 0;
-        chargeX0 = chargeY0 = chargeX1 = chargeY1 = 1.0;
+        // ⛔ Al reset i condensatori delle linee POT sono SCARICHI. Partivano da 1.0, e
+        // cosi' una porta senza niente attaccato leggeva il proprio bit DAT alto finche'
+        // nessuno scriveva START (che e' l'unica cosa che fa girare il ciclo di carica).
+        // Misurato su vAmigaTS Mainboard/Ports/POT/potgo0, potgo5, potgo6: nessuno dei tre
+        // scrive START, e l'oracolo legge POTGOR $0500 dove leggevamo $5500.
+        chargeX0 = chargeY0 = chargeX1 = chargeY1 = 0.0;
 
         dskpth = dskptl = dsklen = 0;
         dsksync = 0x4489;
@@ -575,14 +580,45 @@ public final class Paula {
 
             agnus.scheduleRel(EventSlot.SLOT_POT, 512, EventID.POT_CHARGE);
         } else if (id == EventID.POT_CHARGE) {
-            // Carica massima di default (nessun dispositivo o pulsante rilasciato).
-            // I pulsanti destro/medio del mouse (o button2/3 del joystick) portano
-            // la linea a GND quando premuti, impedendo la carica completa.
-            chargeY0 = (gamePort1 != null && gamePort1.isRightOrButton2Pressed()) ? 0.0 : 1.0;
-            chargeX0 = (gamePort1 != null && gamePort1.isMiddleOrButton3Pressed()) ? 0.0 : 1.0;
-            chargeY1 = (gamePort2 != null && gamePort2.isRightOrButton2Pressed()) ? 0.0 : 1.0;
-            chargeX1 = (gamePort2 != null && gamePort2.isMiddleOrButton3Pressed()) ? 0.0 : 1.0;
+            // ⛔ La linea si carica SOLO se qualcosa la tira su, e a tirarla su è il
+            // DISPOSITIVO, non l'Amiga: Paula non ha pull-up sui pin POTX/POTY. A porta
+            // VUOTA il condensatore resta scarico e il bit DAT di POTGOR legge 0.
+            //
+            // Qui la carica era incondizionata — «carica massima di default (nessun
+            // dispositivo o pulsante rilasciato)» — quindi una macchina senza niente
+            // attaccato leggeva tutti e quattro i bit DAT alti. L'oracolo lo decide in
+            // `cap_check` (inputdevice.cpp):
+            //     if ((is_joystick_pullup(joy) && digital_port[joy][i]) ||
+            //         (is_mouse_pullup(joy)   && mouse_port[joy]))
+            //             charge = 1;  // slow charge via pull-up resistor
+            // e senza quel ramo `charge` resta 0, `pot_cap` sotto soglia, il bit a 0.
+            //
+            // Misurato su vAmigaTS Mainboard/Ports: a riposo l'oracolo legge POTGOR
+            // $0500 — alti i due bit della porta col MOUSE, bassi quelli della porta col
+            // joystick — dove noi leggevamo $5500, tutti e quattro alti.
+            // Vedi docs/vamigats-import-order.md §Esiti Mainboard/Ports, classe A.
+            chargeY0 = potLineCharge(gamePort1, true);
+            chargeX0 = potLineCharge(gamePort1, false);
+            chargeY1 = potLineCharge(gamePort2, true);
+            chargeX1 = potLineCharge(gamePort2, false);
         }
+    }
+
+    /**
+     * Carica di una linea POT: piena solo se il dispositivo attaccato la <b>tira su</b> e il
+     * pulsante corrispondente è rilasciato. Porta vuota ⇒ nessun pull-up ⇒ zero.
+     *
+     * @param port  la game port, o {@code null} se non ne è collegata nessuna
+     * @param yLine {@code true} per la linea Y (pulsante destro / button 2), {@code false}
+     *              per la X (pulsante medio / button 3)
+     */
+    private static double potLineCharge(GamePort port, boolean yLine) {
+        if (port == null || !port.pullsUpPotLines()) {
+            return 0.0;
+        }
+        boolean pressed = yLine ? port.isRightOrButton2Pressed()
+                                : port.isMiddleOrButton3Pressed();
+        return pressed ? 0.0 : 1.0;
     }
 
     // =========================================================================
@@ -872,17 +908,42 @@ public final class Paula {
         }
     }
 
+    /**
+     * POTGOR ($DFF016). ⛔ Restituisce <b>solo</b> i quattro bit DAT (maschera {@code $5500}):
+     * i bit di direzione non si rileggono. È {@code POTGOR()} dell'oracolo,
+     * {@code inputdevice.cpp}: {@code v = handle_joystick_potgor(potgo_value) & 0x5500}.
+     *
+     * <p>Ogni linea ha <b>due</b> regole, e quale valga lo dice la sua direzione in POTGO:
+     * <ul>
+     *   <li><b>uscita</b> ({@code pdir} scritto a 1): il bit riletto segue il dato scritto,
+     *       subito. Oracolo, {@code cap_check}: {@code charge = (potgo_value & pdat) ? 2 : -2}
+     *       — <i>fast (dis)charge if output</i>;</li>
+     *   <li><b>ingresso</b>: il bit è alto solo se il condensatore è carico, e a caricarlo è
+     *       il <b>pull-up del dispositivo</b> attaccato — porta vuota ⇒ 0. Vedi
+     *       {@link GamePort#pullsUpPotLines()} e {@link #potLineCharge}.</li>
+     * </ul>
+     *
+     * <p>⚠️ Sul ramo d'ingresso lo stato del pulsante è letto <b>in diretta</b> invece che dal
+     * condensatore: è ciò che dà risposta immediata senza aspettare il ciclo POT_CHARGE, che
+     * gira solo dopo una scrittura di START.
+     */
     private int buildPotinp() {
-        int val = 0;
-        if (chargeY1 >= 1.0) val |= 0x4000; // Bit 14: DATRY
-        if (chargeX1 >= 1.0) val |= 0x1000; // Bit 12: DATRX
-        if (chargeY0 >= 1.0) val |= 0x0400; // Bit 10: DATLY
-        if (chargeX0 >= 1.0) val |= 0x0100; // Bit  8: DATLX
-        // Sovrascrittura in tempo reale con lo stato dei pulsanti delle game port.
-        // Questo garantisce risposta immediata senza attendere il ciclo POT_CHARGE.
-        if (gamePort1 != null) val = gamePort1.modifyPotinp(val);
-        if (gamePort2 != null) val = gamePort2.modifyPotinp(val);
-        return val;
+        return potinpBit(0x8000, 0x4000, gamePort2, true)    // OUTRY / DATRY
+             | potinpBit(0x2000, 0x1000, gamePort2, false)   // OUTRX / DATRX
+             | potinpBit(0x0800, 0x0400, gamePort1, true)    // OUTLY / DATLY
+             | potinpBit(0x0200, 0x0100, gamePort1, false);  // OUTLX / DATLX
+    }
+
+    private int potinpBit(int dirMask, int datMask, GamePort port, boolean yLine) {
+        if ((potgo & dirMask) != 0) {
+            return potgo & datMask;      // linea pilotata come uscita: rilegge il dato scritto
+        }
+        if (port == null || !port.pullsUpPotLines()) {
+            return 0;                    // nessun pull-up: il condensatore resta scarico
+        }
+        boolean pressed = yLine ? port.isRightOrButton2Pressed()
+                                : port.isMiddleOrButton3Pressed();
+        return pressed ? 0 : datMask;    // pulsante premuto = linea a GND
     }
 
     private int buildSerdatr() {

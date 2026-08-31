@@ -27,9 +27,10 @@ import io.github.zolfrik.amija.common.CIAPinSet;
  *
  * Ogni porta può ospitare un mouse o un joystick. Il metodo {@link #joydat()}
  * restituisce il valore da leggere nel registro JOY0DAT/JOY1DAT di Denise.
- * Il metodo {@link #modifyPotinp(int)} aggiusta i bit del registro POTINP
- * (letto da Paula) in base allo stato dei pulsanti destro/medio del mouse
- * o dei pulsanti 2/3 del joystick.
+ * I bit del registro POTINP li compone Paula, che interroga questa porta con
+ * {@link #pullsUpPotLines()}, {@link #isRightOrButton2Pressed()} e
+ * {@link #isMiddleOrButton3Pressed()}: la porta dice che cosa c'è attaccato, la regola
+ * del registro sta tutta in {@code Paula.potinpBit}.
  *
  * Il pulsante fuoco principale (sinistro del mouse / fire del joystick) viene
  * riflesso direttamente sul pin CIA-A Port A mediante {@code CIAPinSet}:
@@ -149,33 +150,22 @@ public class GamePort implements GamePortControls {
     }
 
     /**
-     * Aggiusta i bit del registro POTINP in base allo stato dei pulsanti.
+     * La periferica attaccata <b>tira su</b> le due linee POTX/POTY di questa porta?
      *
-     * I pulsanti destro e medio del mouse (o pulsanti 2 e 3 del joystick)
-     * sono connessi alle linee potenziometro e le portano a GND quando premuti.
+     * <p>⛔ Paula non ha pull-up su quei pin: a tirarli su è il dispositivo, e se non lo fa
+     * nessuno il condensatore resta scarico e i bit DAT di POTGOR leggono <b>0</b>. Una
+     * porta vuota legge quindi 0, non 1.
      *
-     *   Porta 1: bit 10 (DATLY) = destro/button2, bit  8 (DATLX) = medio/button3
-     *   Porta 2: bit 14 (DATRY) = destro/button2, bit 12 (DATRX) = medio/button3
-     *
-     * Quando il pulsante è premuto, il bit corrispondente è 0 (linea a GND).
-     * Quando il pulsante è rilasciato, il bit è 1 (pull-up attivo).
-     *
-     * @param potinp valore POTINP calcolato dalla simulazione di carica in Paula
-     * @return valore POTINP modificato
+     * <p>L'oracolo lo decide per periferica (`inputdevice.cpp`): {@code is_mouse_pullup()}
+     * per il mouse, {@code is_joystick_pullup()} — vero <b>solo</b> in modo
+     * {@code JSEM_MODE_GAMEPAD} — per il joystick. ⚠️ Il nostro {@code JOYSTICK} è il
+     * secondo caso e non il primo: modella un pad a più pulsanti (button2/3 arrivano dai
+     * joystick veri via GLFW), che è proprio quello che sull'oracolo il pull-up ce l'ha.
+     * Un joystick digitale a un pulsante — il {@code kbd1} che l'oracolo mette in porta 1
+     * per default — sulle linee POT è indistinguibile da una porta vuota.
      */
-    public int modifyPotinp(int potinp) {
-        boolean right  = (device == GamePortDevice.MOUSE)    ? mouse.isRightPressed()
-                       : (device == GamePortDevice.JOYSTICK) ? joystick.isButton2Pressed() : false;
-        boolean middle = (device == GamePortDevice.MOUSE)    ? mouse.isMiddlePressed()
-                       : (device == GamePortDevice.JOYSTICK) ? joystick.isButton3Pressed() : false;
-
-        int maskR = (portNumber == 1) ? 0x0400 : 0x4000;
-        int maskM = (portNumber == 1) ? 0x0100 : 0x1000;
-
-        if (right)  potinp &= ~maskR; else potinp |= maskR;
-        if (middle) potinp &= ~maskM; else potinp |= maskM;
-
-        return potinp;
+    public boolean pullsUpPotLines() {
+        return device == GamePortDevice.MOUSE || device == GamePortDevice.JOYSTICK;
     }
 
     /**
