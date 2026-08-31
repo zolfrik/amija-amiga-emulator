@@ -3709,8 +3709,10 @@ public abstract class AbstractAgnus {
     // rosso da negoziare.
     // ⚠️ La derivazione ha un anello non verificato — `incpos()` incrementa solo se
     // `cpu_memory_cycle_exact`, e `GETHPOS()` non e' `agnus_hpos` quando `ev_sync` e'
-    // attivo — che serve una corsa dell'oracolo con una sonda sul VHPOSR restituito alla
-    // CPU per chiudere. Non un altro sweep.
+    // attivo — e per chiuderlo serve una corsa dell'oracolo con una sonda sul VHPOSR
+    // restituito alla CPU. Non un altro sweep. Il binario dell'oracolo e' compilato in
+    // WSL (Ubuntu-24.04, /root/winuae-src/build/winuae), quindi la sonda e' a portata:
+    // questo punto e' APERTO, non bloccato.
     // Vedi docs/vamigats-import-order.md §synccpu.
     private static final int BEAM_AHEAD_CCK =
             Integer.getInteger("amiga.beamahead", 5);
