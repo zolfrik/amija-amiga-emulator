@@ -1028,12 +1028,44 @@ public abstract class AbstractAgnus {
      * con {@code VSYNC_ENDLINE_PAL 5} in {@code include/custom.h}. Qui l'impulso stava allo
      * <b>wrap di vpos</b>, cinque righe prima.
      *
-     * <p>⚠️ L'oracolo passa anche un {@code hoffset} ({@code lof_store ? 132 : 18}) che
-     * {@code tod_inc_delay()} trasforma in un ritardo dentro la riga; quello <b>non</b> è
-     * modellato, qui come per CIA-B, e per CIA-B lo sweep su 12 posizioni della riga ha
-     * misurato che non muove nessun test del banco. La riga sì.
+     * <p>L'{@code hoffset} che l'oracolo passa insieme alla riga ({@code lof_store ? 132 : 18})
+     * è modellato in {@link #todIncOffsetCck(int, long)}.
      */
     private static final int CIAA_TOD_VPOS = 5;
+
+    /**
+     * {@code hoffset} dell'impulso TOD di <b>CIA-B</b>: la fine dell'hsync.
+     * Oracolo, {@code custom.cpp}: {@code CIAB_tod_handler(35); // hsync end}.
+     */
+    private static final int TOD_HOFFSET_CIAB = 35;
+
+    /** {@code hoffset} dell'impulso TOD di CIA-A su frame <b>lungo</b> (LOF=1, HCENTER). */
+    private static final int TOD_HOFFSET_CIAA_LONG = 132;
+
+    /** {@code hoffset} dell'impulso TOD di CIA-A su frame <b>corto</b> (LOF=0, HSSTRT). */
+    private static final int TOD_HOFFSET_CIAA_SHORT = 18;
+
+    /**
+     * Ritardo interno del contatore TOD, in CCK: {@code TOD_INC_DELAY} dell'oracolo,
+     * {@code 12 * E_CLOCK_LENGTH / 2} = 12 E-clock = 60 CCK ({@code cia.cpp}).
+     */
+    private static final int TOD_INC_DELAY_CCK = 60;
+
+    /**
+     * Passo della griglia a cui l'incremento del TOD si allinea, in CCK: quattro E-clock
+     * ({@code unit = (E_CLOCK_LENGTH * 4) / 2} in {@code tod_inc_delay}). ⚠️ È il modulo che
+     * rende la posizione dell'impulso <b>diversa riga per riga</b>: 227 non è multiplo di 20.
+     */
+    private static final int TOD_ALIGN_CCK = 20;
+
+    /** {@code E_CLOCK_TOD_N} dell'oracolo, in CCK: la correzione finale di {@code tod_inc_delay}. */
+    private static final int TOD_ECLOCK_TOD_CCK = -2;
+
+    /**
+     * Larghezza dell'impulso TOD, in system clock. Due periodi di E-clock: garantisce che
+     * la CIA ne veda il fronte di salita a un solo dei propri tick.
+     */
+    private static final int TOD_PULSE_WIDTH_SC = 20;
 
     /**
      * Posizione orizzontale all'accensione: <b>un CCK prima della fine della riga</b>,
@@ -2158,6 +2190,78 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
+    // Impulsi TOD (tod_inc_delay)
+    // =========================================================================
+
+    /** {@code hpos} del fronte di salita/discesa dell'impulso TOD della riga; -1 = nessuno. */
+    private int todRiseHposA = -1, todFallHposA = -1, todRiseHposB = -1, todFallHposB = -1;
+
+    /**
+     * {@code tod_inc_delay()} dell'oracolo ({@code cia.cpp}): dove cade l'incremento del TOD
+     * <b>dentro la riga</b>, in CCK dall'inizio della riga.
+     *
+     * <p>⛔ <b>Non è una costante e non può esserlo</b>, ed è il banco stesso a dirlo:
+     * {@code toddelay1÷3} sono lo stesso programma con la WAIT del Copper a tre hpos diversi,
+     * cioè una sonda di fase, e uno sweep su tutta la riga rompe {@code toddelay2} a 96 CCK e
+     * {@code toddelay3} a 114 — i due estremi dell'intervallo dell'oracolo. L'oracolo non usa
+     * un valore fisso: allinea l'incremento a una griglia di <b>quattro E-clock</b>
+     * ({@link #TOD_ALIGN_CCK}) ricavata dal contatore <b>assoluto</b> dei CCK, e 227 non è
+     * multiplo di 20, quindi la posizione ruota di 7 CCK a ogni riga.
+     *
+     * <pre>
+     * hoff   = hoffset + 1                    // il pin HSYNC/VSYNC di Agnus ritarda di 1 CCK
+     * div10  = (cck + 3 + hoff) mod 20        // 6 * E_CYCLE_UNIT = 3 CCK
+     * offset = hoff + 60 + (20 - div10) - 2
+     * </pre>
+     *
+     * <p>Sviluppandola, l'istante assoluto dell'incremento è l'unico CCK <b>≡ 14 (mod 20)</b>
+     * nella finestra {@code [A+58, A+77]} con {@code A = cckInizioRiga + hoff}: una griglia
+     * rigida in tempo assoluto, di cui la posizione nella riga è solo la lettura relativa.
+     *
+     * @param hoffset      quello che l'oracolo passa a {@code CIAx_tod_handler}
+     * @param lineStartCck il CCK a cui l'oracolo esegue {@code cia_hsync_do()}, cioè il suo
+     *                     {@code agnus_hpos == 1}: da noi lo wrap di {@code hpos}
+     */
+    private static int todIncOffsetCck(int hoffset, long lineStartCck) {
+        final int hoff = hoffset + 1;
+        final int div10 = (int) Math.floorMod(lineStartCck + 3 + hoff, TOD_ALIGN_CCK);
+        return hoff + TOD_INC_DELAY_CCK + (TOD_ALIGN_CCK - div10) + TOD_ECLOCK_TOD_CCK;
+    }
+
+    /**
+     * Traduce l'offset dell'oracolo (un {@code agnus_hpos}, in CCK) nel nostro {@code hpos},
+     * che conta system clock e va un CCK indietro: il suo wrap è a {@code cck ≡ 0}, il nostro
+     * a {@code cck ≡ 1}, quindi {@code hpos = 2 * (offset - 1)}.
+     *
+     * @return -1 se l'impulso non ci sta nella riga. ⚠️ In PAL e in NTSC <b>non succede</b>:
+     *         l'offset vale al massimo 114 CCK per CIA-B e 211 per CIA-A contro i 227 della
+     *         riga. L'oracolo tratta il caso diversamente per le due CIA — CIA-B salta
+     *         l'incremento ({@code delayedevent = false}), CIA-A lo rimanda alla riga dopo
+     *         ({@code tod_event_state = 4}) — e qui non è modellato perché non è raggiungibile:
+     *         servirebbe una riga programmata con {@code BEAMCON0}, che non emuliamo.
+     */
+    private int todPulseRiseHpos(int offsetCck) {
+        final int rise = 2 * (offsetCck - 1);
+        return (rise < 1 || rise + TOD_PULSE_WIDTH_SC >= maxHpos) ? -1 : rise;
+    }
+
+    /** Calcola gli impulsi TOD della riga che comincia. */
+    private void armTodPulses(long lineStartCck) {
+        todRiseHposB = todPulseRiseHpos(todIncOffsetCck(TOD_HOFFSET_CIAB, lineStartCck));
+        todFallHposB = todRiseHposB < 0 ? -1 : todRiseHposB + TOD_PULSE_WIDTH_SC;
+
+        if (vpos == CIAA_TOD_VPOS) {
+            // lof_store ? 132 : 18 — da noi LOF=1 è field==0 (vedi longFrame in updateBeam).
+            final int hoffset = (field == 0) ? TOD_HOFFSET_CIAA_LONG : TOD_HOFFSET_CIAA_SHORT;
+            todRiseHposA = todPulseRiseHpos(todIncOffsetCck(hoffset, lineStartCck));
+            todFallHposA = todRiseHposA < 0 ? -1 : todRiseHposA + TOD_PULSE_WIDTH_SC;
+        } else {
+            todRiseHposA = -1;
+            todFallHposA = -1;
+        }
+    }
+
+    // =========================================================================
     // Aggiornamento raster
     // =========================================================================
 
@@ -2173,27 +2277,28 @@ public abstract class AbstractAgnus {
         int nextHpos = hpos + 1;
         hpos = nextHpos;
 
-        // CIA-B TOD: connected to H-Sync on Amiga 500
+        // ── Impulsi TOD verso le due CIA ────────────────────────────────────
+        // Quale RIGA porta l'impulso lo decide la sorgente (CIA-B: ogni hsync; CIA-A:
+        // la fine del vsync, riga CIAA_TOD_VPOS). DOVE cade dentro la riga lo calcola
+        // todIncOffsetCck(), il tod_inc_delay() dell'oracolo: prima stava fisso a
+        // inizio riga. L'arm è a nextHpos == 1, cioè un system clock dopo lo wrap,
+        // che è il punto in cui l'oracolo chiama cia_hsync_do().
         if (nextHpos == 1) {
-            if (ciaB != null) {
+            armTodPulses((masterClock - 1) >> 1);
+        }
+        if (ciaB != null) {
+            if (nextHpos == todRiseHposB) {
                 ciaB.getPinSet().getTodPin().setExternalInput(true);
-            }
-        } else if (nextHpos == 21) {
-            if (ciaB != null) {
+                ciaB.incrementTod();
+            } else if (nextHpos == todFallHposB) {
                 ciaB.getPinSet().getTodPin().setExternalInput(false);
             }
         }
-
-        // CIA-A TOD: il segnale di rete a 50 Hz NON è l'inizio del frame, è la FINE
-        // dell'impulso di vsync — che in PAL cade alla riga 5, non allo wrap di vpos.
-        // Oracolo, custom.cpp: «CIA-A TOD counter increases when vsync pulse ends»,
-        //   if (vpos == VSYNC_ENDLINE_PAL) CIAA_tod_handler(lof_store ? 132 : 18);
-        // con VSYNC_ENDLINE_PAL = 5 (include/custom.h). Qui valeva `vpos == maxVpos-1`,
-        // cioè CINQUE righe prima.
-        if (vpos == CIAA_TOD_VPOS && ciaA != null) {
-            if (nextHpos == 1) {
+        if (ciaA != null) {
+            if (nextHpos == todRiseHposA) {
                 ciaA.getPinSet().getTodPin().setExternalInput(true);
-            } else if (nextHpos == 21) {
+                ciaA.incrementTod();
+            } else if (nextHpos == todFallHposA) {
                 ciaA.getPinSet().getTodPin().setExternalInput(false);
             }
         }
@@ -4086,6 +4191,8 @@ public abstract class AbstractAgnus {
             vpos = 0;
             hpos = INITIAL_HPOS;         // la prima riga dura 1 CCK: vedi INITIAL_HPOS
             frameCount = 1;
+            // Gli impulsi TOD sono calcolati per la riga in corso: quella riga non c'è più.
+            todRiseHposA = todFallHposA = todRiseHposB = todFallHposB = -1;
         }
         Arrays.fill(trigger, NEVER);
         Arrays.fill(eventIds, EventID.EVENT_NONE);

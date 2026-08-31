@@ -139,7 +139,6 @@ public class MOS8520 {
     // Internal registers and state
     // -------------------------------------------------------------------------
 
-    private long clock; // CIA internal cycles
     private long delay; // Delay pipeline
     private long feed;  // Flags fed into the pipeline at each tick
 
@@ -172,12 +171,10 @@ public class MOS8520 {
     private int serCounter; // Remaining bits in SSR
 
     private int todCounter;  // 24-bit TOD counter
-    private final int[] todHistory = new int[64]; // History for reading latency
     private int todLatch;    // Latch value when TODHI is read
     private int todAlarm;    // Alarm threshold
     private boolean todFrozen;  // Freezes on TODHI read, defreezes on TODLO read
     private boolean todStopped; // Stops on TODHI write, starts on TODLO write
-    private boolean todMatching; // Alarm edge detector
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -194,7 +191,7 @@ public class MOS8520 {
     // -------------------------------------------------------------------------
 
     public void reset() {
-        clock = 0;
+
         delay = 0;
         feed = 0;
 
@@ -239,7 +236,6 @@ public class MOS8520 {
         // acceso dal reset il contatore di CIA-B corre per tutto il boot e arriva a
         // $8017, dove l'oracolo resta a 0 fino alla prima TODLO del programma.
         todStopped = true;
-        todMatching = (todCounter == todAlarm);
 
         // Initialize pin directions and drives
         cachedDdra = cachedDdrb = cachedPortA = cachedPortB = -1;
@@ -362,6 +358,17 @@ public class MOS8520 {
      * {@code todBug} era {@code false} e nessuno chiamava {@link #setTodBug(boolean)}.
      * Sostituito dalla regola dell'oracolo, che ora è anche <b>accesa</b>: vedi
      * {@link #todBug}.
+     *
+     * <p>⛔ <b>Il confronto è di LIVELLO, non di fronte.</b> Qui c'era un rivelatore di
+     * fronte (<code>todMatching</code>): l'interrupt si alzava solo quando l'uguaglianza
+     * <i>compariva</i>, e restare uguali non ne alzava un secondo. L'oracolo non ce l'ha —
+     * {@code cia_checkalarm} confronta e basta, e i suoi due soli punti di chiamata sono i
+     * nostri: una volta per incremento e una alla scrittura di TODLO in modo contatore.
+     *
+     * <p>La misura che l'ha chiesto è {@code CIA/TOD/tod3}: il gestore rimette a mano
+     * allarme <b>e</b> contatore a zero — quindi uguali a ogni passata — e dipinge lo sfondo
+     * di giallo se l'allarme scatta. Due bande su sei erano <b>blu</b> da noi e gialle
+     * nell'oracolo: erano proprio le passate in cui l'uguaglianza c'era già e il fronte no.
      */
     private void checkTodIrq(boolean inc) {
         boolean match = todCounter == todAlarm;
@@ -370,11 +377,10 @@ public class MOS8520 {
                 && ((todCounter - 1) & 0xFFF000) == todAlarm) {
             match = true;
         }
-        if (!todMatching && match) {
+        if (match) {
             icr |= 0x04; // TOD source bit — ROM reads this to identify the interrupt
             if ((imr & 0x04) != 0) triggerIrq();
         }
-        todMatching = match;
     }
 
     // ── I/O Port Logic ───────────────────────────────────────────────────────
@@ -692,8 +698,6 @@ public class MOS8520 {
      * Transitions are derived from the Lorenz hardware model.
      */
     public void tick() {
-        clock++;
-        todHistory[(int)(clock & 0x3F)] = todCounter;
 
         // ── Timer A Pipeline Processing ───────────────────────────────────────
 
@@ -947,8 +951,15 @@ public class MOS8520 {
         }
         if (specialPinsUpdated) {
             if (pinSet.getFlagPin().isFallingEdge()) emulateFallingEdgeOnFlagPin();
-            if (pinSet.getTodPin().isRisingEdge()) incrementTod();
         }
+        // ⛔ Il fronte di salita del pin TOD NON viene campionato qui, e il pin resta solo
+        // il segnale che Agnus pilota. L'istante in cui il contatore avanza lo calcola
+        // AbstractAgnus.todIncOffsetCck(), cioè il tod_inc_delay() dell'oracolo — che quel
+        // sincronizzatore lo contiene già: dentro ci sono il CCK di ritardo del pin di
+        // Agnus, i 12 E-clock di ritardo interno e l'allineamento alla griglia di quattro
+        // E-clock. Campionare il pin una seconda volta sul NOSTRO E-clock (fase CIA_ANCHOR)
+        // aggiungeva quindi un secondo sincronizzatore allo stesso filo, e con lui un
+        // ritardo costante di 3,5 CCK. Agnus chiama incrementTod() nell'istante esatto.
     }
 
     // -------------------------------------------------------------------------
@@ -1032,15 +1043,25 @@ public class MOS8520 {
         return (byte) result;
     }
 
-    private int getTodLo() { return (todFrozen ? todLatch : getLatchedTod()) & 0xFF; }
-    private int getTodMid() { return ((todFrozen ? todLatch : getLatchedTod()) >> 8) & 0xFF; }
-    private int getTodHi() { return ((todFrozen ? todLatch : getLatchedTod()) >> 16) & 0xFF; }
-
-    private int getLatchedTod() {
-        // vAmiga applies 9.5 cycles for CIA-A and 21 for CIA-B
-        int offset = isCIAA ? 10 : 21;
-        return todHistory[(int)((clock - offset) & 0x3F)];
-    }
+    /**
+     * ⛔ Una lettura del TOD vede il contatore <b>adesso</b>, non com'era qualche clock fa.
+     *
+     * <p>Qui c'era una «latenza di lettura» presa da vAmiga — 10 clock di CIA per CIA-A, 21
+     * per CIA-B, cioè 50 e 105 CCK — che restituiva il valore da uno storico di 64 posizioni.
+     * L'oracolo non ce l'ha: {@code ReadCIA} case 8/9/10 legge {@code c->tod} (o {@code c->tol}
+     * se latchato) e basta, {@code cia.cpp}. E i 105 CCK di CIA-B <b>sono</b> l'intervallo in
+     * cui cade {@code tod_inc_delay} (95÷114): era la stessa attesa contata due volte, in
+     * vAmiga come compensazione di un incremento modellato a inizio riga.
+     *
+     * <p>La misura che l'ha smascherata: {@code CIA/TOD/todcntA1} e {@code todpulse1a}
+     * azzerano il TOD nel gestore VERTB e poi <b>girano finché TODLO cambia</b>. Con la
+     * latenza la rilettura subito dopo l'azzeramento restituiva ancora il valore vecchio,
+     * quindi il ciclo usciva <b>subito</b>: VHPOSR a {@code vpos 0} contro il {@code vpos 5}
+     * dell'oracolo — che è la riga del tick di CIA-A ({@code CIAA_TOD_VPOS}).
+     */
+    private int getTodLo() { return (todFrozen ? todLatch : todCounter) & 0xFF; }
+    private int getTodMid() { return ((todFrozen ? todLatch : todCounter) >> 8) & 0xFF; }
+    private int getTodHi() { return ((todFrozen ? todLatch : todCounter) >> 16) & 0xFF; }
 
     // -------------------------------------------------------------------------
     // Register Write Access
