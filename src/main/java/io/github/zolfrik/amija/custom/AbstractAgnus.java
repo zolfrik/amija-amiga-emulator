@@ -3696,6 +3696,22 @@ public abstract class AbstractAgnus {
     // {+3:3.40%, +4:2.61%, +5:1.45%, +6:75% rompe synccpu3, +7:2.85%}). Il nuovo timing
     // Copper/Blitter ha spostato di nuovo la fase: +5 vince ora. Configurabile via
     // -Damiga.beamahead per future ri-valutazioni (default 5, CRC golden invariato).
+    //
+    // ⛔ 2026-08-31 — QUESTO E' UNA TARATURA, NON UN MODELLO, ed e' dichiarato.
+    // La provenienza e' vAmiga, che non e' un oracolo, e il metodo era uno sweep sul
+    // CONTEGGIO DI PIXEL di bbusy0 — una metrica che questo progetto ha imparato a non
+    // trattare come una distanza. L'oracolo dice un'altra cosa: `VHPOSR()` (custom.cpp)
+    // prende `GETHPOS()` — in cycle-exact e' `agnus_hpos` — e gli applica `incpos()`, che
+    // fa `hp++`. Restituisce quindi `agnus_hpos + 1`; poiche' il nostro hpos va un CCK
+    // indietro rispetto ad agnus_hpos (vedi INITIAL_HPOS), l'equivalente sarebbe 2.
+    // ⛔ PROVATO E REVOCATO: a 2, 3 e 4 `BbusyTest` crolla da 17/0 a 0/17, e a 2
+    // `TodTestSuite` da 14/19 a 8/25. bbusy0 e' generato da WinUAE: e' un veto, non un
+    // rosso da negoziare.
+    // ⚠️ La derivazione ha un anello non verificato — `incpos()` incrementa solo se
+    // `cpu_memory_cycle_exact`, e `GETHPOS()` non e' `agnus_hpos` quando `ev_sync` e'
+    // attivo — che serve una corsa dell'oracolo con una sonda sul VHPOSR restituito alla
+    // CPU per chiudere. Non un altro sweep.
+    // Vedi docs/vamigats-import-order.md §synccpu.
     private static final int BEAM_AHEAD_CCK =
             Integer.getInteger("amiga.beamahead", 5);
 
