@@ -135,6 +135,34 @@ public final class Handshake {
         }
     }
 
+    /**
+     * L'host rifiuta, e il REJECT <b>non è ancora partito</b>: lo manda il chiamante.
+     *
+     * <p>⛔ La differenza con {@link RejectedException} è il verso — quella la riceve
+     * l'ospite, questa la solleva l'host — ma il motivo per cui esiste è un altro, ed è di
+     * <b>ordine</b>. Prima {@link #accept} mandava il REJECT da sé e poi sollevava:
+     * l'ospite veniva quindi informato mentre il chiamante era ancora nel mezzo del
+     * proprio {@code finally}, cioè prima che avesse restituito il posto dell'ospite. Chi
+     * ritentava più in fretta di così — il caso normale: uno sbaglia il codice e riprova —
+     * si sentiva rispondere «c'è già un ospite» invece di «codice errato».
+     *
+     * <p>Dire <i>perché</i> resta di chi conduce l'handshake; dire <i>quando</i> torna a
+     * chi possiede lo stato da rimettere a posto prima di parlare.
+     */
+    public static final class RejectingException extends ProtocolException {
+        private static final long serialVersionUID = 1L;
+        private final int reason;
+
+        public RejectingException(int reason, String message) {
+            super(message);
+            this.reason = reason;
+        }
+
+        public int reason() {
+            return reason;
+        }
+    }
+
     private Handshake() {
     }
 
@@ -146,8 +174,11 @@ public final class Handshake {
      * Esegue il lato host dell'handshake su un socket appena accettato.
      *
      * @return i parametri di sessione, chiavi comprese
-     * @throws ProtocolException se il peer non si autentica o non parla il protocollo; il
-     *                           REJECT e' gia' stato mandato quando aveva senso mandarlo
+     * @throws RejectingException se il peer non si autentica o non parla il protocollo. ⛔ Il
+     *                            REJECT <b>non</b> e' stato mandato: lo manda il chiamante,
+     *                            dopo aver rimesso a posto quel che deve. Vedi
+     *                            {@link RejectingException}
+     * @throws IOException        se il socket cade o il peer tace oltre il timeout
      */
     public static Session accept(ControlChannel ch, String joinCode, HostOffer offer)
             throws IOException {
@@ -175,8 +206,8 @@ public final class Handshake {
         if (proto != RemotePlayProtocol.VERSION) {
             // Il motivo si dice: "non funziona" manda l'utente a controllare il router per un
             // problema che si risolve aggiornando l'emulatore.
-            reject(ch, RemotePlayProtocol.REJECT_PROTOCOL);
-            throw new ProtocolException("protocollo " + proto + ", questo host parla il "
+            throw new RejectingException(RemotePlayProtocol.REJECT_PROTOCOL,
+                    "protocollo " + proto + ", questo host parla il "
                     + RemotePlayProtocol.VERSION);
         }
 
@@ -190,8 +221,8 @@ public final class Handshake {
 
         ControlChannel.Message auth = ch.expect(RemotePlayProtocol.CTRL_AUTH);
         if (auth.length() != SessionCrypto.TAG_BYTES) {
-            reject(ch, RemotePlayProtocol.REJECT_AUTH);
-            throw new ProtocolException("AUTH di " + auth.length() + " byte, attesi "
+            throw new RejectingException(RemotePlayProtocol.REJECT_AUTH,
+                    "AUTH di " + auth.length() + " byte, attesi "
                     + SessionCrypto.TAG_BYTES);
         }
         byte[] received = new byte[SessionCrypto.TAG_BYTES];
@@ -201,8 +232,8 @@ public final class Handshake {
         byte[] expected = crypto.guestTag(nonce, nonce2, RemotePlayProtocol.VERSION);
         if (!SessionCrypto.tagsMatch(expected, received)) {
             crypto.destroy();
-            reject(ch, RemotePlayProtocol.REJECT_AUTH);
-            throw new ProtocolException("autenticazione fallita: join code errato");
+            throw new RejectingException(RemotePlayProtocol.REJECT_AUTH,
+                    "autenticazione fallita: join code errato");
         }
 
         byte[] hostTag = crypto.hostTag(nonce, nonce2, RemotePlayProtocol.VERSION);

@@ -124,6 +124,16 @@ public final class RemotePlayHost implements AutoCloseable {
      */
     private final AtomicBoolean guestSlot = new AtomicBoolean();
 
+    /**
+     * Il posto e' occupato. Visibile al collaudo, che ha bisogno di guardarlo
+     * <b>direttamente</b>: la garanzia da verificare e' che il posto sia libero
+     * nell'istante in cui l'ospite ha in mano il rifiuto, e dedurla dal motivo del rifiuto
+     * successivo la trasforma in una gara fra due giri di TCP.
+     */
+    boolean guestSlotTaken() {
+        return guestSlot.get();
+    }
+
     /** Quanto in fretta si puo' sbagliare il join code, per indirizzo (§8). */
     private final AuthThrottle throttle = new AuthThrottle();
 
@@ -596,6 +606,11 @@ public final class RemotePlayHost implements AutoCloseable {
      */
     private void handshake(ControlChannel channel) {
         boolean established = false;
+        // Il motivo del rifiuto, se c'e'. ⛔ Il REJECT lo manda il finally, DOPO aver
+        // restituito il posto: vedi Handshake.RejectingException. Prima lo mandava
+        // Handshake.accept da se', e l'ospite lo riceveva mentre il posto era ancora
+        // occupato — chi ritentava subito si sentiva rispondere «c'e' gia' un ospite».
+        int rejectReason = 0;
         java.net.InetAddress peer = channel.socket().getInetAddress();
         // Chi fra l'handshake e la sua scadenza arriva primo: uno solo dei due CHIUDE il
         // canale. Senza, una scadenza gia' scattata e ferma un istante prima della close()
@@ -607,6 +622,10 @@ public final class RemotePlayHost implements AutoCloseable {
             startSession(channel);
             established = true;
             throttle.recordSuccess(peer);
+        } catch (Handshake.RejectingException e) {
+            rejectReason = e.reason();
+            RemotePlaySettings.say("handshake rifiutato con %s: %s",
+                    channel.socket().getRemoteSocketAddress(), e.getMessage());
         } catch (IOException e) {
             RemotePlaySettings.say("handshake fallito con %s: %s",
                     channel.socket().getRemoteSocketAddress(), e.getMessage());
@@ -630,15 +649,18 @@ public final class RemotePlayHost implements AutoCloseable {
                 // distinzione la conosce solo chi sta dall'altra parte, e chi prova a
                 // indovinare potrebbe fabbricarla a piacere staccando al momento giusto.
                 throttle.recordFailure(peer);
-                // Il posto PRIMA della chiusura, e non e' pignoleria: closeGracefully()
-                // svuota la coda del peer con un linger di mezzo secondo, e finche' dura
-                // il posto resterebbe occupato da una connessione gia' rifiutata. Chi
-                // ritenta subito — dopo aver sbagliato il codice, che e' il caso normale —
-                // si sentirebbe rispondere «c'e' gia' un ospite» invece di «codice
-                // errato»: il messaggio sbagliato, e per un motivo che non esiste.
-                // I due gesti sono indipendenti: il posto e' una prenotazione, la
-                // chiusura riguarda solo questo socket.
+                // ⛔ Il posto PRIMA di dire qualunque cosa all'ospite, e l'ordine e' la
+                // garanzia: quando il REJECT raggiunge il socket il posto e' gia' libero,
+                // quindi chi ritenta — dopo aver sbagliato il codice, che e' il caso
+                // normale — non puo' sentirsi rispondere «c'e' gia' un ospite» invece di
+                // «codice errato». Metterlo solo prima della chiusura non bastava: il
+                // REJECT partiva da dentro Handshake.accept, cioe' prima ancora di
+                // arrivare qui, e la finestra restava — larga quanto recordFailure(), che
+                // e' poco ma abbastanza da farsi vedere.
                 guestSlot.set(false);
+                if (rejectReason != 0) {
+                    Handshake.reject(channel, rejectReason);
+                }
                 channel.closeGracefully();   // idempotente: la scadenza puo' averlo gia' chiuso
             }
         }
