@@ -237,7 +237,6 @@ public abstract class AbstractDenise {
      */
     private boolean bpl1datWrittenThisLine;
 
-    private int joy0dat, joy1dat;
     private int clxcon,  clxdat;
     // PERF: maschera degli sprite che hanno disegnato pixel sulla scanline corrente
     // (azzerata in hsyncHandler). Usata per saltare i loop di collisione inutili.
@@ -419,7 +418,6 @@ public abstract class AbstractDenise {
         borderBufferIsDirty = 0;
         borderColor = 0;
         clxdat = 0; clxcon = 0;
-        joy0dat = joy1dat = 0;
         Arrays.fill(palette,  0);
         Arrays.fill(paletteLineStart, 0);
         Arrays.fill(bpldat,   0);
@@ -572,8 +570,12 @@ public abstract class AbstractDenise {
     public int readRegister(int address) {
         address &= 0x1FE;
         switch (address) {
-            case 0x00A: return (gamePort1 != null ? gamePort1.joydat() : joy0dat) & 0xFFFF;
-            case 0x00C: return (gamePort2 != null ? gamePort2.joydat() : joy1dat) & 0xFFFF;
+            // JOY0DATR / JOY1DATR: i contatori di quadratura della porta. Non dipendono da
+            // che cosa vi sia collegato — una porta vuota legge i propri contatori, non 0
+            // (vedi GamePort). Lo 0 qui sotto vale solo per una macchina montata SENZA
+            // quella porta, che l'A500 non è.
+            case 0x00A: return (gamePort1 != null ? gamePort1.joydat() : 0) & 0xFFFF;
+            case 0x00C: return (gamePort2 != null ? gamePort2.joydat() : 0) & 0xFFFF;
             // CLXDAT: bit 15 sempre 1; lettura azzera il registro
             case 0x00E: { int v = (clxdat & 0x7FFF) | 0x8000; clxdat = 0; return v; }
 
@@ -1582,8 +1584,6 @@ public abstract class AbstractDenise {
     public void disarmSprite(int idx)       {
         if (idx >= 0 && idx < 8) { armed &= ~(1 << idx); armedLineStart &= ~(1 << idx); }
     }
-    public void setJoy0dat(int v)           { joy0dat = v & 0xFFFF; }
-    public void setJoy1dat(int v)           { joy1dat = v & 0xFFFF; }
     public void setGamePort1(GamePort p)    { gamePort1 = p; }
     public void setGamePort2(GamePort p)    { gamePort2 = p; }
     public int  getBplcon0()                { return bplcon0; }

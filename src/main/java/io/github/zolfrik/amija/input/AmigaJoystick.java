@@ -30,6 +30,10 @@ package io.github.zolfrik.amija.input;
  *   Bit  8 (Y0): su        attivo quando Y0 XOR Y1 = 1
  *   Bit  0 (X0): giù       attivo quando X0 XOR X1 = 1
  *
+ * ⛔ Sono i <b>due bit bassi</b> dei contatori della porta, non un registro separato:
+ * il joystick li impone, il mouse li fa girare, e i 6 bit alti sono gli stessi per
+ * entrambi. Vedi {@link GamePort} e {@link #quadX()}.
+ *
  * Rif: Amiga Hardware Reference Manual, JOY0DAT/JOY1DAT.
  */
 public class AmigaJoystick {
@@ -52,21 +56,30 @@ public class AmigaJoystick {
     public boolean isButton3Pressed() { return button3;    }
 
     /**
-     * Codifica la direzione nel formato JOYxDAT.
+     * Codice di quadratura a 2 bit dell'asse X — i bit 1:0 di JOYxDAT.
      *
-     * Logica (identica a vAmiga Joystick::joydat):
-     *   Sinistra: Y[1:0] = 11  (Y1=1 attivo, Y0=1 → XOR=0 nessun su/giù)
-     *   Destra:   X[1:0] = 11  (X1=1 attivo, X0=1 → XOR=0 nessun su/giù)
-     *   Su:       XOR Y0  →  se da solo Y0=1,Y1=0; se con sinistra Y0=0,Y1=1
-     *   Giù:      XOR X0  →  logica analoga
+     * <p>⛔ Il joystick non produce un valore di JOYxDAT: produce solo questi due bit, che
+     * {@link GamePort} innesta in fondo al contatore della porta. Porta letterale di
+     * {@code joymousecounter()} (WinUAE {@code inputdevice.cpp}), dove i segnali sono
+     * <b>attivi bassi</b> ({@code right = 0} se la leva è a destra):
+     * <pre>
+     *   b0 = (bot ^ right) ? 1 : 0;    b1 = (right ^ 1) ? 2 : 0;    cntx = b0 | b1;
+     * </pre>
      */
-    public int joydat() {
-        int result = 0;
-        if (axisX == -1)      result |= 0x0300;  // sinistra
-        else if (axisX == 1)  result |= 0x0003;  // destra
-        if (axisY == -1)      result ^= 0x0100;  // su  (XOR Y0)
-        else if (axisY == 1)  result ^= 0x0001;  // giù (XOR X0)
-        return result;
+    public int quadX() {
+        final int right = (axisX ==  1) ? 0 : 1;
+        final int bot   = (axisY ==  1) ? 0 : 1;
+        return ((bot ^ right) != 0 ? 1 : 0) | ((right ^ 1) != 0 ? 2 : 0);
+    }
+
+    /**
+     * Codice di quadratura a 2 bit dell'asse Y — i bit 9:8 di JOYxDAT.
+     * Oracolo: {@code b8 = (top ^ left) ? 1 : 0; b9 = (left ^ 1) ? 2 : 0; cnty = b8 | b9;}
+     */
+    public int quadY() {
+        final int left = (axisX == -1) ? 0 : 1;
+        final int top  = (axisY == -1) ? 0 : 1;
+        return ((top ^ left) != 0 ? 1 : 0) | ((left ^ 1) != 0 ? 2 : 0);
     }
 
     public void reset() {

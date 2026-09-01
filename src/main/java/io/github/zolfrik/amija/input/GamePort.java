@@ -27,7 +27,17 @@ import io.github.zolfrik.amija.common.CIAPinSet;
  *
  * Ogni porta può ospitare un mouse o un joystick. Il metodo {@link #joydat()}
  * restituisce il valore da leggere nel registro JOY0DAT/JOY1DAT di Denise.
- * I bit del registro POTINP li compone Paula, che interroga questa porta con
+ *
+ * <p>⛔ <b>I due contatori di quadratura stanno QUI, nella porta, non nel dispositivo.</b>
+ * Sono registri di Denise — una coppia per porta — e <b>esistono anche a porta vuota</b>:
+ * JOYTEST li scrive comunque, e JOYxDAT li rilegge comunque. Il dispositivo non li
+ * possiede, li <i>pilota</i>: il mouse ci somma i suoi spostamenti, il joystick ne
+ * impone i due bit bassi. Oracolo: WinUAE {@code inputdevice.cpp}, dove sono i due array
+ * globali {@code mouse_x[MAX_JPORTS]} / {@code mouse_y[MAX_JPORTS]} — indicizzati per
+ * <b>porta</b> e mai per periferica, scritti da {@code JOYTEST()} su entrambe le porte
+ * senza guardare che cosa vi sia collegato.
+ *
+ * <p>I bit del registro POTINP li compone Paula, che interroga questa porta con
  * {@link #pullsUpPotLines()}, {@link #isRightOrButton2Pressed()} e
  * {@link #isMiddleOrButton3Pressed()}: la porta dice che cosa c'è attaccato, la regola
  * del registro sta tutta in {@code Paula.potinpBit}.
@@ -52,6 +62,12 @@ public class GamePort implements GamePortControls {
     // Indice del pin CIA-A per il fuoco di questa porta (bit 6 per porta 1, bit 7 per porta 2)
     private final int ciaFireBit;
 
+    // Contatori di quadratura di Denise per QUESTA porta (8 bit ciascuno, wrapping).
+    // X = byte basso di JOYxDAT, Y = byte alto. Vedi il commento di classe: sono del
+    // chip, non del dispositivo, e vivono anche con la porta vuota.
+    private int counterX = 0;
+    private int counterY = 0;
+
     public GamePort(int portNumber) {
         this.portNumber  = portNumber;
         this.ciaFireBit  = (portNumber == 1) ? 6 : 7;
@@ -75,10 +91,16 @@ public class GamePort implements GamePortControls {
     // Eventi mouse
     // -------------------------------------------------------------------------
 
-    /** Muove il cursore del mouse di (dx, dy) pixel. Imposta device = MOUSE. */
-    public void moveMouse(int dx, int dy) {
+    /**
+     * Muove il cursore del mouse di (dx, dy) pixel. Imposta device = MOUSE.
+     *
+     * <p>Lo spostamento finisce direttamente nei contatori della porta, come sull'oracolo
+     * ({@code inputdevice_read} somma i delta dell'host in {@code mouse_x/mouse_y}).
+     */
+    public synchronized void moveMouse(int dx, int dy) {
         device = GamePortDevice.MOUSE;
-        mouse.move(dx, dy);
+        counterX = (counterX + dx) & 0xFF;
+        counterY = (counterY + dy) & 0xFF;
     }
 
     /** Preme o rilascia il pulsante sinistro. Aggiorna il pin CIA-A. */
@@ -105,10 +127,11 @@ public class GamePort implements GamePortControls {
     // -------------------------------------------------------------------------
 
     /** Imposta gli assi del joystick. Imposta device = JOYSTICK. */
-    public void setJoystickAxes(int x, int y) {
+    public synchronized void setJoystickAxes(int x, int y) {
         device = GamePortDevice.JOYSTICK;
         joystick.setAxisX(x);
         joystick.setAxisY(y);
+        joyMouseCounter();
     }
 
     /** Preme o rilascia il fuoco principale. Aggiorna il pin CIA-A. */
@@ -135,18 +158,18 @@ public class GamePort implements GamePortControls {
     // -------------------------------------------------------------------------
 
     /**
-     * Valore da restituire per JOY0DAT (porta 1) o JOY1DAT (porta 2).
+     * Valore da restituire per JOY0DAT (porta 1) o JOY1DAT (porta 2):
+     * bit 15:8 = contatore Y, bit 7:0 = contatore X.
      *
-     * Mouse:     contatori di quadratura a 8 bit per X e Y.
-     * Joystick:  codifica direzioni nei 4 bit meno significativi.
-     * Nessuno:   0.
+     * <p>⛔ <b>Non dipende da che cosa è collegato.</b> Una porta vuota non legge 0: legge
+     * i propri contatori, che sono stati scritti dall'ultimo JOYTEST come quelli della
+     * porta con il mouse. È esattamente ciò che misura {@code Mainboard/Ports/JOYxDAT/joytest1},
+     * dove il programma dipinge JOY0DATR e JOY1DATR uno dopo l'altro dopo aver scritto
+     * JOYTEST: l'oracolo produce un gradiente <i>continuo</i> perché i due registri
+     * restituiscono lo stesso valore, non un valore e nero.
      */
-    public int joydat() {
-        return switch (device) {
-            case MOUSE    -> mouse.joydat();
-            case JOYSTICK -> joystick.joydat();
-            default       -> 0;
-        };
+    public synchronized int joydat() {
+        return (counterY << 8) | counterX;
     }
 
     /**
@@ -186,14 +209,22 @@ public class GamePort implements GamePortControls {
              : (device == GamePortDevice.JOYSTICK) ? joystick.isButton3Pressed() : false;
     }
 
-    /** Preset dei contatori mouse da JOYTEST ($DFF036). */
-    public void pokeJoytest(int value) {
-        mouse.pokeJoytest(value);
+    /**
+     * Preset dei contatori da JOYTEST ($DFF036).
+     *
+     * <p>I 6 bit alti di ciascun byte sovrascrivono il contatore, i 2 bassi — lo stato di
+     * quadratura istantaneo — restano quelli che sono. Oracolo: {@code JOYTEST()},
+     * {@code mouse_x[n] &= 3; mouse_x[n] |= v & 0xFC;}
+     */
+    public synchronized void pokeJoytest(int value) {
+        counterX = (counterX & 0x03) | (value & 0xFC);
+        counterY = (counterY & 0x03) | ((value >> 8) & 0xFC);
     }
 
     public int getPortNumber() { return portNumber; }
 
-    public void reset() {
+    public synchronized void reset() {
+        counterX = counterY = 0;
         mouse.reset();
         joystick.reset();
         if (ciaAPins != null) {
@@ -204,6 +235,31 @@ public class GamePort implements GamePortControls {
     // -------------------------------------------------------------------------
     // Privato
     // -------------------------------------------------------------------------
+
+    /**
+     * Porta di {@code joymousecounter()} (WinUAE {@code inputdevice.cpp}): la direzione del
+     * joystick <b>non</b> è un registro a sé, è la coppia di bit di quadratura in fondo ai
+     * contatori della porta — gli stessi che muove il mouse.
+     *
+     * <p>Perciò un joystick fa avanzare i 6 bit alti: la transizione 0→3 del codice a due
+     * bit è un giro di quadratura all'indietro ({@code -4}), quella 3→0 uno in avanti
+     * ({@code +4}). È ciò che permette al driver dell'OS di calcolare un delta con segno
+     * fra due letture consecutive senza sapere che cosa sia collegato.
+     */
+    private void joyMouseCounter() {
+        final int cntx = joystick.quadX();
+        final int cnty = joystick.quadY();
+        final int ocntx = counterX & 3;
+        final int ocnty = counterY & 3;
+
+        if (cntx == 3 && ocntx == 0)      counterX = (counterX - 4) & 0xFF;
+        else if (cntx == 0 && ocntx == 3) counterX = (counterX + 4) & 0xFF;
+        counterX = (counterX & 0xFC) | cntx;
+
+        if (cnty == 3 && ocnty == 0)      counterY = (counterY - 4) & 0xFF;
+        else if (cnty == 0 && ocnty == 3) counterY = (counterY + 4) & 0xFF;
+        counterY = (counterY & 0xFC) | cnty;
+    }
 
     private void updateCIAFirePin(boolean pressed) {
         if (ciaAPins != null) {
