@@ -225,7 +225,7 @@ public final class VirtualCRT {
             // La riga appena completata (lastVpos) prende il border-destro dal COLOR00 al
             // beam cck 0 della riga CORRENTE (deep-HBLANK wrap): campionato al tick a cck 0
             // sotto, quando l'eventuale write a cck 0 è già stato applicato al COLOR00 live.
-            wrapPendingRow = lastVpos;
+            wrapPendingRow = displayRow(lastVpos);
         }
         if (frameCount != lastFrameCount) {
             // Non attraversare il confine di frame (riga 311 userebbe la cck-0 del frame
@@ -277,14 +277,15 @@ public final class VirtualCRT {
     private void completeScanline(int vpos) {
         denise.hsyncHandler(vpos);
 
-        if (vpos < 0 || vpos >= RAW_HEIGHT) {
+        final int row = displayRow(vpos);
+        if (row < 0 || row >= RAW_HEIGHT) {
             return;
         }
 
         // RAW_WIDTH == Denise.HPIXELS == rgbLine.length, quindi la copia in blocco
         // è esattamente equivalente al loop per-pixel su getRawPixelColor(x), ma
         // evita ~912 chiamate al getter (con bound-check) per ogni scanline.
-        System.arraycopy(denise.getRgbLine(), 0, frameBuffer, vpos * RAW_WIDTH, RAW_WIDTH);
+        System.arraycopy(denise.getRgbLine(), 0, frameBuffer, row * RAW_WIDTH, RAW_WIDTH);
 
         if (!agnus.inVBlankArea(vpos) && vpos >= agnus.getDiwVStart() && vpos < agnus.getDiwVStop()) {
             int lineBplcon0 = denise.getLastRenderedBplcon0();
@@ -301,18 +302,33 @@ public final class VirtualCRT {
             // dentro la finestra (lo sfondo che riempie lo schermo, es. schermo Workbench
             // con DIW aperta 29..312 ma bitplane attivi solo al centro), così l'immagine
             // resta inquadrata come sull'hardware invece di seguire solo il contenuto.
-            if (frameFirstDiwLine < 0) frameFirstDiwLine = vpos;
-            frameLastDiwLine = vpos;
+            if (frameFirstDiwLine < 0) frameFirstDiwLine = row;
+            frameLastDiwLine = row;
 
             // Estensione delle righe con output bitplane (non bordo verticale):
             // l'inquadratura verticale si centra su questa (come WinUAE), non
             // sulla DIW. denise.hsyncHandler(vpos) è già stato chiamato sopra, quindi
             // isLastLineVBorder() riflette la riga vpos appena renderizzata.
             if (!denise.isLastLineVBorder()) {
-                if (frameFirstDrawnLine < 0) frameFirstDrawnLine = vpos;
-                frameLastDrawnLine = vpos;
+                if (frameFirstDrawnLine < 0) frameFirstDrawnLine = row;
+                frameLastDrawnLine = row;
             }
         }
+    }
+
+    /**
+     * Riga del framebuffer su cui finisce la scanline {@code vpos}.
+     *
+     * <p>⛔ <b>Non è {@code vpos}</b>: il quadro è agganciato al <b>vsync</b>, non allo wrap
+     * del contatore, e in PAL il vsync del fotogramma corto (LOF=0) comincia una riga
+     * prima. Il modello sta in {@code AbstractAgnus.getDisplayRowShift()}, portato da
+     * {@code custom.cpp} ({@code vsync_mark()} azzera {@code linear_vpos}, che è la riga
+     * del framebuffer). Sul fotogramma lungo — quello su cui le costanti di crop sono
+     * tarate e su cui girano quasi tutti i riferimenti — lo scorrimento è 0 e questa
+     * funzione è l'identità.
+     */
+    private int displayRow(int vpos) {
+        return vpos + agnus.getDisplayRowShift();
     }
 
     // RETE DI SICUREZZA: il frame-skip (lastCompletedFrameHadLateBitplaneDma) serve

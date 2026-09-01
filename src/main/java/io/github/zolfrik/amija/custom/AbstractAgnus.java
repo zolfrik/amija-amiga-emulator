@@ -601,9 +601,14 @@ public abstract class AbstractAgnus {
     }
 
     private void setBPLCON0(int value, int pc) {
-        boolean ersyWasActive = ersyActive();
         if (denise != null) denise.writeRegister(0x100, value);
-        if (ersyWasActive && !ersyActive()) {
+        // ⛔ Il rilascio è IMMEDIATO, l'ingresso no: `checksyncstopped()` dell'oracolo
+        // spegne `syncs_stopped` sulla scrittura, mentre lo accende solo nel ramo non
+        // cycle-exact. Con la configurazione del banco l'unico ingresso è il confine di
+        // riga in `updateBeam`. Quindi un ERSY alzato e riabbassato dentro la stessa riga
+        // non arriva mai qui con `syncsStopped` vero, e non fa niente.
+        if (syncsStopped && !ersyActive()) {
+            syncsStopped = false;
             // ERSY che CADE: la riga riparte da capo.
             //
             // In WinUAE, per tutta la durata del freeze, `setsyncstoppos()` azzera
@@ -1004,6 +1009,16 @@ public abstract class AbstractAgnus {
     private int field = 0;
 
     /**
+     * {@code agnus_vsync} dell'oracolo: l'impulso di vsync è in corso. Serve solo a far
+     * scattare l'aggancio <b>una volta sola</b> per fotogramma — in {@code custom.cpp}
+     * {@code vsync_mark()} è dentro un {@code if (!agnus_vsync)}.
+     */
+    private boolean vsyncActive = false;
+
+    /** Vedi {@link #getDisplayRowShift()}: latchato all'inizio del vsync, una volta per frame. */
+    private int displayRowShift = 0;
+
+    /**
      * Numero massimo di righe per frame.
      * PAL: 312 (righe 0-311), NTSC: 262 (righe 0-261).
      */
@@ -1031,6 +1046,38 @@ public abstract class AbstractAgnus {
      * è modellato in {@link #todIncOffsetCck(int, long)}.
      */
     private static final int CIAA_TOD_VPOS = 5;
+
+    /**
+     * Riga su cui l'impulso di <b>vsync</b> COMINCIA — e con lui il fotogramma che il
+     * display assembla.
+     *
+     * <p>⛔ <b>Non è una costante: dipende da LOF, e solo in PAL.</b> Oracolo,
+     * {@code custom.cpp} (il blocco {@code if (realpal) … else …} che alza
+     * {@code agnus_vsync}):
+     * <pre>
+     * PAL : SHS     &amp;&amp; vpos == 3 &amp;&amp;  lof_store  → vsync_mark()
+     *       HCENTER &amp;&amp; vpos == 2 &amp;&amp; !lof_store  → vsync_mark()
+     * NTSC: SHS     &amp;&amp; vpos == 3 &amp;&amp;  lof_store  → vsync_mark()
+     *       HCENTER &amp;&amp; vpos == 3 &amp;&amp; !lof_store  → vsync_mark()
+     * </pre>
+     * cioè in PAL il fotogramma <b>corto</b> aggancia il vsync <b>una riga prima</b>,
+     * mentre in NTSC le due righe coincidono e cambia solo il punto dentro la riga
+     * (HSSTRT contro HCENTER, gli stessi due che {@link #TOD_HOFFSET_CIAA_LONG} e
+     * {@link #TOD_HOFFSET_CIAA_SHORT} già portano).
+     *
+     * <p>Conta perché <b>il display si aggancia al vsync, non allo wrap di vpos</b>:
+     * in {@code custom.cpp} è {@code vsync_mark()} ad azzerare {@code linear_vpos}, che è
+     * la riga del framebuffer. Una riga di vpos V finisce quindi alla riga
+     * {@code V − vsyncStartLine}, e in PAL con LOF=0 tutto il quadro scende di una riga.
+     * Vedi {@link #getDisplayRowShift()}.
+     */
+    private static final int VSYNC_START_VPOS_PAL_LONG = 3;
+    private static final int VSYNC_START_VPOS_PAL_SHORT = 2;
+    private static final int VSYNC_START_VPOS_NTSC = 3;
+
+    /** Riga su cui l'impulso di vsync FINISCE: PAL 5, NTSC 6 ({@code agnus_vsync = false}). */
+    private static final int VSYNC_END_VPOS_PAL = 5;
+    private static final int VSYNC_END_VPOS_NTSC = 6;
 
     /**
      * {@code hoffset} dell'impulso TOD di <b>CIA-B</b>: la fine dell'hsync.
@@ -1292,12 +1339,22 @@ public abstract class AbstractAgnus {
     // BPLCON0 di ogni copper list). Senza modellare il freeze, il pennello avanza,
     // i due HP differiscono e ogni display eredita ERSY+GAUD ($0102) — LED Storm va
     // in schermo nero perché il suo copper riscrive $a302 (ERSY) ogni frame.
-    // Modello minimale e fedele all'osservabile: mentre ERSY è attivo, le letture
-    // VPOSR/VHPOSR restituiscono la posizione latchata al fronte di salita di ERSY
-    // (pennello "fermo"), così i due HP coincidono e il rilevamento conclude 0.
     // Non abbiamo mai un genlock, quindi ERSY implica sempre sync-stopped.
-    private int     ersyFreezeVpos = -1;      // -1 = ERSY non attivo / non latchato
-    private int     ersyFreezeHpos = -1;
+    // ⛔ Qui stava un LATCH — la posizione campionata al primo accesso sotto ERSY — ed era
+    // un'approssimazione: bastava a far coincidere i due HP del rilevamento genlock, ma il
+    // valore era sbagliato. L'oracolo azzera `agnus_hpos` a ogni cck e restituisce QUELLO,
+    // cioè HP = 0 fisso, e `ersy2` lo misura direttamente ($4000 ripetuto). Il latch non
+    // serve più: il vpos è già fermo perché `updateBeam` non lo incrementa.
+
+    /**
+     * {@code syncs_stopped} dell'oracolo: il freeze è <b>in corso</b>.
+     *
+     * <p>⛔ Non coincide con «ERSY è alto». Entra al primo confine di riga con ERSY alto
+     * (vedi {@code updateBeam}), esce <b>subito</b> quando BPLCON0 abbassa il bit (vedi
+     * {@code setBPLCON0}) — la stessa asimmetria di {@code custom.cpp}, dove
+     * {@code checksyncstopped()} in configurazione cycle-exact sa solo spegnere.
+     */
+    private boolean syncsStopped = false;
 
     // =========================================================================
     // Display Window e DMA Fetch
@@ -2244,6 +2301,50 @@ public abstract class AbstractAgnus {
         return (rise < 1 || rise + TOD_PULSE_WIDTH_SC >= maxHpos) ? -1 : rise;
     }
 
+    /**
+     * Aggancio del <b>vsync</b> a inizio riga: alza e abbassa {@link #vsyncActive} come
+     * {@code agnus_vsync} dell'oracolo e, sul fronte di salita, latcha
+     * {@link #displayRowShift} per tutto il fotogramma.
+     *
+     * <p>⛔ Il latch è il punto: {@code vhpos4} scrive VPOSW <b>a fotogramma già
+     * cominciato</b>, e se ricalcolassimo lo scorrimento riga per riga il quadro si
+     * spezzerebbe a metà. In {@code custom.cpp} {@code vsync_mark()} azzera
+     * {@code linear_vpos} una volta sola, quando {@code agnus_vsync} passa da falso a
+     * vero, e da lì in poi il fotogramma è ancorato lì qualunque cosa faccia
+     * {@code lof_store}.
+     */
+    private void updateVsyncPhase() {
+        final boolean pal = mode != VideoMode.NTSC;
+        final int startVpos = pal
+                ? ((field == 0) ? VSYNC_START_VPOS_PAL_LONG : VSYNC_START_VPOS_PAL_SHORT)
+                : VSYNC_START_VPOS_NTSC;
+        final int endVpos = pal ? VSYNC_END_VPOS_PAL : VSYNC_END_VPOS_NTSC;
+
+        if (!vsyncActive && vpos == startVpos) {
+            vsyncActive = true;
+            // La riga del framebuffer conta dal vsync; le nostre costanti di crop sono
+            // tarate sul fotogramma LUNGO, dove il vsync sta a VSYNC_START_VPOS_PAL_LONG.
+            displayRowShift = VSYNC_START_VPOS_PAL_LONG - startVpos;
+        } else if (vsyncActive && vpos == endVpos) {
+            vsyncActive = false;
+        }
+    }
+
+    /**
+     * Di quante righe il quadro scende nel framebuffer rispetto a {@code vpos}.
+     *
+     * <p>Vale <b>0</b> quasi sempre e <b>+1</b> sul fotogramma corto PAL, perché lì il
+     * vsync — a cui il display è agganciato — comincia una riga prima (vpos 2 invece di
+     * 3): vedi {@link #VSYNC_START_VPOS_PAL_LONG}. Misurato sul banco
+     * {@code Agnus/Registers/VPOS}: {@code lof1} (VPOSW $8001, frame lungo) è bit-exact
+     * con {@code shift = 0}, {@code lof2} (VPOSW $0001, frame corto) lo è con
+     * {@code shift = +1} — nel riferimento dell'oracolo il quadro comincia alla riga 23
+     * invece che alla 22.
+     */
+    public int getDisplayRowShift() {
+        return displayRowShift;
+    }
+
     /** Calcola gli impulsi TOD della riga che comincia. */
     private void armTodPulses(long lineStartCck) {
         todRiseHposB = todPulseRiseHpos(todIncOffsetCck(TOD_HOFFSET_CIAB, lineStartCck));
@@ -2311,6 +2412,19 @@ public abstract class AbstractAgnus {
         scheduleSyncEvent(EVFL_HSYNC);
         scheduleSyncEvent(EVFL_EOL);
 
+        // ⛔ Il freeze ERSY ENTRA QUI, non alla scrittura di BPLCON0. Oracolo,
+        // `custom.cpp` do_cck: il ramo che chiama `setsyncstopped()` sta dentro
+        // `if (agnus_hpos == maxhpos || agnus_hpos == maxhpos_long)`, cioè al confine di
+        // riga, e solo `if (!lol)`. Sulla scrittura, `checksyncstopped()` accende il freeze
+        // solo nel ramo `!cpu_memory_cycle_exact || m68k_speed < 0` — che in configurazione
+        // cycle-exact (la nostra, e quella dell'oracolo del banco) è falso.
+        // ⚠️ Non è un dettaglio: un ERSY acceso e spento DENTRO la stessa riga non congela
+        // niente. È il caso di `Agnus/Registers/VPOS/ersy1`, dove il Copper alza il bit a
+        // hpos $31 e lo riabbassa a $B1 sedici volte di fila.
+        if (!syncsStopped && ersyActive() && !lol) {
+            syncsStopped = true;
+        }
+
         // LOL: su Agnus NTSC la riga alterna 227/228 CCK. Il toggle vale per la riga
         // che sta per iniziare (WinUAE: toggle nell'hsync handler, poi setmaxhpos()).
         updateLineLength(mode == VideoMode.NTSC && !lol);
@@ -2352,7 +2466,7 @@ public abstract class AbstractAgnus {
         // il freeze il nostro pennello si portava avanti di altrettanto rispetto
         // all'oracolo, e da lì in poi ogni attesa del Kickstart agganciata al raster
         // cadeva altrove. Misurato in docs/vamigats-paula-audio-plan.md §13.6.
-        if (ersyActive()) {
+        if (syncsStopped) {
             return;
         }
 
@@ -2370,6 +2484,7 @@ public abstract class AbstractAgnus {
         int wrapAt = longFrame ? (maxVpos + 1) : maxVpos;
 
         if (vpos < wrapAt) {
+            updateVsyncPhase();
             updateBitplaneVerticalWindow();
             updateSpriteDMA(vpos);
             return;
@@ -2378,6 +2493,7 @@ public abstract class AbstractAgnus {
         // ── Fine frame (Start of Line 0) ───────────────────────────────────
         vpos = 0;
         frameCount++;
+        updateVsyncPhase();
 
         // VERTB (Paula INTREQ bit 5, IPL 3): asserito all'inizio della riga 0,
         // come l'hardware reale (cfr. vAmiga serviceVBLEvent: PAL OCS → pos.v==0,
@@ -3733,39 +3849,29 @@ public abstract class AbstractAgnus {
         return cck;
     }
 
-    // ── ERSY-freeze (vedi campi ersyFreezeVpos/Hpos) ────────────────────────────
+    // ── ERSY / syncs_stopped ────────────────────────────────────────────────────
     // Vero se BPLCON0 ha ERSY (bit 1) attivo. Non emuliamo genlock, quindi ERSY
     // implica sempre "sync fermo" (WinUAE issyncstopped: (con0&2) && !genlock).
     private boolean ersyActive() {
         return denise != null && (denise.getBplcon0() & 0x0002) != 0;
     }
 
-    // Latcha la posizione del pennello al primo accesso sotto ERSY; la rilascia
-    // quando ERSY cade. Per il rilevamento genlock ($FCAF96) i due VHPOSR letti
-    // sotto ERSY restituiscono così lo stesso HP → esito "nessun genlock".
-    private void updateErsyFreeze() {
-        if (ersyActive()) {
-            if (ersyFreezeVpos < 0) {
-                ersyFreezeVpos = vposFrozen ? frozenVpos : vpos;
-                ersyFreezeHpos = vposFrozen ? frozenHpos : hpos;
-            }
-        } else {
-            ersyFreezeVpos = -1;
-            ersyFreezeHpos = -1;
-        }
+    /**
+     * Vpos che VPOSR/VHPOSR riportano <b>mentre il freeze è in corso</b>: quello vero, che
+     * non avanza più perché {@code updateBeam} non lo incrementa. Oracolo: {@code GETVPOS()}
+     * restituisce {@code vpos} e {@code incpos()} esce subito con {@code syncs_stopped}.
+     */
+    private int frozenReadVpos() {
+        return vposFrozen ? frozenVpos : vpos;
     }
 
-    /** Vpos usato dalle letture VPOSR/VHPOSR (ERSY-freeze → latch → live). */
+    /** Vpos usato dalle letture VPOSR/VHPOSR fuori dal freeze. */
     private int beamReadVpos() {
-        updateErsyFreeze();
-        if (ersyFreezeVpos >= 0) return ersyFreezeVpos;
         return beamReadLatchVpos >= 0 ? beamReadLatchVpos : (vposFrozen ? frozenVpos : vpos);
     }
 
-    /** Hpos usato dalle letture VPOSR/VHPOSR (ERSY-freeze → latch → live). */
+    /** Hpos usato dalle letture VPOSR/VHPOSR fuori dal freeze. */
     private int beamReadHpos() {
-        updateErsyFreeze();
-        if (ersyFreezeHpos >= 0) return ersyFreezeHpos;
         return beamReadLatchHpos >= 0 ? beamReadLatchHpos : (vposFrozen ? frozenHpos : hpos);
     }
 
@@ -3784,21 +3890,30 @@ public abstract class AbstractAgnus {
         // ancora incrementato, quindi si usa il vpos vecchio per il campo verticale.
         return (cck <= 1) ? vLines : v;
     }
+    /**
+     * Scrittura di un registro custom fatta dal <b>Copper</b>.
+     *
+     * <p>⛔ <b>Qui non c'è nessun filtro sull'indirizzo, e non deve tornarci.</b> Quale
+     * registro il Copper possa toccare lo decide {@code Copper.isIllegalAddress()}, che è
+     * l'unico sito della regola — come nell'oracolo, dove è la sola
+     * {@code test_copper_dangerous()}:
+     * <pre>
+     * addr &lt; ((copcon &amp; 2) ? (ecs_agnus ? 0 : 0x40) : 0x80)
+     * </pre>
+     * cioè con CDANG=1 su <b>ECS non è vietato niente</b>, su OCS solo {@code < $40}; con
+     * CDANG=0 tutto {@code < $80}. Ed è una regola con un effetto: l'indirizzo vietato
+     * <b>ferma il Copper</b>, non gli fa saltare una scrittura.
+     *
+     * <p>⚠️ Qui stava un <b>doppione</b> della regola, nella forma sbagliata: un
+     * {@code if (regAddr < 0x040) return;} incondizionato, che su ECS con CDANG buttava via
+     * scritture del tutto lecite. Lo smaschera {@code Agnus/Registers/VPOS/probe11÷13}, dove
+     * il Copper scrive VPOSW ($02A) per accorciare il fotogramma: la scrittura spariva, i
+     * nostri fotogrammi restavano lunghi e a fine corsa il pennello era 129 righe fuori.
+     */
     public void copperWrite(int regAddr, int value) {
         regAddr &= 0x1FE;
-
-        if (regAddr < 0x040) {
-            return;
-        }
-
-        if (regAddr < 0x080 && !copper.isDanger()) {
-            return;
-        }
-
         __inCopperWrite = true;
         try { writeCustomRegister(regAddr, value); } finally { __inCopperWrite = false; }
-        if (true) return;
-        writeCustomRegister(regAddr, value);
     }
 
     // =========================================================================
@@ -3914,6 +4029,13 @@ public abstract class AbstractAgnus {
                 return res;
             }
             case 0x004: { // VPOSR
+                if (syncsStopped) {
+                    // Freeze ERSY: nessun anticipo, nessun avanzamento. Vedi VHPOSR sotto.
+                    int result = agnusIdBits() << 8;
+                    if ((frozenReadVpos() & 0x100) != 0) result |= 0x0001;
+                    if (field == 0) result |= 0x8000;
+                    return result;
+                }
                 int v = beamReadVpos();
                 int h = beamReadHpos();
                 // VPOSR:
@@ -3931,6 +4053,16 @@ public abstract class AbstractAgnus {
                 return result;
             }
             case 0x006: { // VHPOSR
+                if (syncsStopped) {
+                    // ⛔ Sotto freeze HP vale **0**, non la posizione latchata al primo
+                    // accesso, e non c'è l'anticipo di 5 CCK. Oracolo: `setsyncstoppos()`
+                    // azzera `agnus_hpos` a ogni cck, `GETHPOS()` lo restituisce così com'è
+                    // quando `syncs_stopped`, e `incpos()` esce senza toccare niente.
+                    // Lo misura `ersy2`: i suoi `expected` passano da $40BF,$40C9,$40D3,$40DD
+                    // — la posizione che corre — a **$4000** ripetuto, appena il confine di
+                    // riga fa scattare il freeze.
+                    return (frozenReadVpos() & 0xFF) << 8;
+                }
                 int v = beamReadVpos();
                 int h = beamReadHpos();
                 // VHPOSR: bit 15-8 = VP7-VP0, bit 7-0 = HP8-HP1 (hpos in CCK).
@@ -4243,6 +4375,9 @@ public abstract class AbstractAgnus {
         // misurato fotogramma per fotogramma contro l'oracolo in
         // docs/vamigats-paula-audio-plan.md §13.3.
         field = 1;
+        vsyncActive = false;
+        displayRowShift = 0;
+        syncsStopped = false;
         updateLineLength(false);             // LOL: si riparte sempre da riga corta
         vposFrozen = false; frozenVpos = 0; frozenHpos = 0;
         beamReadLatchVpos = -1; beamReadLatchHpos = -1;
