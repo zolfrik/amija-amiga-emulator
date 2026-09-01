@@ -205,6 +205,18 @@ public final class LhaExtractor {
         boolean isDirectory;
         int dataStart;     // offset del primo byte di dati compressi
         int nextOffset;    // offset della voce successiva
+
+        /**
+         * Byte di payload di QUESTA voce, cioè {@code nextOffset - dataStart}.
+         *
+         * <p>⛔ <b>Non è {@code compSize}</b>, e confonderli è quel che ha rotto WHDLoad. Al
+         * livello 1 il campo a offset 7 è una <b>skip size</b> misurata da dopo la prima
+         * word di lunghezza degli header estesi: comprende <i>anche</i> i corpi degli
+         * header estesi, mentre {@code dataStart} cade dopo di essi. Sommare la skip size a
+         * {@code dataStart} sfora quindi la voce di tanti byte quanti sono gli header
+         * estesi — e sull'ultima voce dell'archivio sfora l'archivio.
+         */
+        int payloadSize;
     }
 
     private Header parseHeader(int off) {
@@ -274,6 +286,9 @@ public final class LhaExtractor {
             h.dataStart = off + total;
             h.nextOffset = h.dataStart + (int) h.compSize;
         }
+        // Una sola derivazione per tutti e tre i livelli: il payload è ciò che sta fra
+        // l'inizio dei dati e la voce successiva. Vedi Header.payloadSize.
+        h.payloadSize = h.nextOffset - h.dataStart;
         return h;
     }
 
@@ -360,10 +375,15 @@ public final class LhaExtractor {
             throw new IOException("voce '" + h.name + "': i dati iniziano fuori "
                     + "dall'archivio, che e' troncato");
         }
-        // Per i metodi memorizzati il payload e' lungo quanto l'originale; per gli altri
-        // e' compSize. In entrambi i casi deve stare dentro quel che si e' letto.
+        // Per i metodi memorizzati il payload e' lungo quanto l'originale, ed e' quel che
+        // decode() copia; per gli altri e' payloadSize. ⛔ NON compSize: al livello 1
+        // quel campo e' una skip size che comprende anche gli header estesi, quindi
+        // sommarla a dataStart sfora la voce — e sull'ultima voce sfora l'archivio,
+        // facendo dichiarare troncato un .lha sano. Vedi Header.payloadSize: e' il difetto
+        // che ha rotto l'installazione di WHDLoad e l'avvio dei giochi .lha, che sono
+        // tutti -lh5- di livello 1.
         long needed = h.method.equals("-lh0-") || h.method.equals("-lhd-")
-                || h.method.equals("-lz4-") ? h.origSize : h.compSize;
+                || h.method.equals("-lz4-") ? h.origSize : h.payloadSize;
         if (needed < 0 || h.dataStart + needed > archive.length) {
             throw new IOException("voce '" + h.name + "': dichiara " + needed
                     + " byte di dati ma dopo l'inizio ne restano "
