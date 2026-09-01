@@ -407,6 +407,55 @@ public abstract class AbstractAgnus {
         scheduleNextRegEvent();
     }
 
+    /**
+     * Una scrittura a BPLxPTH/BPLxPTL è <b>persa</b> se quel piano ha il proprio slot di
+     * fetch nel <b>CCK SUCCESSIVO</b>: il puntatore per quello slot è già stato latchato.
+     *
+     * <p>⛔ <b>Il verso conta, ed era invertito.</b> Il modello che c'era —
+     * {@code dropWrite()}, portato da vAmiga: «una scrittura a un registro puntatore è
+     * scartata se il puntatore è stato usato un ciclo <i>prima</i>» — guarda il CCK
+     * sbagliato, ed era per giunta su un percorso morto. Nell'oracolo la sequenza è una
+     * pipeline a due stadi:
+     * <pre>
+     * cck C  : bitplane_rga_ptmod()  →  r->pv = bplpt[bpl]      (CATTURA)
+     * cck C+1: fetch da r->pv, addmodfm(&r->pv), bplpt[num] = r->pv   (USO + WRITE-BACK)
+     * </pre>
+     * — e il commento di {@code custom.cpp} lo dichiara: <i>«Because BPL and SPR DMA is
+     * decided 1 CCK earlier than others, PT and MOD need to be loaded in following
+     * cycle»</i>. Una scrittura che cade nel CCK della cattura arriva <b>dopo</b> di essa,
+     * e un CCK più tardi il write-back la cancella. Una scrittura un CCK prima, o un CCK
+     * dopo, sopravvive.
+     *
+     * <p>⚠️ <b>Misurato sui due lati con la stessa sonda</b> ({@code WINUAE_BPLPTLOG} da una
+     * parte, {@code -Damiga.bplptlog} dall'altra), su {@code BPLPTR/drop31}, che spazza il
+     * CCK della scrittura di un'unità alla volta. Delle otto finestre del test l'oracolo
+     * perde la scrittura esattamente nelle due in cui il fetch del piano cade al CCK
+     * successivo (vpos 73 e 121), e le tiene nelle altre sei. Questa regola le riproduce
+     * tutte e otto.
+     */
+    private boolean bplPointerWriteIsLost(int bidx) {
+        // ⛔ Vale per le scritture del COPPER, non per quelle della CPU, e la ragione è
+        // l'ordine dentro `do_cck()`: `bitplane_rga_ptmod()` (la cattura) sta in cima
+        // all'iterazione, PRIMA che il Copper prenda il suo slot DMA, mentre la CPU gira
+        // in `do_cycles_normal()` dopo `inc_cck()`, cioè prima della cattura successiva.
+        // La cattura sta quindi FRA la finestra di scrittura della CPU e quella del
+        // Copper. ⚠️ Misurato, non dedotto: nei log di `dropcpu41` e `dropcpu61` la
+        // scrittura della CPU compare SEMPRE prima della `CAPT` dello stesso cck e
+        // sopravvive; in `drop31` quella del Copper compare DOPO e viene persa.
+        if (!__inCopperWrite || denise == null || !fetchWindowOpened || !isBitplaneDMAActive()) {
+            return false;
+        }
+        final int nextCck = (hpos >> 1) + 1;
+        return getBitplaneIndexForRasterPosition(nextCck * 2, fetchUnitBpu, denise.isHires())
+                == bidx;
+    }
+
+    /**
+     * ⚠️ <b>Percorso morto</b>: {@link #recordRegisterChange} non ha chiamanti, quindi
+     * nessuna scrittura passa più di qui. Resta perché la coda dei cambi ritardati serve
+     * ad altro; la regola dei puntatori di bitplane vive in
+     * {@link #bplPointerWriteIsLost(int)}, sul percorso vivo.
+     */
     private boolean dropWrite(BusOwner owner) {
         // vAmiga: A write to a pointer register is dropped if the pointer was used one
         // cycle before the update would happen.
@@ -4265,12 +4314,14 @@ public abstract class AbstractAgnus {
             // Puntatori bitplane (BPLxPTH/BPLxPTL)
             case 0x0E0: case 0x0E4: case 0x0E8: case 0x0EC: case 0x0F0: case 0x0F4: {
                 int bidx = (regAddr - 0x0E0) / 4;
+                if (bplPointerWriteIsLost(bidx)) break;
                 bplPt[bidx] = (bplPt[bidx] & 0x0000FFFF) | ((value << 16) & dmaPtrHiMask);
                 bplPtrInternal[bidx] = (bplPtrInternal[bidx] & 0x0000FFFF) | (bplPt[bidx] & dmaPtrHiMask);
                 break;
             }
             case 0x0E2: case 0x0E6: case 0x0EA: case 0x0EE: case 0x0F2: case 0x0F6: {
                 int bidx = (regAddr - 0x0E2) / 4;
+                if (bplPointerWriteIsLost(bidx)) break;
                 bplPt[bidx] = (bplPt[bidx] & dmaPtrHiMask) | (value & 0xFFFE);
                 bplPtrInternal[bidx] = bplPt[bidx];
                 break;
