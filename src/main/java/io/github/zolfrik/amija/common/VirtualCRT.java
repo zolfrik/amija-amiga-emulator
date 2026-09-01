@@ -328,6 +328,22 @@ public final class VirtualCRT {
      * funzione è l'identità.
      */
     private int displayRow(int vpos) {
+        // ⛔ In INTERLACE lo scorrimento non si applica, e non è un'eccezione alla regola:
+        // è la stessa grandezza espressa a un'altra scala, e va applicata UNA VOLTA SOLA.
+        // Lo scarto fra fotogramma lungo e corto è mezza riga — è proprio ciò che separa i
+        // due semiquadri — e in interlace lo porta già l'intreccio di AmigaDisplay, che
+        // scrive la riga grezza srcY alla riga di schermo `srcY*2 + (campo pari ? 0 : 1)`.
+        // Sommarci anche una riga GREZZA intera significa spostare il semiquadro dispari
+        // di TRE righe di schermo invece di una: i due campi non si intrecciano più e
+        // l'immagine si sfoca. Misurato su uno schermo interlacciato sintetico: i due
+        // campi finivano alle righe 44 e 45 del framebuffer invece che entrambi alla 44.
+        //
+        // Fuori dall'interlace l'intreccio non esiste (le righe si raddoppiano), quindi
+        // è lo scorrimento a portare l'offset: è il caso su cui l'oracolo è stato misurato
+        // (lof1/lof2/vhpos4/vhpos5, tutto il banco vAmigaTS è non interlacciato).
+        if (denise.isInterlaced()) {
+            return vpos;
+        }
         return vpos + agnus.getDisplayRowShift();
     }
 

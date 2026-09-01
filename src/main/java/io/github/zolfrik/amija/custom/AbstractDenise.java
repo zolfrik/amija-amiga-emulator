@@ -1589,6 +1589,8 @@ public abstract class AbstractDenise {
     public int  getBplcon0()                { return bplcon0; }
     public int  getBpu()                    { return bpu; }     // min((bplcon0>>12)&7,6), cached
     public boolean isHires()                { return hires; }   // (bplcon0 & 0x8000)!=0, cached
+    /** LACE (BPLCON0 bit 2): il display alterna due semiquadri sfalsati di mezza riga. */
+    public boolean isInterlaced()           { return (bplcon0 & 0x0004) != 0; }
     public int[] getRgbLine()               { return rgbLine; }
     /**
      * RGB del COLOR00 (bordo) LIVE, usando la stessa LUT di {@link #amigaToRGB}. Serve
