@@ -1507,6 +1507,14 @@ public abstract class AbstractAgnus {
     private int fetchUnitBpu = 0;
 
     /**
+     * Risoluzione LATCHATA che il sequencer usa per maschera e sequenza di fetch. Segue
+     * esattamente { #fetchUnitBpu}: vengono dalla stessa scrittura di BPLCON0 e dalla
+     * stessa pipeline dell'oracolo ({ pipelined_custom_write(BPLCON0_delayed, v, 2)}
+     * -> { setup_fmodes()}).
+     */
+    private boolean fetchUnitHires = false;
+
+    /**
      * ddfCckStart CAMPIONATO all'apertura della finestra di fetch (al primo CCK in
      * cui CCK == ddfCckStart vivo) e usato — per la fase di fetch e per i confini
      * della finestra — per tutta la riga. Sull'hardware reale la sequenza di fetch
@@ -2054,7 +2062,18 @@ public abstract class AbstractAgnus {
             // esattamente dove il banco `Agnus/Registers/DMACON` guarda: quando BPLEN si
             // spegne e si riaccende dentro la riga. Vedi decideBpl().
             if (!busTakenByCustom && bprun > 0) {
-                boolean hires = denise.isHires();    // = (bplcon0 & 0x8000)!=0, cached
+                // ⛔ La RISOLUZIONE che conta qui è quella LATCHATA, non quella viva.
+                // Non è una scelta nostra: nell'oracolo BPLCON0 arriva ad Agnus da
+                // `pipelined_custom_write(BPLCON0_delayed, v, 2)` e **solo** il gestore
+                // ritardato chiama `setup_fmodes()`, che è ciò che fissa `bplcon0_res`,
+                // `fetchstart_mask`, `fm_maxplane` e `bpl_sequence`. Cioè maschera e
+                // sequenza del sequencer cambiano con lo stesso ritardo del BPU, e per la
+                // stessa ragione: vengono dalla stessa scrittura e dalla stessa pipeline.
+                //
+                // ⚠️ Leggendola viva il cambio di risoluzione a metà riga entrava 4 CCK
+                // troppo presto, ed è tutto il residuo di `DMACON/resmod1÷4` — che di
+                // DMACON non hanno niente: scrivono `BPLCON0 $A200 → $2200`.
+                boolean hires = fetchUnitHires;
                 boolean lastOfBlock = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
                 if (dmaconBplSeq) {
                     // BPU viene CAMPIONATO una sola volta per riga, all'apertura della
@@ -2075,12 +2094,14 @@ public abstract class AbstractAgnus {
                     if (!fetchWindowOpened) {
                         fetchWindowOpened = true;
                         fetchUnitBpu = denise.getRawBpu();  // grezzo: il limite è di Agnus
+                        fetchUnitHires = denise.isHires();
                         bpuRelatchCck = -1;
                     }
                     // BPLCON0 scritto a finestra aperta: BPU efficace da write+4 CCK
                     // (pipeline WinUAE; vedi setBPLCON0 per le misure [WRGA]).
                     if (bpuRelatchCck >= 0 && cck >= bpuRelatchCck) {
                         fetchUnitBpu = denise.getRawBpu();
+                        fetchUnitHires = denise.isHires();
                         bpuRelatchCck = -1;
                     }
                     int plane = bplSequence(bprunCycle, hires);
@@ -4472,7 +4493,7 @@ public abstract class AbstractAgnus {
         cpuAccessTransferred = false; copperBusProcessed = false;
         cpuRouteCacheValid = false;
         cpuCurrentRoute = null;
-        bprun = 0; bprunCycle = 0; ddfStopping = 0;
+        bprun = 0; bprunCycle = 0; ddfStopping = 0; fetchUnitHires = false;
         ddfEnableOn = false; ddfLimitIn = false; ddfLimitOut = false;
         hwiOld = false; dmaconBpl2 = false;
         dmaconBplSeq = false; dmaconBplPipe = false;
