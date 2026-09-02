@@ -1493,9 +1493,13 @@ public abstract class AbstractAgnus {
      * quale bitplane fetchare al prossimo slot.
      */
     /**
-     * BPU campionato all'apertura della finestra di fetch (CCK == ddfCckStart)
-     * e usato per tutta la riga. Evita che un cambio di BPU a metà riga avvii
-     * un fetch parziale che disallinea i piani. Vedi "2. Bitplane DMA".
+     * BPU <b>grezzo</b> campionato all'apertura della finestra di fetch
+     * (CCK == ddfCckStart) e usato per tutta la riga. Evita che un cambio di BPU a metà
+     * riga avvii un fetch parziale che disallinea i piani. Vedi "2. Bitplane DMA".
+     *
+     * <p>⚠️ Grezzo: quanti piani il DMA prelevi davvero lo decide
+     * {@link #bitplaneDmaPlaneLimit(int, boolean)} al momento dell'uso, perché dipende
+     * anche dalla risoluzione — che può cambiare dentro la riga.
      */
     private int fetchUnitBpu = 0;
 
@@ -2063,13 +2067,13 @@ public abstract class AbstractAgnus {
                 if (!fetchWindowOpened && cck == ddfCckStart) {
                     fetchWindowOpened = true;
                     fetchUnitDdfStart = ddfCckStart;
-                    fetchUnitBpu = denise.getBpu();  // = min((bplcon0>>12)&7,6), cached
+                    fetchUnitBpu = denise.getRawBpu();  // grezzo: il limite è di Agnus
                     bpuRelatchCck = -1;
                 }
                 // BPLCON0 scritto a finestra aperta: BPU efficace da write+4 CCK
                 // (pipeline WinUAE; vedi setBPLCON0 per le misure [WRGA]).
                 if (bpuRelatchCck >= 0 && cck >= bpuRelatchCck) {
-                    fetchUnitBpu = denise.getBpu();
+                    fetchUnitBpu = denise.getRawBpu();
                     bpuRelatchCck = -1;
                 }
                 int bplIdx = fetchWindowOpened
@@ -3074,8 +3078,10 @@ public abstract class AbstractAgnus {
         if (denise == null || !isBitplaneDMAActive()) return;
 
         int bplcon0Val = denise.getBplcon0();
-        int bplCount = Math.min((bplcon0Val >> 12) & 0x7, 6);
-        if (bplCount <= 0) return;
+        // Piani DISEGNATI, non prelevati: qui si decide se Denise fa uscire qualcosa,
+        // e la soglia è la sua (AbstractDenise.deniseBpu) — più di 4 piani in hires
+        // significa nessun piano, non quattro.
+        if (denise.getBpu() <= 0) return;
 
         boolean hires = (bplcon0Val & 0x8000) != 0;
         int cycleLen = hires ? 4 : 8;
@@ -4696,11 +4702,39 @@ public abstract class AbstractAgnus {
         // il puntatore del piano 3 derivava di +2 byte/riga e l'immagine veniva
         // "traslata" progressivamente solo sulle componenti colore che usano quel
         // piano (es. la banda verde della schermata 640x512 di DiagROM).
-        if (cck < fetchUnitDdfStart || cck >= getEffectiveDdfStopCck(hires) || bplCount <= 0) return -1;
+        int limit = bitplaneDmaPlaneLimit(bplCount, hires);
+        if (cck < fetchUnitDdfStart || cck >= getEffectiveDdfStopCck(hires) || limit <= 0) return -1;
         if ((hpos & 1) != 0) return -1;
 
         int plane = getBitplaneIndexForFetchUnit(cck - fetchUnitDdfStart, hires);
-        return plane < bplCount ? plane : -1;
+        return plane < limit ? plane : -1;
+    }
+
+    /**
+     * Quanti piani il DMA di bitplane preleva davvero, dato il BPU grezzo di BPLCON0.
+     *
+     * <p>⛔ <b>Non è un troncamento al numero di slot: quando i piani non ci stanno, il
+     * DMA di bitplane si spegne del tutto.</b> È {@code real_bitplane_number} di WinUAE
+     * ({@code custom.cpp create_cycle_diagram_table}), letto da {@code GET_PLANES_LIMIT}
+     * e usato in {@code generate_bpl()} come {@code plane <= bplcon0_planes_limit}:
+     * <pre>
+     *   int rplanes = planes;
+     *   if (rplanes &gt; max_planes) rplanes = 0;                          // niente DMA
+     *   if (rplanes == 7 &amp;&amp; fm == 0 &amp;&amp; res == 0 &amp;&amp; !aga_mode) rplanes = 4;
+     * </pre>
+     * con {@code max_planes = fm_maxplanes[fm*4+res]} = 8 in lores, <b>4 in hires</b>
+     * (2 in SuperHires, che non modelliamo). Quindi cinque o sei piani in hires — la
+     * configurazione illegale di {@code BPLPTR/drop5x}, {@code drop6x} e
+     * {@code dropcpu6x} — non prelevano niente e lasciano liberi tutti gli slot.
+     *
+     * <p>⚠️ Il caso {@code 7 → 4} è il motivo per cui qui arriva il BPU <b>grezzo</b>
+     * ({@link AbstractDenise#getRawBpu()}) e non quello di Denise: i due chip hanno la
+     * stessa soglia ma non la stessa tabella, e sette piani in lores sono quattro fetch
+     * con sei piani disegnati (i due alti tengono il dato vecchio).
+     */
+    static int bitplaneDmaPlaneLimit(int rawBpu, boolean hires) {
+        if (hires) return rawBpu > 4 ? 0 : rawBpu;
+        return rawBpu == 7 ? 4 : rawBpu;
     }
 
     private int getEffectiveDdfStopCck(boolean hires) {

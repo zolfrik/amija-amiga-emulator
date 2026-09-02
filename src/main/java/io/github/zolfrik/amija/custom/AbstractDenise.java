@@ -206,7 +206,7 @@ public abstract class AbstractDenise {
     // updateBplcon0Derived). Evitano di rifare Math.min(...) / shift ad ogni
     // pixel nei percorsi di decodifica bitplane (hot path). Valore identico a
     // ricalcolarli al volo: dipendono SOLO da bplcon0.
-    private int     bpu   = 0;            // numero piani attivi: min((bplcon0>>12)&7, 6)
+    private int     bpu   = 0;            // piani DISEGNATI da Denise: vedi deniseBpu()
     private boolean hires = false;        // (bplcon0 & 0x8000) != 0
 
     /**
@@ -403,8 +403,35 @@ public abstract class AbstractDenise {
     public void setField(int field)               { this.field   = field;   }
 
     private void updateBplcon0Derived() {
-        bpu   = Math.min((bplcon0 >> 12) & 7, 6);
+        bpu   = deniseBpu(bplcon0);
         hires = (bplcon0 & 0x8000) != 0;
+    }
+
+    /**
+     * Numero di piani che <b>Denise</b> compone, ricavato da BPLCON0.
+     *
+     * <p>⛔ <b>Più di quattro piani in HIRES non è una configurazione legale su OCS/ECS:
+     * Denise non ne disegna NESSUNO.</b> Non è un troncamento a quattro — l'immagine
+     * sparisce del tutto e resta lo sfondo. L'oracolo lo dichiara in
+     * {@code drawing.cpp update_fmode()}:
+     * <pre>
+     *   denise_planes = GET_PLANES(bplcon0_denise);
+     *   if (denise_bplfmode == 0 &amp;&amp; denise_res &gt; 0 &amp;&amp; denise_planes &gt; 4) denise_planes = 0;
+     *   if (denise_bplfmode == 0 &amp;&amp; denise_res &gt; 1 &amp;&amp; denise_planes &gt; 2) denise_planes = 0;
+     * </pre>
+     * (il secondo ramo è SuperHires, che non modelliamo). Il gemello lato Agnus è
+     * {@code real_bitplane_number} — vedi {@code AbstractAgnus.bitplaneDmaPlaneLimit}:
+     * i due chip applicano la stessa soglia, ciascuno per conto proprio.
+     *
+     * <p>La clamp a 6 è invece nostra e riguarda solo BPU=7 in lores: il registro a
+     * scorrimento ha sei piani, e sull'oracolo sette piani in lores sono comunque
+     * Extra-Half-Brite ({@code bplehb = denise_planes == 6 || (!aga_mode &amp;&amp;
+     * denise_planes == 7)}), cioè lo stesso disegno che si ottiene con sei.
+     */
+    private static int deniseBpu(int bplcon0) {
+        int planes = (bplcon0 >> 12) & 7;
+        if ((bplcon0 & 0x8000) != 0 && planes > 4) return 0;
+        return Math.min(planes, 6);
     }
 
     public void reset() {
@@ -507,8 +534,15 @@ public abstract class AbstractDenise {
             // --- BPLCON ---
             case 0x100: // BPLCON0
                 conChanges.insert(pixel, address, value);
-                // Cambio modalità HAM: tracciato in colChanges per colorize
-                if (isHAM(bplcon0) != isHAM(value)) colChanges.insert(pixel, address, value);
+                // Cambio di modalità di COLORE: tracciato in colChanges per colorize.
+                // ⛔ Sono DUE, non solo HAM: anche Extra-Half-Brite si accende e si spegne
+                // dentro la riga (BPU che passa a 6, o che lascia una configurazione hires
+                // illegale), e senza questa insert la riga in cui il Copper alza BPU a 6
+                // resta colorata a piena luminosità per intero — il residuo di riga 22 di
+                // `BPLPTR/drop6x` e `dropcpu6x`.
+                if (isHAM(bplcon0) != isHAM(value) || isEHB(bplcon0) != isEHB(value)) {
+                    colChanges.insert(pixel, address, value);
+                }
                 bplcon0 = value;
                 updateBplcon0Derived();
                 break;
@@ -1382,25 +1416,32 @@ public abstract class AbstractDenise {
         int     pixel   = 0;
         int     hold    = palette[0];
         boolean hamMode = isHAM(initialBplcon0);
+        // ⛔ Anche EHB segue BPLCON0 dentro la riga, esattamente come HAM. Prima veniva
+        // deciso una volta sola da initialBplcon0 (lo snapshot di inizio riga): una riga
+        // in cui il Copper porta BPU a 6 dopo l'inizio veniva colorata TUTTA a piena
+        // luminosità, e quella è una riga sola per schermata — la prima del blocco a sei
+        // piani di `BPLPTR/drop6x` e `dropcpu6x` (riga 22), $88F invece di $447.
+        // Nell'oracolo `bplehb` è ricalcolato da `update_mode()` a ogni scrittura di
+        // BPLCON0 e il decoder lo legge vivo (drawing.cpp:2791).
+        boolean ehbMode = isEHB(initialBplcon0);
         int     colIdx  = 0;
 
         while (colIdx < colChanges.size()) {
             int trigger = colChanges.keys[colIdx];
             if (hamMode) hold = colorizeHAM(vpos, pixel, trigger, hold);
-            else              colorizeNormal(vpos, pixel, trigger);
+            else              colorizeNormal(vpos, pixel, trigger, ehbMode);
             pixel = trigger;
             RegChange c = colChanges.elements[colIdx++];
-            if      (c.reg == 0x100)  hamMode = isHAM(c.value);
+            if      (c.reg == 0x100) { hamMode = isHAM(c.value); ehbMode = isEHB(c.value); }
             else if (c.reg >= 0x180)  palette[(c.reg - 0x180) / 2] = c.value & 0xFFF;
         }
         if (hamMode) colorizeHAM(vpos, pixel, HPIXELS, hold);
-        else         colorizeNormal(vpos, pixel, HPIXELS);
+        else         colorizeNormal(vpos, pixel, HPIXELS, ehbMode);
 
         colChanges.clear();
     }
 
-    private void colorizeNormal(int vpos, int from, int to) {
-        boolean ehb      = isEHB(initialBplcon0);
+    private void colorizeNormal(int vpos, int from, int to, boolean ehb) {
         for (int i = from; i < to && i < HPIXELS; i++) {
             // lineIsVBorder → riga senza output bitplane: tutta bordo (niente sprite)
             // bBuffer[i] == 0xFF → pixel interno al DIW → usa mBuffer (indice finale)
@@ -1566,7 +1607,7 @@ public abstract class AbstractDenise {
      */
     private static boolean isEHB(int bplcon0) {
         return !isHAM(bplcon0)
-            && ((bplcon0 >> 12) & 7) == 6;
+            && deniseBpu(bplcon0) == 6;
     }
 
     // =========================================================================
@@ -1587,7 +1628,9 @@ public abstract class AbstractDenise {
     public void setGamePort1(GamePort p)    { gamePort1 = p; }
     public void setGamePort2(GamePort p)    { gamePort2 = p; }
     public int  getBplcon0()                { return bplcon0; }
-    public int  getBpu()                    { return bpu; }     // min((bplcon0>>12)&7,6), cached
+    public int  getBpu()                    { return bpu; }     // piani DISEGNATI, vedi deniseBpu()
+    /** BPU grezzo di BPLCON0, senza nessuna clamp: è quello che Agnus filtra da sé. */
+    public int  getRawBpu()                 { return (bplcon0 >> 12) & 7; }
     public boolean isHires()                { return hires; }   // (bplcon0 & 0x8000)!=0, cached
     /** LACE (BPLCON0 bit 2): il display alterna due semiquadri sfalsati di mezza riga. */
     public boolean isInterlaced()           { return (bplcon0 & 0x0004) != 0; }
