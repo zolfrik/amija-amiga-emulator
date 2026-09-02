@@ -2130,9 +2130,18 @@ public abstract class AbstractAgnus {
             // DMA e alternando frame puliti/corrotti (lo sprite "lampeggia" e cambia
             // forma). Cfr. WinUAE do_sprites (vpos<sprite_vblank_endline → return) e
             // vAmiga Sequencer (disable sprites se v<25 || v>=vMax).
-            if (!busTakenByCustom && isSpriteDMAEnabled()
+            // ⛔ Il bit di DMA sprite che conta qui è quello DECISO DUE CCK PRIMA, non
+            // quello vivo — vedi spriteDmaSeq. L'oracolo lo dichiara: in `handle_dmal()`
+            // i tap degli sprite nello shift register stanno due posizioni più avanti
+            // («sprites have earlier DMA decisions»), quindi `generate_sprites()` legge
+            // `dmaen(DMA_SPRITE)` al CCK S−2 e il trasferimento cade al CCK S.
+            if (!busTakenByCustom && spriteDmaSeq
                     && vpos >= SPRITE_RESET_LINE && vpos < maxVpos
-                    && DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE) {
+                    && DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE
+                    // ⛔ ...e lo slot DECISO nel CCK subito dopo l'accensione del DMA
+                    // sprite è «deciso ma NON allocato»: nessun prelievo e nessun
+                    // avanzamento del puntatore. Vedi spriteDmaOnDecisionCck.
+                    && (masterClock >> 1) - 2 != spriteDmaOnDecisionCck) {
                 int sprIdx = (cck - SLOT_SPRITE_0) / 4;
                 if (spriteNeedsFetch(sprIdx)) {
                     handleSpriteDMA(cck);
@@ -2230,6 +2239,11 @@ public abstract class AbstractAgnus {
             // le nostre scritture sono immediate: vedi dmaconBplSeq.
             dmaconBplSeq = dmaconBplPipe;
             dmaconBplPipe = bitplaneDmaEnabled;
+
+            // Stessa forma per gli SPRITE, ma la ragione è un'altra: lì è un latch
+            // ricampionato, qui è la DECISIONE che sta due CCK prima del trasferimento.
+            spriteDmaSeq = spriteDmaPipe;
+            spriteDmaPipe = spriteDmaEnabled;
         }
 
         // 5. CPU — il clock del 68000 non si ferma mai.
@@ -3929,12 +3943,24 @@ public abstract class AbstractAgnus {
     // ⛔ PROVATO E REVOCATO: a 2, 3 e 4 `BbusyTest` crolla da 17/0 a 0/17, e a 2
     // `TodTestSuite` da 14/19 a 8/25. bbusy0 e' generato da WinUAE: e' un veto, non un
     // rosso da negoziare.
-    // ⚠️ La derivazione ha un anello non verificato — `incpos()` incrementa solo se
-    // `cpu_memory_cycle_exact`, e `GETHPOS()` non e' `agnus_hpos` quando `ev_sync` e'
-    // attivo — e per chiuderlo serve una corsa dell'oracolo con una sonda sul VHPOSR
-    // restituito alla CPU. Non un altro sweep. Il binario dell'oracolo e' compilato in
-    // WSL (Ubuntu-24.04, /root/winuae-src/build/winuae), quindi la sonda e' a portata:
-    // questo punto e' APERTO, non bloccato.
+    // ✅ 2026-09-02 — L'ANELLO E' CHIUSO, E IL 5 HA UNA DECOMPOSIZIONE.
+    // La sonda che mancava esiste (`tools/vamiga-oracle/winuae-vhposlog-patch.py`,
+    // `WINUAE_VHPOSLOG`, neutra verificata) e la corsa legge i due rami condizionali
+    // invece di dedurli: su 146 letture di `bplmod5` e' sempre `cpu_memory_cycle_exact=1`,
+    // `eventtab[ev_sync].active=0` e `syncs_stopped=0`, quindi `GETHPOS() == agnus_hpos`
+    // e il ritorno e' `agnus_hpos + 1`. Regola confermata.
+    // ⛔ Ma il valore che ne segue -- 3, con l'ancora `agnus_hpos = nostro_cck + 2`
+    // misurata dal sequencer -- resta REVOCATO: a 3 `BbusyTest` va 17/0 -> 0/17 e
+    // `BplModTest` 4/2 -> 0/6. Il 5 non e' pero' piu' un numero da sweep:
+    //     5 = 3 (la regola dell'oracolo al SUO istante di lettura)
+    //       + 2 (il nostro: la FSM di bus consegna il dato della lettura custom in
+    //            S5-S7, l'oracolo campiona a S4 -- due CCK prima).
+    // Il residuo ha quindi un nome, ed e' il PUNTO DI CONSEGNA di una lettura custom,
+    // non VHPOSR. Toccarlo sposta la fase di ogni test che legge VHPOSR.
+    // ✅ Controprova: i marcatori di `synccpu` (COLOR00 $F0F/$606/$A0A/$404) misurati
+    // sui due lati con `WINUAE_COLORLOG` e `SynccpuProbe` danno uno scarto COSTANTE di
+    // +4 su tutti gli stadi, sia su `bplmod5` sia su `sprdiscpu1`: al valore corrente la
+    // nostra `synccpu` riproduce l'oracolo ciclo per ciclo.
     // Vedi docs/vamigats-import-order.md §synccpu.
     private static final int BEAM_AHEAD_CCK =
             Integer.getInteger("amiga.beamahead", 5);
@@ -4497,6 +4523,7 @@ public abstract class AbstractAgnus {
         ddfEnableOn = false; ddfLimitIn = false; ddfLimitOut = false;
         hwiOld = false; dmaconBpl2 = false;
         dmaconBplSeq = false; dmaconBplPipe = false;
+        spriteDmaSeq = false; spriteDmaPipe = false; spriteDmaOnDecisionCck = -1;
         diwStrt = 0; diwStop = 0; ddfStrt = 0; ddfStop = 0;
         diwVStart = 0; diwVStop = 0; ddfCckStart = 0; ddfCckStop = 0;
         bplcon1 = 0; scrollOdd = 0; scrollEven = 0;
@@ -4587,9 +4614,16 @@ public abstract class AbstractAgnus {
      * viene riaggiornato sia qui sia in updateBitplaneVerticalWindow().
      */
     private void updateDmaFlags() {
+        final boolean sprWas = spriteDmaEnabled;
         dmaMasterEnabled   = (dmacon & 0x0200) != 0;
         bitplaneDmaEnabled = dmaMasterEnabled && (dmacon & 0x0100) != 0; // BPLEN
         spriteDmaEnabled   = dmaMasterEnabled && (dmacon & 0x0020) != 0; // SPREN
+        if (!sprWas && spriteDmaEnabled) {
+            // Vedi spriteDmaOnDecisionCck: il CCK di DECISIONE che questa accensione
+            // rende "deciso ma non allocato". L'oracolo lo scrive come
+            // `sprite_dma_change_cycle_on = get_cycles() + CYCLE_UNIT`.
+            spriteDmaOnDecisionCck = (masterClock >> 1) + 1;
+        }
         diskDmaEnabled     = dmaMasterEnabled && (dmacon & 0x0010) != 0; // DSKEN
         audioDmaEnabled    = dmaMasterEnabled && (dmacon & 0x000F) != 0; // AUDxEN
         copperDmaEnabled   = dmaMasterEnabled && (dmacon & 0x0080) != 0; // COPEN
@@ -4918,6 +4952,47 @@ public abstract class AbstractAgnus {
      * diventano tre.
      */
     private boolean dmaconBplSeq, dmaconBplPipe;
+
+    /**
+     * Il bit di DMA sprite <b>come stava due CCK prima</b> dello slot che lo usa.
+     *
+     * <p>⛔ Non è un latch di comodo: nell'oracolo la decisione degli sprite è
+     * <b>anticipata per costruzione</b>. Gli slot escono da uno shift register
+     * ({@code dmal_shifter}) i cui tap degli sprite stanno due posizioni più avanti di
+     * quelli di audio e disco — {@code handle_dmal()} lo dichiara nel commento
+     * <i>«sprites have earlier DMA decisions»</i> — e {@code generate_sprites()} legge
+     * {@code dmaen(DMA_SPRITE)} lì, scrivendo la richiesta nella pipeline RGA; il
+     * trasferimento cade due CCK dopo.
+     *
+     * <p>⚠️ È esattamente ciò che il banco {@code DMACON/sprdiscpu*} misura: quando la CPU
+     * spegne il DMA sprite <b>fra la decisione e il trasferimento</b>, l'oracolo fa il
+     * fetch lo stesso e noi no. Misurato su {@code sprdiscpu1} con
+     * {@code WINUAE_SPRLOG}/{@link io.github.zolfrik.amija.probe.SpriteDmaProbe}: alla riga
+     * 65 la scrittura cade a {@code h=24}, fra la decisione di SPRxDATA ({@code h=23}) e il
+     * suo trasferimento ({@code h=25}), e l'oracolo preleva SPRxDATA ma non SPRxDATB.
+     * Leggendo il bit vivo noi non prelevavamo nessuno dei due, e SPRxDATA/SPRxDATB
+     * finivano a righe diverse — due pixel di colore 17 e 18 dove ce n'è uno di colore 19.
+     */
+    private boolean spriteDmaSeq, spriteDmaPipe;
+
+    /**
+     * CCK di <b>decisione</b> reso inefficace dall'accensione del DMA sprite, oppure −1.
+     *
+     * <p>⛔ Seconda regola dello stesso meccanismo, e l'oracolo la commenta parola per
+     * parola: <i>«If sprite DMA is switched on just when sprite DMA is decided, channel is
+     * still decided but it is not allocated!»</i>. Accendere SPREN al CCK {@code W} fissa
+     * {@code sprite_dma_change_cycle_on = W + 1}; lo slot la cui <b>decisione</b> cade
+     * proprio lì entra nella pipeline RGA con {@code alloc = 0} — quindi <b>non preleva e
+     * non fa avanzare il puntatore</b>, e il ciclo resta libero per il Blitter.
+     *
+     * <p>Poiché la decisione sta due CCK prima del trasferimento (vedi {@link #spriteDmaSeq}),
+     * lo slot saltato è quello a {@code W + 3}. Misurato su {@code sprenacpu2}, sprite 4,
+     * riga 125: l'accensione cade a {@code h=40}, la decisione dello slot B a {@code h=41},
+     * e l'oracolo <b>non</b> preleva — il puntatore resta a {@code $0705BA} e la riga
+     * successiva riparte da lì. Senza questa regola facevamo un prelievo in più e
+     * SPRxDATA/SPRxDATB restavano sfasati di una word per tutto lo sprite.
+     */
+    private long spriteDmaOnDecisionCck = -1;
 
     /**
      * {@code decide_bpl()} dell'oracolo: la macchina a stati che decide se il sequencer dei
