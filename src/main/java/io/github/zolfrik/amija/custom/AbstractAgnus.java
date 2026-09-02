@@ -442,12 +442,15 @@ public abstract class AbstractAgnus {
         // Copper. ⚠️ Misurato, non dedotto: nei log di `dropcpu41` e `dropcpu61` la
         // scrittura della CPU compare SEMPRE prima della `CAPT` dello stesso cck e
         // sopravvive; in `drop31` quella del Copper compare DOPO e viene persa.
-        if (!__inCopperWrite || denise == null || !fetchWindowOpened || !isBitplaneDMAActive()) {
+        if (!__inCopperWrite || denise == null || bprun == 0 || !isBitplaneDMAActive()) {
             return false;
         }
-        final int nextCck = (hpos >> 1) + 1;
-        return getBitplaneIndexForRasterPosition(nextCck * 2, fetchUnitBpu, denise.isHires())
-                == bidx;
+        // ⚠️ `bprunCycle` è già stato incrementato per il CCK corrente (la decisione di
+        // fetch precede il Copper dentro il ciclo), quindi il suo valore di adesso È la
+        // fase del CCK successivo — quello la cui cattura la scrittura sta per perdere.
+        final boolean hires = denise.isHires();
+        final int plane = bplSequence(bprunCycle, hires);
+        return plane >= 0 && plane < bitplaneDmaPlaneLimit(fetchUnitBpu, hires) && plane == bidx;
     }
 
     /**
@@ -2042,48 +2045,58 @@ public abstract class AbstractAgnus {
                     break;
             }
 
-            // 2. Bitplane DMA
-            if (!busTakenByCustom && isBitplaneDMAActive()) {
+            // 2. Bitplane DMA — generate_bpl() dell'oracolo.
+            //
+            // ⛔ La finestra di fetch NON è un intervallo di posizioni: è un SEQUENCER.
+            // La fase la porta `bprunCycle`, un contatore che parte quando la macchina
+            // si arma e avanza a ogni CCK finché `bprun` è acceso — non `cck - DDFSTRT`.
+            // I due coincidono finché la riga va dritta da DDFSTRT a DDFSTOP, e divergono
+            // esattamente dove il banco `Agnus/Registers/DMACON` guarda: quando BPLEN si
+            // spegne e si riaccende dentro la riga. Vedi decideBpl().
+            if (!busTakenByCustom && bprun > 0) {
                 boolean hires = denise.isHires();    // = (bplcon0 & 0x8000)!=0, cached
-                // BPU viene CAMPIONATO una sola volta per riga, all'apertura della
-                // finestra di fetch (CCK == ddfCckStart), e usato per tutta la riga.
-                //
-                // Sull'hardware reale la sequenza di fetch dei bitplane è "armata" a
-                // DDFSTRT: il numero di piani da prelevare è fissato lì. Un aumento di
-                // BPU a metà riga (dopo DDFSTRT) NON avvia un fetch su quella riga.
-                //
-                // L'intro di Monkey Island accende i bitplani (BPU 0→5) a metà della
-                // riga di transizione del bordo (riga 43, a CCK 124, ben oltre DDFSTRT
-                // a CCK 56). Campionando BPU vivo ad ogni slot, quella riga prelevava
-                // ~11 word parziali: questo (a) disallineava i piani pari/dispari di
-                // 16px e (b) faceva avanzare TUTTI i puntatori di 11 word, traslando
-                // l'intera immagine per il resto del frame (testo "sdoppiato" con
-                // frange di colore). Con il latch a DDFSTRT la riga 43 vede BPU=0 →
-                // 0 fetch → nessun drift, nessuna traslazione. Le righe con BPU stabile
-                // (Workbench, gioco normale) non cambiano comportamento.
-                // Latch all'apertura della finestra (primo match di DDFSTRT vivo):
-                // campiona sia BPU sia ddfCckStart e li usa per tutta la riga, così un
-                // cambio di DDFSTRT a metà riga non sposta la fase/finestra di fetch.
-                if (!fetchWindowOpened && cck == ddfCckStart) {
-                    fetchWindowOpened = true;
-                    fetchUnitDdfStart = ddfCckStart;
-                    fetchUnitBpu = denise.getRawBpu();  // grezzo: il limite è di Agnus
-                    bpuRelatchCck = -1;
+                boolean lastOfBlock = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
+                if (dmaconBplSeq) {
+                    // BPU viene CAMPIONATO una sola volta per riga, all'apertura della
+                    // finestra di fetch, e usato per tutta la riga.
+                    //
+                    // L'intro di Monkey Island accende i bitplani (BPU 0→5) a metà della
+                    // riga di transizione del bordo (riga 43, a CCK 124, ben oltre DDFSTRT
+                    // a CCK 56). Campionando BPU vivo ad ogni slot, quella riga prelevava
+                    // ~11 word parziali: questo (a) disallineava i piani pari/dispari di
+                    // 16px e (b) faceva avanzare TUTTI i puntatori di 11 word, traslando
+                    // l'intera immagine per il resto del frame (testo "sdoppiato" con
+                    // frange di colore).
+                    // ⚠️ L'oracolo il BPU lo tiene VIVO (`bplcon0_planes_limit`,
+                    // ricalcolato a ogni scrittura di BPLCON0): il latch è una nostra
+                    // deroga, misurata su quel caso e tenuta separata dal porto del
+                    // sequencer perché due modelli cambiati insieme non si sanno più
+                    // attribuire. È il prossimo passo, non questo.
+                    if (!fetchWindowOpened) {
+                        fetchWindowOpened = true;
+                        fetchUnitBpu = denise.getRawBpu();  // grezzo: il limite è di Agnus
+                        bpuRelatchCck = -1;
+                    }
+                    // BPLCON0 scritto a finestra aperta: BPU efficace da write+4 CCK
+                    // (pipeline WinUAE; vedi setBPLCON0 per le misure [WRGA]).
+                    if (bpuRelatchCck >= 0 && cck >= bpuRelatchCck) {
+                        fetchUnitBpu = denise.getRawBpu();
+                        bpuRelatchCck = -1;
+                    }
+                    int plane = bplSequence(bprunCycle, hires);
+                    if (plane >= 0 && plane < bitplaneDmaPlaneLimit(fetchUnitBpu, hires)) {
+                        handleBitplaneDMA(cck, plane, hires);
+                        owner = OWNER_VALUES[BusOwner.BPL1.ordinal() + plane];
+                        busTakenByCustom = true;
+                    }
                 }
-                // BPLCON0 scritto a finestra aperta: BPU efficace da write+4 CCK
-                // (pipeline WinUAE; vedi setBPLCON0 per le misure [WRGA]).
-                if (bpuRelatchCck >= 0 && cck >= bpuRelatchCck) {
-                    fetchUnitBpu = denise.getRawBpu();
-                    bpuRelatchCck = -1;
-                }
-                int bplIdx = fetchWindowOpened
-                        ? getBitplaneIndexForRasterPosition(hpos, fetchUnitBpu, hires)
-                        : -1;
-
-                if (bplIdx >= 0) {
-                    handleBitplaneDMA(cck, bplIdx, hires);
-                    owner = OWNER_VALUES[BusOwner.BPL1.ordinal() + bplIdx];
-                    busTakenByCustom = true;
+                bprunCycle++;
+                if (lastOfBlock) {
+                    // `if (ddf_stopping == 2) bpl_dma_normal_stop(); if (ddf_stopping == 1)
+                    // ddf_stopping = 2;` — in quest'ordine: il blocco che chiude con
+                    // ddf_stopping a 1 ne fa ancora UNO prima di fermarsi.
+                    if (ddfStopping == 2) bplDmaNormalStop();
+                    if (ddfStopping == 1) ddfStopping = 2;
                 }
             }
 
@@ -2184,6 +2197,18 @@ public abstract class AbstractAgnus {
             }
 
             busOwners[cck] = owner.ordinal();
+
+            // ⚠️ DOPO l'arbitraggio, non prima: in `do_cck()` l'ordine è
+            // `generate_dma_requests()` (che contiene `generate_bpl`) e POI
+            // `decide_bpl(agnus_hpos)`. Una macchina armata al CCK X preleva la prima
+            // word al CCK X+1, ed è quel CCK di sfasamento a rendere giuste le finestre.
+            decideBpl(cck);
+
+            // Ricampionamento del latch BPLEN, nell'ordine dell'oracolo: DOPO decide_bpl e
+            // PRIMA che la scrittura del CCK corrente arrivi al registro. Due stadi perche'
+            // le nostre scritture sono immediate: vedi dmaconBplSeq.
+            dmaconBplSeq = dmaconBplPipe;
+            dmaconBplPipe = bitplaneDmaEnabled;
         }
 
         // 5. CPU — il clock del 68000 non si ferma mai.
@@ -3060,8 +3085,14 @@ public abstract class AbstractAgnus {
         // "scintille"/righe chiare, docs/glitch1.png / glitch2.png).
         // In hires il domod copre solo la SECONDA metà dell'unità finale da 8 CCK
         // (fm_maxplane==4 && cycle>=4): ogni piano prende il modulo una sola volta.
-        int effStop = getEffectiveDdfStopCck(hires);
-        if (cck >= effStop - (hires ? 4 : 8)) {
+        //
+        // ⛔ Quale sia l'ultimo blocco lo dice il SEQUENCER, non la posizione: è
+        // `ddf_stopping == 2`, lo stato in cui la macchina entra dopo che DDFSTOP è
+        // passato (generate_bpl). Col vecchio confronto posizionale
+        // `cck >= effStop - (hires?4:8)` una riga che spegne e riaccende BPLEN nel mezzo
+        // applicava il modulo dove capitava, perche' `effStop` non sa niente di quel che
+        // e' successo dentro la riga.
+        if (ddfStopping == 2 && (!hires || (bprunCycle & 7) >= 4)) {
             int mod = (bplIdx % 2 == 0) ? bpl1mod : bpl2mod;
             // Il modulo si somma SENZA maschera: il wrap entro la Chip RAM installata è
             // di dmaChipAddr, al momento della fetch (oracolo WinUAE: bitplane_rga_ptmod
@@ -4441,6 +4472,10 @@ public abstract class AbstractAgnus {
         cpuAccessTransferred = false; copperBusProcessed = false;
         cpuRouteCacheValid = false;
         cpuCurrentRoute = null;
+        bprun = 0; bprunCycle = 0; ddfStopping = 0;
+        ddfEnableOn = false; ddfLimitIn = false; ddfLimitOut = false;
+        hwiOld = false; dmaconBpl2 = false;
+        dmaconBplSeq = false; dmaconBplPipe = false;
         diwStrt = 0; diwStop = 0; ddfStrt = 0; ddfStop = 0;
         diwVStart = 0; diwVStop = 0; ddfCckStart = 0; ddfCckStop = 0;
         bplcon1 = 0; scrollOdd = 0; scrollEven = 0;
@@ -4634,6 +4669,13 @@ public abstract class AbstractAgnus {
     protected static final int DDF_HARD_STOP_CCK = 0xD7;
 
     /**
+     * Limite hard di INIZIO fetch: a CCK {@code $18} Agnus rilascia la condizione DDFSTOP
+     * ereditata dalla riga precedente ({@code decide_bpl}: {@code if (hpos == 0x18)
+     * ddf_limit_in = false;}). È l'altro estremo di {@link #DDF_HARD_STOP_CCK}.
+     */
+    protected static final int DDF_HARD_START_CCK = 0x18;
+
+    /**
      * {@code true} se i limiti HARD della finestra di fetch sono disattivati. Su OCS
      * non lo sono mai; su ECS li disabilitano BEAMCON0 VARBEAMEN/HARDDIS e i bit
      * UHRES/SHRES di BPLCON0 (WinUAE {@code harddis_h}).
@@ -4776,6 +4818,204 @@ public abstract class AbstractAgnus {
     // frame rate. Rese static final: zero allocazioni, comportamento identico.
     private static final int[] HIRES_FETCH = { 3, 1, 2, 0 };
     private static final int[] LORES_FETCH = { -1, 3, 5, 1, -1, 2, 4, 0 };
+
+    // =========================================================================
+    // Sequencer dei bitplane — decide_bpl()/generate_bpl() dell'oracolo
+    // =========================================================================
+
+    /**
+     * Il blocco di fetch dura <b>otto</b> CCK in tutte le risoluzioni: è
+     * {@code fetchunits[] = {8,8,8,...}} di WinUAE con {@code fetchmode 0}. Quel che cambia
+     * con la risoluzione è la lunghezza della <b>sequenza</b> dentro il blocco
+     * ({@code fetchstarts[]}: 8 CCK in lores, 4 in hires) e quanti piani ci stanno
+     * ({@code fm_maxplanes[]}: 8 e 4).
+     */
+    private static final int FETCHUNIT_MASK = 7;
+
+    /**
+     * ⚠️ <b>Sfasamento fra la nostra griglia di CCK e l'{@code hpos} dell'oracolo</b>, da
+     * sommare ai valori DDF prima di confrontarli. Non è una taratura libera: è
+     * l'ancora già misurata sul banco {@code BPLPTR} — «il nostro {@code hpos} per lo
+     * stesso evento è più basso di quello dell'oracolo, e il nostro <i>fetch</i>
+     * corrisponde al suo <i>write-back</i>, con la cattura un CCK prima».
+     * Il modello posizionale precedente lo assorbiva nella definizione della finestra
+     * ({@code relCck = cck - (ddfStrt & mask)}); il sequencer deve dichiararlo.
+     */
+    private static final int SEQ_PHASE = -2;
+
+    /** Quale piano tocca al CCK di fase {@code bprunCycle}; -1 se lo slot è libero. */
+    private static int bplSequence(int bprunCycle, boolean hires) {
+        return hires ? HIRES_FETCH[bprunCycle & 0x3] : LORES_FETCH[bprunCycle & 0x7];
+    }
+
+    /** Stato di {@code bprun}: 0 = fermo, 1 = in corsa, 2/3 = spegnimento in due CCK. */
+    private int bprun;
+    /** Fase della sequenza di fetch: avanza a ogni CCK di {@code bprun}, non con hpos. */
+    private int bprunCycle;
+    /**
+     * Condizione «DDFSTOP passato»: 0 = no, 1 = appena scattata, 2 = ultimo blocco (è qui
+     * che si applicano i moduli). ⚠️ Non si azzera a fine riga: la azzera solo
+     * {@link #bplDmaNormalStop()}, come nell'oracolo.
+     */
+    private int ddfStopping;
+    /** ECS: vero fra il match di DDFSTRT e quello di DDFSTOP. */
+    private boolean ddfEnableOn;
+    /** Limite hard $18÷$D7, campionato con un CCK di ritardo ({@code ddf_limit_out}). */
+    private boolean ddfLimitIn, ddfLimitOut;
+    /** Valore precedente di {@code hwi}: la macchina parte sul FRONTE, non sul livello. */
+    private boolean hwiOld;
+    /** OCS: BPLEN arriva al sequencer con un CCK di ritardo in più che su ECS. */
+    private boolean dmaconBpl2;
+
+    /**
+     * BPLEN <b>come lo vede il sequencer</b>, e non è il valore vivo del registro.
+     *
+     * <p>⛔ Nell'oracolo {@code dmacon_bpl} è un <b>latch ricampionato una volta per CCK</b>,
+     * e il punto in cui lo fa è quel che conta: in fondo a {@code do_cck()}, <b>dopo</b>
+     * {@code decide_bpl()}, dopo {@code inc_cck()} e <b>prima</b> di
+     * {@code handle_pipelined_custom_write()} — cioè prima che la scrittura del CCK corrente
+     * arrivi al registro:
+     * <pre>
+     *   generate_dma_requests();  // generate_bpl: usa il latch
+     *   decide_bpl(agnus_hpos);   // usa il latch
+     *   ...
+     *   inc_cck();
+     *   dmacon_bpl = (dmacon &amp; DMA_BITPLANE) &amp;&amp; (dmacon &amp; 0x200);   // ricampiona
+     *   handle_pipelined_custom_write(false);                        // e SOLO ORA scrive
+     * </pre>
+     * ⇒ una scrittura a DMACON al CCK X entra in {@code dmacon} dopo il ricampionamento di
+     * X, viene presa da quello di X+1 e il sequencer la vede a <b>X+2</b>. Due stadi.
+     *
+     * <p>⚠️ Misurato, non dedotto: su {@code reenable2} riga 64 il Copper spegne BPLEN a
+     * hpos $51 e l'oracolo reagisce a h=87 — sei CCK dopo — mentre noi, leggendo il registro
+     * vivo, reagivamo a quattro. Quei due CCK spostavano {@code bprun_cycle} di due, e con
+     * esso il blocco su cui cade {@code ddf_stopping}: il sequencer terminava nel punto
+     * sbagliato e {@code reenable2} passava dal 1,91% al 26,03%.
+     *
+     * <p>⚠️ È la stessa forma che l'oracolo usa già, dichiarata, per il ritardo in più di
+     * OCS ({@code dmacon_bpl2}, <i>«OCS BPLENA is delayed by extra 1 CCK»</i>): lì gli stadi
+     * diventano tre.
+     */
+    private boolean dmaconBplSeq, dmaconBplPipe;
+
+    /**
+     * {@code decide_bpl()} dell'oracolo: la macchina a stati che decide se il sequencer dei
+     * bitplane è in corsa. Va chiamata <b>dopo</b> aver deciso lo slot del CCK corrente —
+     * in {@code do_cck()} l'ordine è {@code generate_dma_requests()} (che contiene
+     * {@code generate_bpl}) e <b>poi</b> {@code decide_bpl(agnus_hpos)} — quindi una
+     * macchina armata al CCK X preleva la prima word al CCK X+1.
+     *
+     * <p>⛔ <b>Il cuore è che BPRUN parte sul FRONTE di salita di una condizione
+     * composta</b>, non sul suo livello:
+     * <pre>
+     *   hwi = dma &amp;&amp; diw &amp;&amp; ddf_enable_on &amp;&amp; (!ddf_limit_out || harddis_h);
+     *   if (!bprun &amp;&amp; hwi &amp;&amp; !hwi_old)      { bprun = 1; bprun_cycle = 0; }
+     *   else if (bprun &amp;&amp; !hwi &amp;&amp; hwi_old)  { if (!ddf_stopping) ddf_stopping = 1; }
+     * </pre>
+     * Il commento dell'oracolo lo dice: <i>«BPRUN can only start if DMA, DIW or DDF state
+     * has changed since last time»</i>. Da qui viene il <b>baco del sequencer</b> che
+     * {@code DMACON/bpoffbug1} e {@code reenable2/3} misurano: spegnere BPLEN dentro la
+     * finestra fa scattare {@code ddf_stopping = 1} sul fronte di discesa, e quando BPLEN
+     * torna la sequenza riparte ma si ferma alla fine del blocco in corso — «early
+     * termination», che il README del banco descrive come un baco di Agnus.
+     *
+     * <p>⚠️ E lo spegnimento non è immediato: {@code (!dma || !diw) && bprun == 1} porta
+     * {@code bprun} a 2, e da lì 2→3→0, cioè <b>due CCK</b> di coda.
+     *
+     * <p>⚠️ OCS e ECS sono due rami diversi nell'oracolo e restano due qui. Su OCS BPLEN
+     * arriva con un CCK di ritardo in più ({@code dmacon_bpl2}), la partenza è sul
+     * <b>match</b> di DDFSTRT invece che sul fronte di {@code hwi}, e sono DDFSTOP e il
+     * limite hard a far scattare {@code ddf_stopping} invece della discesa di {@code hwi}.
+     */
+    private void decideBpl(int cck) {
+        // ⛔ L'ULTIMA RIGA DEL FOTOGRAMMA spegne la finestra verticale, DIWSTOP o no.
+        // Oracolo, `check_bpl_vdiw()`, col suo commento:
+        //     bool forceoff = agnus_bsvb && !harddis_v;
+        //     bool end = vpos == plflastline || forceoff;
+        //     // VB start line forces vertical display window off (if HARDDIS=0)
+        // e `agnus_bsvb` è vero esattamente lì: `vpos == maxvpos + lof_store - 1`
+        // (`check_vsyncs`), cioè 312 su un fotogramma lungo PAL.
+        // ⚠️ Misurato con la sonda: senza questa riga il sequencer preleva 80 word in più
+        // per fotogramma, tutte su vpos 312 — e sono quelle che facevano finire il blitter
+        // 32 CCK prima, cioè il crollo di `BbusyTest`. Il modello posizionale non ne aveva
+        // bisogno perché la sua finestra non arrivava fin lì per altra via.
+        final boolean lastFrameLine = vpos == (field == 0 ? maxVpos : maxVpos - 1);
+        final boolean diw = bitplaneVerticalActive && !lastFrameLine;
+        final boolean harddis = ddfHardLimitsDisabled();
+        // ⛔ Il `| 1`: l'oracolo confronta contro `ddfstrt_val = (ddfstrt & ddf_mask) | 1`
+        // (DDFSTRT(), commento «DDFSTRT (odd cycle)»), mentre DDFSTOP resta pari. Il modello
+        // posizionale non aveva mai avuto bisogno di saperlo perché non confrontava una
+        // posizione con un match, ricavava una fase da una sottrazione.
+        final int ddfStrtCck = ((ddfStrt & ddfMask()) | 1) + SEQ_PHASE;
+        final int ddfStopCck = (ddfStop & ddfMask()) + SEQ_PHASE;
+
+        ddfLimitOut = ddfLimitIn;
+
+        if (isECS()) {
+            final boolean dma = dmaconBplSeq;
+
+            if (cck == DDF_HARD_START_CCK + SEQ_PHASE) ddfLimitIn = false;
+            if (cck == DDF_HARD_STOP_CCK + SEQ_PHASE && !harddis) ddfLimitIn = true;
+
+            if (cck == ddfStrtCck) ddfEnableOn = true;
+            if (cck == ddfStopCck) ddfEnableOn = false;
+
+            boolean hwi = dma && diw && ddfEnableOn && (!ddfLimitOut || harddis);
+            if (bprun == 0 && hwi && !hwiOld) {
+                bprun = 1;
+                bprunCycle = 0;
+            } else if (bprun != 0 && !hwi && hwiOld) {
+                if (ddfStopping == 0) ddfStopping = 1;
+            }
+            hwiOld = hwi;
+
+            if (bprun == 3) bprun = 0;
+            if (bprun > 1) bprun++;
+            if ((!dma || !diw) && bprun == 1) bprun = 2;
+
+        } else {
+            // OCS: BPLENA ritardata di un CCK in più rispetto a ECS/AGA.
+            final boolean dma = dmaconBpl2;
+            dmaconBpl2 = dmaconBplSeq;
+
+            if (cck == ddfStopCck && bprun != 0 && ddfStopping == 0) ddfStopping = 1;
+
+            if (cck == DDF_HARD_START_CCK + SEQ_PHASE) ddfLimitIn = false;
+            if (cck == DDF_HARD_STOP_CCK + SEQ_PHASE && bprun != 0 && ddfStopping == 0) ddfStopping = 1;
+
+            boolean ddfstrtMatch = cck == ddfStrtCck;
+            if (!ddfLimitOut && ddfstrtMatch && bprun == 0 && dma && diw) {
+                bprun = 1;
+                bprunCycle = 0;
+            }
+
+            if (bprun == 2) {
+                // Se DDF è già passato si salta all'ultimo blocco (cracktro di Scoopex
+                // «Crash Landing», citato dall'oracolo).
+                if (ddfStopping == 1) ddfStopping = 2;
+                bprun = 0;
+            }
+
+            if ((!dma || !diw) && bprun == 1) {
+                bprun = 2;
+                if (ddfStopping == 1) {
+                    ddfStopping = 2;
+                    bprun = 0;
+                }
+            }
+        }
+    }
+
+    /**
+     * {@code bpl_dma_normal_stop()}: fine regolare della sequenza. ⚠️ Su OCS ri-arma anche
+     * il limite hard, che è quel che impedisce a una seconda finestra di aprirsi nella
+     * stessa riga.
+     */
+    private void bplDmaNormalStop() {
+        ddfStopping = 0;
+        bprun = 0;
+        if (!isECS()) ddfLimitIn = true;
+    }
 
     private static int getBitplaneIndexForFetchUnit(int relCck, boolean hires) {
         return hires ? HIRES_FETCH[relCck & 0x3] : LORES_FETCH[relCck & 0x7];
