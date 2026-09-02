@@ -946,37 +946,43 @@ public final class Paula {
      * i bit di direzione non si rileggono. È {@code POTGOR()} dell'oracolo,
      * {@code inputdevice.cpp}: {@code v = handle_joystick_potgor(potgo_value) & 0x5500}.
      *
-     * <p>Ogni linea ha <b>due</b> regole, e quale valga lo dice la sua direzione in POTGO:
-     * <ul>
-     *   <li><b>uscita</b> ({@code pdir} scritto a 1): il bit riletto segue il dato scritto,
-     *       subito. Oracolo, {@code cap_check}: {@code charge = (potgo_value & pdat) ? 2 : -2}
-     *       — <i>fast (dis)charge if output</i>;</li>
-     *   <li><b>ingresso</b>: il bit è alto solo se il condensatore è carico, e a caricarlo è
-     *       il <b>pull-up del dispositivo</b> attaccato — porta vuota ⇒ 0. Vedi
-     *       {@link GamePort#pullsUpPotLines()} e {@link #capCheck(boolean)}.</li>
-     * </ul>
+     * <p>⛔ <b>C'è UNA regola sola, e non guarda la direzione: il bit DAT è la tensione del
+     * CONDENSATORE.</b> L'oracolo, {@code handle_joystick_potgor}, non ha nessun ramo
+     * «uscita»: per ognuna delle quattro linee fa
+     * <pre>
+     *   potgor &amp;= ~pdat;
+     *   if (pot_cap[joy][i] &gt; 100) potgor |= pdat;
+     * </pre>
+     * La direzione decide soltanto <b>come si carica</b> il condensatore, e questo succede
+     * dentro {@link #capCheck(boolean)}: {@code charge = (potgo_value & pdat) ? 2 : -2},
+     * <i>fast (dis)charge if output</i>.
      *
-     * <p>⚠️ Sul ramo d'ingresso lo stato del pulsante è letto <b>in diretta</b> invece che
-     * dalla carica del condensatore: dà risposta immediata alla pressione senza aspettare le
-     * righe che servono al condensatore per riscendere sotto soglia.
+     * <p>⛔ <b>E il pulsante vince comunque</b>, perché nell'oracolo l'ultima parola arriva
+     * DOPO il ramo d'uscita: {@code if (isbutton) charge = -2; // button press overrides
+     * everything}. Un pulsante è un corto verso massa, il driver d'uscita di Paula è debole:
+     * una linea programmata «uscita alta» viene tirata a zero lo stesso.
+     *
+     * <p>⚠️ È l'idioma con cui i demo aspettano il click a schermo fermo, e leggere il dato
+     * scritto invece del condensatore lo rompeva: <i>Hardwired</i>, alla schermata «INSERT
+     * HARDWIRED DISK 2», programma la porta 1 come {@code POTGO=$0F00} — entrambe le linee
+     * uscite alte — e poi gira su {@code BTST #2,$DFF016} aspettando che DATLY scenda. Con la
+     * rilettura del dato scritto DATLY restava 1 per sempre e il tasto destro non arrivava
+     * mai: il disco 2 si poteva infilare quanto si voleva. Vedi
+     * {@code PotgorButtonOverridesOutputTest}.
+     *
+     * <p>⚠️ {@code cap_check(false)} è chiamato <b>dalla lettura stessa</b>, come nell'oracolo
+     * ({@code handle_joystick_potgor} lo fa in cima): è quello che dà la risposta immediata al
+     * pulsante senza aspettare la riga successiva, perché con {@code charge = -2} il
+     * condensatore perde 160 per lettura e un poll stretto lo porta sotto soglia subito.
      */
     private int buildPotinp() {
-        return potinpBit(0x8000, 0x4000, gamePort2, true)    // OUTRY / DATRY
-             | potinpBit(0x2000, 0x1000, gamePort2, false)   // OUTRX / DATRX
-             | potinpBit(0x0800, 0x0400, gamePort1, true)    // OUTLY / DATLY
-             | potinpBit(0x0200, 0x0100, gamePort1, false);  // OUTLX / DATLX
-    }
-
-    private int potinpBit(int dirMask, int datMask, GamePort port, boolean yLine) {
-        if ((potgo & dirMask) != 0) {
-            return potgo & datMask;      // linea pilotata come uscita: rilegge il dato scritto
-        }
-        if (port == null || !port.pullsUpPotLines()) {
-            return 0;                    // nessun pull-up: il condensatore resta scarico
-        }
-        boolean pressed = yLine ? port.isRightOrButton2Pressed()
-                                : port.isMiddleOrButton3Pressed();
-        return pressed ? 0 : datMask;    // pulsante premuto = linea a GND
+        capCheck(false);
+        int v = 0;
+        if (potCap[0][0] > 100) v |= 0x0100;   // DATLX — porta 1, linea X
+        if (potCap[0][1] > 100) v |= 0x0400;   // DATLY — porta 1, linea Y
+        if (potCap[1][0] > 100) v |= 0x1000;   // DATRX — porta 2, linea X
+        if (potCap[1][1] > 100) v |= 0x4000;   // DATRY — porta 2, linea Y
+        return v;
     }
 
     private int buildSerdatr() {
