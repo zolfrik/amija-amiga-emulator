@@ -295,6 +295,45 @@ public abstract class AbstractDenise {
     private final int[] shiftReg   = new int[6];
     private boolean     armedOdd, armedEven;
 
+    /**
+     * Stato dell'<b>emissione incrementale</b> degli shift register, un gruppo per
+     * playfield (indice 0 = piani dispari, 1 = piani pari).
+     *
+     * <p>⛔ <b>Denise non disegna una word in blocco: la fa uscire un pixel alla volta, al
+     * passo della risoluzione VIVA.</b> L'oracolo lo scrive come un contatore di shift
+     * ({@code drawing.cpp}, {@code lts_unaligned_ecs}):
+     * <pre>
+     * bplshiftcnt[0] += denise_res_size;                    // 1 in lores, 2 in hires
+     * if (bplshiftcnt[0] &gt;= 4) { bplshiftcnt[0] = 0; shiftbpl6(); }
+     * </pre>
+     * — e ha perfino un ramo dedicato alla transizione lores→hires
+     * ({@code expand_bplcon0_early()}: {@code reswitch_unalign = 3}), che manda tre
+     * mezze-CCK sul percorso lento pixel-esatto.
+     *
+     * <p>⚠️ <b>Che cosa cambia davvero</b>, e perché è un rifacimento e non una costante:
+     * il vecchio modello scriveva i 16 pixel della word tutti insieme, al CCK di draw, con
+     * un solo {@code pixScale = hires ? 1 : 2}. Un modello a blocchi <b>non può</b>
+     * esprimere un cambio di passo a metà word: se BPLCON0 commuta mentre la word sta
+     * uscendo, i bit rimasti devono uscire al passo nuovo — l'oracolo finisce la word in
+     * metà tempo e poi resta nero, noi la facevamo durare tutta. È il banco
+     * {@code Denise/Registers/BPLCON0/hilo}, e sono i 21 px che il §12 aveva rimandato a
+     * questo banco per nome.
+     *
+     * <p>✅ <b>A risoluzione costante l'emissione incrementale è bit-identica al blocco</b>:
+     * 16 bit × 2 sub-pixel = 32 entry = 8 CCK in lores, 16 entry = 4 CCK in hires, gli
+     * stessi indici e gli stessi valori. È la proprietà che rende il rifacimento
+     * verificabile — la rete deve restare ferma, e a muoversi dev'essere solo {@code hilo}.
+     *
+     * <p>⚠️ <b>Vivo è SOLO {@code hires}.</b> {@code bpu}, il dual-playfield e lo scroll
+     * fine sono <b>latchati al caricamento</b>, esattamente come li congelava il blocco:
+     * cambiarli insieme sarebbe cambiare due modelli in una volta, e a quel punto un rosso
+     * non si sa più attribuire. Sono materia di altre classi dello stesso banco.
+     */
+    private final int[]  srCount  = new int[2];   // bit ancora da far uscire (0..16)
+    private final int[]  srCursor = new int[2];   // prossimo indice di dBuffer da scrivere
+    private final int[]  srPhase  = new int[2];   // sub-pixel già emessi del bit corrente
+    private final int[]  srBpu    = new int[2];   // BPU latchato al caricamento
+
     // =========================================================================
     // Sprite state
     // =========================================================================
@@ -451,6 +490,10 @@ public abstract class AbstractDenise {
         Arrays.fill(bpldatPipe, 0);
         Arrays.fill(shiftReg, 0);
         armedOdd = armedEven = false;
+        srCount[0] = srCount[1] = 0;
+        srPhase[0] = srPhase[1] = 0;
+        srCursor[0] = srCursor[1] = 0;
+        srBpu[0] = srBpu[1] = 0;
         Arrays.fill(sprdata,  0);
         Arrays.fill(sprdatb,  0);
         Arrays.fill(sprpos,   0);
@@ -751,6 +794,12 @@ public abstract class AbstractDenise {
         // interamente sovrascritta su ~92% delle righe (le visibili) = lavoro sprecato
         // (~3,5% del tempo core in Arrays.fill). Rimuoverla è bit-exact (golden CRC
         // 832316F5 invariata).
+        // Una word armata a fine riga non fa in tempo a uscire tutta: i CCK per farlo non
+        // ci sono più. Il vecchio modello a blocchi quei pixel li aveva già scritti, quindi
+        // qui si finisce di scriverli — è la coda della riga, oltre la finestra di fetch, e
+        // serve solo a NON introdurre una seconda differenza. Vedi srCount.
+        flushShiftOut();
+
         updateBorderBuffer();
 
         if (agnus != null && !agnus.inVBlankArea(vpos)) {
@@ -852,36 +901,117 @@ public abstract class AbstractDenise {
     }
 
     // =========================================================================
-    // Fase 1: fillShiftRegisters — converte bpldat in dBuffer
+    // Fase 1: caricamento degli shift register ed emissione dei pixel
     // =========================================================================
 
     /**
-     * Carica i dati bitplane nel line-buffer dBuffer, applicando:
-     *   - lo scroll orizzontale da BPLCON1 (FIX 2)
-     *   - la modalità HIRES / LORES
-     *   - la separazione dei piani dispari (PF1) e pari (PF2) per il DPF
-     *
-     * BPLCON1:
-     *   bit 3:0 = PF1H — scroll dei piani dispari (BPL1, BPL3, BPL5), unità pixel
-     *   bit 7:4 = PF2H — scroll dei piani pari   (BPL2, BPL4, BPL6), unità pixel
-     *
-     * In modalità SPF i piani pari usano PF1H (scrollono assieme agli altri).
-     * In modalità HIRES 1 unit BPLCON1 = 1 sub-pixel; in LORES = 2 sub-pixel.
-     *
-     * Il dBuffer viene scritto con |= per permettere la sovrapposizione
-     * corretta tra fetch DMA adiacenti che con lo scroll potrebbero scrivere
-     * in posizioni parzialmente sovrapposte.
+     * <b>Carica</b> gli shift register: non disegna più niente qui. I pixel escono da
+     * {@link #emitBitplanePixels(int)}, quattro per CCK, al passo della risoluzione viva.
+     * Vedi {@link #srCount} per il perché.
      */
     public void drawBitplanesAtPixel(int pixel, boolean drawOdd, boolean drawEven) {
         if (drawOdd && armedOdd) {
             loadOddShiftRegisters();
-            drawOddBitplanes(pixel);
+            armShiftOut(0, pixel, initialBplcon1 & 0x01);
             armedOdd = false;
         }
         if (drawEven && armedEven) {
             loadEvenShiftRegisters();
-            drawEvenBitplanes(pixel);
+            // In SPF i piani pari scrollano con i dispari (PF1H), in DPF hanno il loro PF2H.
+            final boolean dual = (bplcon0 & 0x0400) != 0;
+            int scrollEven = dual ? ((initialBplcon1 & 0x10) >> 4) : (initialBplcon1 & 0x01);
+            armShiftOut(1, pixel, scrollEven);
             armedEven = false;
+        }
+    }
+
+    /**
+     * Arma l'uscita di una word: 16 bit da far scorrere a partire da {@code pixel}, più lo
+     * scroll <b>fine</b> (il bit 0 di PF1H/PF2H, 1 pixel lores; la parte grossa la fa già
+     * Agnus ritardando il CCK di draw a passi di 2 pixel).
+     *
+     * <p>⚠️ {@code bpu} e il dual-playfield si <b>latchano qui</b>: il modello a blocchi li
+     * congelava all'istante del draw, e tenerli congelati è ciò che rende questo
+     * rifacimento bit-identico a risoluzione costante.
+     */
+    private void armShiftOut(int grp, int pixel, int fineScroll) {
+        srCount[grp]  = 16;
+        srCursor[grp] = pixel + fineScroll * (hires ? 1 : 2);
+        srPhase[grp]  = 0;
+        srBpu[grp]    = bpu;
+    }
+
+    /**
+     * Fa uscire i <b>due sub-pixel di questa MEZZA CCK</b> da entrambi i gruppi di shift
+     * register. Chiamata <b>due volte per CCK</b> da Agnus: nel fronte di salita (dopo
+     * l'eventuale caricamento) e nel fronte di discesa, subito dopo il Copper.
+     *
+     * <p>Un bit dura <b>due</b> sub-pixel in lores e <b>uno</b> in hires, e la risoluzione
+     * si rilegge a ogni sub-pixel: è qui, e solo qui, che una commutazione a metà word
+     * cambia il passo di uscita.
+     *
+     * <p>⛔ <b>Perché due mezze-CCK e non un CCK intero.</b> Nell'oracolo la parte
+     * <b>risoluzione</b> di BPLCON0 entra <b>uno stadio prima</b> del resto del registro:
+     * {@code expand_drga_early()} — che chiama {@code expand_bplcon0_early()} — legge lo
+     * slot RGA {@code idx0}, mentre {@code expand_drga()} legge {@code idx1}, cioè uno
+     * indietro. Quello stadio vale <b>mezzo color clock</b>, ed è misurato: emettendo
+     * quattro sub-pixel in blocco in cima al CCK, la commutazione di {@code hilo} cadeva
+     * <b>due sub-pixel tardi</b> su tutte e dodici le righe. Spezzando l'emissione a metà,
+     * la scrittura del Copper del CCK corrente arriva in tempo per la seconda metà.
+     *
+     * <p>⚠️ Spezzarla non cambia <b>quali</b> sub-pixel si scrivono né con che valore: il
+     * cursore avanza allo stesso modo. Cambia solo l'istante in cui {@code hires} viene
+     * riletto, che è esattamente l'unica cosa che questo rifacimento vuole spostare.
+     */
+    public void emitBitplaneHalfCck() {
+        if (srCount[0] == 0 && srCount[1] == 0) return;
+        if (srCount[0] != 0) emitGroup(0, 2);
+        if (srCount[1] != 0) emitGroup(1, 2);
+    }
+
+    /** Fa uscire quel che resta delle due word, a fine riga. Vedi il chiamante. */
+    private void flushShiftOut() {
+        while (srCount[0] > 0 || srCount[1] > 0) {
+            if (srCount[0] > 0) emitGroup(0, 2);
+            if (srCount[1] > 0) emitGroup(1, 2);
+        }
+    }
+
+    private void emitGroup(int grp, int subPixels) {
+        final int bpuLatched = srBpu[grp];
+        // Il cursore resta in fase col CCK: due sub-pixel per mezza-CCK, sempre.
+        for (int i = 0; i < subPixels && srCount[grp] > 0; i++) {
+            final int p = srCursor[grp];
+            if (p >= 0 && p < dBuffer.length) {
+                if (grp == 0) {
+                    int slice = 0;
+                    if (bpuLatched >= 1 && (shiftReg[0] & 0x8000) != 0) slice |= 1;
+                    if (bpuLatched >= 3 && (shiftReg[2] & 0x8000) != 0) slice |= 4;
+                    if (bpuLatched >= 5 && (shiftReg[4] & 0x8000) != 0) slice |= 16;
+                    dBuffer[p] = (byte) ((dBuffer[p] & 0x2A) | slice);
+                } else {
+                    int slice = 0;
+                    if (bpuLatched >= 2 && (shiftReg[1] & 0x8000) != 0) slice |= 2;
+                    if (bpuLatched >= 4 && (shiftReg[3] & 0x8000) != 0) slice |= 8;
+                    if (bpuLatched >= 6 && (shiftReg[5] & 0x8000) != 0) slice |= 32;
+                    dBuffer[p] = (byte) ((dBuffer[p] & 0x15) | slice);
+                }
+            }
+            srCursor[grp]++;
+            // Passo del bit: 2 sub-pixel in lores, 1 in hires — letto VIVO.
+            if (++srPhase[grp] >= (hires ? 1 : 2)) {
+                srPhase[grp] = 0;
+                srCount[grp]--;
+                if (grp == 0) {
+                    shiftReg[0] = (shiftReg[0] << 1) & 0xFFFF;
+                    shiftReg[2] = (shiftReg[2] << 1) & 0xFFFF;
+                    shiftReg[4] = (shiftReg[4] << 1) & 0xFFFF;
+                } else {
+                    shiftReg[1] = (shiftReg[1] << 1) & 0xFFFF;
+                    shiftReg[3] = (shiftReg[3] << 1) & 0xFFFF;
+                    shiftReg[5] = (shiftReg[5] << 1) & 0xFFFF;
+                }
+            }
         }
     }
 
@@ -897,61 +1027,6 @@ public abstract class AbstractDenise {
         if (bpu >= 6) shiftReg[5] = bpldatPipe[5];
     }
 
-    private void drawOddBitplanes(int pixel) {
-        int     pixScale   = hires ? 1 : 2;   // sub-pixel per lores-pixel
-
-        // Scroll FINE da BPLCON1: la parte grezza (bit 3:1 di PF1H) è già gestita da
-        // Agnus ritardando il cck di draw in passi da 2 pixel; qui resta solo il bit 0
-        // (1 pixel lores). L'offset va espresso in sub-pixel, quindi * pixScale.
-        int scrollOdd  = (initialBplcon1 & 0x01);       // PF1H bit 0 (1 px lores)
-
-        for (int i = 0; i < 16; i++) {
-            int bitMask = 0x8000 >> i;
-
-            // ---- Piani dispari: BPL1 (p=0), BPL3 (p=2), BPL5 (p=4) ----
-            // Contributo in bit 0, 2, 4 di dBuffer
-            int sliceOdd = 0;
-            if (bpu >= 1 && (shiftReg[0] & bitMask) != 0) sliceOdd |= 1;
-            if (bpu >= 3 && (shiftReg[2] & bitMask) != 0) sliceOdd |= 4;
-            if (bpu >= 5 && (shiftReg[4] & bitMask) != 0) sliceOdd |= 16;
-            int pOdd = pixel + i * pixScale + scrollOdd * pixScale;
-            if (pOdd >= 0 && pOdd < dBuffer.length) {
-                dBuffer[pOdd] = (byte) ((dBuffer[pOdd] & 0x2A) | sliceOdd);
-                if (!hires && pOdd + 1 < dBuffer.length)
-                    dBuffer[pOdd + 1] = (byte) ((dBuffer[pOdd + 1] & 0x2A) | sliceOdd);
-            }
-        }
-
-        shiftReg[0] = shiftReg[2] = shiftReg[4] = 0;
-    }
-
-    private void drawEvenBitplanes(int pixel) {
-        boolean dual       = (bplcon0 & 0x0400) != 0;
-        int     pixScale   = hires ? 1 : 2;   // sub-pixel per lores-pixel
-
-        int scrollOdd  = (initialBplcon1 & 0x01);       // PF1H bit 0 (1 px lores)
-        int scrollEven = (initialBplcon1 & 0x10) >> 4;  // PF2H bit 0 (1 px lores)
-        if (!dual) scrollEven = scrollOdd;
-
-        for (int i = 0; i < 16; i++) {
-            int bitMask = 0x8000 >> i;
-
-            // ---- Piani pari: BPL2 (p=1), BPL4 (p=3), BPL6 (p=5) ----
-            // Contributo in bit 1, 3, 5 di dBuffer
-            int sliceEven = 0;
-            if (bpu >= 2 && (shiftReg[1] & bitMask) != 0) sliceEven |= 2;
-            if (bpu >= 4 && (shiftReg[3] & bitMask) != 0) sliceEven |= 8;
-            if (bpu >= 6 && (shiftReg[5] & bitMask) != 0) sliceEven |= 32;
-            int pEven = pixel + i * pixScale + scrollEven * pixScale;
-            if (pEven >= 0 && pEven < dBuffer.length) {
-                dBuffer[pEven] = (byte) ((dBuffer[pEven] & 0x15) | sliceEven);
-                if (!hires && pEven + 1 < dBuffer.length)
-                    dBuffer[pEven + 1] = (byte) ((dBuffer[pEven + 1] & 0x15) | sliceEven);
-            }
-        }
-
-        shiftReg[1] = shiftReg[3] = shiftReg[5] = 0;
-    }
 
     // =========================================================================
     // Fase 2: updateBorderBuffer — calcola bBuffer (maschera DIW/bordo)

@@ -2059,6 +2059,17 @@ public abstract class AbstractAgnus {
 
             handleBitplaneDrawEvent(cck);
 
+            // ⛔ L'emissione dei pixel è INCREMENTALE e non è gated dal DMA: gli shift
+            // register di Denise continuano a scorrere anche se BPLEN si spegne a metà
+            // word, esattamente come il vecchio modello a blocchi aveva già scritto tutti
+            // e 16 i pixel all'istante del draw. Gated qui sarebbe una differenza in più,
+            // e questo rifacimento ne deve avere UNA sola. Vedi AbstractDenise.srCount.
+            //
+            // Questa è la PRIMA mezza-CCK; la seconda è nel fronte di discesa, subito dopo
+            // il Copper, perché la risoluzione entra in Denise mezzo color clock prima del
+            // resto di BPLCON0 (oracolo: expand_drga_early). Vedi emitBitplaneHalfCck().
+            if (denise != null) denise.emitBitplaneHalfCck();
+
             // 1. Slot fissi ad alta priorità (DAS: refresh/disk/audio) — tipo di
             //    slot letto dalla tabella sequencer precomputata DMA_SLOT_TABLE.
             //    Le condizioni dinamiche (DMACON enable, richiesta canale) restano
@@ -2345,6 +2356,12 @@ public abstract class AbstractAgnus {
         if ((hpos & 1) == 0 && isCopperEnabled()) {
             copper.fallingEdge();
         }
+
+        // SECONDA mezza-CCK di Denise, subito DOPO il Copper: la parte risoluzione di
+        // BPLCON0 entra uno stadio RGA prima del resto (oracolo: expand_drga_early legge
+        // idx0, expand_drga legge idx1), cioè mezzo color clock, ed è ciò che fa cadere la
+        // commutazione di `hilo` al sub-pixel giusto. Vedi AbstractDenise.emitBitplaneHalfCck.
+        if ((hpos & 1) == 0 && denise != null) denise.emitBitplaneHalfCck();
         // Il Blitter è single-phase (Fase 3): tutta la sua logica (accesso a memoria,
         // avanzamento micro-op) avviene in stepCck() nel risingEdge; nessun fallingEdge.
 
