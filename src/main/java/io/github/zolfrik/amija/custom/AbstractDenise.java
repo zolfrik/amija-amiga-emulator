@@ -1145,9 +1145,17 @@ public abstract class AbstractDenise {
      * PF2P=1) il cursore sprite finiva DIETRO al playfield invece che davanti.
      */
     private void translateSPF(int from, int to, int bplcon2) {
-        int zpf2 = zPF((bplcon2 >> 3) & 7);
+        int plf2pri = (bplcon2 >> 3) & 7;
+        int zpf2    = zPF(plf2pri);
+        // La regola «SWIV» vive qui: playfield singolo, almeno 5 piani e PF2P >= 5. Il
+        // gemello per il dual-playfield sta in translateDPF. Vedi deniseSpecials().
+        boolean specials = bpu >= 5 && plf2pri >= 5;
         for (int i = from; i < to && i < mBuffer.length; i++) {
-            int s      = mBuffer[i] & 0x3F;
+            int s = mBuffer[i] & 0x3F;
+            if (specials) {
+                s = deniseSpecials(s, bpu, false, bplcon2 & 7, plf2pri);
+                mBuffer[i] = (byte) s;
+            }
             zBuffer[i] = (s != 0) ? zpf2 : 0;
         }
     }
@@ -1157,9 +1165,11 @@ public abstract class AbstractDenise {
      * risolve priorità in base a bplcon2.
      */
     private void translateDPF(int from, int to, int bplcon2) {
-        boolean pf2pri = (bplcon2 & 0x0040) != 0;
-        int     zpf1   = zPF(bplcon2 & 7);
-        int     zpf2   = zPF((bplcon2 >> 3) & 7);
+        boolean pf2pri  = (bplcon2 & 0x0040) != 0;
+        int     plf1pri = bplcon2 & 7;
+        int     plf2pri = (bplcon2 >> 3) & 7;
+        int     zpf1    = zPF(plf1pri);
+        int     zpf2    = zPF(plf2pri);
 
         for (int i = from; i < to && i < mBuffer.length; i++) {
             int s    = dBuffer[i] & 0x3F;
@@ -1167,17 +1177,24 @@ public abstract class AbstractDenise {
             int idx1 = (s & 1) | ((s & 4) >> 1) | ((s & 16) >> 2);
             int idx2 = ((s & 2) >> 1) | ((s & 8) >> 2) | ((s & 32) >> 3);
 
+            // ⛔ Il COLORE esce dalla tabella dell'oracolo, che è la stessa che serve a
+            // HAM+DPF e che sa già leggere i bit 6/7 del playfield trasparente; la
+            // PRIORITÀ (e quindi lo z per gli sprite) resta decisa dai piani veri, perché
+            // un playfield trasparente continua a coprire quello dietro.
+            int pv  = deniseSpecials(s, bpu, true, plf1pri, plf2pri);
+            byte colour = (byte) dualPlayfieldIndex(pv, pf2pri);
+
             if (idx1 != 0) {
                 if (idx2 != 0) {
                     // Entrambi i playfield visibili: vince la priorità configurata
-                    if (pf2pri) { mBuffer[i] = (byte)(idx2 | 8); zBuffer[i] = zpf2 | 0x05; }
-                    else        { mBuffer[i] = (byte) idx1;       zBuffer[i] = zpf1 | 0x04; }
+                    if (pf2pri) { mBuffer[i] = colour; zBuffer[i] = zpf2 | 0x05; }
+                    else        { mBuffer[i] = colour; zBuffer[i] = zpf1 | 0x04; }
                 } else {
-                    mBuffer[i] = (byte) idx1;       zBuffer[i] = zpf1 | 0x02;
+                    mBuffer[i] = colour;              zBuffer[i] = zpf1 | 0x02;
                 }
             } else {
-                if (idx2 != 0) { mBuffer[i] = (byte)(idx2 | 8); zBuffer[i] = zpf2 | 0x03; }
-                else           { mBuffer[i] = 0;                  zBuffer[i] = 0x01; }
+                if (idx2 != 0) { mBuffer[i] = colour; zBuffer[i] = zpf2 | 0x03; }
+                else           { mBuffer[i] = 0;      zBuffer[i] = 0x01; }
             }
         }
     }
@@ -1841,6 +1858,55 @@ public abstract class AbstractDenise {
      * priorità in BPLCON2 — qui sono sempre zero: il nostro {@code dBuffer} porta sei piani.
      * È materia della classe A ({@code invprio}), non di questa.
      */
+    /**
+     * Le due funzioni <b>non documentate</b> che Denise ha quando una priorità di playfield
+     * in BPLCON2 vale <b>5 o più</b> — cioè punta a un playfield che non esiste.
+     * L'oracolo le sceglie in {@code update_specials()} e le applica in
+     * {@code decode_denise_specials()}, sul pixel <b>grezzo</b> e <b>dopo</b> il calcolo
+     * delle collisioni:
+     * <pre>
+     * decode_specials = 0;
+     * if (!aga_mode) {
+     *   if ((bplmode == CMODE_NORMAL || bplmode == CMODE_EXTRAHB || ...)
+     *       &amp;&amp; denise_planes &gt;= 5 &amp;&amp; plf2pri &gt;= 5)      decode_specials = 1;
+     *   if (bplmode == CMODE_DUALPF &amp;&amp; (plf1pri &gt;= 5 || plf2pri &gt;= 5))
+     *                                                    decode_specials = 2;
+     * }
+     * </pre>
+     *
+     * <p><b>1 — «SWIV»</b>, playfield singolo: con almeno 5 piani e PF2P ≥ 5, se il bit del
+     * <b>piano 5</b> è acceso <i>tutti gli altri piani sono ignorati</i> e l'indice diventa
+     * esattamente 16. L'oracolo la chiama come il gioco che la usa (il pannello punteggi di
+     * SWIV).
+     *
+     * <p><b>2 — playfield TRASPARENTE</b>, dual-playfield: il playfield la cui priorità è
+     * ≥ 5 mantiene la sua precedenza — continua a coprire l'altro — ma il suo colore diventa
+     * COLOR00. Si segnala accendendo i bit 6 e 7 del pixel, che sono i bit «inutilizzati» dei
+     * piani su OCS/ECS ed è esattamente per questo che
+     * {@link #dualPlayfieldIndex(int, boolean)} li legge: {@code plane1x} e {@code plane2x}
+     * diventano 0 mentre {@code plane1}/{@code plane2} restano non nulli, quindi la priorità
+     * non cambia e il colore sì. (Il logo di Running Man / Scoopex.)
+     *
+     * @param pv       pixel grezzo a 6 bit
+     * @param planes   piani che Denise sta componendo
+     * @param dpf      true se il modo è dual-playfield
+     * @param plf1pri  PF1P = {@code bplcon2 & 7}
+     * @param plf2pri  PF2P = {@code (bplcon2 >> 3) & 7}
+     */
+    private static int deniseSpecials(int pv, int planes, boolean dpf,
+                                      int plf1pri, int plf2pri) {
+        if (dpf) {
+            if (plf1pri >= 5 || plf2pri >= 5) {
+                if (plf1pri >= 5 && (pv & 0x15) != 0) pv |= 0x40;
+                if (plf2pri >= 5 && (pv & 0x2A) != 0) pv |= 0x80;
+            }
+            return pv;
+        }
+        // Playfield singolo: la regola «SWIV».
+        if (planes >= 5 && plf2pri >= 5 && (pv & 0x10) != 0) return 0x10;
+        return pv;
+    }
+
     private static int dualPlayfieldIndex(int pv, boolean pf2pri) {
         int plane1 = ((pv >> 0) & 1) | ((pv >> 1) & 2) | ((pv >> 2) & 4) | ((pv >> 3) & 8);
         int plane2 = ((pv >> 1) & 1) | ((pv >> 2) & 2) | ((pv >> 3) & 4) | ((pv >> 4) & 8);
