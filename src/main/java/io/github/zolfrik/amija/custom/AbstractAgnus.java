@@ -3203,8 +3203,24 @@ public abstract class AbstractAgnus {
         }
     }
 
+    /**
+     * ⛔ <b>BPL1DAT è il TRIGGER del display, ed è una SCRITTURA DI REGISTRO</b>: il DMA di
+     * bitplane è solo il suo fornitore abituale, non la sua condizione. Con BPLEN
+     * <b>spento</b> e il Copper (o la CPU) che scrive BPL1DAT a mano, Denise fa uscire quella
+     * word lo stesso — l'oracolo lo tratta come un trigger a sé ({@code bpl1dat_trigger},
+     * {@code bpl1dat_enable_bpls()} sul {@code case 0x110} di {@code expand_drga_early}), e
+     * non guarda DMACON.
+     *
+     * <p>⚠️ Il gate qui era {@code isBitplaneDMAActive()}, e faceva sparire <b>tutto</b>
+     * l'output del banco {@code Denise/Registers/BPL0DAT}, dove il DMA di bitplane non è mai
+     * acceso: quattro test in cui non disegnavamo un pixel. Il gate giusto è «c'è una word
+     * armata», che con il DMA acceso è vero esattamente quando lo era prima — il fetch
+     * scrive BPL1DAT e arma. La condizione è quindi <b>additiva</b>: tutto ciò che disegnava
+     * prima disegna ancora, e in più disegna il caso a DMA spento.
+     */
     private void handleBitplaneDrawEvent(int cck) {
-        if (denise == null || !isBitplaneDMAActive()) return;
+        if (denise == null) return;
+        if (!isBitplaneDMAActive() && !denise.isBitplaneArmed()) return;
 
         int bplcon0Val = denise.getBplcon0();
         // Piani DISEGNATI, non prelevati: qui si decide se Denise fa uscire qualcosa,

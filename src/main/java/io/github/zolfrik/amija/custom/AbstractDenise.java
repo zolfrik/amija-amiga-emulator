@@ -214,7 +214,9 @@ public abstract class AbstractDenise {
      * Usati da translate/colorize per garantire la coerenza nel caso in cui
      * il Copper modifichi i registri a metà riga.
      */
-    private int initialBplcon0, initialBplcon1, initialBplcon2;
+    // ⚠️ initialBplcon1 NON esiste piu': lo scroll fine si legge vivo, vedi
+    // drawBitplanesAtPixel. BPLCON0 e BPLCON2 restano invece snapshot di inizio riga.
+    private int initialBplcon0, initialBplcon2;
     private int lastRenderedBplcon0;
 
     private int     hstrt,   hstop;
@@ -479,7 +481,7 @@ public abstract class AbstractDenise {
         updateBplcon0Derived();
         bplcon3 = 0x0C00;
         bplcon4 = 0x0011;
-        initialBplcon0 = initialBplcon1 = initialBplcon2 = 0;
+        initialBplcon0 = initialBplcon2 = 0;
         hstrt = 0; hstop = 0;
         hflop = true;
         borderBufferIsDirty = 0;
@@ -866,7 +868,6 @@ public abstract class AbstractDenise {
         // Snapshot dei registri: saranno usati come stato "iniziale" per
         // la scanline che sta per cominciare, prima di qualsiasi aggiornamento.
         initialBplcon0 = bplcon0;
-        initialBplcon1 = bplcon1;
         initialBplcon2 = bplcon2;
         // Snapshot dei registri colore di FINE riga (= inizio della prossima):
         // nel ramo visibile colorize() ha appena riportato palette[] allo stato di
@@ -911,16 +912,24 @@ public abstract class AbstractDenise {
      * Vedi {@link #srCount} per il perché.
      */
     public void drawBitplanesAtPixel(int pixel, boolean drawOdd, boolean drawEven) {
+        // ⛔ Lo scroll fine si legge VIVO, non dallo snapshot di inizio riga. BPLCON1
+        // scritto dentro la riga vale da subito: l'oracolo aggiorna `bplcon1_shift[]` alla
+        // scrittura (`update_bplcon1()`), non al confine di riga. Con `initialBplcon1` il
+        // bit 0 arrivava una RIGA tardi, e si vede in `BPL0DAT/bpl0dat*`, dove il Copper
+        // scrive BPLCON1 e BPL1DAT sulla stessa riga: la riga a scroll 0 era esatta e tutte
+        // le altre erano indietro esattamente del proprio scroll.
+        // ⚠️ La parte GROSSA dello scroll (bit 3:1) resta di Agnus, che ritarda il CCK di
+        // draw: qui c'è solo il bit 0, un pixel lores.
         if (drawOdd && armedOdd) {
             loadOddShiftRegisters();
-            armShiftOut(0, pixel, initialBplcon1 & 0x01);
+            armShiftOut(0, pixel, bplcon1 & 0x01);
             armedOdd = false;
         }
         if (drawEven && armedEven) {
             loadEvenShiftRegisters();
             // In SPF i piani pari scrollano con i dispari (PF1H), in DPF hanno il loro PF2H.
             final boolean dual = (bplcon0 & 0x0400) != 0;
-            int scrollEven = dual ? ((initialBplcon1 & 0x10) >> 4) : (initialBplcon1 & 0x01);
+            int scrollEven = dual ? ((bplcon1 & 0x10) >> 4) : (bplcon1 & 0x01);
             armShiftOut(1, pixel, scrollEven);
             armedEven = false;
         }
@@ -1726,6 +1735,10 @@ public abstract class AbstractDenise {
     public int  getBpu()                    { return bpu; }     // piani DISEGNATI, vedi deniseBpu()
     /** BPU grezzo di BPLCON0, senza nessuna clamp: è quello che Agnus filtra da sé. */
     public int  getRawBpu()                 { return (bplcon0 >> 12) & 7; }
+    /** {@code true} se una word e' ancora da caricare negli shift register: vedi
+     *  AbstractAgnus.handleBitplaneDrawEvent, dove e' il gate del disegno al posto di DMACON. */
+    public boolean isBitplaneArmed()        { return armedOdd || armedEven; }
+
     public boolean isHires()                { return hires; }   // (bplcon0 & 0x8000)!=0, cached
     /** LACE (BPLCON0 bit 2): il display alterna due semiquadri sfalsati di mezza riga. */
     public boolean isInterlaced()           { return (bplcon0 & 0x0004) != 0; }
