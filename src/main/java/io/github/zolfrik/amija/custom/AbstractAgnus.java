@@ -1491,6 +1491,41 @@ public abstract class AbstractAgnus {
     private int bpl2mod = 0;
 
     /**
+     * Il modulo che il write-back del fetch somma al puntatore <b>non è il registro
+     * vivo</b>: è quello campionato da {@code bitplane_rga_ptmod()}, la <b>prima</b> cosa
+     * di {@code do_cck()}, un CCK prima del trasferimento — e l'oracolo ne scrive la
+     * ragione: <i>«Because BPL and SPR DMA is decided 1 CCK earlier than others, PT and MOD
+     * need to be loaded in following cycle, cycle when request goes to DMA addressing
+     * logic»</i>.
+     *
+     * <p>⛔ <b>Ma non è un ritardo: è un ORDINE dentro il CCK</b>, e da noi le due
+     * scritture stanno dalla parte sbagliata. Nell'oracolo la sequenza di un CCK è
+     * <pre>CPU(X) → ptmod(X) → rga_out(X) → Copper(X) → CPU(X+1) → ptmod(X+1) → …</pre>
+     * cioè, allo stesso CCK, <b>la scrittura della CPU precede il campionamento e quella
+     * del Copper lo segue</b>; da noi cadono entrambe dopo il fetch e nell'ordine inverso
+     * (prima il Copper in {@code copper.fallingEdge()}, poi la CPU in
+     * {@code handleCpuDataTransferPhase()}). Un solo punto di campionamento non può quindi
+     * riprodurle entrambe — misurato: qualunque ritardo uniforme rende verdi
+     * {@code bplmod5/6} (il Copper esce dalla finestra) e rossi {@code bplmod2/3/4} (la CPU
+     * ne esce con lui).
+     *
+     * <p>La pipe riproduce l'ordine invece del ritardo: <b>due stadi campionati in cima al
+     * CCK</b> — che tengono fuori la scrittura del Copper del CCK precedente, esattamente
+     * come {@code rga_out} sta dopo {@code ptmod} — più l'<b>iniezione diretta</b> della
+     * scrittura della CPU nello stadio d'ingresso, che è ciò che la fa entrare in tempo per
+     * il fetch del CCK successivo. L'uscita {@code bplXmodFetch} è la sola letta da
+     * {@link #handleBitplaneDMA}; {@code bplXmod} resta il registro vivo, quello che si
+     * rilegge e che il savestate porta.
+     *
+     * <p>⚠️ Misurato sui due lati con {@code WINUAE_BPLPTLOG} / {@code BplModProbe},
+     * ancorando sul puntatore (stesso valore ⇒ stesso fetch): la scrittura cade a
+     * {@code trasferimento − 1} su entrambi i lati, sia dal Copper sia dalla CPU. La
+     * divergenza era tutta nell'ordine dentro il CCK.
+     */
+    private int bpl1modFetch = 0, bpl2modFetch = 0;
+    private int bpl1modStage = 0, bpl2modStage = 0;
+
+    /**
      * Contatore fetch DMA dei bitplane nella riga corrente.
      * Tiene traccia di quanti fetch sono stati fatti per determinare
      * quale bitplane fetchare al prossimo slot.
@@ -2013,6 +2048,14 @@ public abstract class AbstractAgnus {
         // ── DMA slot (in CCK = hpos pari) ────────────────────────────────────
         if (cckEdge) {
             BusOwner owner = BusOwner.NONE;
+
+            // `bitplane_rga_ptmod()`: il caricamento del modulo è la PRIMA cosa del CCK,
+            // prima di qualunque slot. Vedi il campo bpl1modFetch per il perché di due
+            // stadi e dell'iniezione della scrittura CPU.
+            bpl1modFetch = bpl1modStage;
+            bpl2modFetch = bpl2modStage;
+            bpl1modStage = bpl1mod;
+            bpl2modStage = bpl2mod;
 
             handleBitplaneDrawEvent(cck);
 
@@ -3128,7 +3171,10 @@ public abstract class AbstractAgnus {
         // applicava il modulo dove capitava, perche' `effStop` non sa niente di quel che
         // e' successo dentro la riga.
         if (ddfStopping == 2 && (!hires || (bprunCycle & 7) >= 4)) {
-            int mod = (bplIdx % 2 == 0) ? bpl1mod : bpl2mod;
+            // ⛔ Il modulo è quello CAMPIONATO in cima al CCK (`bitplane_rga_ptmod`), non
+            // il registro vivo: vedi bpl1modFetch. Leggendolo vivo, una scrittura del
+            // Copper caduta nel CCK precedente entrava un CCK troppo presto.
+            int mod = (bplIdx % 2 == 0) ? bpl1modFetch : bpl2modFetch;
             // Il modulo si somma SENZA maschera: il wrap entro la Chip RAM installata è
             // di dmaChipAddr, al momento della fetch (oracolo WinUAE: bitplane_rga_ptmod
             // fa `bplpt[i] += mod` e solo chipmem_agnus_wget applica chipmem_full_mask).
@@ -4411,11 +4457,16 @@ public abstract class AbstractAgnus {
                 break;
             }
 
+            // BPL1MOD/BPL2MOD: il registro vivo si aggiorna sempre; lo stadio d'ingresso
+            // della pipe SOLO se a scrivere è la CPU, perché nell'oracolo è la sola delle
+            // due a girare PRIMA del campionamento dello stesso CCK. Vedi bpl1modFetch.
             case 0x108: // BPL1MOD
                 bpl1mod = (short) (value & 0xFFFE);
+                if (!__inCopperWrite) bpl1modStage = bpl1mod;
                 break;
             case 0x10A: // BPL2MOD
                 bpl2mod = (short) (value & 0xFFFE);
+                if (!__inCopperWrite) bpl2modStage = bpl2mod;
                 break;
 
             // Puntatori sprite (SPRxPTH/SPRxPTL). SPRxPT è il puntatore DMA LIVE:
@@ -4534,6 +4585,8 @@ public abstract class AbstractAgnus {
         Arrays.fill(sprVStart, 0);
         Arrays.fill(sprVStop, 0);
         bpl1mod = 0; bpl2mod = 0;
+        bpl1modFetch = 0; bpl2modFetch = 0;
+        bpl1modStage = 0; bpl2modStage = 0;
         lastCiaAPra = -1;
         lastCiaADdra = -1;
         if (copper  != null) copper.reset();
@@ -4950,6 +5003,13 @@ public abstract class AbstractAgnus {
      * <p>⚠️ È la stessa forma che l'oracolo usa già, dichiarata, per il ritardo in più di
      * OCS ({@code dmacon_bpl2}, <i>«OCS BPLENA is delayed by extra 1 CCK»</i>): lì gli stadi
      * diventano tre.
+     *
+     * <p>⛔ <b>I due stadi NON erano il surrogato di un caricamento PT/MOD mancante</b>, ed
+     * è stato rimisurato il 2026-09-03, subito dopo aver reso esplicito il campionamento del
+     * modulo ({@code bpl1modFetch}): tornando a <b>uno</b> stadio il banco peggiora —
+     * {@code DmaConBitplaneTest} 1/7 → 0/8 e {@code OldDmaConTest} 1/19 → 0/20, con
+     * {@code BplModTest} fermo a 6/0. Questo latch è di BPLEN, quello è di PT/MOD: due
+     * meccanismi diversi che vivono nello stesso CCK. Non ridurli.
      */
     private boolean dmaconBplSeq, dmaconBplPipe;
 
