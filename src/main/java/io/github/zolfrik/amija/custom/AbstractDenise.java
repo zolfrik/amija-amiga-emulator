@@ -1953,6 +1953,20 @@ public abstract class AbstractDenise {
      * the previous line"). Campionato a inizio riga successiva (dopo l'eventuale write a cck 0).
      */
     public int  getLiveColor0Rgb()          { return amigaToRGB(palette[0]); }
+
+    /**
+     * True se alla colonna grezza {@code rawX} la riga <b>appena renderizzata</b> aveva
+     * <b>playfield</b>: né bordo verticale né fuori dalla finestra DIW orizzontale.
+     *
+     * <p>Serve alla colonna di wrap del bordo destro — vedi
+     * {@code VirtualCRT.saveRegressionScreenshot}. {@code bBuffer} porta la maschera di
+     * bordo della riga che {@link #hsyncHandler(int)} ha appena chiuso, quindi va
+     * interrogato <b>prima</b> che la riga successiva la ricalcoli.
+     */
+    public boolean isPlayfieldAt(int rawX) {
+        return !lineIsVBorder && rawX >= 0 && rawX < bBuffer.length
+                && bBuffer[rawX] == (byte) 0xFF;
+    }
     public int  getPaletteColor(int idx)    { return palette[idx & 31]; }
     public int  getRawPixelColor(int rawX)  { return rawX >= 0 && rawX < HPIXELS ? rgbLine[rawX] : 0; }
     public int  getPixelColor(int rawX, int vpos) { return getRawPixelColor(rawX); }

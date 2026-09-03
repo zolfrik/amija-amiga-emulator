@@ -95,6 +95,9 @@ public final class VirtualCRT {
     private static final int RIGHT_HBLANK_WRAP_COL = 4 * (227 - 0x12); // 836
     private int wrapPendingRow = -1;                          // riga V, campiona a cck 0 di V+1
     private final int[] borderCck0Rgb = new int[RAW_HEIGHT];  // COLOR00 al beam cck 0 di ogni riga
+    // Se a quel punto la riga aveva playfield il wrap NON si applica: vedi
+    // saveRegressionScreenshot.
+    private final boolean[] wrapIsPlayfield = new boolean[RAW_HEIGHT];
     private int frameHiresLines;
     private int frameLoresLines;
     private int frameInterlacedLines;
@@ -245,6 +248,11 @@ public final class VirtualCRT {
             // riga = colore dell'ultimo CCK visibile (col 836) della riga precedente.
             if (wrapPendingRow < RAW_HEIGHT) {
                 borderCck0Rgb[wrapPendingRow] = denise.getLiveColor0Rgb();
+                // ⛔ Il wrap è CONDIZIONALE: COLOR00 vale solo dove a quell'istante il
+                // pennello è nel BORDO. Dove la riga aveva playfield fin lì, il pixel
+                // giusto è quello che abbiamo già renderizzato. Vedi il commento in
+                // saveRegressionScreenshot per le tre misure che lo hanno stabilito.
+                wrapIsPlayfield[wrapPendingRow] = denise.isPlayfieldAt(RIGHT_HBLANK_WRAP_COL);
             }
             wrapPendingRow = -1;
         }
@@ -548,8 +556,23 @@ public final class VirtualCRT {
             // Bordo-destro deep-HBLANK wrap (vAmiga dumpTexture): l'ultimo CCK visibile
             // (col 836-839 = beam cck 0) mostra il COLOR00 al confine di riga, campionato
             // a cck 0 della riga successiva. Applicato SOLO qui (non nel framebuffer live).
+            //
+            // ⛔ Ed è CONDIZIONALE, dopo tre misure sullo stesso oggetto:
+            //  1. toglierlo del tutto (2026-09-02) affondava TimingTest, BbusyTest,
+            //     memtim1 e MemoryRom ⇒ il wrap è reale, non un residuo del porto vAmiga;
+            //  2. prendere `rgbLine[0]` della riga V+1 invece di COLOR00 era peggio di
+            //     entrambe (oldDMACON 20/20, memtim1 da 0 a 456 px): la nostra riga
+            //     comincia a cck 18, non a cck 0, quindi quel pixel non è l'istante giusto;
+            //  3. toglierlo DOPO il rifacimento per-pixel di Denise (2026-09-03) portava
+            //     `BPLCON1/overscan` da 384 px (0,19%) a 27÷39 px (0,01%) ma rompeva di
+            //     nuovo memtim1 (2/0 → 0/2) e MemoryRom (3/1 → 2/2).
+            // ⇒ le due popolazioni sono separate e misurate: dove a cck 0 della riga V+1 il
+            // pennello è nel BORDO vale COLOR00 (memtim*, MemoryRom), dove invece la riga
+            // aveva PLAYFIELD fin lì vale il pixel che abbiamo renderizzato (overscan) —
+            // che prima di quel rifacimento non era ancora giusto, ed è per questo che la
+            // condizione non si poteva scrivere allora.
             if (wrapCropCol >= 0 && wrapCropCol + 4 <= REGRESSION_CROP_W
-                    && srcY >= 0 && srcY < RAW_HEIGHT) {
+                    && srcY >= 0 && srcY < RAW_HEIGHT && !wrapIsPlayfield[srcY]) {
                 int rgb = borderCck0Rgb[srcY];
                 int di  = row * REGRESSION_CROP_W + wrapCropCol;
                 dst[di] = rgb; dst[di + 1] = rgb; dst[di + 2] = rgb; dst[di + 3] = rgb;
