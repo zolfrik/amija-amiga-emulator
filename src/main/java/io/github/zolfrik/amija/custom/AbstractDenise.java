@@ -586,7 +586,7 @@ public abstract class AbstractDenise {
                 // illegale), e senza questa insert la riga in cui il Copper alza BPU a 6
                 // resta colorata a piena luminosità per intero — il residuo di riga 22 di
                 // `BPLPTR/drop6x` e `dropcpu6x`.
-                if (isHAM(bplcon0) != isHAM(value) || isEHB(bplcon0) != isEHB(value)) {
+                if (isHamActive(bplcon0) != isHamActive(value) || isEHB(bplcon0) != isEHB(value)) {
                     colChanges.insert(pixel, address, value);
                 }
                 bplcon0 = value;
@@ -1115,7 +1115,7 @@ public abstract class AbstractDenise {
         System.arraycopy(dBuffer, 0, mBuffer, 0, mBuffer.length);
 
         int     pixel          = 0;
-        boolean dual           = (initialBplcon0 & 0x0400) != 0;
+        boolean dual           = isDualPlayfield(initialBplcon0);
         int     currentBplcon2 = initialBplcon2;
         int     conIdx         = 0;
 
@@ -1125,7 +1125,7 @@ public abstract class AbstractDenise {
             else      translateSPF(pixel, trigger, currentBplcon2);
             pixel = trigger;
             RegChange c = conChanges.elements[conIdx++];
-            if      (c.reg == 0x100) dual           = (c.value & 0x0400) != 0;
+            if      (c.reg == 0x100) dual           = isDualPlayfield(c.value);
             else if (c.reg == 0x104) currentBplcon2 = c.value;
         }
         if (dual) translateDPF(pixel, HPIXELS, currentBplcon2);
@@ -1523,7 +1523,7 @@ public abstract class AbstractDenise {
         System.arraycopy(paletteLineStart, 0, palette, 0, 32);
         int     pixel   = 0;
         int     hold    = palette[0];
-        boolean hamMode = isHAM(initialBplcon0);
+        boolean hamMode = isHamActive(initialBplcon0);
         // ⛔ Anche EHB segue BPLCON0 dentro la riga, esattamente come HAM. Prima veniva
         // deciso una volta sola da initialBplcon0 (lo snapshot di inizio riga): una riga
         // in cui il Copper porta BPU a 6 dopo l'inizio veniva colorata TUTTA a piena
@@ -1532,18 +1532,30 @@ public abstract class AbstractDenise {
         // Nell'oracolo `bplehb` è ricalcolato da `update_mode()` a ogni scrittura di
         // BPLCON0 e il decoder lo legge vivo (drawing.cpp:2791).
         boolean ehbMode = isEHB(initialBplcon0);
+        // ⛔ Il bit DPF serve al decoder HAM ed è quello GREZZO, non quello della catena di
+        // priorità: `decode_ham_pixel()` guarda `bpldualpf` (bit 10 di BPLCON0) anche quando
+        // il modo è HAM. Vedi dualPlayfieldIndex().
+        boolean hamDpf  = (initialBplcon0 & 0x0400) != 0;
+        // ⚠️ PF2PRI dallo snapshot di inizio riga, come lo `zpf` di colorizeHAM: BPLCON2
+        // cambia dentro la riga solo via conChanges, che qui non arrivano. Nessun test del
+        // banco lo muove sotto HAM+DPF; il giorno che servisse, va portato in colChanges.
+        boolean hamDpfPri = (initialBplcon2 & 0x0040) != 0;
         int     colIdx  = 0;
 
         while (colIdx < colChanges.size()) {
             int trigger = colChanges.keys[colIdx];
-            if (hamMode) hold = colorizeHAM(vpos, pixel, trigger, hold);
+            if (hamMode) hold = colorizeHAM(vpos, pixel, trigger, hold, hamDpf, hamDpfPri);
             else              colorizeNormal(vpos, pixel, trigger, ehbMode);
             pixel = trigger;
             RegChange c = colChanges.elements[colIdx++];
-            if      (c.reg == 0x100) { hamMode = isHAM(c.value); ehbMode = isEHB(c.value); }
+            if      (c.reg == 0x100) {
+                hamMode = isHamActive(c.value);
+                ehbMode = isEHB(c.value);
+                hamDpf  = (c.value & 0x0400) != 0;
+            }
             else if (c.reg >= 0x180)  palette[(c.reg - 0x180) / 2] = c.value & 0xFFF;
         }
-        if (hamMode) colorizeHAM(vpos, pixel, HPIXELS, hold);
+        if (hamMode) colorizeHAM(vpos, pixel, HPIXELS, hold, hamDpf, hamDpfPri);
         else         colorizeNormal(vpos, pixel, HPIXELS, ehbMode);
 
         colChanges.clear();
@@ -1588,7 +1600,8 @@ public abstract class AbstractDenise {
      * @param hold  ultimo colore accumulato (12-bit 0x0RGB)
      * @return      nuovo valore di hold al termine del segmento
      */
-    private int colorizeHAM(int vpos, int from, int to, int hold) {
+    private int colorizeHAM(int vpos, int from, int to, int hold, boolean hamDpf,
+                            boolean hamDpfPri) {
         // FIX 5: Z del playfield corrente. HAM è single-playfield: la priorità
         // verso gli sprite usa PF2P (bit 3-5), come translateSPF e vAmiga.
         int zpf = zPF((initialBplcon2 >> 3) & 7);
@@ -1618,12 +1631,17 @@ public abstract class AbstractDenise {
             // Processo HAM: decodifica op e val dai 6 bit grezzi del bitplane
             int s   = dBuffer[i] & 0x3F;
             int op  = (s >> 4) & 3;
-            int val = s & 0xF;
+            // ⛔ HAM + dual-playfield: l'operazione resta quella di HAM (bit 5:4), ma il
+            // VALORE non è più `s & 0xF` — è l'indice risolto dalla PRIORITÀ dei due
+            // playfield. Vedi dualPlayfieldIndex().
+            int val = hamDpf ? (dualPlayfieldIndex(s, hamDpfPri) & 0xF) : (s & 0xF);
             int r   = (hold >> 8) & 0xF;
             int g   = (hold >> 4) & 0xF;
             int b   =  hold       & 0xF;
             switch (op) {
-                case 0: hold = palette[val];                 break; // seleziona palette
+                // op 0 sceglie dalla palette: in HAM+DPF l'indice e' quello risolto, non `val`.
+                case 0: hold = palette[(hamDpf ? dualPlayfieldIndex(s, hamDpfPri) : val) & 0x1F];
+                        break;
                 case 1: b = val; hold = (r<<8)|(g<<4)|b;    break; // modifica B
                 case 2: r = val; hold = (r<<8)|(g<<4)|b;    break; // modifica R
                 case 3: g = val; hold = (r<<8)|(g<<4)|b;    break; // modifica G
@@ -1705,6 +1723,35 @@ public abstract class AbstractDenise {
     }
 
     /**
+     * HAM <b>davvero attivo</b>: il bit c'è <i>e</i> i piani sono più di quattro.
+     *
+     * <p>⛔ <b>Con quattro piani o meno HAM non è HAM: è una normale lettura di palette.</b>
+     * L'oracolo lo decide in {@code select_lts()} ({@code drawing.cpp}), dopo aver già
+     * scelto il modo:
+     * <pre>
+     * if (denise_max_planes &lt;= 4 &amp;&amp; bm == CMODE_HAM) {
+     *     bm = CMODE_NORMAL;
+     * }
+     * </pre>
+     * (e appena sopra, il gemello per l'Extra-Half-Brite con {@code <= 5}).
+     *
+     * <p>⚠️ Con HAM da solo la deroga è <b>invisibile</b>, ed è per questo che non era mai
+     * emersa: con ≤ 4 piani i bit 5:4 del pixel sono zero, l'operazione HAM è sempre «scegli
+     * dalla palette» e il risultato coincide con la lettura normale. Si vede solo quando
+     * <b>c'è anche il DPF</b>, perché lì l'operazione 0 userebbe l'indice risolto dalla
+     * priorità invece del pixel grezzo — e allora i due modi divergono.
+     *
+     * <p>⚠️ L'oracolo usa {@code denise_max_planes}, che è il <b>massimo raggiunto nella
+     * riga</b> e non il valore corrente («if plane count decreases mid-scanline, old data in
+     * higher plane count shifters must be still shifted out»). Qui si usa il conteggio
+     * corrente: nessun test del banco cambia BPU dentro la riga sotto HAM. ⏸ Se un giorno
+     * servisse, il massimo di riga va tenuto in un campo e azzerato all'hsync.
+     */
+    private static boolean isHamActive(int bplcon0) {
+        return isHAM(bplcon0) && deniseBpu(bplcon0) > 4;
+    }
+
+    /**
      * Extra Half-Brite attivo quando BPU=6 e HAM=0.
      *
      * FIX 1: la versione precedente controllava il bit 7 di BPLCON0 (GAUD =
@@ -1714,8 +1761,94 @@ public abstract class AbstractDenise {
      * (Rif: HW Ref Manual §7, "Extra Half-Brite Mode")
      */
     private static boolean isEHB(int bplcon0) {
+        final int planes = deniseBpu(bplcon0);
         return !isHAM(bplcon0)
-            && deniseBpu(bplcon0) == 6;
+            && !isDualPlayfield(bplcon0)
+            && (planes == 6 || planes == 7);
+    }
+
+    /**
+     * Dual-playfield — <b>e HAM non deve essere acceso</b>.
+     *
+     * <p>⛔ <b>I modi di Denise sono una CATENA DI PRIORITÀ, non tre bit indipendenti.</b>
+     * L'oracolo la scrive in una riga sola ({@code setbplmode()}, {@code drawing.cpp}):
+     * <pre>
+     * if      (bplham)               bplmode_next = CMODE_HAM;
+     * else if (bpldualpf)            bplmode_next = CMODE_DUALPF;
+     * else if (bplehb &amp;&amp; bplehb_eke) bplmode_next = CMODE_EXTRAHB_ECS_KILLEHB;
+     * else if (bplehb)               bplmode_next = CMODE_EXTRAHB;
+     * else                           bplmode_next = CMODE_NORMAL;
+     * </pre>
+     * ⇒ <b>HAM vince su tutto</b>, il dual-playfield viene dopo, e l'Extra-Half-Brite si
+     * accende solo se non c'è né l'uno né l'altro:
+     * <pre>
+     * bplehb = (denise_planes == 6 || (!aga_mode &amp;&amp; denise_planes == 7))
+     *          &amp;&amp; !bplham &amp;&amp; !bpldualpf &amp;&amp; (!ecs_denise || !(bplcon2_denise &amp; 0x200));
+     * </pre>
+     *
+     * <p>⚠️ Noi trattavamo i tre come indipendenti: {@code translate()} sceglieva il
+     * dual-playfield dal solo bit 10 e {@code colorize()} decideva HAM per conto suo, così
+     * con <b>HAM e DPF accesi insieme</b> — che i manuali non definiscono — risolvevamo le
+     * priorità come dual-playfield e poi decodificavamo HAM sopra il risultato. È la classe
+     * B del §16: {@code block3}, {@code block3m}, {@code modes3/3b/3c}, {@code modes4},
+     * {@code invprio3}, cioè tutti e soli i test in cui BPLCON0 ha bit 11 e bit 10 alti.
+     *
+     * <p>⏸ Su ECS manca ancora il ramo {@code bplehb_eke} (KILLEHB, bit 9 di BPLCON2), che
+     * qui non serve: l'harness monta {@code OcsDenise}.
+     */
+    private static boolean isDualPlayfield(int bplcon0) {
+        return (bplcon0 & 0x0400) != 0 && !isHAM(bplcon0);
+    }
+
+    /**
+     * L'indice di colore che il <b>dual-playfield</b> risolve per il pixel grezzo
+     * {@code pv}: si separano i due playfield e vince quello che ha priorità, con l'altro
+     * usato solo dove il primo è trasparente.
+     *
+     * <p>⛔ <b>Serve anche in HAM</b>, ed è il difetto che chiudeva la classe B del §16.
+     * Con HAM e DPF accesi insieme l'operazione resta quella di HAM — la scelgono i bit 5:4
+     * del pixel — ma il <b>valore</b> non è più {@code pv & 0xF}: è questo indice.
+     * L'oracolo ha un ramo apposta in {@code decode_ham_pixel()} ({@code drawing.cpp}):
+     * <pre>
+     * } else {   /&#42; OCS/ECS mode HAM6 + DPF &#42;/
+     *     int *lookup = bpldualpfpri ? dblpf_ind2 : dblpf_ind1;
+     *     int idx = lookup[pv];
+     *     switch (pv &amp; 0x30) {
+     *         case 0x00: ham_lastcolor = color_regs_ecs[idx]; break;
+     *         case 0x10: ham_lastcolor &amp;= 0xFF0; ham_lastcolor |= (idx &amp; 0xF); break;
+     *         ...
+     * </pre>
+     * ⚠️ E il {@code bpldualpf} che lo guida è il bit <b>grezzo</b> di BPLCON0, non il modo
+     * risolto da {@code setbplmode()}: lì HAM vince e il modo è {@code CMODE_HAM}, ma il
+     * decoder guarda comunque il bit 10.
+     *
+     * <p>La tabella è {@code gen_pfield_tables()}, riprodotta qui alla lettera:
+     * <pre>
+     * plane1 = bit 0,2,4,6 del pixel   →  playfield 1 (piani dispari)
+     * plane2 = bit 1,3,5,7 del pixel   →  playfield 2 (piani pari), +8 se non zero
+     * plane1x = (pv &amp; 0x40) ? 0 : plane1     // "invalid value emulation" di BPLCON2
+     * plane2x = (pv &amp; 0x80) ? 0 : plane2
+     * dblpf_ind1[pv] = plane1 == 0 ? plane2x : plane1x;   // PF1 davanti
+     * dblpf_ind2[pv] = plane2 == 0 ? plane1x : plane2x;   // PF2 davanti (PF2PRI)
+     * </pre>
+     *
+     * <p>⚠️ <b>Verificato in aritmetica, non a occhio</b>: sul pixel {@code pv = $1F} di
+     * {@code block3} la tabella dà {@code plane1 = 7}, {@code plane2 = 3+8 = 11},
+     * {@code dblpf_ind1 = 7}; con l'operazione {@code $10} (modifica blu) il colore diventa
+     * {@code 000070}, che è esattamente il pixel dell'oracolo dove noi davamo {@code 0000F0}.
+     *
+     * <p>⏸ I bit 6 e 7 — che l'oracolo usa per emulare i valori <b>non validi</b> di
+     * priorità in BPLCON2 — qui sono sempre zero: il nostro {@code dBuffer} porta sei piani.
+     * È materia della classe A ({@code invprio}), non di questa.
+     */
+    private static int dualPlayfieldIndex(int pv, boolean pf2pri) {
+        int plane1 = ((pv >> 0) & 1) | ((pv >> 1) & 2) | ((pv >> 2) & 4) | ((pv >> 3) & 8);
+        int plane2 = ((pv >> 1) & 1) | ((pv >> 2) & 2) | ((pv >> 3) & 4) | ((pv >> 4) & 8);
+        if (plane2 > 0) plane2 += 8;
+        int plane1x = (pv & 0x40) != 0 ? 0 : plane1;
+        int plane2x = (pv & 0x80) != 0 ? 0 : plane2;
+        return pf2pri ? (plane2 == 0 ? plane1x : plane2x)
+                      : (plane1 == 0 ? plane2x : plane1x);
     }
 
     // =========================================================================
