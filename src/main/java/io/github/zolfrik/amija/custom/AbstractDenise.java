@@ -911,34 +911,38 @@ public abstract class AbstractDenise {
      * {@link #emitBitplanePixels(int)}, quattro per CCK, al passo della risoluzione viva.
      * Vedi {@link #srCount} per il perché.
      */
-    public void drawBitplanesAtPixel(int pixel, boolean drawOdd, boolean drawEven) {
-        // ⛔ Lo scroll fine si legge VIVO, non dallo snapshot di inizio riga. BPLCON1
-        // scritto dentro la riga vale da subito: l'oracolo aggiorna `bplcon1_shift[]` alla
-        // scrittura (`update_bplcon1()`), non al confine di riga. Con `initialBplcon1` il
-        // bit 0 arrivava una RIGA tardi, e si vede in `BPL0DAT/bpl0dat*`, dove il Copper
-        // scrive BPLCON1 e BPL1DAT sulla stessa riga: la riga a scroll 0 era esatta e tutte
-        // le altre erano indietro esattamente del proprio scroll.
-        // ⚠️ La parte GROSSA dello scroll (bit 3:1) resta di Agnus, che ritarda il CCK di
-        // draw: qui c'è solo il bit 0, un pixel lores.
+    /**
+     * @param fineOdd  resto sotto il CCK dello scroll dei piani dispari, in <b>sub-pixel</b>
+     *                 (0÷3); la parte grossa l'ha già applicata Agnus ritardando il CCK di
+     *                 draw. La divisione e la regola stanno in
+     *                 {@code AbstractAgnus.scrollSubPixels}.
+     * @param fineEven lo stesso per i piani pari. ⚠️ In SPF Agnus passa qui il valore di
+     *                 PF1H, perché i piani pari scrollano con i dispari.
+     */
+    public void drawBitplanesAtPixel(int pixel, boolean drawOdd, boolean drawEven,
+                                     int fineOdd, int fineEven) {
+        // ⛔ Lo scroll si legge VIVO, non dallo snapshot di inizio riga: BPLCON1 scritto
+        // dentro la riga vale da subito (l'oracolo aggiorna `bplcon1_shift[]` alla
+        // scrittura, `update_bplcon1()`). Con `initialBplcon1` arrivava una RIGA tardi, e lo
+        // smaschera `BPL0DAT/bpl0dat*`, dove il Copper scrive BPLCON1 e BPL1DAT sulla stessa
+        // riga: la riga a scroll 0 era esatta e tutte le altre indietro del proprio scroll.
         if (drawOdd && armedOdd) {
             loadOddShiftRegisters();
-            armShiftOut(0, pixel, bplcon1 & 0x01);
+            armShiftOut(0, pixel, fineOdd);
             armedOdd = false;
         }
         if (drawEven && armedEven) {
             loadEvenShiftRegisters();
-            // In SPF i piani pari scrollano con i dispari (PF1H), in DPF hanno il loro PF2H.
-            final boolean dual = (bplcon0 & 0x0400) != 0;
-            int scrollEven = dual ? ((bplcon1 & 0x10) >> 4) : (bplcon1 & 0x01);
-            armShiftOut(1, pixel, scrollEven);
+            armShiftOut(1, pixel, fineEven);
             armedEven = false;
         }
     }
 
     /**
      * Arma l'uscita di una word: 16 bit da far scorrere a partire da {@code pixel}, più lo
-     * scroll <b>fine</b> (il bit 0 di PF1H/PF2H, 1 pixel lores; la parte grossa la fa già
-     * Agnus ritardando il CCK di draw a passi di 2 pixel).
+     * scroll <b>fine</b> — il resto sotto il CCK, gia' in SUB-PIXEL (0÷3). La parte grossa
+     * l'ha applicata Agnus ritardando il CCK di draw; la regola che le divide sta in
+     * {@code AbstractAgnus.scrollSubPixels}.
      *
      * <p>⚠️ {@code bpu} e il dual-playfield si <b>latchano qui</b>: il modello a blocchi li
      * congelava all'istante del draw, e tenerli congelati è ciò che rende questo
@@ -946,7 +950,7 @@ public abstract class AbstractDenise {
      */
     private void armShiftOut(int grp, int pixel, int fineScroll) {
         srCount[grp]  = 16;
-        srCursor[grp] = pixel + fineScroll * (hires ? 1 : 2);
+        srCursor[grp] = pixel + fineScroll;   // fineScroll e' gia' in sub-pixel
         srPhase[grp]  = 0;
         srBpu[grp]    = bpu;
         precomputeSlices(grp);

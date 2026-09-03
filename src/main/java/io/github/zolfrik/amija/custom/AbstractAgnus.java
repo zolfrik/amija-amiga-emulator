@@ -706,9 +706,51 @@ public abstract class AbstractAgnus {
 
     private void setBPLCON1(int value) {
         bplcon1 = value & 0xFF;
-        scrollOdd = (bplcon1 & 0x0E) >> 1;
-        scrollEven = (bplcon1 & 0xE0) >> 5;
         if (denise != null) denise.writeRegister(0x102, value);
+    }
+
+    /**
+     * Lo scroll orizzontale di BPLCON1 in <b>sub-pixel</b> (pixel hires), che è l'unità in
+     * cui Denise lo applica davvero.
+     *
+     * <p>⛔ <b>In hires lo scroll NON è più fine: è più CORTO.</b> Una unità di BPLCON1 vale
+     * un pixel <b>lores</b> — cioè 2 sub-pixel — <b>in tutte e due le risoluzioni</b>; quel
+     * che cambia in hires è che il valore viene <b>mascherato a 3 bit</b> e quindi si
+     * avvolge a 8. L'oracolo lo scrive in {@code update_bplcon1()}:
+     * <pre>
+     * bplcon1_shift_mask = fetchmode_mask_denise &gt;&gt; denise_res;   // 15 in lores, 7 in hires
+     * bplcon1_shift[0]   = delay1 &amp; bplcon1_shift_mask;
+     * bplcon1_shift_full[0] = (bplcon1_shift[0] &lt;&lt; 2) | bplcon1_hr[0];  // &lt;&lt;2 SEMPRE
+     * </pre>
+     * dove {@code fetchmode_mask_denise} è 15 su OCS/ECS ({@code 16 << bpldat_fmode}, fmode
+     * 0) e {@code bplcon1_hr} è la parte sub-hires di AGA, zero qui. Lo spostamento è quindi
+     * {@code (v & mask) << 2} in <b>shres</b>, e uno shres è mezzo sub-pixel dei nostri: da
+     * cui il {@code * 2}.
+     *
+     * <p>⛔ <b>Dedurre «un'unità = un pixel della risoluzione corrente» è sbagliato, ed è
+     * stato misurato</b>: con {@code v * (hires ? 1 : 2)} il gruppo {@code simple} peggiora
+     * da 6,77 % a 9,55 %. La regola è quella dell'oracolo, non quella che sembra simmetrica.
+     *
+     * <p>La regola unica {@code sub = (v & mask) * 2} si divide poi in:
+     * <ul>
+     *   <li><b>grossa</b>, {@code sub >> 2}: quanti CCK ritardare il blocco di draw (un CCK
+     *       sono 4 sub-pixel), ed è quel che decide {@link #handleBitplaneDrawEvent};</li>
+     *   <li><b>fine</b>, {@code sub & 3}: il resto sotto il CCK, che applica Denise
+     *       spostando il cursore di uscita.</li>
+     * </ul>
+     *
+     * <p>⚠️ In lores si riduce a quel che il codice faceva già ({@code v>>1} CCK più il bit
+     * 0), ed è per questo che il lores di {@code BPLCON1/simple} era verde. In <b>hires</b>
+     * no: mancava la maschera a 3 bit e la parte fine avanzava di un sub-pixel invece che di
+     * due. Sono le righe hires di {@code simple0÷14}.
+     *
+     * <p>Nell'oracolo non esiste nessuna divisione: lo scroll è <b>un solo contatore</b> in
+     * Denise ({@code bplcon1_shift[]} + {@code bplshiftcnt[]}). La nostra divisione in due è
+     * una deroga di struttura; questa funzione è il punto in cui resta almeno <b>una sola
+     * regola</b>.
+     */
+    private static int scrollSubPixels(int pfh, boolean hires) {
+        return (pfh & (hires ? 0x07 : 0x0F)) * 2;
     }
 
     // --- End of Delayed Register Changes ---
@@ -3231,10 +3273,22 @@ public abstract class AbstractAgnus {
         boolean hires = (bplcon0Val & 0x8000) != 0;
         int cycleLen = hires ? 4 : 8;
         int mask = cycleLen - 1;
-        boolean drawOdd = (cck & mask) == (scrollOdd & mask);
-        boolean drawEven = (cck & mask) == (scrollEven & mask);
+        // Parte GROSSA dello scroll: quanti CCK ritardare il blocco. Vedi scrollSubPixels
+        // per la regola unica e per perché in hires non è la stessa di lores.
+        int subOdd  = scrollSubPixels(bplcon1, hires);
+        int subEven = scrollSubPixels(bplcon1 >> 4, hires);
+        boolean drawOdd = (cck & mask) == ((subOdd >> 2) & mask);
+        boolean drawEven = (cck & mask) == ((subEven >> 2) & mask);
         if (drawOdd || drawEven) {
-            denise.drawBitplanesAtPixel(cck * 4 - 70, drawOdd, drawEven);
+            // ⚠️ In SPF la parte FINE dei piani pari viene da PF1H (i piani pari scrollano
+            // coi dispari), mentre quella GROSSA viene da PF2H come per il DPF. È
+            // l'asimmetria che il codice aveva già, e la si conserva di proposito: non è la
+            // materia di questo passo, e con PF1H == PF2H — il caso di tutti i giochi e di
+            // tutto `BPLCON1/simple` — non è osservabile. ⏸ Da risolvere quando ci sarà un
+            // riferimento che la distingua.
+            int fineEven = ((bplcon0Val & 0x0400) != 0 ? subEven : subOdd) & 3;
+            denise.drawBitplanesAtPixel(cck * 4 - 70, drawOdd, drawEven,
+                    subOdd & 3, fineEven);
         }
     }
 
