@@ -333,6 +333,7 @@ public abstract class AbstractDenise {
     private final int[]  srCursor = new int[2];   // prossimo indice di dBuffer da scrivere
     private final int[]  srPhase  = new int[2];   // sub-pixel già emessi del bit corrente
     private final int[]  srBpu    = new int[2];   // BPU latchato al caricamento
+    private final byte[][] srSlice = new byte[2][16]; // slice precalcolati, uno per bit
 
     // =========================================================================
     // Sprite state
@@ -939,6 +940,7 @@ public abstract class AbstractDenise {
         srCursor[grp] = pixel + fineScroll * (hires ? 1 : 2);
         srPhase[grp]  = 0;
         srBpu[grp]    = bpu;
+        precomputeSlices(grp);
     }
 
     /**
@@ -977,42 +979,60 @@ public abstract class AbstractDenise {
         }
     }
 
+    /**
+     * Precalcola i <b>sedici slice</b> della word: il contributo a {@code dBuffer} di ogni
+     * bit, già combinato sui tre piani del gruppo.
+     *
+     * <p>⚠️ <b>È un'ottimizzazione, non un modello</b>, e la si può fare solo perché nulla
+     * tocca {@code shiftReg} fra un caricamento e il successivo: i BPLxDAT scrivono
+     * {@code bpldat}/{@code bpldatPipe}, e un nuovo caricamento riarma comunque tutto. Senza
+     * di essa l'emissione costa tre test e tre shift <b>per sub-pixel</b> invece che per
+     * word, e si misura: +12,45 % sul banco A/B (`tools/ab-bench`, 5/5 concordi).
+     */
+    private void precomputeSlices(int grp) {
+        final byte[] dst = srSlice[grp];
+        final int bpuL = srBpu[grp];
+        final int r0, r1, r2, m0, m1, m2;
+        if (grp == 0) {
+            r0 = bpuL >= 1 ? shiftReg[0] : 0; m0 = 1;
+            r1 = bpuL >= 3 ? shiftReg[2] : 0; m1 = 4;
+            r2 = bpuL >= 5 ? shiftReg[4] : 0; m2 = 16;
+        } else {
+            r0 = bpuL >= 2 ? shiftReg[1] : 0; m0 = 2;
+            r1 = bpuL >= 4 ? shiftReg[3] : 0; m1 = 8;
+            r2 = bpuL >= 6 ? shiftReg[5] : 0; m2 = 32;
+        }
+        for (int i = 0; i < 16; i++) {
+            final int bit = 0x8000 >> i;
+            int slice = 0;
+            if ((r0 & bit) != 0) slice |= m0;
+            if ((r1 & bit) != 0) slice |= m1;
+            if ((r2 & bit) != 0) slice |= m2;
+            dst[i] = (byte) slice;
+        }
+    }
+
     private void emitGroup(int grp, int subPixels) {
-        final int bpuLatched = srBpu[grp];
+        final byte[] slices = srSlice[grp];
+        final int keepMask = (grp == 0) ? 0x2A : 0x15;
+        final int bitStep  = hires ? 1 : 2;   // sub-pixel per bit — letto VIVO
+        int count  = srCount[grp];
+        int cursor = srCursor[grp];
+        int phase  = srPhase[grp];
         // Il cursore resta in fase col CCK: due sub-pixel per mezza-CCK, sempre.
-        for (int i = 0; i < subPixels && srCount[grp] > 0; i++) {
-            final int p = srCursor[grp];
-            if (p >= 0 && p < dBuffer.length) {
-                if (grp == 0) {
-                    int slice = 0;
-                    if (bpuLatched >= 1 && (shiftReg[0] & 0x8000) != 0) slice |= 1;
-                    if (bpuLatched >= 3 && (shiftReg[2] & 0x8000) != 0) slice |= 4;
-                    if (bpuLatched >= 5 && (shiftReg[4] & 0x8000) != 0) slice |= 16;
-                    dBuffer[p] = (byte) ((dBuffer[p] & 0x2A) | slice);
-                } else {
-                    int slice = 0;
-                    if (bpuLatched >= 2 && (shiftReg[1] & 0x8000) != 0) slice |= 2;
-                    if (bpuLatched >= 4 && (shiftReg[3] & 0x8000) != 0) slice |= 8;
-                    if (bpuLatched >= 6 && (shiftReg[5] & 0x8000) != 0) slice |= 32;
-                    dBuffer[p] = (byte) ((dBuffer[p] & 0x15) | slice);
-                }
+        for (int i = 0; i < subPixels && count > 0; i++) {
+            if (cursor >= 0 && cursor < dBuffer.length) {
+                dBuffer[cursor] = (byte) ((dBuffer[cursor] & keepMask) | slices[16 - count]);
             }
-            srCursor[grp]++;
-            // Passo del bit: 2 sub-pixel in lores, 1 in hires — letto VIVO.
-            if (++srPhase[grp] >= (hires ? 1 : 2)) {
-                srPhase[grp] = 0;
-                srCount[grp]--;
-                if (grp == 0) {
-                    shiftReg[0] = (shiftReg[0] << 1) & 0xFFFF;
-                    shiftReg[2] = (shiftReg[2] << 1) & 0xFFFF;
-                    shiftReg[4] = (shiftReg[4] << 1) & 0xFFFF;
-                } else {
-                    shiftReg[1] = (shiftReg[1] << 1) & 0xFFFF;
-                    shiftReg[3] = (shiftReg[3] << 1) & 0xFFFF;
-                    shiftReg[5] = (shiftReg[5] << 1) & 0xFFFF;
-                }
+            cursor++;
+            if (++phase >= bitStep) {
+                phase = 0;
+                count--;
             }
         }
+        srCount[grp]  = count;
+        srCursor[grp] = cursor;
+        srPhase[grp]  = phase;
     }
 
     private void loadOddShiftRegisters() {
