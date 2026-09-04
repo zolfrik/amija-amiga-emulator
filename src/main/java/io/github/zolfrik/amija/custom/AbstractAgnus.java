@@ -638,8 +638,35 @@ public abstract class AbstractAgnus {
             bitplaneDmaEnabledLateThisFrame = true;
         }
 
+        final boolean copWas = copperDmaEnabled;
+
         dmacon = newValue;
         updateDmaFlags();
+
+        // ⛔ Un cambio di COPEN NON e' visibile all'arbitraggio nello stesso CCK: finche'
+        // il ciclo corrente non ha superato la soglia, il Copper legge il valore VECCHIO.
+        // L'oracolo lo scrive in due pezzi (custom.cpp):
+        //
+        //   if (newcop != oldcop && safecpu())
+        //       copper_dma_change_cycle = copper_access ? get_cycles()
+        //                                               : get_cycles() + CYCLE_UNIT;
+        //   static bool is_copper_dma(bool checksame) {
+        //       bool dma = dmaen(DMA_COPPER);
+        //       if (checksame && get_cycles() <= copper_dma_change_cycle) return !dma;
+        //       return dma;
+        //   }
+        //
+        // ⇒ la soglia e' `<=`, quindi una scrittura del COPPER costa 1 CCK e una della
+        // CPU ne costa 2. `safecpu()` e' vero per la nostra configurazione (68000
+        // cycle-exact), quindi il ritardo vale sempre.
+        // ⚠️ E' la stessa forma della classe B del §14 (DDFSTRT/DDFSTOP: il match usa il
+        // valore vecchio) e del `spriteDmaOnDecisionCck` qui sopra. Misurato sui quattro
+        // `lc` del banco Agnus/Copper, che accendono il DMA del Copper a meta' riga: erano
+        // 8 px ciascuno, cioe' 2 CCK di anticipo, sempre su una riga sola.
+        if (copWas != copperDmaEnabled) {
+            copperDmaChangeCck = (masterClock >> 1) + (__inCopperWrite ? 0 : 1);
+        }
+
         // Notify other components if needed
         if (blitter != null) {
             blitter.setDmaEnabled(blitterDmaEnabled);
@@ -4899,9 +4926,23 @@ public abstract class AbstractAgnus {
         return audioDmaEnabled;
     }
 
+    /**
+     * Il COPEN <b>come lo vede l'arbitraggio</b>: finche' il CCK corrente non ha superato
+     * {@link #copperDmaChangeCck} vale il valore <b>precedente</b>. E' {@code is_copper_dma()}
+     * dell'oracolo; la soglia la fissa la scrittura a DMACON — vedi il commento la'.
+     */
     public boolean isCopperEnabled() {
+        if ((masterClock >> 1) <= copperDmaChangeCck) {
+            return !copperDmaEnabled;
+        }
         return copperDmaEnabled;
     }
+
+    /**
+     * CCK fino al quale (compreso) l'arbitraggio deve usare il COPEN <b>vecchio</b>.
+     * {@code Long.MIN_VALUE} = nessun cambio in sospeso.
+     */
+    private long copperDmaChangeCck = Long.MIN_VALUE;
 
     public boolean isOCS() {
         // Se Agnus ID (VPOSR bit 14-8) ha il bit 13 (0x20) a 0 siamo su OCS, altrimenti
