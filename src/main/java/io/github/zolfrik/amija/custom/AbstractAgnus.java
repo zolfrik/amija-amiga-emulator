@@ -4251,6 +4251,18 @@ public abstract class AbstractAgnus {
     private int readCustomRegisterImpl(int regAddr) {
         regAddr &= 0x1FE;
 
+        // DENISEID ($07C) su OCS: il registro NON ESISTE, e la lettura non vale 0xFFFF — e'
+        // una lettura write-only "faulty" come per ogni altro registro assente. Lo dice
+        // WinUAE (custom.cpp, DENISEID()): su OCS Denise con un 68000 compatible o
+        // cycle-exact la funzione alza *missing e il chiamante fa `goto writeonly`, cioe'
+        // prende la stessa strada di un registro solo-scrittura. Restituire 0xFFFF accendeva
+        // tutte e 16 le barre di vAmigaTS Denise/Misc/Id/deniseid.
+        // ⚠️ Il README di vAmigaTS avverte che sull'A500 vero il valore NON e' deterministico
+        // ("in most cases 0xFFFF, but not always"): e' proprio la firma di un bus flottante.
+        if (regAddr == 0x07C && denise != null && !denise.isECS()) {
+            return faultyCustomRead(regAddr);
+        }
+
         // Denise (registri leggibili: JOY0/1DAT, CLXDAT, DENISEID, BPLCONx su ECS)
         if (regAddr == 0x00A || regAddr == 0x00C || regAddr == 0x00E || regAddr == 0x07C
                 || (regAddr >= 0x100 && regAddr <= 0x106) || regAddr == 0x10C
