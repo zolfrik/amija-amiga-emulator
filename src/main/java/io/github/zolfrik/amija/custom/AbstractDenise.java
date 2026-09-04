@@ -739,15 +739,42 @@ public abstract class AbstractDenise {
     // Helpers write register
     // =========================================================================
 
+    /**
+     * ⛔ <b>Le due scritture DIW si registrano sull'asse del CONTATORE, non su quello dei
+     * pixel</b>, e i due assi hanno una fase diversa: {@code DIW_AXIS_SHIFT} è quella fase.
+     *
+     * <p>Il comparatore della finestra orizzontale è l'unico consumatore di Denise che non
+     * lavora sull'indice di pixel ma su {@code counter} (vedi {@link #updateBorderBuffer()}),
+     * e la conversione {@code counter = 2·HBLANK_MIN + i/2} mancava di una costante. Misurata
+     * sui due lati con {@code WINUAE_HDIWLOG} (metà produttore, in {@code custom.cpp}) e
+     * {@code DiwWriteProbe}, sulla stessa {@code vpos} e sulle stesse sei righe di sweep di
+     * {@code diwtim1}: l'oracolo scrive a {@code agnus_hpos} 178, 180, 182, 184, 186, 188 e
+     * noi ai cck 174, 176, 178, 180, 182, 184 — Δ costante <b>+4</b>, che è la convenzione di
+     * etichetta fra le due griglie già misurata dal §12 sui marcatori di {@code synccpu}.
+     * Appaiando con l'evento {@code CALC} ({@code hcnt = 2·agnus_hpos − 6}), all'istante della
+     * <b>stessa</b> scrittura l'oracolo ha {@code hcnt} = il nostro {@code counter} <b>+ 2</b>,
+     * e due unità di contatore sono <b>un CCK</b>, cioè quattro sub-pixel.
+     *
+     * <p>⚠️ <b>Non è un ritardo della scrittura</b>, ed è la distinzione che conta: applicare
+     * lo stesso spostamento a <b>tutte</b> le scritture di Denise porta il §16
+     * {@code Denise/Registers} da 52/16 a <b>27/34</b> — sull'asse dei pixel siamo già giusti,
+     * ed è il §16 a dimostrarlo. Lo spostamento vale per il solo consumatore che cambia asse.
+     *
+     * <p>⚠️ Equivalente e sbagliato: spostare l'origine di {@code counter}. Sposterebbe anche
+     * <b>dove cadono i bordi</b> della finestra, che oggi sono giusti su tutte le righe che non
+     * sono di transizione.
+     */
+    private static final int DIW_AXIS_SHIFT = 4;
+
     private void setHSTRT(int val, int pixel) {
         hstrt = val;
-        diwChanges.insert(pixel, 0x08E, val);
+        diwChanges.insert(pixel + DIW_AXIS_SHIFT, 0x08E, val);
         borderBufferIsDirty = Math.max(borderBufferIsDirty, 2);
     }
 
     private void setHSTOP(int val, int pixel) {
         hstop = val;
-        diwChanges.insert(pixel, 0x090, val);
+        diwChanges.insert(pixel + DIW_AXIS_SHIFT, 0x090, val);
         borderBufferIsDirty = Math.max(borderBufferIsDirty, 2);
     }
 
