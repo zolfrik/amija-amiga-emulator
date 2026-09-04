@@ -4518,10 +4518,12 @@ public abstract class AbstractAgnus {
             case 0x092: // DDFSTRT
                 ddfStrt = value;
                 ddfCckStart = ddfStrt & ddfMask();
+                noteDdfStrtWrite();
                 break;
             case 0x094: // DDFSTOP
                 ddfStop = value;
                 ddfCckStop = decodeDdfStopCck(ddfStop);
+                noteDdfStopWrite();
                 break;
 
             case 0x096: // DMACON
@@ -4668,6 +4670,8 @@ public abstract class AbstractAgnus {
         spriteDmaSeq = false; spriteDmaPipe = false; spriteDmaOnDecisionCck = -1;
         diwStrt = 0; diwStop = 0; ddfStrt = 0; ddfStop = 0;
         diwVStart = 0; diwVStop = 0; ddfCckStart = 0; ddfCckStop = 0;
+        ddfStrtVal = 1; ddfStrtValOld = 1; ddfStopVal = 0; ddfStopValOld = 0;
+        ddfStrtChangeCck = Long.MIN_VALUE; ddfStopChangeCck = Long.MIN_VALUE;
         bplcon1 = 0; scrollOdd = 0; scrollEven = 0;
         bitplaneVerticalActive = false;
         Arrays.fill(bplPt, 0); Arrays.fill(sprPt, 0);
@@ -5115,6 +5119,50 @@ public abstract class AbstractAgnus {
     private boolean ddfEnableOn;
     /** Limite hard $18÷$D7, campionato con un CCK di ritardo ({@code ddf_limit_out}). */
     private boolean ddfLimitIn, ddfLimitOut;
+
+    /**
+     * ⛔ <b>DDFSTRT e DDFSTOP non entrano in vigore subito</b>, e finche' non lo fanno il
+     * confronto usa il valore <b>vecchio</b>. L'oracolo lo dichiara nel commento dei due
+     * handler — <i>«new value is available after 2 CCKs»</i> — e lo realizza tenendo il valore
+     * precedente accanto al nuovo, col CCK della scrittura come discriminante:
+     *
+     * <pre>{
+     * // scrittura:  ddfstrt_val_old = ddfstrt_val;  ddfstrt_cycle = get_cycles() + CYCLE_UNIT;
+     * (hpos == ddfstrt_val && cyc >  ddfstrt_cycle) || (hpos == ddfstrt_val_old && cyc <  ddfstrt_cycle)
+     * (hpos == ddfstop     && cyc >  ddfstop_cycle) || (hpos == ddfstop_old     && cyc <= ddfstop_cycle)
+     * }</pre>
+     *
+     * ⚠️ <b>I due non hanno lo stesso operatore, e non è una svista</b>: DDFSTOP usa { <=} e
+     * DDFSTRT { <}. ⇒ al CCK <b>esattamente uguale</b> a { ddfstrt_cycle} nessuna delle
+     * due condizioni di DDFSTRT è vera — <b>né il valore vecchio né quello nuovo</b> fanno match e
+     * la riga non parte affatto. È il caso che il README del §14 dichiara per { ddftimcop9}
+     * (<i>«the write cycle matches the trigger cycle which causes neither the old nor the new
+     * value to match»</i>, con una riga mancante nell'immagine), e cade fuori dai due operatori
+     * invece che da una regola a parte. ⇒ { ddftimcop9} è <b>bit-exact</b>.
+     *
+     * <p>⚠️ <b>Il { + 1} dell'oracolo diventa { 1 - SEQ_PHASE} da noi, e non è una
+     * taratura</b>: il §12 ha misurato che l'etichetta delle due griglie differisce di <b>+4 per
+     * una scrittura</b> e di <b>+2 per un fetch</b>, e qui l'istante della scrittura va confrontato
+     * sulla griglia del <b>match</b>. La conversione fra le due è { -SEQ_PHASE} = 2, la stessa
+     * costante che il sequencer usa per posizionare DDFSTRT e DDFSTOP. ⇒ { 1 + 2 = 3}.
+     */
+    private static final int DDF_WRITE_DELAY = 1 - SEQ_PHASE;
+    private int ddfStrtVal = 1, ddfStrtValOld = 1, ddfStopVal, ddfStopValOld;
+    private long ddfStrtChangeCck = Long.MIN_VALUE, ddfStopChangeCck = Long.MIN_VALUE;
+
+    private void noteDdfStrtWrite() {
+        ddfStrtValOld    = ddfStrtVal;
+        ddfStrtChangeCck = (masterClock >> 1) + DDF_WRITE_DELAY;
+        ddfStrtVal       = (ddfStrt & ddfMask()) | 1;
+    }
+
+    private void noteDdfStopWrite() {
+        ddfStopValOld    = ddfStopVal;
+        ddfStopChangeCck = (masterClock >> 1) + DDF_WRITE_DELAY;
+        ddfStopVal       = ddfStop & ddfMask();
+    }
+
+
     /** Valore precedente di {@code hwi}: la macchina parte sul FRONTE, non sul livello. */
     private boolean hwiOld;
     /** OCS: BPLEN arriva al sequencer con un CCK di ritardo in più che su ECS. */
@@ -5247,8 +5295,13 @@ public abstract class AbstractAgnus {
         // (DDFSTRT(), commento «DDFSTRT (odd cycle)»), mentre DDFSTOP resta pari. Il modello
         // posizionale non aveva mai avuto bisogno di saperlo perché non confrontava una
         // posizione con un match, ricavava una fase da una sottrazione.
-        final int ddfStrtCck = ((ddfStrt & ddfMask()) | 1) + SEQ_PHASE;
-        final int ddfStopCck = (ddfStop & ddfMask()) + SEQ_PHASE;
+        final long cyc = masterClock >> 1;
+        final boolean ddfStrtMatch =
+                   (cck == (ddfStrtVal    + SEQ_PHASE) && cyc >  ddfStrtChangeCck)
+                || (cck == (ddfStrtValOld + SEQ_PHASE) && cyc <  ddfStrtChangeCck);
+        final boolean ddfStopMatch =
+                   (cck == (ddfStopVal    + SEQ_PHASE) && cyc >  ddfStopChangeCck)
+                || (cck == (ddfStopValOld + SEQ_PHASE) && cyc <= ddfStopChangeCck);
 
         ddfLimitOut = ddfLimitIn;
 
@@ -5258,8 +5311,8 @@ public abstract class AbstractAgnus {
             if (cck == DDF_HARD_START_CCK + SEQ_PHASE) ddfLimitIn = false;
             if (cck == DDF_HARD_STOP_CCK + SEQ_PHASE && !harddis) ddfLimitIn = true;
 
-            if (cck == ddfStrtCck) ddfEnableOn = true;
-            if (cck == ddfStopCck) ddfEnableOn = false;
+            if (ddfStrtMatch) ddfEnableOn = true;
+            if (ddfStopMatch) ddfEnableOn = false;
 
             boolean hwi = dma && diw && ddfEnableOn && (!ddfLimitOut || harddis);
             if (bprun == 0 && hwi && !hwiOld) {
@@ -5279,12 +5332,12 @@ public abstract class AbstractAgnus {
             final boolean dma = dmaconBpl2;
             dmaconBpl2 = dmaconBplSeq;
 
-            if (cck == ddfStopCck && bprun != 0 && ddfStopping == 0) ddfStopping = 1;
+            if (ddfStopMatch && bprun != 0 && ddfStopping == 0) ddfStopping = 1;
 
             if (cck == DDF_HARD_START_CCK + SEQ_PHASE) ddfLimitIn = false;
             if (cck == DDF_HARD_STOP_CCK + SEQ_PHASE && bprun != 0 && ddfStopping == 0) ddfStopping = 1;
 
-            boolean ddfstrtMatch = cck == ddfStrtCck;
+            boolean ddfstrtMatch = ddfStrtMatch;
             if (!ddfLimitOut && ddfstrtMatch && bprun == 0 && dma && diw) {
                 bprun = 1;
                 bprunCycle = 0;
