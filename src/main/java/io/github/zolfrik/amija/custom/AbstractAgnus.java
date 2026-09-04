@@ -4502,12 +4502,16 @@ public abstract class AbstractAgnus {
             case 0x08E: // DIWSTRT
                 diwStrt = value;
                 diwVStart = (diwStrt >> 8) & 0xFF;
+                // `calcvdiw()` → need_vdiw_check: il confronto verticale rigira SUBITO,
+                // a riga in corso. Vedi recheckBitplaneVerticalWindow().
+                recheckBitplaneVerticalWindow();
                 if (denise != null) denise.writeRegister(0x08E, value);
                 break;
             case 0x090: // DIWSTOP
                 diwStop = value;
                 diwVStop = (diwStop >> 8) & 0xFF;
                 if ((diwStop & 0x8000) == 0) diwVStop += 256;
+                recheckBitplaneVerticalWindow();
                 if (denise != null) denise.writeRegister(0x090, value);
                 break;
 
@@ -4786,21 +4790,11 @@ public abstract class AbstractAgnus {
         // imposta DIWSTRT con Vstart=0 → bitplane mai prelevati → solo le barre del
         // Copper, niente testo né vettori). vAmiga resetta il flip-flop all'ultima
         // riga del frame, non alla riga 0, così uno Vstart==0 apre correttamente.
-        boolean start = vpos == diwVStart;
-        boolean stop = vpos == diwVStop;
-
         if (vpos == 0) {
             bitplaneVerticalActive = (diwVStart == 0) && (diwVStop != 0);
             if (bitplaneVerticalActive) bitplaneDmaOnAtWindowStart = bitplaneDmaEnabled;
-        } else if (stop) {
-            bitplaneVerticalActive = false;
-        } else if (start) {
-            bitplaneVerticalActive = true;
-            // Stato del DMA bitplane all'APERTURA della finestra di display: serve a
-            // distinguere un frame parziale (bitplane spenti in cima, accesi più giù →
-            // mano insert-disk del KS) da uno split-screen legittimo (bitplane accesi
-            // in cima, commutati a metà → pannello verbi/inventario di Monkey Island 2).
-            bitplaneDmaOnAtWindowStart = bitplaneDmaEnabled;
+        } else {
+            compareBitplaneVerticalWindow();
         }
         // Vertical blank di Agnus: il VB inizia all'ULTIMA riga del field
         // (WinUAE custom.cpp vsync: `vpos == maxvpos + lof_store - 1` → agnus_vb,
@@ -4813,6 +4807,68 @@ public abstract class AbstractAgnus {
         boolean lastLineOfField = vpos == ((field == 0) ? maxVpos : maxVpos - 1);
         bitplaneDmaActive = bitplaneDmaEnabled && bitplaneVerticalActive && !lastLineOfField;
     }
+
+    /**
+     * Il confronto vero e proprio: {@code vpos} contro Vstart e Vstop, con lo <b>stop che
+     * domina</b> lo start. È il corpo di {@code check_bpl_vdiw()} dell'oracolo:
+     *
+     * <pre>{@code
+     * bool start = vpos == plffirstline && !forceoff;
+     * bool end   = vpos == plflastline  || forceoff;
+     * if (start && !end) vdiwstate = DIW_waiting_stop;   // apre
+     * else if (end)      vdiwstate = DIW_waiting_start;  // chiude
+     * }</pre>
+     *
+     * Estratto perché lo chiamano <b>due</b> percorsi: lo scorrimento di riga e la
+     * rivalutazione alla scrittura di DIWSTRT/DIWSTOP/DIWHIGH — vedi
+     * {@link #recheckBitplaneVerticalWindow()}.
+     */
+    private void compareBitplaneVerticalWindow() {
+        if (vpos == diwVStop) {
+            bitplaneVerticalActive = false;
+        } else if (vpos == diwVStart) {
+            bitplaneVerticalActive = true;
+            // Stato del DMA bitplane all'APERTURA della finestra di display: serve a
+            // distinguere un frame parziale (bitplane spenti in cima, accesi più giù →
+            // mano insert-disk del KS) da uno split-screen legittimo (bitplane accesi
+            // in cima, commutati a metà → pannello verbi/inventario di Monkey Island 2).
+            bitplaneDmaOnAtWindowStart = bitplaneDmaEnabled;
+        }
+    }
+
+    /**
+     * ⛔ <b>La finestra verticale si rivaluta ALLA SCRITTURA, non solo a inizio riga.</b>
+     * Nell'oracolo una scrittura a DIWSTRT/DIWSTOP/DIWHIGH chiama {@code calcvdiw()}, che
+     * aggiorna {@code plffirstline}/{@code plflastline} e alza <b>{@code need_vdiw_check}</b>;
+     * il flag è consumato dentro {@code do_cck()}, <b>dopo</b> {@code decide_bpl()}, quindi il
+     * confronto rigira <b>a riga in corso</b> e il nuovo stato vale dal CCK successivo.
+     *
+     * <p>Senza questa rivalutazione, un valore che coincide con la riga <b>corrente</b> non
+     * apre mai la finestra — e siccome quel valore resta per il resto del fotogramma, non la
+     * apre più nemmeno dopo. È tutta la classe A del banco {@code Agnus/DIW}: su
+     * {@code diwv10÷12} non disegnavamo un pixel di playfield da vpos 58 in giù, mentre
+     * l'oracolo disegnava tutto.
+     *
+     * <p>⚠️ <b>Perché qui basta chiamarlo subito e non serve un flag «al CCK dopo».</b>
+     * L'unica cosa che l'attesa dell'oracolo garantisce è che la scrittura <i>non</i> influenzi
+     * la decisione di fetch del proprio CCK ({@code decide_bpl} è già girata). Da noi le due
+     * scritture possibili — Copper in {@code copper.fallingEdge()} e CPU in
+     * {@code handleCpuDataTransferPhase()} — stanno <b>entrambe</b> nel fronte di discesa,
+     * cioè dopo l'arbitraggio degli slot del CCK corrente: la garanzia c'è già per
+     * costruzione. Un secondo stadio di pipe sarebbe un CCK di ritardo in più, non una
+     * traduzione.
+     *
+     * <p>⚠️ Il ramo {@code vpos == 0} di {@link #updateBitplaneVerticalWindow()} <b>non</b> si
+     * applica qui: quello modella il reset del flip-flop a fine fotogramma (vAmiga
+     * {@code eolHandler}, oracolo {@code forceoff}), non un confronto, e riapplicarlo a una
+     * scrittura chiuderebbe la finestra dove l'oracolo la lascia com'è.
+     */
+    private void recheckBitplaneVerticalWindow() {
+        compareBitplaneVerticalWindow();
+        boolean lastLineOfField = vpos == ((field == 0) ? maxVpos : maxVpos - 1);
+        bitplaneDmaActive = bitplaneDmaEnabled && bitplaneVerticalActive && !lastLineOfField;
+    }
+
     private boolean bitplaneDmaOnAtWindowStart = false;
 
     private boolean isSpriteDMAEnabled() {
@@ -4908,6 +4964,8 @@ public abstract class AbstractAgnus {
         value &= 0x2727;
         diwVStart = (diwVStart & 0xFF) | ((value & 0x07) << 8);
         diwVStop  = (diwVStop  & 0xFF) | (((value >> 8) & 0x07) << 8);
+        // Anche DIWHIGH passa da calcvdiw(): stesso trattamento di DIWSTRT/DIWSTOP.
+        recheckBitplaneVerticalWindow();
         if (denise != null) denise.writeRegister(0x1E4, value);
     }
 
