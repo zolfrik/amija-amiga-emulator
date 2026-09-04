@@ -5150,6 +5150,29 @@ public abstract class AbstractAgnus {
     private int ddfStrtVal = 1, ddfStrtValOld = 1, ddfStopVal, ddfStopValOld;
     private long ddfStrtChangeCck = Long.MIN_VALUE, ddfStopChangeCck = Long.MIN_VALUE;
 
+    /**
+     * ⛔ <b>Il contatore della riga è CIRCOLARE, e il confronto DDF non deve uscirne.</b>
+     * L'oracolo confronta {@code agnus_hpos} con {@code ddfstrt_val}; la nostra griglia è
+     * spostata di {@link #SEQ_PHASE}, quindi per le coordinate <b>vicinissime a zero</b> la
+     * sottrazione porta il punto di match <b>fuori dalla riga</b> e il match non avviene mai.
+     *
+     * <p>Il caso è reale e il banco §14 lo isola: {@code hwstop1/7/8} scrivono
+     * {@code DDFSTRT = DDFSTOP = $00} per una manciata di righe, quindi
+     * {@code ddfstrt_val = ($00 & $FC) | 1 = 1}. L'oracolo fa match a {@code hpos == 1} e
+     * arma la riga da lì fino all'hard stop; da noi {@code 1 + SEQ_PHASE = −1} non esiste, e
+     * quelle righe restavano <b>vuote</b> — 358 pixel per riga, sei righe nella metà lores e
+     * sei in quella hires. ⚠️ E la controprova è nel banco stesso: {@code hwstop3} ha le
+     * <b>stesse</b> coordinate `LEFT`/`RIGHT` ma scrive {@code $08} invece di {@code $00}, ed
+     * era già verde.
+     *
+     * <p>⚠️ È la stessa forma del §17 classe B — <i>il contatore gira, e un modello che non lo
+     * segue perde esattamente i valori vicini al wrap</i>.
+     */
+    private int ddfMatchCck(int val) {
+        int c = val + SEQ_PHASE;
+        return c < 0 ? c + maxHpos / 2 : c;
+    }
+
     private void noteDdfStrtWrite() {
         ddfStrtValOld    = ddfStrtVal;
         ddfStrtChangeCck = (masterClock >> 1) + DDF_WRITE_DELAY;
@@ -5297,11 +5320,11 @@ public abstract class AbstractAgnus {
         // posizione con un match, ricavava una fase da una sottrazione.
         final long cyc = masterClock >> 1;
         final boolean ddfStrtMatch =
-                   (cck == (ddfStrtVal    + SEQ_PHASE) && cyc >  ddfStrtChangeCck)
-                || (cck == (ddfStrtValOld + SEQ_PHASE) && cyc <  ddfStrtChangeCck);
+                   (cck == ddfMatchCck(ddfStrtVal)    && cyc >  ddfStrtChangeCck)
+                || (cck == ddfMatchCck(ddfStrtValOld) && cyc <  ddfStrtChangeCck);
         final boolean ddfStopMatch =
-                   (cck == (ddfStopVal    + SEQ_PHASE) && cyc >  ddfStopChangeCck)
-                || (cck == (ddfStopValOld + SEQ_PHASE) && cyc <= ddfStopChangeCck);
+                   (cck == ddfMatchCck(ddfStopVal)    && cyc >  ddfStopChangeCck)
+                || (cck == ddfMatchCck(ddfStopValOld) && cyc <= ddfStopChangeCck);
 
         ddfLimitOut = ddfLimitIn;
 
