@@ -374,6 +374,31 @@ public abstract class AbstractDenise {
     private int armed;                 // bitmask degli sprite armati
     private int spriteClipBegin, spriteClipEnd;
 
+    /**
+     * ⛔ <b>BPL1DAT non arma solo i bitplane: SBLOCCA anche gli sprite.</b> Pixel in cui
+     * BPL1DAT e' stato scritto la prima volta in questa riga, o {@link Integer#MAX_VALUE}
+     * se non e' mai stato scritto (riga tutta bordo).
+     *
+     * <p>WinUAE lo modella come una maschera a <b>due bit</b>, {@code sprites_hidden}
+     * (drawing.cpp): il bit 0 e' la finestra orizzontale (HDIW) e il bit <b>1</b> e'
+     * proprio questo — {@code hstart_new()} lo alza a inizio riga e <b>solo</b>
+     * {@code bpl1dat_enable_sprites()} lo abbassa, con il commento che lo dice per esteso:
+     * <i>«BPL1DAT allows sprites 1 lores pixel before bitplanes»</i>. Lo sprite esce solo
+     * se {@code !sprites_hidden}, cioe' se <b>entrambi</b> i bit sono a zero.
+     *
+     * <p>⚠️ Il bit 0 lo applicavamo gia' (la maschera DIW di {@code bBuffer} in
+     * {@code colorize}); il bit 1 mancava, e sono i 14 rossi su 14 del gruppo
+     * {@code clip} del banco Denise/Sprites.
+     */
+    private int bpl1datPixelThisLine = Integer.MAX_VALUE;
+
+    /**
+     * Lo scarto fra la scrittura di BPL1DAT e il pixel da cui lo sprite torna visibile,
+     * in pixel raw (2 per CCK-mezza). ⚠️ <b>MISURATO</b>, non deduttо dal commento
+     * dell'oracolo: vedi il piano, §20 classe A.
+     */
+    private static final int SPRITE_ENABLE_OFFSET = 0;
+
     /** Pixel totali resi per sprite per frame corrente (reset a ogni vsync). */
     private final long[] spritePixelsThisFrame = new long[8];
     /** Pixel totali resi per sprite nel frame completato più recente. */
@@ -788,6 +813,7 @@ public abstract class AbstractDenise {
             armedOdd  = true;
             armedEven = true;
             bpl1datWrittenThisLine = true;
+            if (pixel < bpl1datPixelThisLine) bpl1datPixelThisLine = pixel;
         }
     }
 
@@ -866,6 +892,11 @@ public abstract class AbstractDenise {
             // (border = plfleft<0 → sprite solo con BRDSPRT/ECS).
             lineIsVBorder = !bpl1datWrittenThisLine;
             translate();
+            // Bit 1 di `sprites_hidden`: prima della prima BPL1DAT della riga lo sprite
+            // non esce. Vedi bpl1datPixelThisLine.
+            spriteClipBegin = bpl1datPixelThisLine == Integer.MAX_VALUE
+                    ? Integer.MAX_VALUE
+                    : bpl1datPixelThisLine + SPRITE_ENABLE_OFFSET;
             drawSprites();
             checkCollisions();
             colorize(vpos);
@@ -910,6 +941,7 @@ public abstract class AbstractDenise {
         for (int i = 0; i < 8; i++) { ssra[i] = 0; ssrb[i] = 0; }
         spritesOnLineMask = 0;
         bpl1datWrittenThisLine = false;   // reset per la prossima scanline
+        bpl1datPixelThisLine = Integer.MAX_VALUE;
 
         // Gli sprite possono essere visibili ovunque sulla riga attiva;
         // la posizione orizzontale è già filtrata da sprhppos (negativo se in blanking).
@@ -1559,10 +1591,18 @@ public abstract class AbstractDenise {
             // (il layout precedente, 6-9/10-13, era l'inverso di quello reale)
             if ((d & enabled2) == match2) {
                 clxdat |= (1 << (5 + (x >> 1)));
-            } else if ((zBuffer[pos] & 0x01) == 0) {
-                // Stranezza hardware in single-playfield: se PF2 non matcha,
-                // nemmeno PF1 matcha (vAmiga checkS2PCollisions, Z_DPF;
-                // i codici 0x01/0x03/0x05 sono scritti solo da translateDPF).
+            } else if ((zBuffer[pos] & 0x07) == 0) {
+                // Stranezza hardware in single-playfield: se PF2 non matcha, nemmeno PF1
+                // matcha. L'oracolo la discrimina su `bpldualpf` (drawing.cpp,
+                // denise_collide_sprites: in DPF i due confronti sono PARALLELI, in SPF
+                // quello di PF1 è ANNIDATO dentro quello di PF2); noi ci serve per-pixel,
+                // perché il Copper commuta SPF/DPF DENTRO la riga.
+                // ⛔ E il marcatore non è il bit 0: translateDPF scrive 0x01..0x05, e i
+                // codici 0x02 (solo PF1 visibile) e 0x04 (entrambi, vince PF1) hanno il
+                // bit 0 a ZERO. Leggendo solo `& 0x01` quei pixel passavano per
+                // single-playfield e si prendevano l'annidamento che non gli spetta.
+                // translateSPF non scrive mai i tre bit bassi e le costanti Z stanno
+                // tutte da 0x0008 in su, quindi `& 0x07` è esattamente «reso in DPF».
                 continue;
             }
             if ((d & enabled1) == match1) clxdat |= (1 << (1 + (x >> 1)));
