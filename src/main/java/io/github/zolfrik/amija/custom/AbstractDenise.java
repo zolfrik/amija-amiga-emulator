@@ -220,6 +220,29 @@ public abstract class AbstractDenise {
     private int lastRenderedBplcon0;
 
     private int     hstrt,   hstop;
+    /**
+     * ⛔ <b>Lo stato di HSTRT/HSTOP all'INIZIO della riga, e senza di esso una scrittura a
+     * metà riga si applica all'indietro.</b> {@link #updateBorderBuffer()} gira a fine riga,
+     * quando {@link #hstrt}/{@link #hstop} portano già il valore <b>nuovo</b>: partendo da
+     * quelli, i pixel <i>prima</i> della scrittura venivano mascherati con la coordinata che
+     * ancora non era stata scritta, e {@link #diwChanges} — che la reinserisce al suo pixel —
+     * non poteva accorgersene, perché reimpostava un valore già in uso.
+     *
+     * <p>Il difetto è invisibile finché la finestra non si muove dentro la riga, ed è il
+     * banco §17 {@code Denise/DIW} a renderlo osservabile: {@code diwtim.i} riscrive DIWSTOP
+     * due volte per riga alternando due coordinate a 32 pixel lores di distanza, e su ogni
+     * riga in cui la scrittura cadeva <b>dopo</b> che il contatore aveva già superato
+     * entrambe usavamo la nuova dove l'oracolo tiene la vecchia. Su {@code diwtim1} la
+     * finestra chiudeva a 571 invece che a 507: 64 pixel di crop, cioè esattamente
+     * {@code $80 − $60}.
+     *
+     * <p>⚠️ È il gemello rovesciato di {@code initialBplcon1} (§16 classe F): là leggevamo
+     * uno snapshot dove l'oracolo legge vivo, qui leggevamo vivo dove serve lo snapshot. La
+     * discriminante è <b>chi consuma il valore</b>: lo scroll fine entra nel cursore
+     * d'uscita mentre la riga scorre, la maschera DIW viene ricostruita tutta insieme a fine
+     * riga e ha quindi bisogno del proprio stato iniziale.
+     */
+    private int     hstrtLineStart, hstopLineStart;
     private boolean hflop;
     private int     borderBufferIsDirty;
     private int     borderColor;
@@ -483,6 +506,7 @@ public abstract class AbstractDenise {
         bplcon4 = 0x0011;
         initialBplcon0 = initialBplcon2 = 0;
         hstrt = 0; hstop = 0;
+        hstrtLineStart = 0; hstopLineStart = 0;
         hflop = true;
         borderBufferIsDirty = 0;
         borderColor = 0;
@@ -869,6 +893,11 @@ public abstract class AbstractDenise {
         // la scanline che sta per cominciare, prima di qualsiasi aggiornamento.
         initialBplcon0 = bplcon0;
         initialBplcon2 = bplcon2;
+        // Stesso ragionamento della palette, per la finestra orizzontale: updateBorderBuffer()
+        // ha appena consumato la riga, quindi i valori vivi sono quelli che la PROSSIMA riga
+        // eredita. Vedi hstrtLineStart.
+        hstrtLineStart = hstrt;
+        hstopLineStart = hstop;
         // Snapshot dei registri colore di FINE riga (= inizio della prossima):
         // nel ramo visibile colorize() ha appena riportato palette[] allo stato di
         // fine riga; nel ramo VBlank palette[] contiene già i valori live. In
@@ -1077,21 +1106,26 @@ public abstract class AbstractDenise {
         // linea precedente (chiusa) → schermo vuoto. Il check di livello apre la
         // finestra correttamente; per i valori standard (hstrt=$81, hstop=$1C1) dà
         // lo stesso risultato dei fronti, quindi nessuna regressione.
+        // ⛔ Si parte dallo stato di INIZIO RIGA, non da quello vivo: vedi hstrtLineStart.
+        int     hs      = hstrtLineStart;
+        int     he      = hstopLineStart;
         int     counter = HBLANK_MIN * 2;
-        boolean hf      = (hstrt <= hstop)
-                ? (counter >= hstrt && counter < hstop)
-                : (counter >= hstrt || counter < hstop);
+        boolean hf      = (hs <= he)
+                ? (counter >= hs && counter < he)
+                : (counter >= hs || counter < he);
         int     diwIdx  = 0;
 
         for (int i = 0; i < HPIXELS; i++) {
             // Applica eventuali modifiche DIW in questo pixel
             while (diwIdx < diwChanges.size() && i >= diwChanges.keys[diwIdx]) {
                 RegChange c = diwChanges.elements[diwIdx++];
-                if      (c.reg == 0x08E) hstrt = c.value;
-                else if (c.reg == 0x090) hstop = c.value;
+                if      (c.reg == 0x08E) hs = c.value;
+                else if (c.reg == 0x090) he = c.value;
             }
-            if (counter == hstrt) hf = true;
-            if (counter == hstop) hf = false;
+            // L'ordine è quello dell'oracolo (drawing.cpp, lts_*_ecs): prima lo start, poi
+            // lo stop, ed entrambi `if` separati ⇒ a coordinate uguali lo STOP vince.
+            if (counter == hs) hf = true;
+            if (counter == he) hf = false;
 
             // Incrementa counter ogni 2 pixel (1 CCK)
             if ((i & 1) == 1) {
