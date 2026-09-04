@@ -236,6 +236,46 @@ public final class Blitter {
     private boolean running = false;
     private boolean bbusy   = false;
 
+    /**
+     * CCK in cui {@link #bbusy} e' passato da acceso a spento — cioe' il
+     * {@code blt_info.finishcycle_dmacon} dell'oracolo. {@code Long.MIN_VALUE} = mai.
+     *
+     * <p>⛔ Serve alla vista del <b>COPPER</b>, che NON e' quella della CPU. WinUAE le
+     * scrive una accanto all'altra (blitter.cpp, {@code blitter_done_all}):
+     *
+     * <pre>
+     *   blt_info.finishcycle_dmacon = get_cycles();
+     *   blt_info.finishcycle_copper = get_cycles() + 1 * CYCLE_UNIT;
+     * </pre>
+     *
+     * e {@code blit_busy(bool dmaconr)} sceglie la soglia col parametro, restituendo
+     * {@code true} finche' {@code get_cycles() <= } quella giusta. ⇒ <b>Il Blitter risulta
+     * ancora occupato per un CCK in piu' al Copper che alla CPU</b>, ed e' li' che
+     * {@code generate_blitter()} chiama {@code blitter_done_notify()} per svegliare una WAIT
+     * con BFD.
+     *
+     * <p>⚠️ La vista della CPU ({@link #isBusy}) NON va toccata: e' quella tarata sui poll di
+     * {@code bbusy0} e congelata da {@code BbusyTest} (17/17).
+     */
+    private long busyClearedCck = Long.MIN_VALUE;
+
+    /** Unico punto in cui BBUSY si spegne: registra il CCK del fronte. */
+    private void clearBbusy() {
+        if (bbusy && agnus != null) {
+            busyClearedCck = agnus.getMasterClock() >> 1;
+        }
+        bbusy = false;
+    }
+
+    /**
+     * Il Blitter <b>come lo vede il Copper</b>: occupato per un CCK oltre {@link #isBusy}.
+     * E' {@code blit_busy(false)} dell'oracolo.
+     */
+    public boolean isBusyForCopper() {
+        return bbusy
+            || (agnus != null && (agnus.getMasterClock() >> 1) <= busyClearedCck);
+    }
+
     // Modalità "immediate blit": esegue l'intero blit in un colpo alla scrittura di
     // BLTSIZE (zero cicli di bus emulati). Non cycle-exact; solo da amiga.properties.
     private boolean immediateMode = false;
@@ -296,7 +336,7 @@ public final class Blitter {
 
     public void reset() {
         state = State.IDLE;
-        running = false; bbusy = false; dmaEnabled = false;
+        running = false; clearBbusy(); dmaEnabled = false;
         startPending = false; startCountdown = 0; clearBusyCountdown = 0;
         bltcon0 = 0; bltcon1 = 0;
         bltafwm = 0xFFFF; bltalwm = 0xFFFF;
@@ -417,7 +457,7 @@ public final class Blitter {
         // Guard SpeedBall II: senza DMA blitter abilitato il blit non parte e BBUSY non
         // si attiva (vedi startBlit()); annulla un eventuale arm pendente.
         if (!dmaEnabled) {
-            running = false; bbusy = false; startPending = false; startCountdown = 0; clearBusyCountdown = 0;
+            running = false; clearBbusy(); startPending = false; startCountdown = 0; clearBusyCountdown = 0;
             return;
         }
         if (immediateMode) {
@@ -449,7 +489,7 @@ public final class Blitter {
         // Senza DMA blitter abilitato il blitter non può svolgere cicli di memoria: non
         // parte e BBUSY non si attiva (loader che scrivono BLTSIZE con DMA off e poi
         // attendono BBUSY — es. cracktro Speedball II — si bloccherebbero altrimenti).
-        if (!dmaEnabled) { running = false; bbusy = false; clearBusyCountdown = 0; return; }
+        if (!dmaEnabled) { running = false; clearBbusy(); clearBusyCountdown = 0; return; }
 
         recacheAreaBlitFields();
 
@@ -502,7 +542,7 @@ public final class Blitter {
             stepCck(true);
         }
         if (running) endBlit(); // guard scaduto: non lasciare BBUSY incollato
-        clearBusyCountdown = 0; bbusy = false; // niente tick successivi in immediate
+        clearBusyCountdown = 0; clearBbusy(); // niente tick successivi in immediate
     }
 
     // =========================================================================
@@ -538,7 +578,7 @@ public final class Blitter {
      */
     public void tickBusyClear() {
         if (clearBusyCountdown == 1) {
-            bbusy = false;
+            clearBbusy();
             clearBusyCountdown = 0;
         }
     }
@@ -649,7 +689,7 @@ public final class Blitter {
                 // 9° slot = b+10, visibile b+11 = il nostro ultimo REPEAT a b+11).
                 // Il vecchio countdown a 2 stadi compensava l'asse 2 CCK presto,
                 // non un difetto del clear vAmiga. Il blit continua (drain D).
-                bbusy = false;
+                clearBbusy();
             }
         }
 
@@ -684,7 +724,7 @@ public final class Blitter {
         // BLTDONE arriva PRIMA dello slot d'uscita che spegne BBUSY (misurato su
         // bbusy0 v202, BPU=4). Il countdown viene completato da tickBusyClear.
         // I path senza countdown (line mode, guardie) azzerano subito come prima.
-        if (clearBusyCountdown == 0) bbusy = false;
+        if (clearBusyCountdown == 0) clearBbusy();
         state   = State.IDLE;
         // L'interrupt BLIT è già stato asserito nel ciclo BLTDONE (birq). Se per il line
         // mode arriviamo qui senza averlo asserito, lo facciamo ora.
@@ -739,7 +779,7 @@ public final class Blitter {
         // poll di bbusy9l v98 h=94 (stesso cck del REPEAT, con slot rubato dal
         // bitplane a 91) legge già clear.
         if ((op & LINE_LAST_BUS) != 0 && hCount == 1) {
-            if ((op & REPEAT) != 0) bbusy = false;
+            if ((op & REPEAT) != 0) clearBbusy();
             else clearBusyCountdown = 1;
         }
 
@@ -929,7 +969,7 @@ public final class Blitter {
         if (!enabled) {
             startPending = false; startCountdown = 0;
             if (running || bbusy) {
-                running = false; bbusy = false; clearBusyCountdown = 0; state = State.IDLE;
+                running = false; clearBbusy(); clearBusyCountdown = 0; state = State.IDLE;
             }
         }
     }

@@ -5533,7 +5533,12 @@ public abstract class AbstractAgnus {
     public int  getChipMask()        { return chipMask; }
     public int  getLastCompletedFrameField() { return lastCompletedFrameField; }
     public boolean lastCompletedFrameHadLateBitplaneDma() { return lastCompletedFrameHadLateBitplaneDma; }
-    public boolean isBlitterFinished() { return !blitter.isBusy(); }
+    /**
+     * Il Blitter come lo vede il COPPER (BFD): resta occupato per <b>un CCK in piu</b>
+     * di quanto lo veda la CPU via DMACONR. E' { blit_busy(false)} dell'oracolo -
+     * vedi { Blitter#isBusyForCopper}.
+     */
+    public boolean isBlitterFinished() { return !blitter.isBusyForCopper(); }
     public FloppyDrive getDf0()      { return df0; }
     public FloppyDrive getDf1()      { return df1; }
     public FloppyDrive getDf2()      { return df2; }
