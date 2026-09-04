@@ -1125,21 +1125,33 @@ public abstract class AbstractDenise {
         if (borderBufferIsDirty == 0) return;
         borderBufferIsDirty--;
 
-        // Stato iniziale della finestra DIW orizzontale calcolato per LIVELLO al
-        // counter di partenza, non solo per fronte. Il counter itera [2..455] (wrap
-        // $1C8→2) e non raggiunge mai valori come 0 o $1FF: con hstrt/hstop fuori da
-        // questo range (es. Barbarian: DIWSTRT H=$00, DIWSTOP H=$FF→$1FF) i fronti
-        // non scatterebbero mai e la finestra resterebbe congelata allo stato della
-        // linea precedente (chiusa) → schermo vuoto. Il check di livello apre la
-        // finestra correttamente; per i valori standard (hstrt=$81, hstop=$1C1) dà
-        // lo stesso risultato dei fronti, quindi nessuna regressione.
-        // ⛔ Si parte dallo stato di INIZIO RIGA, non da quello vivo: vedi hstrtLineStart.
+        // ⛔ La finestra orizzontale è un FLIP-FLOP che ATTRAVERSA la riga: si parte dallo
+        // stato in cui la riga precedente l'ha lasciata, non da un confronto di livello.
+        // È `denise_hdiw` dell'oracolo — una variabile persistente che cambia SOLO nelle due
+        // transizioni (`do_hstrt_ecs`/`do_hstop_ecs`) e non viene mai ricalcolata a inizio
+        // riga.
+        //
+        // Il counter itera [2..455] (wrap $1C8→2) e non raggiunge mai valori come 0 o $1FF:
+        // con hstrt/hstop fuori da quel range i fronti non scattano MAI, e il flip-flop
+        // resta dov'è per sempre. È esattamente il comportamento che serve nei due casi che
+        // il banco §17 e i giochi mettono alla prova:
+        //   - Barbarian (DIWSTRT H=$00, DIWSTOP H=$FF→$1FF): nessuna transizione, la
+        //     finestra resta APERTA perché lo era (hflop parte a true al reset) → schermo
+        //     visibile. Un confronto di livello dava lo stesso esito, ma per un'altra strada;
+        //   - DIWH/minmax (DIWSTRT H=$FF, DIWSTOP oltre $1C7): la finestra si apre a 255 e
+        //     NON si richiude, quindi la riga dopo comincia già aperta. ⛔ Qui il confronto
+        //     di livello sbagliava — ricalcolava "chiusa" a inizio riga — ed è il rosso che
+        //     ha fatto scoprire la forma giusta: 4 righe su minmax, l'oracolo che disegna
+        //     dalla colonna 30 dove noi partivamo dalla 314 (= hstart 255).
+        //
+        // ⚠️ hflop è aggiornato in coda a questo metodo con lo stato di fine riga, quindi
+        // qui porta esattamente ciò che la riga precedente ha lasciato.
+        // ⛔ E le COORDINATE si prendono dallo stato di inizio riga, non da quello vivo:
+        // vedi hstrtLineStart.
         int     hs      = hstrtLineStart;
         int     he      = hstopLineStart;
         int     counter = HBLANK_MIN * 2;
-        boolean hf      = (hs <= he)
-                ? (counter >= hs && counter < he)
-                : (counter >= hs || counter < he);
+        boolean hf      = hflop;
         int     diwIdx  = 0;
 
         for (int i = 0; i < HPIXELS; i++) {
