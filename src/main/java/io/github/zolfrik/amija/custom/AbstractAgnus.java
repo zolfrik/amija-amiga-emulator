@@ -1146,10 +1146,13 @@ public abstract class AbstractAgnus {
      * Numero massimo di righe per frame.
      * PAL: 312 (righe 0-311), NTSC: 262 (righe 0-261).
      */
-    // STEP 14/P-12 (PERFORMANCE_REPORT_FINAL): final → il JIT può fare constant
-    // folding nei confronti in updateBeam/risingEdge. maxVpos è assegnato nel
-    // costruttore (262 NTSC / 312 PAL), maxHpos è costante.
-    private final int maxVpos;
+    // STEP 14/P-12 (PERFORMANCE_REPORT_FINAL) l'aveva reso `final` per il constant
+    // folding del JIT. ⛔ Non può più esserlo: su ECS il modo si commuta A CALDO
+    // scrivendo BEAMCON0 (vedi {@link #beamNtsc}), e `init_beamcon0()` dell'oracolo
+    // riassegna `maxvpos` nel CCK stesso della scrittura. Resta assegnato nel
+    // costruttore (262 NTSC / 312 PAL) e cambia SOLO su una scrittura a BEAMCON0 che
+    // rovescia il bit PAL — cioè mai, in una macchina che non tocca il registro.
+    private int maxVpos;
 
     /**
      * Numero di system clock della riga <b>corta</b>: 454 SC = 227 CCK.
@@ -1342,6 +1345,29 @@ public abstract class AbstractAgnus {
      * Default: 0x0020 per PAL.
      */
     protected int beamcon0 = 0x0020;
+
+    /** BEAMCON0 bit 5: video PAL. Spento ⇒ NTSC. */
+    private static final int BEAMCON0_PAL_BIT = 0x0020;
+    /** BEAMCON0 bit 11: LOLDIS, disabilita l'alternanza riga lunga/corta. */
+    private static final int BEAMCON0_LOLDIS  = 0x0800;
+
+    /**
+     * Modo del <b>pennello</b>: NTSC se il bit PAL di BEAMCON0 è spento.
+     *
+     * <p>⛔ <b>Non è {@link #mode}</b>. `mode` è la macchina — il quarzo, l'ID di Agnus
+     * letto da VPOSR, la scelta fatta alla costruzione; questo è quel che il pennello sta
+     * facendo <i>adesso</i>, e su ECS il software lo commuta <b>a caldo</b> scrivendo
+     * BEAMCON0. L'oracolo lo calcola in `init_beamcon0()` (custom.cpp) come
+     * {@code isntsc = (beamcon0 & BEAMCON0_PAL) ? 0 : 1}, con la deroga
+     * {@code if (!ecs_agnus) isntsc = currprefs.ntscmode} — da noi implicita, perché su OCS
+     * {@link #beamcon0Writable()} è falso e il registro non cambia mai.
+     *
+     * <p>Cambia tre cose insieme, e vanno insieme: {@link #maxVpos} (312 ⇄ 262),
+     * l'alternanza {@link #lol} della riga lunga (che esiste solo in NTSC) e la fase del
+     * VSYNC. Misurato su `Agnus/Misc/ntsc4` e `ntsc5`, gli unici due del banco che spengono
+     * il bit PAL.
+     */
+    private boolean beamNtsc;
 
     // =========================================================================
     // Chip ID (VPOSR bits 15-8)
@@ -1702,9 +1728,11 @@ public abstract class AbstractAgnus {
         if (mode == VideoMode.NTSC) {
             this.maxVpos   = 262;
             this.beamcon0  = 0x0000;
+            this.beamNtsc  = true;
         } else {
             this.maxVpos   = 312;
             this.beamcon0  = 0x0020;
+            this.beamNtsc  = false;
         }
 
         this.copperBusReq  = new BusRequest();
@@ -2581,7 +2609,7 @@ public abstract class AbstractAgnus {
      * {@code lof_store}.
      */
     private void updateVsyncPhase() {
-        final boolean pal = mode != VideoMode.NTSC;
+        final boolean pal = !beamNtsc;
         final int startVpos = pal
                 ? ((field == 0) ? VSYNC_START_VPOS_PAL_LONG : VSYNC_START_VPOS_PAL_SHORT)
                 : VSYNC_START_VPOS_NTSC;
@@ -2694,7 +2722,12 @@ public abstract class AbstractAgnus {
 
         // LOL: su Agnus NTSC la riga alterna 227/228 CCK. Il toggle vale per la riga
         // che sta per iniziare (WinUAE: toggle nell'hsync handler, poi setmaxhpos()).
-        updateLineLength(mode == VideoMode.NTSC && !lol);
+        // ⛔ La condizione è quella dell'oracolo per intero:
+        //   if (!(new_beamcon0 & BEAMCON0_PAL) && !(new_beamcon0 & BEAMCON0_LOLDIS))
+        //       lol = !lol; else lol = false;
+        // cioè NTSC *e* LOLDIS spento; altrimenti la riga torna corta e ci resta. Il modo
+        // lo decide BEAMCON0, non la macchina (vedi beamNtsc).
+        updateLineLength(beamNtsc && (beamcon0 & BEAMCON0_LOLDIS) == 0 && !lol);
 
         hpos = 0;
         fetchWindowOpened = false;   // riarma il latch della finestra di fetch per la nuova riga
@@ -4665,7 +4698,15 @@ public abstract class AbstractAgnus {
             }
 
             case 0x1DC: // BEAMCON0 (ECS-only): su OCS la scrittura è ignorata.
-                if (beamcon0Writable()) beamcon0 = value;
+                if (beamcon0Writable()) {
+                    final int prev = beamcon0;
+                    beamcon0 = value;
+                    // `BEAMCON0()` dell'oracolo chiama `init_beamcon0()` SUBITO quando il
+                    // valore cambia, e li' `maxvpos` e' riassegnato nel CCK stesso della
+                    // scrittura. Il resto del modo (lol, fase del vsync) segue da se',
+                    // perche' e' letto da beamNtsc a ogni riga.
+                    if (value != prev) applyBeamcon0();
+                }
                 break;
 
             case 0x1E4: // DIWHIGH (ECS-only): estende DIWSTRT/STOP. No-op su OCS.
@@ -5047,6 +5088,29 @@ public abstract class AbstractAgnus {
      * {@code Agnus::pokeBEAMCON0} ({@code if (isOCS()) return;}).
      */
     protected boolean beamcon0Writable() { return false; }
+
+    /**
+     * Applica il modo scritto in BEAMCON0 al pennello — l'{@code init_beamcon0()}
+     * dell'oracolo, ridotto a quel che modelliamo: {@code maxvpos} e il modo
+     * {@link #beamNtsc} da cui dipendono {@link #lol} e la fase del VSYNC.
+     *
+     * <p>⚠️ Il numero di righe cambia <b>nel CCK della scrittura</b>, non al fotogramma
+     * dopo: se il pennello è già oltre la nuova ultima riga, il fotogramma corrente si
+     * chiude alla prima occasione utile — che è esattamente quel che fa l'oracolo, dove
+     * `maxvpos` è una variabile letta a ogni confronto di riga.
+     *
+     * <p>⛔ Non modelliamo il resto di `init_beamcon0()`: i modi programmati
+     * (VARBEAMEN/VTOTAL/HTOTAL), i sync variabili e il ricalcolo della finestra di
+     * visualizzazione sono materia del display, non del contatore.
+     */
+    private void applyBeamcon0() {
+        final boolean ntsc = (beamcon0 & BEAMCON0_PAL_BIT) == 0;
+        if (ntsc == beamNtsc) {
+            return;
+        }
+        beamNtsc = ntsc;
+        maxVpos = ntsc ? 262 : 312;
+    }
 
     /** Maschera del contatore REFPTR ($028). OCS: 9 bit ({@code 0x01FF}). */
     protected int refptrMask() { return 0x01FF; }
@@ -5657,7 +5721,7 @@ public abstract class AbstractAgnus {
     }
 
     public boolean inVBlankArea(int vpos) {
-        return vpos < (mode == VideoMode.PAL ? 26 : 20);
+        return vpos < (beamNtsc ? 20 : 26);
     }
 
     public void triggerLightPen() {

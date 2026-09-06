@@ -94,6 +94,12 @@ public final class VirtualCRT {
     // 4*(227 - HBLANK_MIN) = 4*(227-18) = 836.
     private static final int RIGHT_HBLANK_WRAP_COL = 4 * (227 - 0x12); // 836
     private int wrapPendingRow = -1;                          // riga V, campiona a cck 0 di V+1
+    /**
+     * Sentinella di {@link #borderCck0Rgb}: <b>nessun campione</b> per questa riga, quindi
+     * la colonna di wrap tiene il pixel che abbiamo renderizzato. Non è un colore valido
+     * (l'RGB sta in 24 bit), quindi non può collidere con un campione vero.
+     */
+    private static final int NO_WRAP_SAMPLE = -1;
     private final int[] borderCck0Rgb = new int[RAW_HEIGHT];  // COLOR00 al beam cck 0 di ogni riga
     // Se a quel punto la riga aveva playfield il wrap NON si applica: vedi
     // saveRegressionScreenshot.
@@ -101,6 +107,20 @@ public final class VirtualCRT {
     private int frameHiresLines;
     private int frameLoresLines;
     private int frameInterlacedLines;
+
+    /**
+     * Riga più alta del framebuffer scritta dal fotogramma corrente, oppure {@code -1}.
+     *
+     * <p>⛔ Serve perché <b>un fotogramma può essere più corto della finestra</b>: il
+     * framebuffer è alto {@link #RAW_HEIGHT} = 312 righe, quanto un frame PAL, ma un frame
+     * NTSC ne ha 262 — e su ECS il modo si commuta <b>a caldo</b> scrivendo BEAMCON0
+     * ({@code AbstractAgnus.beamNtsc}). Le 50 righe che il pennello non percorre più
+     * restavano com'erano, cioè col contenuto di un fotogramma PRECEDENTE, e un
+     * framebuffer non ha persistenza: quelle righe non esistono, quindi sono nere.
+     * L'oracolo dice la stessa cosa in un altro modo — il suo dump di `ntsc4`/`ntsc5` è
+     * alto {@code 262} e tutto ciò che sta sotto è riempito di zeri.
+     */
+    private int frameMaxRow = -1;
 
     // Estensione verticale REALE della finestra di display nel frame: prima/ultima
     // scanline che cade dentro la DIW viva (campionata riga per riga). Serve a centrare
@@ -206,6 +226,7 @@ public final class VirtualCRT {
 
     public void reset() {
         Arrays.fill(frameBuffer, 0);
+        frameMaxRow = -1;
         lastHpos = agnus.getHpos();
         lastVpos = agnus.getVpos();
         lastFrameCount = agnus.getFrameCount();
@@ -231,13 +252,21 @@ public final class VirtualCRT {
             wrapPendingRow = displayRow(lastVpos);
         }
         if (frameCount != lastFrameCount) {
-            // Non attraversare il confine di frame (riga 311 userebbe la cck-0 del frame
-            // nuovo; comunque non croppata). Scarta il campione cross-frame.
+            // Non attraversare il confine di frame: l'ultima riga userebbe la cck-0 del
+            // frame NUOVO. Scarta il campione cross-frame — e ⛔ **azzera anche quello che
+            // c'era prima**, altrimenti sull'ultima riga resta il wrap di un fotogramma
+            // precedente. In PAL è la riga 311, fuori dal crop, e non si vedeva; dopo una
+            // commutazione a NTSC è la 261, che nel crop è la riga 235: quattro pixel
+            // accesi dove l'oracolo ha il nero (`Agnus/Misc/ntsc5`).
+            if (wrapPendingRow >= 0 && wrapPendingRow < RAW_HEIGHT) {
+                borderCck0Rgb[wrapPendingRow] = NO_WRAP_SAMPLE;
+            }
             wrapPendingRow = -1;
             // L'input dell'ospite si applica QUI e non dentro presentFrame(): quello può
             // saltare un frame (frame-skip) e i controlli non devono saltare con lui.
             // È il punto di quantizzazione fisso del piano §4.3 — una volta per frame,
             // sul thread di emulazione, sempre nello stesso posto.
+            blankRowsBelowFrame();
             RemotePlayHost inputHost = remotePlayHost;
             if (inputHost != null) {
                 inputHost.applyPendingInput();
@@ -282,6 +311,25 @@ public final class VirtualCRT {
         }
     }
 
+    /**
+     * Azzera le righe del framebuffer che il fotogramma appena chiuso non ha percorso.
+     *
+     * <p>⚠️ In PAL non fa <b>niente</b>: {@code maxVpos} è 312 = {@link #RAW_HEIGHT} e
+     * l'ultima riga scritta è sempre l'ultima del buffer. Vale solo dopo una commutazione
+     * a NTSC, dove il fotogramma è di 262 righe. Vedi {@link #frameMaxRow}.
+     */
+    private void blankRowsBelowFrame() {
+        if (frameMaxRow >= 0 && frameMaxRow + 1 < RAW_HEIGHT) {
+            final int from = frameMaxRow + 1;
+            Arrays.fill(frameBuffer, from * RAW_WIDTH, RAW_HEIGHT * RAW_WIDTH, 0);
+            // La colonna di wrap del bordo destro è per-riga e si porta dietro lo stesso
+            // residuo: senza questo, delle righe azzerate restano accesi i 4 px di col 836.
+            java.util.Arrays.fill(borderCck0Rgb, from, RAW_HEIGHT, 0);
+            java.util.Arrays.fill(wrapIsPlayfield, from, RAW_HEIGHT, false);
+        }
+        frameMaxRow = -1;
+    }
+
     private void completeScanline(int vpos) {
         denise.hsyncHandler(vpos);
 
@@ -294,6 +342,9 @@ public final class VirtualCRT {
         // è esattamente equivalente al loop per-pixel su getRawPixelColor(x), ma
         // evita ~912 chiamate al getter (con bound-check) per ogni scanline.
         System.arraycopy(denise.getRgbLine(), 0, frameBuffer, row * RAW_WIDTH, RAW_WIDTH);
+        if (row > frameMaxRow) {
+            frameMaxRow = row;
+        }
 
         if (!agnus.inVBlankArea(vpos) && vpos >= agnus.getDiwVStart() && vpos < agnus.getDiwVStop()) {
             int lineBplcon0 = denise.getLastRenderedBplcon0();
@@ -572,7 +623,8 @@ public final class VirtualCRT {
             // che prima di quel rifacimento non era ancora giusto, ed è per questo che la
             // condizione non si poteva scrivere allora.
             if (wrapCropCol >= 0 && wrapCropCol + 4 <= REGRESSION_CROP_W
-                    && srcY >= 0 && srcY < RAW_HEIGHT && !wrapIsPlayfield[srcY]) {
+                    && srcY >= 0 && srcY < RAW_HEIGHT && !wrapIsPlayfield[srcY]
+                    && borderCck0Rgb[srcY] != NO_WRAP_SAMPLE) {
                 int rgb = borderCck0Rgb[srcY];
                 int di  = row * REGRESSION_CROP_W + wrapCropCol;
                 dst[di] = rgb; dst[di + 1] = rgb; dst[di + 2] = rgb; dst[di + 3] = rgb;
