@@ -844,10 +844,41 @@ public abstract class AbstractDenise {
         }
     }
 
+    /**
+     * Istante in cui una scrittura a SPRxDATA/SPRxDATB agisce, in pixel dal confine di CCK.
+     * Nell'oracolo è lo stadio {@code expand_drga_early} (idx0) e l'applicazione è
+     * <b>immediata</b>: {@code case 0x144…: sprwrite(sreg, rd->v)}.
+     */
+    private static final int SPR_DAT_PX = 8;
+
+    /**
+     * Istante in cui una scrittura a SPRxPOS/SPRxCTL agisce: <b>mezzo CCK più tardi</b>
+     * di SPRxDATA.
+     *
+     * <p>⛔ Nell'oracolo POS e CTL <b>non</b> si applicano allo stadio in cui arrivano:
+     * {@code expand_drga_early} li mette da parte ({@code spr_unalign_reg[0]}) e il
+     * consumo avviene nel disegno per-pixel, sulla <b>seconda metà</b> del color clock e
+     * <b>dopo</b> il confronto orizzontale (`drawing.cpp`, percorso OCS/ECS):
+     * <pre>
+     *   if (h &amp;&amp; spr_unalign_reg[0]) {
+     *       matchsprites2(cnt &lt;&lt; 2);                              // il match usa il valore VECCHIO
+     *       sprwrite(spr_unalign_reg[0] - 0x140, spr_unalign_val[0]);
+     *       spr_unalign_reg[0] = 0;
+     *   }
+     * </pre>
+     * SPRxDATA/SPRxDATB quella deviazione non ce l'hanno.
+     *
+     * <p>Misurato su `Denise/Sprites/timing/sprtimpos1` e `sprtimctl1`, che scrivono
+     * SPRxPOS/SPRxCTL <b>a ridosso</b> dell'inizio orizzontale dello sprite: la nostra
+     * scadenza era <b>un CCK intero</b> dopo quella di SPRxDATA, e sulle righe di confine
+     * rifiutavamo una scrittura che l'oracolo accetta.
+     */
+    private static final int SPR_POSCTL_PX = SPR_DAT_PX + 2;
+
     private void pokeSPRxPOS(int x, int value, int pixel) {
         sprpos[x] = value;
         updateSprHCoords(x);
-        sprChanges[x / 2].insert(pixel + 12, 0x140 + x * 8, value);
+        sprChanges[x / 2].insert(pixel + SPR_POSCTL_PX, 0x140 + x * 8, value);
     }
 
     private void pokeSPRxCTL(int x, int value, int pixel) {
@@ -857,18 +888,18 @@ public abstract class AbstractDenise {
         // This prevents stale data from the previous frame rendering on scanlines
         // before VSTART (which would create a vertical line artifact).
         armed &= ~(1 << x);
-        sprChanges[x / 2].insert(pixel + 12, 0x142 + x * 8, value);
+        sprChanges[x / 2].insert(pixel + SPR_POSCTL_PX, 0x142 + x * 8, value);
     }
 
     private void pokeSPRxDATA(int x, int value, int pixel) {
         armed    |= (1 << x);
         sprdata[x] = value & 0xFFFF;
-        sprChanges[x / 2].insert(pixel + 8, 0x144 + x * 8, value);
+        sprChanges[x / 2].insert(pixel + SPR_DAT_PX, 0x144 + x * 8, value);
     }
 
     private void pokeSPRxDATB(int x, int value, int pixel) {
         sprdatb[x] = value & 0xFFFF;
-        sprChanges[x / 2].insert(pixel + 8, 0x146 + x * 8, value);
+        sprChanges[x / 2].insert(pixel + SPR_DAT_PX, 0x146 + x * 8, value);
     }
 
     private void updateSprHCoords(int x) {
