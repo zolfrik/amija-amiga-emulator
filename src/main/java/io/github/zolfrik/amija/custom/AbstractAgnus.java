@@ -566,7 +566,15 @@ public abstract class AbstractAgnus {
     private void sprStartStop(int idx) {
         if (inVBlankArea(vpos)) return;
         if (vpos == sprVStart[idx]) sprDmaEnabled[idx] = true;
-        if (vpos == sprVStop[idx])  sprDmaEnabled[idx] = false;
+        if (vpos == sprVStop[idx]) {
+            sprDmaEnabled[idx] = false;
+            // ⚠️ ASIMMETRIA DELL'ORACOLO, trascritta com'è: sul percorso della SCRITTURA
+            // (`sprstartstop`) il VSTOP AZZERA `dmacycle`, mentre allo slot 0 di
+            // `generate_sprites()` lo mette a 1. Le due funzioni si somigliano ma non
+            // fanno la stessa cosa, ed è la differenza che decide chi vince fra una
+            // scrittura del Copper e il DMA.
+            sprDmaCycle[idx] = 0;
+        }
     }
 
     /** SPRxPOS: come WinUAE SPRxPOS() → sprstartstop, ricalcolo, sprstartstop. */
@@ -1409,6 +1417,14 @@ public abstract class AbstractAgnus {
     // Sprite DMA: 2 slot per sprite (vAmiga p[0x15..0x33] dispari = CCK 21..51).
     // Sprite 0: 21,23; sprite 1: 25,27; ... sprite 7: 49,51.
     private static final int SLOT_SPRITE_0     = 21;
+
+    /**
+     * CCK di anticipo della DECISIONE di uno slot sprite rispetto al trasferimento.
+     * ⛔ È l'ancora dell'oracolo, non una taratura: `generate_sprites()` è chiamata da
+     * `handle_dmal()`, dove i tap degli sprite nello shift register stanno DUE posizioni
+     * più avanti di quelli di disco e audio («sprites have earlier DMA decisions»).
+     */
+    private static final int SPRITE_DECISION_LEAD_CCK = 2;
     private static final int SLOT_SPRITE_7_END = 51;
 
     // =========================================================================
@@ -1580,9 +1596,18 @@ public abstract class AbstractAgnus {
      * contatore {@code dmacycle} per intero — che fa dormire uno sprite inattivo invece di
      * rileggerne il descrittore a ogni riga — è la seconda metà e vuole una misura propria.
      */
-    private final boolean[] sprSlotFetch = new boolean[8];
-    /** Fase latchata al primo slot: {@code true} = DATA/DATB, {@code false} = POS/CTL. */
-    private final boolean[] sprSlotDataPhase = new boolean[8];
+    private final boolean[][] sprSlotFetch = new boolean[8][2];
+    /**
+     * {@code dmacycle} dell'oracolo: 0 = questo sprite non usa i suoi slot su questa riga,
+     * 1 = primo slot, 2 = secondo. È la <b>seconda metà</b> del sequencer, quella che fa
+     * <b>dormire</b> uno sprite inattivo: {@code if (!dmacycle && dmastate) dmacycle = 1}
+     * non riarma chi ha {@code dmastate == 0}, quindi dopo il fetch POS/CTL della riga di
+     * VSTOP lo sprite <b>non fa più DMA</b> finché {@code vpos == vstart}. Prima
+     * rileggevamo il descrittore a ogni riga.
+     */
+    private final int[] sprDmaCycle = new int[8];
+    /** Fase latchata alla DECISIONE: {@code true} = DATA/DATB, {@code false} = POS/CTL. */
+    private final boolean[][] sprSlotDataPhase = new boolean[8][2];
 
     /**
      * DATA/DATB phase flag per ciascuno sprite.
@@ -2344,16 +2369,32 @@ public abstract class AbstractAgnus {
             // i tap degli sprite nello shift register stanno due posizioni più avanti
             // («sprites have earlier DMA decisions»), quindi `generate_sprites()` legge
             // `dmaen(DMA_SPRITE)` al CCK S−2 e il trasferimento cade al CCK S.
-            // ⛔ Il latch si prende al PRIMO slot dello sprite e VALE PER ENTRAMBI, e si
-            // prende anche quando il ciclo non è allocato (bitplane o Blitter lo rubano):
-            // di là `generate_sprites()` gira comunque, è solo il trasferimento a essere
-            // gated da `dmaen()`. Vedi sprSlotFetch.
-            if (DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE
-                    && ((cck - SLOT_SPRITE_0) % 4) / 2 == 0) {
-                int latchIdx = (cck - SLOT_SPRITE_0) / 4;
+            // ⛔ La DECISIONE dello sprite sta DUE CCK PRIMA del suo slot, e con essa TUTTA
+            // la macchina a stati: `generate_sprites()` è chiamata da `handle_dmal()`, dove
+            // i tap degli sprite nello shift register stanno due posizioni più avanti
+            // («sprites have earlier DMA decisions»). È la stessa ancora già misurata per il
+            // bit di DMA (§12 classe D) — qui ci passa anche il confronto VSTART/VSTOP.
+            // ⚠️ Si prende anche quando il ciclo non sarà allocato (bitplane o Blitter lo
+            // rubano): di là `generate_sprites()` gira comunque, è solo il trasferimento a
+            // essere gated da `dmaen()`. Vedi sprSlotFetch.
+            final int sprDecideCck = cck + SPRITE_DECISION_LEAD_CCK;
+            if (sprDecideCck < DMA_SLOT_TABLE.length
+                    && DMA_SLOT_TABLE[sprDecideCck] == DMASLOT_SPRITE) {
+                int latchIdx = (sprDecideCck - SLOT_SPRITE_0) / 4;
+                int latchSub = ((sprDecideCck - SLOT_SPRITE_0) % 4) / 2;
                 if (latchIdx >= 0 && latchIdx <= 7) {
-                    sprSlotFetch[latchIdx] = spriteNeedsFetch(latchIdx);
-                    sprSlotDataPhase[latchIdx] = sprDmaEnabled[latchIdx];
+                    if (latchSub == 0) {
+                        generateSpritesSlot0(latchIdx);
+                    }
+                    sprSlotFetch[latchIdx][latchSub] = sprDmaCycle[latchIdx] != 0;
+                    sprSlotDataPhase[latchIdx][latchSub] = sprDmaEnabled[latchIdx];
+                    // Coda di generate_sprites(), quindi alla decisione e non al trasferimento.
+                    if (sprDmaCycle[latchIdx] != 0) {
+                        sprDmaCycle[latchIdx]++;
+                        if (sprDmaCycle[latchIdx] > 2) {
+                            sprDmaCycle[latchIdx] = sprDmaEnabled[latchIdx] ? 1 : 0;
+                        }
+                    }
                 }
             }
 
@@ -2365,7 +2406,8 @@ public abstract class AbstractAgnus {
                     // avanzamento del puntatore. Vedi spriteDmaOnDecisionCck.
                     && (masterClock >> 1) - 2 != spriteDmaOnDecisionCck) {
                 int sprIdx = (cck - SLOT_SPRITE_0) / 4;
-                if (sprIdx >= 0 && sprIdx <= 7 && sprSlotFetch[sprIdx]) {
+                int sprSub = ((cck - SLOT_SPRITE_0) % 4) / 2;
+                if (sprIdx >= 0 && sprIdx <= 7 && sprSlotFetch[sprIdx][sprSub]) {
                     handleSpriteDMA(cck);
                     owner = OWNER_VALUES[BusOwner.SPRITE0.ordinal() + sprIdx];
                     busTakenByCustom = true;
@@ -3281,7 +3323,7 @@ public abstract class AbstractAgnus {
         openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
         sprPtrInternal[sprIdx] += 2;
 
-        if (!sprSlotDataPhase[sprIdx]) {
+        if (!sprSlotDataPhase[sprIdx][subSlot]) {
             // ── Fase POS/CTL: fetch del descrittore sprite ──────────────────
             if (subSlot == 0) {
                 // Primo slot: SPRxPOS
@@ -3302,13 +3344,35 @@ public abstract class AbstractAgnus {
         }
     }
 
-    private boolean spriteNeedsFetch(int sprIdx) {
-        if (sprIdx < 0 || sprIdx > 7) return false;
-        // Fase DATA: sprDmaEnabled è true nelle righe VSTART..VSTOP-1.
-        if (sprDmaEnabled[sprIdx]) return true;
-        // Fase POS/CTL: fetch quando vpos raggiunge sprVStop (mai a riga 0).
-        return vpos > 0 && vpos == sprVStop[sprIdx];
+    /**
+     * Lo {@code slot == 0} di {@code generate_sprites()} (custom.cpp): l'<b>unico</b> punto
+     * in cui il sequencer degli sprite si arma.
+     *
+     * <p>⛔ <b>L'ancora è lo SLOT, non il confine di riga.</b> Prima VSTART/VSTOP li
+     * valutava {@code updateSpriteDMA()} al cambio di {@code vpos}; l'oracolo lo fa qui, al
+     * primo dei due slot di <i>quello</i> sprite — che per lo sprite <i>n</i> cade al CCK
+     * {@code 21 + 4n}. Fra il confine di riga e quel CCK ci stanno le scritture del Copper,
+     * ed è precisamente lì che vivono i test `spritedma/interfere*`.
+     *
+     * <p>⚠️ La riga di reset (25 PAL) è il {@code agnus_vb_active_end_line} dell'oracolo:
+     * ferma lo sprite e gli fa rileggere il descrittore, ed è quel che prima ottenevamo
+     * riscrivendo {@code sprVStop[i] = 25}. Qui è una condizione, non una scrittura a un
+     * registro di stato.
+     */
+    private void generateSpritesSlot0(int idx) {
+        if (sprDmaCycle[idx] == 0 && sprDmaEnabled[idx]) {
+            sprDmaCycle[idx] = 1;
+        }
+        if (vpos == sprVStart[idx]) {
+            sprDmaEnabled[idx] = true;
+            sprDmaCycle[idx] = 1;
+        }
+        if (vpos == sprVStop[idx] || vpos == SPRITE_RESET_LINE) {
+            sprDmaEnabled[idx] = false;
+            sprDmaCycle[idx] = 1;
+        }
     }
+
 
     /**
      * Aggiorna sprDmaEnabled per la riga nextVpos, seguendo la logica vAmiga:
@@ -3321,21 +3385,12 @@ public abstract class AbstractAgnus {
      * Deve essere chiamato DOPO l'incremento di vpos, con nextVpos = nuovo vpos.
      */
     private void updateSpriteDMA(int nextVpos) {
-        if (isSpriteDMAEnabled() && nextVpos == SPRITE_RESET_LINE) {
-            // Forza il fetch POS/CTL alla riga 25 per tutti gli sprite.
-            for (int i = 0; i < 8; i++) sprVStop[i] = SPRITE_RESET_LINE;
-            Arrays.fill(sprDmaEnabled, false);
-            return;
-        }
+        // ⛔ La valutazione di VSTART/VSTOP NON sta più qui: sta allo slot 0 di ciascuno
+        // sprite (generateSpritesSlot0), dove la mette l'oracolo. Resta il solo spegnimento
+        // di fine quadro, che di là è il gate `vpos < maxvpos` dell'arbitraggio.
         if (nextVpos >= maxVpos) {
             Arrays.fill(sprDmaEnabled, false);
-            return;
-        }
-        if (!inVBlankArea(nextVpos)) {
-            for (int i = 0; i < 8; i++) {
-                if (nextVpos == sprVStart[i]) sprDmaEnabled[i] = true;
-                if (nextVpos == sprVStop[i])  sprDmaEnabled[i] = false;
-            }
+            Arrays.fill(sprDmaCycle, 0);
         }
     }
 
