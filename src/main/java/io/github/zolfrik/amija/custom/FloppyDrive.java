@@ -83,6 +83,12 @@ public final class FloppyDrive {
     /** FIX #2: il motore reale impiega ~3 s per fermarsi completamente. */
     private static final long   CYCLES_MOTOR_STOP        = 21_000_000L;  // rampa arresto motore (~3 s)
     private static final long   CYCLES_SETTLE_STEP       =    21_281L;   // settle dopo step stesso verso (~3 ms)
+    /**
+     * Distanza minima fra due impulsi di STEP perche' il secondo sia accettato:
+     * {@code MIN_STEPLIMIT_CYCLE = CYCLE_UNIT * 140} dell'oracolo, cioe' <b>140 CCK</b>.
+     * Qui il clock base e' 7,09 MHz — due unita' per CCK — quindi <b>280</b>.
+     */
+    private static final long   CYCLES_MIN_STEP_INTERVAL =         280L;   // 140 CCK
     private static final long   CYCLES_SETTLE_DIR_CHG    =   127_688L;   // settle dopo inversione direzione (~18 ms)
     /** FIX #5: il cambio side ha un breve settle analogico (~2 ms). */
     private static final long   CYCLES_SETTLE_SIDE       =    14_188L;
@@ -125,6 +131,8 @@ public final class FloppyDrive {
     private long    switchCycle  = 0L;
     private double  switchSpeed  = 0.0;
     private long    totalCycles  = 0L;
+    /** {@code steplimitcycle}: istante dell'ultimo impulso di STEP ACCETTATO. */
+    private long    lastAcceptedStepCycle = Long.MIN_VALUE / 4;
 
     // -------------------------------------------------------------------------
     // Posizionamento testina
@@ -454,8 +462,24 @@ public final class FloppyDrive {
 
             // /STEP is active LOW on the bus; Agnus passes true while the
             // line is asserted, so the physical falling edge is false -> true.
+            //
+            // ⛔ Un impulso troppo ravvicinato al precedente ACCETTATO viene IGNORATO: la
+            // testina non ce la fa. E' `drive_step()` dell'oracolo (disk.cpp):
+            //
+            //     if (drv->steplimit && get_cycles() - drv->steplimitcycle < MIN_STEPLIMIT_CYCLE)
+            //         return;                       // passo ignorato
+            //     set_steplimit(drv);               // solo per i passi ACCETTATI
+            //
+            // con `MIN_STEPLIMIT_CYCLE = CYCLE_UNIT * 140`. ⚠️ La guardia ha due termini, ma
+            // il secondo non e' mai vincolante: `steplimit` parte da 4 e cala di uno per
+            // hsync, e in meno di 140 CCK passa al massimo UN hsync — quindi quando il
+            // tempo e' sotto soglia il contatore di righe e' sempre != 0. La regola si
+            // riduce alla sola distanza in cicli.
             if (!prevStep && step) {
-                executeStep(direction);
+                if (totalCycles - lastAcceptedStepCycle >= CYCLES_MIN_STEP_INTERVAL) {
+                    lastAcceptedStepCycle = totalCycles;
+                    executeStep(direction);
+                }
             }
         }
 
@@ -761,7 +785,24 @@ public final class FloppyDrive {
     public void markStatusDirty() { statusDirty = true; }
 
     public boolean isTrack0Raw()         { return connected && (targetTrack == 0); }
-    public boolean isWriteProtectedRaw() { return diskInserted && writeProtected; }
+    /**
+     * /WPROT come lo vede il bus, senza il gate della selezione.
+     *
+     * <p>⛔ <b>Un drive VUOTO riporta protetto in scrittura.</b> L'oracolo (disk.cpp,
+     * {@code drive_writeprotected}) lo scrive nell'ultimo termine:
+     *
+     * <pre>
+     *   return currprefs.floppy_read_only || drv->wrprot || drv->forcedwrprot
+     *          || drv->diskfile == NULL;
+     * </pre>
+     *
+     * <p>Non e' un dettaglio: /WPROT e' una linea <b>wired</b>, e basta UN drive selezionato
+     * a tirarla bassa. Con piu' drive selezionati insieme, un drive vuoto protegge la linea
+     * anche se quello col disco non lo farebbe. Misurato su {@code Paula/Drive/step5}, che
+     * seleziona tutti e quattro i drive (`and.b #$87,CIAB_PRB`) mentre df0 ha un disco
+     * scrivibile e df1 e' vuoto.
+     */
+    public boolean isWriteProtectedRaw() { return !diskInserted || writeProtected; }
     public boolean isDiskChangedRaw()    { return connected && dskchange; }
     public boolean isIndexActiveRaw()    { return connected && indexPulse; }
 

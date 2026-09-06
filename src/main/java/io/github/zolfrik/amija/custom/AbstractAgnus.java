@@ -1099,6 +1099,9 @@ public abstract class AbstractAgnus {
     /** Cicli (CCK) consecutivi in cui la CPU ha voluto il bus senza ottenerlo. */
     private int cpuBusWaitCck = 0;
 
+    /** {@code BLIT_NASTY_CPU_STEAL_CYCLE_COUNT} di blitter.cpp. */
+    private static final int BLIT_NASTY_CPU_STEAL_CYCLE_COUNT = 3;
+
     private boolean lastResetSignal = false;
 
     /**
@@ -2103,9 +2106,14 @@ public abstract class AbstractAgnus {
         int cck = hpos >> 1;
         if (cckEdge) {
             busTakenByCustom = false;
-            // BLS (vAmiga): la CPU ha atteso il bus per ≥2 CCK → cede-blitter attivo.
+            // La CPU ruba un ciclo al Blitter dopo aver atteso il bus abbastanza a lungo,
+            // e solo con BLTPRI spento. La soglia e' dell'ORACOLO, non di vAmiga:
+            // blitter.cpp, `#define BLIT_NASTY_CPU_STEAL_CYCLE_COUNT 3` e
+            // `bstreq = blt_info.nasty_cnt >= BLIT_NASTY_CPU_STEAL_CYCLE_COUNT && !pri`.
+            // `nasty_cnt` lo incrementa `dma_cycle()` una volta per CCK negato e lo azzera
+            // quando la CPU ottiene il bus — cioe' esattamente `cpuBusWaitCck`.
             // Calcolato PRIMA dell'arbitraggio, dal conteggio accumulato nei CCK scorsi.
-            bls = cpuBusWaitCck >= 2;
+            bls = cpuBusWaitCck >= BLIT_NASTY_CPU_STEAL_CYCLE_COUNT;
             // Latenza di avvio BBUSY del Blitter (vAmiga BLT_STRT1/STRT2): la
             // scrittura di BLTSIZE arma il blit, ma BBUSY si attiva 2 CCK dopo.
             // Il countdown avanza qui (una volta per CCK), prima dell'arbitraggio
