@@ -2386,7 +2386,19 @@ public abstract class AbstractAgnus {
                     if (latchSub == 0) {
                         generateSpritesSlot0(latchIdx);
                     }
-                    sprSlotFetch[latchIdx][latchSub] = sprDmaCycle[latchIdx] != 0;
+                    // ⛔ E alla decisione si guarda anche il SEQUENCER BITPLANE: lo sprite
+                    // rinuncia allo slot quando il fetch bitplane e' IN CORSA, e la
+                    // condizione e' dell'oracolo per intero (generate_sprites):
+                    //   bool bplconflict = false;
+                    //   if (bprun && ddf_stopping == 2 && islastbplseq()) bplconflict = true;
+                    //   if (bprun != 1 || bplconflict) dodma = true;
+                    // ⚠️ Non e' «il bitplane ha preso questo CCK»: e' lo STATO di bprun DUE
+                    // CCK PRIMA. E' la differenza che i test `blocked*` misurano allargando
+                    // la finestra DDF sopra gli slot sprite (issue #799 di vAmiga).
+                    final boolean lastBplSeq = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
+                    final boolean bplConflict = bprun != 0 && ddfStopping == 2 && lastBplSeq;
+                    sprSlotFetch[latchIdx][latchSub] =
+                            sprDmaCycle[latchIdx] != 0 && (bprun != 1 || bplConflict);
                     sprSlotDataPhase[latchIdx][latchSub] = sprDmaEnabled[latchIdx];
                     // Coda di generate_sprites(), quindi alla decisione e non al trasferimento.
                     if (sprDmaCycle[latchIdx] != 0) {
