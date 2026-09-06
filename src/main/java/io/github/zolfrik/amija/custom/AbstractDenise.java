@@ -475,6 +475,31 @@ public abstract class AbstractDenise {
     // Change recorder (per supporto Copper mid-scanline)
     // =========================================================================
 
+    /**
+     * Ritardo, in pixel, con cui un registro <b>BPLCON</b> agisce dentro Denise: <b>un CCK</b>.
+     *
+     * <p>⛔ <b>Non è un ritardo del bus: è lo STADIO della pipe RGA di Denise.</b> Nell'oracolo
+     * (`drawing.cpp`, `do_denise_cck()`) gli slot si leggono a due indici diversi nello stesso
+     * CCK:
+     * <pre>
+     *   idx0 = i + startpos - 0   → expand_drga_early(rd)   // COLORxx (update_color)
+     *   idx1 = i + startpos - 1   → expand_drga(rd)         // BPLCON0/1/2/3, BPLxDAT, DIWSTRT…
+     * </pre>
+     * I colori agiscono nel CCK in cui sono scritti, i BPLCON <b>un CCK dopo</b>. È una
+     * differenza <b>relativa</b>: per questo si vede solo dove la stessa riga ha entrambi.
+     *
+     * <p>Misurato su `Denise/Sprites` (`general/sprites1÷4`, `reenable1`,
+     * `spritedma/sprdma1÷3`): il Copper commuta il dual-playfield con BPLCON0 a hpos `$51`,
+     * `$61`, `$71`… e la transizione di colore cadeva <b>4 px = 1 CCK</b> troppo a sinistra,
+     * sempre, otto test e 48÷56 px ciascuno.
+     *
+     * <p>⚠️ Nell'oracolo lo stesso stadio porta anche BPLCON1, BPLxDAT e DIWSTRT/DIWSTOP. Da
+     * noi quei tre hanno modelli tarati per conto loro (lo split dello scroll fra Agnus e
+     * Denise, BPL1DAT come trigger del display, `DIW_AXIS_SHIFT`) e <b>non</b> sono stati
+     * spostati: servirebbe una misura propria per ciascuno.
+     */
+    private static final int CON_DELAY_PX = 4;
+
     private final RegChangeRecorder  conChanges = new RegChangeRecorder(128);
     private final RegChangeRecorder  diwChanges = new RegChangeRecorder(128);
     private final RegChangeRecorder  colChanges = new RegChangeRecorder(1024);
@@ -628,7 +653,7 @@ public abstract class AbstractDenise {
 
             // --- BPLCON ---
             case 0x100: // BPLCON0
-                conChanges.insert(pixel, address, value);
+                conChanges.insert(pixel + CON_DELAY_PX, address, value);
                 // Cambio di modalità di COLORE: tracciato in colChanges per colorize.
                 // ⛔ Sono DUE, non solo HAM: anche Extra-Half-Brite si accende e si spegne
                 // dentro la riga (BPU che passa a 6, o che lascia una configurazione hires
@@ -636,7 +661,9 @@ public abstract class AbstractDenise {
                 // resta colorata a piena luminosità per intero — il residuo di riga 22 di
                 // `BPLPTR/drop6x` e `dropcpu6x`.
                 if (isHamActive(bplcon0) != isHamActive(value) || isEHB(bplcon0) != isEHB(value)) {
-                    colChanges.insert(pixel, address, value);
+                    // Stesso stadio del conChanges qui sopra: HAM ed EHB escono da
+                    // bplcon0_denise, cioe' da expand_bplcon0(), non dal ramo _early.
+                    colChanges.insert(pixel + CON_DELAY_PX, address, value);
                 }
                 bplcon0 = value;
                 updateBplcon0Derived();
