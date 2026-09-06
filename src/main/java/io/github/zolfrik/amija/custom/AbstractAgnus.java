@@ -1552,6 +1552,39 @@ public abstract class AbstractAgnus {
     private final int[] sprPtrInternal = new int[8];
 
     /**
+     * Latch della decisione presa al <b>primo</b> dei due slot DMA di uno sprite: fa fetch
+     * o no ({@link #sprSlotFetch}) e con quale fase ({@link #sprSlotDataPhase}).
+     *
+     * <p>⛔ <b>Anche il fetch sprite è un SEQUENCER, non un predicato vivo.</b> L'oracolo
+     * (`custom.cpp`, `generate_sprites()`) tiene per ogni sprite un contatore {@code dmacycle}
+     * che vale 1 al primo slot e 2 al secondo, e lo <b>arma solo allo slot 0</b>:
+     * <pre>
+     *   if (slot == 0) {
+     *       if (!s->dmacycle &amp;&amp; s->dmastate)              s->dmacycle = 1;
+     *       if (vpos == s->vstart) { s->dmastate = 1; s->dmacycle = 1; }
+     *       if (vpos == s->vstop)  { s->dmastate = 0; s->dmacycle = 1; }
+     *   }
+     *   if (dmaen(DMA_SPRITE) &amp;&amp; s->dmacycle) { … reg = 0x140 + slot + num*8 + (dmastate ? 4 : 0); }
+     * </pre>
+     * ⇒ fra i due slot la decisione <b>non si rivaluta</b>: una scrittura a SPRxPOS/SPRxCTL
+     * che cade in mezzo cambia {@code vstart}/{@code vstop} ma non ciò che il secondo slot
+     * preleva. Da noi {@code spriteNeedsFetch()} era un predicato letto a ogni slot, e il
+     * secondo vedeva già il valore nuovo.
+     *
+     * <p>È la <b>terza</b> volta che questo progetto trova la stessa forma, dopo il fetch
+     * bitplane e la decisione del DMA sprite due CCK prima dello slot: dove l'oracolo tiene
+     * uno stato, una regola ricalcolata dà la stessa risposta finché nessuno scrive nel
+     * mezzo — ed è esattamente quel che i test `spritedma/interfere*` fanno.
+     *
+     * <p>⚠️ <b>Portata la metà che la misura sostiene</b>: il latch fra i due slot. Il
+     * contatore {@code dmacycle} per intero — che fa dormire uno sprite inattivo invece di
+     * rileggerne il descrittore a ogni riga — è la seconda metà e vuole una misura propria.
+     */
+    private final boolean[] sprSlotFetch = new boolean[8];
+    /** Fase latchata al primo slot: {@code true} = DATA/DATB, {@code false} = POS/CTL. */
+    private final boolean[] sprSlotDataPhase = new boolean[8];
+
+    /**
      * DATA/DATB phase flag per ciascuno sprite.
      *
      * true  = fase DATA/DATB — fetch dei pixel tra VSTART e VSTOP (esclusa).
@@ -2311,6 +2344,19 @@ public abstract class AbstractAgnus {
             // i tap degli sprite nello shift register stanno due posizioni più avanti
             // («sprites have earlier DMA decisions»), quindi `generate_sprites()` legge
             // `dmaen(DMA_SPRITE)` al CCK S−2 e il trasferimento cade al CCK S.
+            // ⛔ Il latch si prende al PRIMO slot dello sprite e VALE PER ENTRAMBI, e si
+            // prende anche quando il ciclo non è allocato (bitplane o Blitter lo rubano):
+            // di là `generate_sprites()` gira comunque, è solo il trasferimento a essere
+            // gated da `dmaen()`. Vedi sprSlotFetch.
+            if (DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE
+                    && ((cck - SLOT_SPRITE_0) % 4) / 2 == 0) {
+                int latchIdx = (cck - SLOT_SPRITE_0) / 4;
+                if (latchIdx >= 0 && latchIdx <= 7) {
+                    sprSlotFetch[latchIdx] = spriteNeedsFetch(latchIdx);
+                    sprSlotDataPhase[latchIdx] = sprDmaEnabled[latchIdx];
+                }
+            }
+
             if (!busTakenByCustom && spriteDmaSeq
                     && vpos >= SPRITE_RESET_LINE && vpos < maxVpos
                     && DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE
@@ -2319,7 +2365,7 @@ public abstract class AbstractAgnus {
                     // avanzamento del puntatore. Vedi spriteDmaOnDecisionCck.
                     && (masterClock >> 1) - 2 != spriteDmaOnDecisionCck) {
                 int sprIdx = (cck - SLOT_SPRITE_0) / 4;
-                if (spriteNeedsFetch(sprIdx)) {
+                if (sprIdx >= 0 && sprIdx <= 7 && sprSlotFetch[sprIdx]) {
                     handleSpriteDMA(cck);
                     owner = OWNER_VALUES[BusOwner.SPRITE0.ordinal() + sprIdx];
                     busTakenByCustom = true;
@@ -3235,7 +3281,7 @@ public abstract class AbstractAgnus {
         openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
         sprPtrInternal[sprIdx] += 2;
 
-        if (!sprDmaEnabled[sprIdx]) {
+        if (!sprSlotDataPhase[sprIdx]) {
             // ── Fase POS/CTL: fetch del descrittore sprite ──────────────────
             if (subSlot == 0) {
                 // Primo slot: SPRxPOS
