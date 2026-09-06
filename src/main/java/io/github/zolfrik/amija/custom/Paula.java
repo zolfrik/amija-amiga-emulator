@@ -123,7 +123,17 @@ public final class Paula {
 
     private int dskpth, dskptl;
     private int dsklen;
-    private int dsksync = 0x4489;
+    /**
+     * DSKSYNC. ⛔ <b>Al reset vale ZERO</b>, non {@code 0x4489}: in WinUAE
+     * {@code dsksync} e' uno static azzerato che {@code DISK_reset()} non tocca mai,
+     * quindi finche' il software non lo scrive il comparatore confronta contro
+     * {@code 0x0000}. Misurato sui due lati sul boot di {@code Paula/Audio/irqaud1}
+     * (20 s emulati): <b>nessuno dei due emulatori scrive DSKSYNC</b> — Kickstart 1.3
+     * legge la traccia grezza con WORDSYNC spento (ADKCON {@code $1100}) e decodifica
+     * in software — quindi il {@code 0x4489} che ci ritrovavamo era solo il nostro
+     * valore di reset. Vedi docs/vamigats-paula-audio-plan.md §7.1.24.
+     */
+    private int dsksync = 0x0000;
     private int dsk_syncMatches = 0; // diagnostica: sync trovati nella sessione DMA corrente
     /**
      * Latch del rilevatore di sync: l'interrupt DSKSYN e' <b>edge-triggered</b> e parte solo
@@ -255,7 +265,7 @@ public final class Paula {
         }
 
         dskpth = dskptl = dsklen = 0;
-        dsksync = 0x4489;
+        dsksync = 0x0000;
         diskState = DriveDmaState.OFF;
         dsklenWriteCount = 0;
         dsk_fifo = 0;
@@ -767,6 +777,49 @@ public final class Paula {
     public static final int WRITE_BIT_STALL = -2;
     /** Sentinella di {@link #nextWriteBit()}: trasferimento in scrittura concluso. */
     public static final int WRITE_BIT_END   = -1;
+
+    /**
+     * Shifter di lettura <b>a riposo</b>: nessun drive connesso e' selezionato.
+     *
+     * <p>E' {@code disk_doupdate_read_reallynothing} dell'oracolo (disk.cpp, ramo
+     * {@code (selected | disabled) == 15 && dskdmaen < DSKDMA_WRITE}). Sulla scheda la
+     * linea dati del bus floppy resta ferma al valore di pull-up — sull'A500
+     * {@code cs_floppydatapullup = 0}, cioe' <b>zeri</b> — ma il registro a scorrimento di
+     * Paula continua a scorrere e il comparatore continua a confrontare: e' cosi' che
+     * l'oracolo alza sette DSKSYN durante il boot di Kickstart 1.3, tutti con la firma
+     * {@code word=0000 dsksync=0000} (docs/vamigats-paula-audio-plan.md §7.1.22).
+     *
+     * <p>⛔ <b>Fa MENO di {@link #shiftInDiskBit(int)}, ed e' il punto</b>: {@code reallynothing}
+     * scorre la word, aggiorna DSKBYTR al confine di byte e valuta il latch del sync. Non
+     * tocca {@code dsk_syncCycle} (cioe' WORDEQUAL, l'osservabile su cui vivono le
+     * protezioni Copylock), non riallinea lo shifter da WORDSYNC e non travasa niente
+     * nella FIFO. Passare a riposo per la strada completa aggiungerebbe divergenze invece
+     * di toglierne: e' la ragione per cui il primo tentativo di questo porto fu revocato
+     * (§7.1.23).
+     */
+    public void shiftInDiskBitIdle(int bit) {
+        // `dskdmaen < DSKDMA_WRITE`: in scrittura l'oracolo sceglie disk_doupdate_write e
+        // questo ramo non gira affatto — non e' solo l'interrupt a essere inibito.
+        if (diskState == DriveDmaState.WRITE) {
+            return;
+        }
+        dsk_dataReg = ((dsk_dataReg << 1) | (bit & 1)) & 0xFFFF;
+        dsk_dataRegCount++;
+
+        // loaddskbytr() dell'oracolo, gated da canloaddskbytr(): al confine di byte.
+        if ((dsk_dataRegCount & 7) == 0) {
+            dskbytr_incoming = 0x8000 | (dsk_dataReg & 0xFF);
+        }
+
+        // Il latch `dsksync_on`, identico alla strada completa.
+        if (dsk_dataReg != dsksync) {
+            dsksyncOn = false;
+        }
+        if (!dsksyncOn && (adkcon & 0x0200) == 0 && dsk_dataReg == dsksync) {
+            raiseInterrupt(0x1000); // DSKSYN
+            dsksyncOn = true;
+        }
+    }
 
     public void shiftInDiskBit(int bit) {
         dsk_dataReg = ((dsk_dataReg << 1) | (bit & 1)) & 0xFFFF;

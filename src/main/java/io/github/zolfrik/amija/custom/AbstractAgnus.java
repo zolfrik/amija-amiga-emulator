@@ -2072,6 +2072,23 @@ public abstract class AbstractAgnus {
             }
         }
 
+        // ── Shifter di lettura A RIPOSO ─────────────────────────────────────
+        // ⛔ Quando NESSUN drive connesso e' selezionato, la linea dati del bus floppy resta
+        // al pull-up (sull'A500 cs_floppydatapullup = 0, cioe' ZERI) ma il registro a
+        // scorrimento di Paula CONTINUA a scorrere e il comparatore continua a confrontare.
+        // E' disk_doupdate_read_reallynothing dell'oracolo, il ramo
+        // `(selected | disabled) == 15 && dskdmaen < DSKDMA_WRITE`: durante il boot di
+        // Kickstart 1.3 e' da li' che nascono SETTE DSKSYN, tutti con la firma
+        // `word=0000 dsksync=0000` — possibili solo perche' DSKSYNC al reset vale ZERO
+        // (vedi Paula.dsksync). Un drive DISCONNESSO non conta, come il `disabled`
+        // dell'oracolo. Vedi docs/vamigats-paula-audio-plan.md §7.1.24.
+        if (++idleDiskBitAccum >= IDLE_DISK_CYCLES_PER_BIT) {
+            idleDiskBitAccum = 0;
+            if (paula != null && !isAnyDriveSelected(ciab_prb)) {
+                paula.shiftInDiskBitIdle(0);
+            }
+        }
+
         // ── Paula tick (solo period-counter dei canali audio) ───────────────
         // La produzione dei sample di output (accumulatore outputSamplePhase) NON è
         // più qui: è stata spostata su un evento auto-rischedulante (SLOT_CH0 /
@@ -3041,6 +3058,18 @@ public abstract class AbstractAgnus {
         return paula != null ? paula.nextWriteBit() : Paula.WRITE_BIT_END;
     }
 
+    /**
+     * Almeno un drive <b>connesso</b> e' selezionato? E' il complemento del
+     * {@code (selected | disabled) == 15} dell'oracolo (disk.cpp): le linee /SELx del PRB
+     * di CIA-B sono attive basse, e un drive non connesso e' il suo {@code disabled}.
+     */
+    private boolean isAnyDriveSelected(byte ciabPrb) {
+        return (df0 != null && df0.isConnected() && (ciabPrb & 0x08) == 0)
+            || (df1 != null && df1.isConnected() && (ciabPrb & 0x10) == 0)
+            || (df2 != null && df2.isConnected() && (ciabPrb & 0x20) == 0)
+            || (df3 != null && df3.isConnected() && (ciabPrb & 0x40) == 0);
+    }
+
     private void tickFloppyDrive(FloppyDrive drive, int cycles) {
         if (drive == null) return;
         if (!drive.isConnected()) return;
@@ -3064,6 +3093,11 @@ public abstract class AbstractAgnus {
     // PERF: accumulatore per processare il floppy a granularità CCK (2 master-cycle)
     // invece che ad ogni master-cycle. Vedi il blocco floppy in risingEdge().
     private int floppyAccumCycles = 0;
+
+    /** Durata di una cella MFM in master-cycle: 7 CCK, come FloppyDrive.CYCLES_PER_BIT. */
+    private static final int IDLE_DISK_CYCLES_PER_BIT = 14;
+    /** Cadenza dello shifter a riposo (vedi il blocco omonimo in risingEdge). */
+    private int idleDiskBitAccum = 0;
 
     private static class FloppyStatus {
         boolean rdy = false, tk0 = false, wpro = false, chng = false, index = false;
