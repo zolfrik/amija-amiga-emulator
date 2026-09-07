@@ -519,8 +519,26 @@ public abstract class AbstractDenise {
 
     private void updateBplcon0Derived() {
         bpu   = deniseBpu(bplcon0);
+        if (bpu > bpuMaxThisLine) {
+            bpuMaxThisLine = bpu;
+        }
         hires = (bplcon0 & 0x8000) != 0;
     }
+
+    /**
+     * Il MASSIMO numero di piani visto in QUESTA riga.
+     *
+     * <p>⛔ È {@code denise_max_planes} dell'oracolo, e non è un dettaglio: la routine di
+     * rendering si sceglie su di lui ({@code select_lts()}), e la regola è dichiarata nel
+     * sorgente — <i>«if plane count decreases mid-scanline, old data in higher plane count
+     * shifters must be still shifted out»</i>. Quindi <b>sale subito</b> e <b>non scende
+     * fino a fine riga</b>: {@code denise_draw_update()} lo riporta a
+     * {@code denise_planes} una volta per riga.
+     *
+     * <p>È il valore che decide se le due funzioni non documentate della priorità ≥ 5 si
+     * applicano — vedi {@link #deniseSpecials}.
+     */
+    private int bpuMaxThisLine = 0;
 
     /**
      * Numero di piani che <b>Denise</b> compone, ricavato da BPLCON0.
@@ -975,6 +993,10 @@ public abstract class AbstractDenise {
             conChanges.clear();
         }
 
+        // `denise_draw_update()` dell'oracolo: il massimo dei piani vale UNA riga, e si
+        // riporta al valore vivo DOPO che la riga e' stata composta.
+        bpuMaxThisLine = bpu;
+
         // Pulizia buffer per la prossima scanline.
         //
         // STEP 6 (PERFORMANCE_REPORT_FINAL): azzeramento mirato dell'hot path.
@@ -1330,11 +1352,11 @@ public abstract class AbstractDenise {
         int zpf2    = zPF(plf2pri);
         // La regola «SWIV» vive qui: playfield singolo, almeno 5 piani e PF2P >= 5. Il
         // gemello per il dual-playfield sta in translateDPF. Vedi deniseSpecials().
-        boolean specials = bpu >= 5 && plf2pri >= 5;
+        boolean specials = bpuMaxThisLine >= 5 && plf2pri >= 5;
         for (int i = from; i < to && i < mBuffer.length; i++) {
             int s = mBuffer[i] & 0x3F;
             if (specials) {
-                s = deniseSpecials(s, bpu, false, bplcon2 & 7, plf2pri);
+                s = deniseSpecials(s, bpuMaxThisLine, false, bplcon2 & 7, plf2pri);
                 mBuffer[i] = (byte) s;
             }
             zBuffer[i] = (s != 0) ? zpf2 : 0;
@@ -1362,7 +1384,7 @@ public abstract class AbstractDenise {
             // HAM+DPF e che sa già leggere i bit 6/7 del playfield trasparente; la
             // PRIORITÀ (e quindi lo z per gli sprite) resta decisa dai piani veri, perché
             // un playfield trasparente continua a coprire quello dietro.
-            int pv  = deniseSpecials(s, bpu, true, plf1pri, plf2pri);
+            int pv  = deniseSpecials(s, bpuMaxThisLine, true, plf1pri, plf2pri);
             byte colour = (byte) dualPlayfieldIndex(pv, pf2pri);
 
             if (idx1 != 0) {
@@ -2084,15 +2106,25 @@ public abstract class AbstractDenise {
      */
     private static int deniseSpecials(int pv, int planes, boolean dpf,
                                       int plf1pri, int plf2pri) {
+        // ⛔ ENTRAMBE le funzioni vogliono ALMENO CINQUE PIANI, e la soglia non sta in
+        // `update_specials()`: sta nel GENERATORE delle routine di rendering.
+        // `genlinetoscr.cpp` emette la chiamata a `decode_denise_specials()` solo dentro
+        // le varianti con più di quattro piani —
+        //     if (planes > 4) { outf("if (decode_specials) {");
+        //                       outf("  pix%d = decode_denise_specials(pix%d);", i, i); }
+        // — quindi nelle varianti `p2` e `p4` la specials NON viene mai applicata, per
+        // quanto `decode_specials` valga 2. È il motivo per cui leggere `update_specials()`
+        // e `decode_denise_specials()` non bastava: la condizione è in un file generato.
+        if (planes < 5) {
+            return pv;
+        }
         if (dpf) {
-            if (plf1pri >= 5 || plf2pri >= 5) {
-                if (plf1pri >= 5 && (pv & 0x15) != 0) pv |= 0x40;
-                if (plf2pri >= 5 && (pv & 0x2A) != 0) pv |= 0x80;
-            }
+            if (plf1pri >= 5 && (pv & 0x15) != 0) pv |= 0x40;
+            if (plf2pri >= 5 && (pv & 0x2A) != 0) pv |= 0x80;
             return pv;
         }
         // Playfield singolo: la regola «SWIV».
-        if (planes >= 5 && plf2pri >= 5 && (pv & 0x10) != 0) return 0x10;
+        if (plf2pri >= 5 && (pv & 0x10) != 0) return 0x10;
         return pv;
     }
 
