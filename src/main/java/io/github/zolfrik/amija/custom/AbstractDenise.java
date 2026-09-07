@@ -1095,8 +1095,26 @@ public abstract class AbstractDenise {
      * rifacimento bit-identico a risoluzione costante.
      */
     private void armShiftOut(int grp, int pixel, int fineScroll) {
+        final int cursor = pixel + fineScroll;   // fineScroll e' gia' in sub-pixel
+        // ⛔ LO SHIFTER NON SI FERMA FRA UNA WORD E L'ALTRA. Nell'oracolo
+        // (`drawing.cpp`) lo shift register avanza a OGNI pixel della riga e lo scroll
+        // sceglie soltanto la FASE in cui la word nuova viene caricata
+        // (`if (bpldat_copy[x] && dhv == bplcon1_shift_full[x]) copybpl8()`): non c'è un
+        // cursore, quindi non c'è mai un buco. Il nostro modello dipinge invece ogni word
+        // in una finestra assoluta, e quando lo scroll CALA a metà riga la word nuova
+        // parte OLTRE il punto raggiunto da quella vecchia — quei sub-pixel non li
+        // scriveva nessuno e uscivano di colore 0.
+        //
+        // ⚠️ E non basta «tenere» l'ultimo valore: misurato, il bit tenuto sarebbe 0 e
+        // l'oracolo lì disegna il playfield. Quel che l'oracolo emette sono i BIT
+        // SUCCESSIVI della word vecchia, che continua a scorrere finché la nuova non la
+        // sostituisce. È esattamente ciò che si fa qui, e la finestra è limitata per
+        // costruzione: al più lo scarto fra i due scroll.
+        if (srCount[grp] > 0 && cursor > srCursor[grp]) {
+            emitGroup(grp, cursor - srCursor[grp]);
+        }
         srCount[grp]  = 16;
-        srCursor[grp] = pixel + fineScroll;   // fineScroll e' gia' in sub-pixel
+        srCursor[grp] = cursor;
         srPhase[grp]  = 0;
         srBpu[grp]    = bpu;
         precomputeSlices(grp);
