@@ -2818,6 +2818,20 @@ public abstract class AbstractAgnus {
         }
 
         // ── Fine riga ──────────────────────────────────────────────────────
+
+        // ⛔ IL DRAW BITPLANE NON SI FERMA AL CONFINE DI RIGA. La griglia degli eventi di
+        // draw prosegue nella riga seguente, ma i primi sub-pixel che ne escono
+        // appartengono ancora al buffer di QUESTA riga: sono le colonne raw 836÷839
+        // (`cck 227`), la stessa cella su cui vive la «colonna del wrap» del §16 — che per
+        // il BORDO è già modellata (`VirtualCRT.borderCck0Rgb`) e per il PLAYFIELD non lo
+        // era. Con lo scroll grosso il blocco finale cade proprio lì: `BPLCON1/overscan`
+        // scrive BPLCON1 ai cicli DMA alti apposta per metterlo a cavallo del confine, e
+        // senza questo evento quella word non esce mai — un pixel per riga, 1 px in hires
+        // e 2 in lores, su 21 righe di ognuno dei dodici test.
+        // ⚠️ UN solo CCK, non di più: `rgbLine` è larga 912 = 228 CCK a partire da
+        // `cck 18`, quindi `cck 227` è l'ultima cella che le appartiene.
+        handleBitplaneDrawEvent(maxHpos >> 1);
+
         scheduleSyncEvent(EVFL_HSYNC);
         scheduleSyncEvent(EVFL_EOL);
 
