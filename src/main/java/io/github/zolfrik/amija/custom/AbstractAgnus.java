@@ -564,9 +564,16 @@ public abstract class AbstractAgnus {
      * (ri)avviare uno sprite a metà frame scrivendo POS/CTL via Copper.
      */
     private void sprStartStop(int idx) {
-        if (inVBlankArea(vpos)) return;
-        if (vpos == sprVStart[idx]) sprDmaEnabled[idx] = true;
-        if (vpos == sprVStop[idx]) {
+        // ⛔ La riga è {@link #triggerVpos}, non {@code vpos}: nell'oracolo `sprstartstop()`
+        // legge lo stesso `vpos` che `custom_trigger_start()` ha già incrementato, e la
+        // differenza si vede negli ULTIMI TRE CCK della riga. È ciò che `sprdma12`/`sprdma13`
+        // misurano — *«SPRxCTL modified at the end of a rasterline»*: il Copper scrive
+        // SPRxCTL a `WAIT $47DF` (fine riga 71) e l'oracolo, che lì è già alla riga 72, trova
+        // `vpos == vstop` col VSTOP VECCHIO e **addormenta** lo sprite; noi eravamo ancora a
+        // 71, nessun match, e lo sprite continuava a disegnare per diciotto righe.
+        if (inVBlankArea(triggerVpos)) return;
+        if (triggerVpos == sprVStart[idx]) sprDmaEnabled[idx] = true;
+        if (triggerVpos == sprVStop[idx]) {
             sprDmaEnabled[idx] = false;
             // ⚠️ ASIMMETRIA DELL'ORACOLO, trascritta com'è: sul percorso della SCRITTURA
             // (`sprstartstop`) il VSTOP AZZERA `dmacycle`, mentre allo slot 0 di
@@ -1842,7 +1849,7 @@ public abstract class AbstractAgnus {
         df3.setWriteBitSource(this::nextDiskWriteBit);
 
         this.vpos = 0;
-        this.vdiwVpos = 0;
+        this.triggerVpos = 0;
         this.hpos = INITIAL_HPOS;
 
         // Arma il tick E-clock delle CIA come evento (Step 1, event-driven). I test
@@ -2799,10 +2806,10 @@ public abstract class AbstractAgnus {
             }
         }
 
-        // ⛔ La riga della FINESTRA VERTICALE avanza TRE CCK prima del wrap di hpos:
-        // è dove l'oracolo chiama check_bpl_vdiw(). Vedi VDIW_ADVANCE_LEAD_HPOS.
-        if (nextHpos == maxHpos - VDIW_ADVANCE_LEAD_HPOS) {
-            advanceVerticalWindowRow();
+        // ⛔ La riga dell'ORACOLO avanza TRE CCK prima del nostro wrap di hpos:
+        // è dove chiama custom_trigger_start(). Vedi TRIGGER_VPOS_LEAD_HPOS.
+        if (nextHpos == maxHpos - TRIGGER_VPOS_LEAD_HPOS) {
+            advanceTriggerVpos();
         }
 
         if (nextHpos < maxHpos) {
@@ -4707,7 +4714,7 @@ public abstract class AbstractAgnus {
                 // Bit 15 = LOF
                 if ((value & 0x8000) != 0) field = 0; else field = 1;
                 vpos = (vpos & 0xFF) | ((value & 1) << 8);
-                vdiwVpos = vpos;
+                triggerVpos = vpos;
                 // "LOL is always reset when VPOSW is written to. Implemented in all
                 // NTSC Agnus versions and ECS/AGA Agnus in NTSC mode" (WinUAE
                 // custom.cpp, VPOSW): la riga corrente torna corta.
@@ -4715,7 +4722,7 @@ public abstract class AbstractAgnus {
                 break;
             case 0x02C: // VHPOSW
                 vpos = (vpos & 0x100) | ((value >> 8) & 0xFF);
-                vdiwVpos = vpos;
+                triggerVpos = vpos;
                 hpos = (value & 0xFF) << 1;
                 break;
             case 0x08C: // COPINS
@@ -4859,7 +4866,7 @@ public abstract class AbstractAgnus {
         if (hardware) {
             masterClock = 0;
             vpos = 0;
-            vdiwVpos = 0;
+            triggerVpos = 0;
             hpos = INITIAL_HPOS;         // la prima riga dura 1 CCK: vedi INITIAL_HPOS
             frameCount = 1;
             // Gli impulsi TOD sono calcolati per la riga in corso: quella riga non c'è più.
@@ -5027,8 +5034,8 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Quanto la RIGA DELLA FINESTRA VERTICALE precede il wrap di {@code hpos}, in unità
-     * di mezzo-CCK: <b>3 CCK</b>.
+     * Quanto {@link #triggerVpos} — la riga dell'oracolo — precede il wrap di
+     * {@code hpos}, in unità di mezzo-CCK: <b>3 CCK</b>.
      *
      * <p>⛔ <b>Misurato sui due lati il 2026-09-06</b> (sonde {@code WINUAE_COPLOG} e
      * {@code WINUAE_SPRLOG} contro le stesse da noi). La griglia fra le due macchine è
@@ -5044,7 +5051,7 @@ public abstract class AbstractAgnus {
      * confronto, che quindi ha già chiuso la finestra col valore vecchio) e noi sulla
      * VECCHIA (prima del confronto, che quindi usa il valore nuovo).
      *
-     * <p>⛔ <b>Perché si sposta solo QUESTO consumatore e non {@code vpos} stesso.</b>
+     * <p>⛔ <b>Perché si spostano solo i CONSUMATORI e non {@code vpos} stesso.</b>
      * Spostare il contatore intero è stato provato ed è un <b>veto della rete</b>:
      * {@code Agnus/Copper} 94/20 → 87/27 ({@code cross2}, {@code steal7}, {@code coptim4/5},
      * {@code oldcoptim3/5}), {@code Paula/Interrupts} 82/0 → 77/5 (i cinque
@@ -5057,20 +5064,29 @@ public abstract class AbstractAgnus {
      * {@code BEAM_AHEAD_CCK} e le ancore degli sprite. Vedi
      * {@code docs/vamigats-import-order.md}, §La riga del contatore verticale.
      */
-    private static final int VDIW_ADVANCE_LEAD_HPOS = 6;
+    private static final int TRIGGER_VPOS_LEAD_HPOS = 6;
 
     /**
-     * La riga su cui si valuta la finestra verticale di display: {@code vpos} portato
-     * avanti di {@link #VDIW_ADVANCE_LEAD_HPOS}. Coincide con {@code vpos} per tutta la
-     * riga tranne i tre CCK finali, dove vale già quello della riga che sta per iniziare.
+     * Il {@code vpos} dell'ORACOLO nella nostra griglia: {@code vpos} portato avanti di
+     * {@link #TRIGGER_VPOS_LEAD_HPOS}. Coincide con {@code vpos} per tutta la riga tranne
+     * i tre CCK finali, dove vale già quello della riga che sta per iniziare.
+     *
+     * <p>Lo leggono i consumatori per cui la misura esiste, uno alla volta: la FINESTRA
+     * VERTICALE di display ({@link #updateBitplaneVerticalWindow()} /
+     * {@link #compareBitplaneVerticalWindow()}) e {@link #sprStartStop(int)}, che
+     * nell'oracolo è {@code sprstartstop()} e legge lo stesso {@code vpos} già
+     * incrementato da {@code custom_trigger_start()}. <b>Non</b> lo leggono i consumatori
+     * interni alla riga (la macchina a stati del DMA sprite allo slot 0, p.es.), dove
+     * {@code triggerVpos == vpos} e la distinzione non si osserva.
      */
-    private int vdiwVpos = 0;
+    private int triggerVpos = 0;
 
     /**
-     * {@code check_bpl_vdiw()} dell'oracolo per la riga che sta per iniziare, tre CCK
-     * prima del nostro confine di riga.
+     * Il {@code custom_trigger_start()} dell'oracolo: porta {@link #triggerVpos} alla riga
+     * che sta per iniziare, tre CCK prima del nostro confine di riga, e rivaluta lì la
+     * finestra verticale ({@code check_bpl_vdiw()}).
      */
-    private void advanceVerticalWindowRow() {
+    private void advanceTriggerVpos() {
         if (syncsStopped) {
             return;
         }
@@ -5079,7 +5095,7 @@ public abstract class AbstractAgnus {
         if (next >= wrapAt) {
             next = 0;
         }
-        vdiwVpos = next;
+        triggerVpos = next;
         updateBitplaneVerticalWindow();
     }
 
@@ -5094,7 +5110,7 @@ public abstract class AbstractAgnus {
         // imposta DIWSTRT con Vstart=0 → bitplane mai prelevati → solo le barre del
         // Copper, niente testo né vettori). vAmiga resetta il flip-flop all'ultima
         // riga del frame, non alla riga 0, così uno Vstart==0 apre correttamente.
-        if (vdiwVpos == 0) {
+        if (triggerVpos == 0) {
             bitplaneVerticalActive = (diwVStart == 0) && (diwVStop != 0);
             if (bitplaneVerticalActive) bitplaneDmaOnAtWindowStart = bitplaneDmaEnabled;
         } else {
@@ -5108,7 +5124,7 @@ public abstract class AbstractAgnus {
         // → fase del beam-lock del frame successivo sfasata (bande in cima).
         // NB: il VB hardware copre anche v0..~v25; qui modelliamo solo la riga
         // d'inizio (subset sicuro: nessun test/gioco fetcha in quell'area).
-        boolean lastLineOfField = vdiwVpos == ((field == 0) ? maxVpos : maxVpos - 1);
+        boolean lastLineOfField = triggerVpos == ((field == 0) ? maxVpos : maxVpos - 1);
         bitplaneDmaActive = bitplaneDmaEnabled && bitplaneVerticalActive && !lastLineOfField;
     }
 
@@ -5128,9 +5144,9 @@ public abstract class AbstractAgnus {
      * {@link #recheckBitplaneVerticalWindow()}.
      */
     private void compareBitplaneVerticalWindow() {
-        if (vdiwVpos == diwVStop) {
+        if (triggerVpos == diwVStop) {
             bitplaneVerticalActive = false;
-        } else if (vdiwVpos == diwVStart) {
+        } else if (triggerVpos == diwVStart) {
             bitplaneVerticalActive = true;
             // Stato del DMA bitplane all'APERTURA della finestra di display: serve a
             // distinguere un frame parziale (bitplane spenti in cima, accesi più giù →
@@ -5169,7 +5185,7 @@ public abstract class AbstractAgnus {
      */
     private void recheckBitplaneVerticalWindow() {
         compareBitplaneVerticalWindow();
-        boolean lastLineOfField = vdiwVpos == ((field == 0) ? maxVpos : maxVpos - 1);
+        boolean lastLineOfField = triggerVpos == ((field == 0) ? maxVpos : maxVpos - 1);
         bitplaneDmaActive = bitplaneDmaEnabled && bitplaneVerticalActive && !lastLineOfField;
     }
 
