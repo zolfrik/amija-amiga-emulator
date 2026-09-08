@@ -101,9 +101,9 @@ public final class VirtualCRT {
      */
     private static final int NO_WRAP_SAMPLE = -1;
     private final int[] borderCck0Rgb = new int[RAW_HEIGHT];  // COLOR00 al beam cck 0 di ogni riga
-    // Se a quel punto la riga aveva playfield il wrap NON si applica: vedi
-    // saveRegressionScreenshot.
-    private final boolean[] wrapIsPlayfield = new boolean[RAW_HEIGHT];
+    // Maschera a 4 bit (uno per sub-pixel della cella di wrap): dove il bit è acceso la
+    // riga ha prodotto contenuto e il wrap NON si applica. Vedi saveRegressionScreenshot.
+    private final int[] wrapIsPlayfield = new int[RAW_HEIGHT];
     private int frameHiresLines;
     private int frameLoresLines;
     private int frameInterlacedLines;
@@ -277,11 +277,19 @@ public final class VirtualCRT {
             // riga = colore dell'ultimo CCK visibile (col 836) della riga precedente.
             if (wrapPendingRow < RAW_HEIGHT) {
                 borderCck0Rgb[wrapPendingRow] = denise.getLiveColor0Rgb();
-                // ⛔ Il wrap è CONDIZIONALE: COLOR00 vale solo dove a quell'istante il
-                // pennello è nel BORDO. Dove la riga aveva playfield fin lì, il pixel
-                // giusto è quello che abbiamo già renderizzato. Vedi il commento in
-                // saveRegressionScreenshot per le tre misure che lo hanno stabilito.
-                wrapIsPlayfield[wrapPendingRow] = denise.isPlayfieldAt(RIGHT_HBLANK_WRAP_COL);
+                // ⛔ Il wrap è CONDIZIONALE, e la condizione è PER SUB-PIXEL. COLOR00 vale
+                // solo dove a quell'istante il pennello è nel BORDO; dove la riga ha
+                // prodotto contenuto il pixel giusto è quello che abbiamo già renderizzato.
+                // ⚠️ E i quattro sub-pixel della cella NON sono la stessa cosa: misurato su
+                // `OLDDIW/diw1,diw2,diw11` e `DIWH/minmax*`, l'oracolo ha bordo a 712÷713 e
+                // playfield a 714÷715 sulla stessa riga. Una maschera sola per la cella
+                // spegneva o accendeva tutt'e quattro insieme. Vedi il commento in
+                // saveRegressionScreenshot per le misure che hanno stabilito il resto.
+                int mask = 0;
+                for (int k = 0; k < 4; k++) {
+                    if (denise.isPlayfieldAt(RIGHT_HBLANK_WRAP_COL + k)) mask |= 1 << k;
+                }
+                wrapIsPlayfield[wrapPendingRow] = mask;
             }
             wrapPendingRow = -1;
         }
@@ -325,7 +333,7 @@ public final class VirtualCRT {
             // La colonna di wrap del bordo destro è per-riga e si porta dietro lo stesso
             // residuo: senza questo, delle righe azzerate restano accesi i 4 px di col 836.
             java.util.Arrays.fill(borderCck0Rgb, from, RAW_HEIGHT, 0);
-            java.util.Arrays.fill(wrapIsPlayfield, from, RAW_HEIGHT, false);
+            java.util.Arrays.fill(wrapIsPlayfield, from, RAW_HEIGHT, 0);
         }
         frameMaxRow = -1;
     }
@@ -622,12 +630,34 @@ public final class VirtualCRT {
             // aveva PLAYFIELD fin lì vale il pixel che abbiamo renderizzato (overscan) —
             // che prima di quel rifacimento non era ancora giusto, ed è per questo che la
             // condizione non si poteva scrivere allora.
+            //
+            // ⛔ E la condizione «PLAYFIELD» è stata SBAGLIATA due volte, in due modi
+            // diversi, corretti entrambi il 2026-09-08:
+            //  4. era la sola DIW APERTA (`bBuffer == 0xFF`), che non è «c'è contenuto»:
+            //     dove la finestra è aperta e il fetch è già finito, colorizeNormal usa
+            //     `mBuffer & 0x3F` = 0 ⇒ il pixel è palette[0], cioè bordo, ma col COLOR00
+            //     di FINE riga V invece di quello vivo al cck 0 della riga V+1. In
+            //     `Agnus/Copper/copwait1,2,5,6,8` e `Agnus/DIW/OLDDIW/diw1,diw8` il Copper
+            //     scrive COLOR00 esattamente lì, e la cella usciva col colore vecchio.
+            //     ⇒ la condizione è ora `bBuffer == 0xFF && (mBuffer & 0x3F) != 0`
+            //     (AbstractDenise.isPlayfieldAt), verificata sui due lati con
+            //     `WINUAE_COPLOG`: l'istante della MOVE è lo STESSO (oracolo v=49 h=4, noi
+            //     v=49 cck=0), quindi non era un difetto del Copper;
+            //  5. era una maschera SOLA per tutta la cella. I quattro sub-pixel non sono la
+            //     stessa cosa: su `OLDDIW/diw1,diw2,diw11` e `DIWH/minmax*` l'oracolo ha
+            //     bordo a 712÷713 e playfield a 714÷715 sulla STESSA riga. Correggere solo
+            //     il punto 4 rendeva rossi diw2/diw11/minmax, che erano verdi.
+            //     ⇒ `wrapIsPlayfield` è una maschera a 4 bit e si applica per sub-pixel.
             if (wrapCropCol >= 0 && wrapCropCol + 4 <= REGRESSION_CROP_W
-                    && srcY >= 0 && srcY < RAW_HEIGHT && !wrapIsPlayfield[srcY]
+                    && srcY >= 0 && srcY < RAW_HEIGHT
                     && borderCck0Rgb[srcY] != NO_WRAP_SAMPLE) {
-                int rgb = borderCck0Rgb[srcY];
-                int di  = row * REGRESSION_CROP_W + wrapCropCol;
-                dst[di] = rgb; dst[di + 1] = rgb; dst[di + 2] = rgb; dst[di + 3] = rgb;
+                int rgb  = borderCck0Rgb[srcY];
+                int mask = wrapIsPlayfield[srcY];
+                int di   = row * REGRESSION_CROP_W + wrapCropCol;
+                // ⚠️ Sub-pixel per sub-pixel: la cella non è omogenea. Vedi tick().
+                for (int k = 0; k < 4; k++) {
+                    if ((mask & (1 << k)) == 0) dst[di + k] = rgb;
+                }
             }
         }
         ImageIO.write(cropped, "png", file);

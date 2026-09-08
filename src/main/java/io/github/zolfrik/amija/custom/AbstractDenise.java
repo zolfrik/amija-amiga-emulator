@@ -2176,17 +2176,34 @@ public abstract class AbstractDenise {
     public int  getLiveColor0Rgb()          { return amigaToRGB(palette[0]); }
 
     /**
-     * True se alla colonna grezza {@code rawX} la riga <b>appena renderizzata</b> aveva
-     * <b>playfield</b>: né bordo verticale né fuori dalla finestra DIW orizzontale.
+     * True se alla colonna grezza {@code rawX} la riga <b>appena renderizzata</b> ha
+     * prodotto <b>contenuto</b>: né bordo verticale, né fuori dalla finestra DIW
+     * orizzontale, e con un indice di colore <b>diverso da zero</b>.
      *
      * <p>Serve alla colonna di wrap del bordo destro — vedi
      * {@code VirtualCRT.saveRegressionScreenshot}. {@code bBuffer} porta la maschera di
      * bordo della riga che {@link #hsyncHandler(int)} ha appena chiuso, quindi va
      * interrogato <b>prima</b> che la riga successiva la ricalcoli.
+     *
+     * <p>⛔ <b>La finestra DIW aperta NON basta, ed è stato un difetto misurato.</b> La
+     * condizione era il solo {@code bBuffer[rawX] == 0xFF}, cioè «la DIW è aperta qui»;
+     * ma dove la DIW è aperta e il fetch è già finito {@link #colorizeNormal} usa
+     * {@code mBuffer[i] & 0x3F}, che lì vale <b>0</b> ⇒ il pixel è {@code palette[0]}, cioè
+     * proprio il bordo — con il COLOR00 di <b>fine riga V</b> invece di quello vivo al
+     * {@code cck 0} della riga V+1, che è l'istante che quella cella mostra. In
+     * {@code Agnus/Copper/copwait1÷6} e {@code Agnus/DIW/OLDDIW/diw1,diw8} il Copper scrive
+     * COLOR00 esattamente a quel {@code cck} — misurato sui due lati con
+     * {@code WINUAE_COPLOG}, l'istante è lo <b>stesso</b> (oracolo {@code v=49 h=4},
+     * noi {@code v=49 cck=0}) — e la cella usciva col colore vecchio.
+     *
+     * <p>Un indice non nullo, invece, è contenuto vero (playfield o sprite: i colori sprite
+     * stanno da 16 in su) e va tenuto com'è stato reso: è la coda dello shifter che
+     * attraversa il confine di riga, cioè quel che le classi H e I del §16 hanno portato.
      */
     public boolean isPlayfieldAt(int rawX) {
         return !lineIsVBorder && rawX >= 0 && rawX < bBuffer.length
-                && bBuffer[rawX] == (byte) 0xFF;
+                && bBuffer[rawX] == (byte) 0xFF
+                && (mBuffer[rawX] & 0x3F) != 0;
     }
     public int  getPaletteColor(int idx)    { return palette[idx & 31]; }
     public int  getRawPixelColor(int rawX)  { return rawX >= 0 && rawX < HPIXELS ? rgbLine[rawX] : 0; }
