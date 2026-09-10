@@ -956,7 +956,7 @@ public abstract class AbstractDenise {
         // serve solo a NON introdurre una seconda differenza. Vedi srCount.
         flushShiftOut();
 
-        updateBorderBuffer();
+        updateBorderBuffer(vpos == 0);
 
         if (agnus != null && !agnus.inVBlankArea(vpos)) {
             // Scanline visibile: pipeline completa.
@@ -1257,7 +1257,20 @@ public abstract class AbstractDenise {
      */
     private static final int HDIW_SCAN_END_COUNTER = 10;
 
-    private void updateBorderBuffer() {
+    private void updateBorderBuffer(boolean frameStart) {
+        // On the first line of a frame the beam sweeps the counter values below the start
+        // of the buffer as well, so a horizontal start coordinate of 0 or 1 - which a
+        // normal line never reaches, the counter wrapping 0x1C8 to 2 - matches here and
+        // opens the window for the whole frame. No pixel comes out of this pass: it only
+        // carries the flip-flop, so it runs before the dirty check.
+        if (frameStart) {
+            boolean hf0 = hflop;
+            for (int c = 0; c < HBLANK_MIN * 2; c++) {
+                if (c == hstrtLineStart) hflop = true;
+                if (c == hstopLineStart) hflop = false;
+            }
+            if (hflop != hf0) borderBufferIsDirty = Math.max(borderBufferIsDirty, 1);
+        }
         if (borderBufferIsDirty == 0) return;
         borderBufferIsDirty--;
 
