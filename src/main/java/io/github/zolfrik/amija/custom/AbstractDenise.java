@@ -1652,6 +1652,20 @@ public abstract class AbstractDenise {
     // Fase 5: checkCollisions — aggiorna CLXDAT su zBuffer/dBuffer
     // =========================================================================
 
+    /**
+     * Un pixel partecipa alle collisioni solo se Denise lo <b>rende</b>: dentro la
+     * finestra orizzontale e dopo la prima BPL1DAT della riga. Sono gli stessi due bit
+     * che nascondono lo sprite ({@code spriteClipBegin} è il secondo), e valgono anche
+     * per il playfield: fuori di lì non c'è pixel bitplane da confrontare, e prenderlo
+     * per un valore vero fa comparire collisioni che l'hardware non riporta — con
+     * CLXCON che si aspetta zero su un piano, il bordo (dove {@code dBuffer} è 0)
+     * accende il confronto su tutta la riga.
+     */
+    private boolean collisionActiveAt(int pos) {
+        return pos >= spriteClipBegin && pos < spriteClipEnd
+                && bBuffer[pos] == (byte) 0xFF;
+    }
+
     private void checkCollisions() {
         // PERF (bit-identico): salta i loop di collisione che non possono produrre
         // alcun bit in clxdat. checkS2PCollisions(x) itererebbe tutta la linea solo
@@ -1685,6 +1699,7 @@ public abstract class AbstractDenise {
         int z_s45 = Z_SP4 | ((clxcon & 0x4000) != 0 ? Z_SP5 : 0);
         int z_s67 = Z_SP6 | ((clxcon & 0x8000) != 0 ? Z_SP7 : 0);
         for (int pos = 0; pos < HPIXELS; pos++) {
+            if (!collisionActiveAt(pos)) continue;
             int z = zBuffer[pos];
             if ((z & z_s01) != 0 && (z & z_s23) != 0) clxdat |= 0x0200;  // bit 9
             if ((z & z_s01) != 0 && (z & z_s45) != 0) clxdat |= 0x0400;  // bit 10
@@ -1730,6 +1745,7 @@ public abstract class AbstractDenise {
 
         for (int pos = 0; pos < HPIXELS; pos++) {
             if ((zBuffer[pos] & Z_SP[x]) == 0) continue;
+            if (!collisionActiveAt(pos)) continue;
             int d = dBuffer[pos] & 0xFF;
             // FIX collisioni: layout CLXDAT hardware (HRM §7):
             //   bit 1-4 = sprite coppia (x>>1) vs piani DISPARI (PF1)
@@ -1778,6 +1794,7 @@ public abstract class AbstractDenise {
         int match2   =  clxcon       & 0x2A & enabled2;
 
         for (int pos = 0; pos < HPIXELS; pos++) {
+            if (!collisionActiveAt(pos)) continue;
             int d = dBuffer[pos] & 0xFF;
             if ((d & enabled1) == match1 && (d & enabled2) == match2) {
                 clxdat |= 0x0001;
