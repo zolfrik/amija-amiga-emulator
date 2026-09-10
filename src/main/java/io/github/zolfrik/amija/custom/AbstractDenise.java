@@ -1251,6 +1251,12 @@ public abstract class AbstractDenise {
     // Fase 2: updateBorderBuffer — calcola bBuffer (maschera DIW/bordo)
     // =========================================================================
 
+    /**
+     * First horizontal-counter value a line's rendering no longer compares: the window
+     * closes at the HSSTRT of the following line. See {@link #updateBorderBuffer()}.
+     */
+    private static final int HDIW_SCAN_END_COUNTER = 10;
+
     private void updateBorderBuffer() {
         if (borderBufferIsDirty == 0) return;
         borderBufferIsDirty--;
@@ -1284,7 +1290,32 @@ public abstract class AbstractDenise {
         boolean hf      = hflop;
         int     diwIdx  = 0;
 
-        for (int i = 0; i < HPIXELS; i++) {
+        // A line's rendering is shorter than the buffer, so the comparator does not run
+        // over all 912 sub-pixels. The rendered window closes at the HSSTRT of the
+        // FOLLOWING line, not at the line wrap, and the start/stop comparison happens only
+        // inside it: a coordinate the counter reaches outside that window is never
+        // compared at all.
+        //
+        // The window therefore spans counter 28 to 463 (= 9 after the wrap), 436 units out
+        // of 454, which leaves a hole of 18 units - counters 10 to 27 - that no line
+        // renders. Small DIWSTRT coordinates that fall in the hole never open the window.
+        //
+        // The buffer starts at HBLANK_MIN (counter 36, cck 18); scanning all 912 sub-pixels
+        // would cover 456 units, with no hole and twenty units too many, so the counter
+        // would reach 37 and coordinates 10 to 37 would produce transitions that carry into
+        // the next line through hflop.
+        //
+        // The truncated tail lies entirely outside the regression crop (raw indices 856 to
+        // 911), including the right-border wrap cell at 836 to 839, which stays inside the
+        // window. Only the state handed to the next line changes.
+        //
+        // The eight head units (counters 28 to 35, cck 14 to 17) stay out as well: they
+        // precede HBLANK_MIN, so they are outside the framebuffer.
+        final int scanPixels = Math.min(HPIXELS, 2 * ((0x1C8 - HBLANK_MIN * 2)
+                                                      + (HDIW_SCAN_END_COUNTER - 2)));
+
+        int i = 0;
+        for (; i < scanPixels; i++) {
             // Applica eventuali modifiche DIW in questo pixel
             while (diwIdx < diwChanges.size() && i >= diwChanges.keys[diwIdx]) {
                 RegChange c = diwChanges.elements[diwIdx++];
@@ -1302,6 +1333,10 @@ public abstract class AbstractDenise {
                 if (counter == 0x1C8) counter = 2;  // wrap PAL
             }
             bBuffer[i] = hf ? (byte) 0xFF : (byte) borderColor;
+        }
+        // Tail outside the rendered window: no comparison, the state stays as it is.
+        if (i < HPIXELS) {
+            Arrays.fill(bBuffer, i, HPIXELS, hf ? (byte) 0xFF : (byte) borderColor);
         }
 
         if (hflop != hf) {
@@ -2176,29 +2211,22 @@ public abstract class AbstractDenise {
     public int  getLiveColor0Rgb()          { return amigaToRGB(palette[0]); }
 
     /**
-     * True se alla colonna grezza {@code rawX} la riga <b>appena renderizzata</b> ha
-     * prodotto <b>contenuto</b>: né bordo verticale, né fuori dalla finestra DIW
-     * orizzontale, e con un indice di colore <b>diverso da zero</b>.
+     * True when raw column {@code rawX} of the line just rendered carries actual content:
+     * not vertical border, not outside the horizontal DIW window, and with a non-zero
+     * colour index.
      *
-     * <p>Serve alla colonna di wrap del bordo destro — vedi
-     * {@code VirtualCRT.saveRegressionScreenshot}. {@code bBuffer} porta la maschera di
-     * bordo della riga che {@link #hsyncHandler(int)} ha appena chiuso, quindi va
-     * interrogato <b>prima</b> che la riga successiva la ricalcoli.
+     * <p>Used by the right-border wrap cell - see
+     * {@code VirtualCRT.saveRegressionScreenshot}. {@code bBuffer} holds the border mask of
+     * the line {@link #hsyncHandler(int)} has just closed, so it must be read before the
+     * next line recomputes it.
      *
-     * <p>⛔ <b>La finestra DIW aperta NON basta, ed è stato un difetto misurato.</b> La
-     * condizione era il solo {@code bBuffer[rawX] == 0xFF}, cioè «la DIW è aperta qui»;
-     * ma dove la DIW è aperta e il fetch è già finito {@link #colorizeNormal} usa
-     * {@code mBuffer[i] & 0x3F}, che lì vale <b>0</b> ⇒ il pixel è {@code palette[0]}, cioè
-     * proprio il bordo — con il COLOR00 di <b>fine riga V</b> invece di quello vivo al
-     * {@code cck 0} della riga V+1, che è l'istante che quella cella mostra. In
-     * {@code Agnus/Copper/copwait1÷6} e {@code Agnus/DIW/OLDDIW/diw1,diw8} il Copper scrive
-     * COLOR00 esattamente a quel {@code cck} — misurato sui due lati con
-     * {@code WINUAE_COPLOG}, l'istante è lo <b>stesso</b> (oracolo {@code v=49 h=4},
-     * noi {@code v=49 cck=0}) — e la cella usciva col colore vecchio.
-     *
-     * <p>Un indice non nullo, invece, è contenuto vero (playfield o sprite: i colori sprite
-     * stanno da 16 in su) e va tenuto com'è stato reso: è la coda dello shifter che
-     * attraversa il confine di riga, cioè quel che le classi H e I del §16 hanno portato.
+     * <p>An open DIW window is not enough on its own. Where the window is open but the
+     * fetch has already ended, {@link #colorizeNormal} uses {@code mBuffer[i] & 0x3F},
+     * which is 0 there, so the pixel is {@code palette[0]} - border, drawn with the COLOR00
+     * of the end of the line instead of the value live at cck 0 of the next line, which is
+     * the instant that cell shows. A non-zero index is real content instead (playfield or
+     * sprite: sprite colours start at 16) and must be kept as rendered, being the tail of
+     * the shifter crossing the line boundary.
      */
     public boolean isPlayfieldAt(int rawX) {
         return !lineIsVBorder && rawX >= 0 && rawX < bBuffer.length
