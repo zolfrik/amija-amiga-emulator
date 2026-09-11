@@ -2304,6 +2304,29 @@ public abstract class AbstractAgnus {
             // esattamente dove il banco `Agnus/Registers/DMACON` guarda: quando BPLEN si
             // spegne e si riaccende dentro la riga. Vedi decideBpl().
             if (!busTakenByCustom && bprun > 0) {
+                // BPU and resolution are sampled once per line, when the fetch window opens,
+                // and used for the whole line. The sample is taken before the resolution is
+                // read below, so the first CCK of the window already fetches with the new
+                // line's sequence: with the previous line's value, a hires line followed by a
+                // lores one fetched an extra BPL4 word at sequence step 0, shifting that plane
+                // by 16 pixels for the rest of the screen.
+                //
+                // L'intro di Monkey Island accende i bitplani (BPU 0→5) a metà della riga di
+                // transizione del bordo (riga 43, a CCK 124, ben oltre DDFSTRT a CCK 56).
+                // Campionando BPU vivo ad ogni slot, quella riga prelevava ~11 word parziali:
+                // questo (a) disallineava i piani pari/dispari di 16px e (b) faceva avanzare
+                // TUTTI i puntatori di 11 word, traslando l'intera immagine per il resto del
+                // frame (testo "sdoppiato" con frange di colore).
+                // ⚠️ L'oracolo il BPU lo tiene VIVO (`bplcon0_planes_limit`, ricalcolato a
+                // ogni scrittura di BPLCON0): il latch è una nostra deroga, misurata su quel
+                // caso e tenuta separata dal porto del sequencer perché due modelli cambiati
+                // insieme non si sanno più attribuire. È il prossimo passo, non questo.
+                if (dmaconBplSeq && !fetchWindowOpened) {
+                    fetchWindowOpened = true;
+                    fetchUnitBpu = denise.getRawBpu();  // grezzo: il limite è di Agnus
+                    fetchUnitHires = denise.isHires();
+                    bpuRelatchCck = -1;
+                }
                 // ⛔ La RISOLUZIONE che conta qui è quella LATCHATA, non quella viva.
                 // Non è una scelta nostra: nell'oracolo BPLCON0 arriva ad Agnus da
                 // `pipelined_custom_write(BPLCON0_delayed, v, 2)` e **solo** il gestore
@@ -2318,27 +2341,6 @@ public abstract class AbstractAgnus {
                 boolean hires = fetchUnitHires;
                 boolean lastOfBlock = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
                 if (dmaconBplSeq) {
-                    // BPU viene CAMPIONATO una sola volta per riga, all'apertura della
-                    // finestra di fetch, e usato per tutta la riga.
-                    //
-                    // L'intro di Monkey Island accende i bitplani (BPU 0→5) a metà della
-                    // riga di transizione del bordo (riga 43, a CCK 124, ben oltre DDFSTRT
-                    // a CCK 56). Campionando BPU vivo ad ogni slot, quella riga prelevava
-                    // ~11 word parziali: questo (a) disallineava i piani pari/dispari di
-                    // 16px e (b) faceva avanzare TUTTI i puntatori di 11 word, traslando
-                    // l'intera immagine per il resto del frame (testo "sdoppiato" con
-                    // frange di colore).
-                    // ⚠️ L'oracolo il BPU lo tiene VIVO (`bplcon0_planes_limit`,
-                    // ricalcolato a ogni scrittura di BPLCON0): il latch è una nostra
-                    // deroga, misurata su quel caso e tenuta separata dal porto del
-                    // sequencer perché due modelli cambiati insieme non si sanno più
-                    // attribuire. È il prossimo passo, non questo.
-                    if (!fetchWindowOpened) {
-                        fetchWindowOpened = true;
-                        fetchUnitBpu = denise.getRawBpu();  // grezzo: il limite è di Agnus
-                        fetchUnitHires = denise.isHires();
-                        bpuRelatchCck = -1;
-                    }
                     // BPLCON0 scritto a finestra aperta: BPU efficace da write+4 CCK
                     // (pipeline WinUAE; vedi setBPLCON0 per le misure [WRGA]).
                     if (bpuRelatchCck >= 0 && cck >= bpuRelatchCck) {
