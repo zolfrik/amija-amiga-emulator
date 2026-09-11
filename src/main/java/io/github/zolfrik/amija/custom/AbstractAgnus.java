@@ -2492,7 +2492,12 @@ public abstract class AbstractAgnus {
             //    pari faceva slittare al pari successivo il fetch rifiutato dal BLOCKED di
             //    $E0, rubando 2 CCK alla CPU (root di §S2). La parità vive ora dentro la
             //    FSM (Copper.risingEdge), che riceve `evenCck`.
-            if (isCopperEnabled()) {
+            // A Copper cycle is allocated one CCK before it acts, and COPEN is checked at
+            // the allocation: a cycle allocated while COPEN was on still acts after COPEN
+            // goes off.
+            copperTickEnabled = copperAllocEnabled;
+            copperAllocEnabled = isCopperEnabled();
+            if (copperTickEnabled) {
                 // busFree = vAmiga busIsFree<COPPER>(): nessun DMA a priorità
                 // superiore ha già preso lo slot e non è il ciclo $E0 (bloccato).
                 // Gli stati idle della FSM Copper (REQ_DMA/WAIT*/SKIP*/JMP*)
@@ -2500,7 +2505,7 @@ public abstract class AbstractAgnus {
                 // (FETCH/MOVE/WAIT_OR_SKIP) assertano comunque la richiesta e la
                 // concessione è decisa qui sotto.
                 boolean copperBusFree = !busTakenByCustom && cck != 0xE0;
-                copper.risingEdge(copperBusFree, (cck & 1) == 0);
+                copper.risingEdge(copperBusFree, copperRequestParity(cck), cck == 0xE0);
                 // Fix 1: ensure stale ACK doesn't lead to false ownership if bus is taken.
                 copperBusResp.ack = false;
 
@@ -2611,7 +2616,7 @@ public abstract class AbstractAgnus {
         // Copper può legittimamente ottenere il bus dopo un diniego (reschedule +1) — è
         // esattamente il fetch a 225 dopo il BLOCKED di $E0=224. La cadenza +2 fra fetch
         // riusciti è imposta da Copper.tickDelay, non più dal gate.
-        if ((hpos & 1) == 0 && isCopperEnabled()) {
+        if ((hpos & 1) == 0 && copperTickEnabled) {
             copper.fallingEdge();
         }
 
@@ -5298,6 +5303,13 @@ public abstract class AbstractAgnus {
      */
     private long copperDmaChangeCck = Long.MIN_VALUE;
 
+    /**
+     * COPEN as seen by the Copper cycle of the current CCK ({@link #copperTickEnabled}) and
+     * by the one of the next CCK ({@link #copperAllocEnabled}): the value at allocation, one
+     * CCK before the cycle acts.
+     */
+    private boolean copperTickEnabled, copperAllocEnabled;
+
     public boolean isOCS() {
         // Se Agnus ID (VPOSR bit 14-8) ha il bit 13 (0x20) a 0 siamo su OCS, altrimenti
         // su ECS. L'ID è fornito dal hook agnusIdBits(), specializzato per sottoclasse.
@@ -5534,6 +5546,20 @@ public abstract class AbstractAgnus {
     private boolean sequencerClock(int cck) {
         final int lineCck = maxHpos >> 1;
         return (lineCck & 1) == 0 || cck != lineCck - 1 + SEQ_PHASE;
+    }
+
+    /**
+     * Whether the Copper may issue a new request whose cycle lands at this CCK. Copper
+     * requests are made on odd values of the horizontal counter and act one CCK later, so
+     * the eligible CCKs follow the counter's parity rather than ours: in the body of the
+     * line they are our even CCKs, but across the wrap of an odd-length line the counter
+     * repeats a parity and the slot after CCK 222 is 225, not 226.
+     */
+    private boolean copperRequestParity(int cck) {
+        final int lineCck = maxHpos >> 1;
+        int h = cck - SEQ_PHASE - 1;
+        if (h >= lineCck) h -= lineCck;
+        return (h & 1) != 0;
     }
 
     /** Quale piano tocca al CCK di fase {@code bprunCycle}; -1 se lo slot è libero. */

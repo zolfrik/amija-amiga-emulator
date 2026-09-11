@@ -350,7 +350,11 @@ public final class Copper {
      */
     private void strobeCopperList(int address) {
         setPC(address);
-        state                 = State.REQ_DMA;
+        // A strobe restarts the machine: the first Copper slot after it is the allocated
+        // cycle whose data is discarded, as on the frame restart, and nothing of the
+        // previous state's cadence survives.
+        state                 = State.STROBE;
+        tickDelay             = 0;
         skip                  = false;
         forbiddenMoveDetected = false;
         busReq.clear();
@@ -423,6 +427,17 @@ public final class Copper {
      *                 NESSUN altro stato: `COP_FETCH` &c. non hanno vincolo di parità)
      */
     public void risingEdge(boolean busFree, boolean evenCck) {
+        risingEdge(busFree, evenCck, false);
+    }
+
+    /**
+     * @param slot      a Copper cycle may land on this CCK: every state of the machine
+     *                  advances only on these CCKs
+     * @param wrapDummy the CCK of the line wrap on which a pending request still drives a
+     *                  bus cycle, although no Copper cycle can land there
+     */
+    public void risingEdge(boolean busFree, boolean slot, boolean wrapDummy) {
+        final boolean evenCck = slot;
         if (state == State.DORMANT) return;
 
         // schedule/reschedule di vAmiga: salta i CCK di attesa.
@@ -430,6 +445,12 @@ public final class Copper {
             tickDelay--;
             return;
         }
+
+        // A read state still asserts its request on the wrap CCK, where it is denied;
+        // every other transition waits for a Copper slot.
+        final boolean readState = state == State.FETCH || state == State.MOVE
+                || state == State.WAIT_OR_SKIP;
+        if (!slot && !(readState && wrapDummy)) return;
 
         switch (state) {
 
