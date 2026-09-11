@@ -442,15 +442,11 @@ public abstract class AbstractAgnus {
         // Copper. ⚠️ Misurato, non dedotto: nei log di `dropcpu41` e `dropcpu61` la
         // scrittura della CPU compare SEMPRE prima della `CAPT` dello stesso cck e
         // sopravvive; in `drop31` quella del Copper compare DOPO e viene persa.
-        if (!__inCopperWrite || denise == null || bprun == 0 || !isBitplaneDMAActive()) {
+        if (!__inCopperWrite) {
             return false;
         }
-        // ⚠️ `bprunCycle` è già stato incrementato per il CCK corrente (la decisione di
-        // fetch precede il Copper dentro il ciclo), quindi il suo valore di adesso È la
-        // fase del CCK successivo — quello la cui cattura la scrittura sta per perdere.
-        final boolean hires = denise.isHires();
-        final int plane = bplSequence(bprunCycle, hires);
-        return plane >= 0 && plane < bitplaneDmaPlaneLimit(fetchUnitBpu, hires) && plane == bidx;
+        // The request fetched at the next CCK has already been captured by now.
+        return bplReqNext >= 0 && (bplReqNext & BPLREQ_PLANE) == bidx;
     }
 
     /**
@@ -742,7 +738,7 @@ public abstract class AbstractAgnus {
         // è fetchato. Né il latch immediato né il vecchio latch solo-a-DDFSTRT
         // riproducono entrambi.
         if (fetchWindowOpened) {
-            bpuRelatchCck = (hpos >> 1) + 4;
+            bpuRelatchCck = (hpos >> 1) + 2;
         }
     }
 
@@ -1348,7 +1344,7 @@ public abstract class AbstractAgnus {
     private boolean lastCompletedFrameHadLateBitplaneDma = false;
     private int lastCompletedFrameField = 0;
 
-    /** REFPTR — contatore DRAM refresh (9 bit). */
+    /** REFPTR — DRAM refresh address, stepped by every refresh cycle. */
     private int refptr = 0;
 
     /** DSKPT — Disk DMA pointer. */
@@ -1734,10 +1730,22 @@ public abstract class AbstractAgnus {
 
     /**
      * CCK (della riga corrente) da cui un BPLCON0 scritto a finestra aperta diventa
-     * efficace sul fetch: write+4 (vedi setBPLCON0). −1 = nessun re-latch pendente.
-     * Scartato a fine riga (la nuova riga ricampiona BPU all'apertura finestra).
+     * efficace sulla decisione di fetch: write+2, cioè sul fetch write+4 (vedi
+     * setBPLCON0). −1 = nessun re-latch pendente. Scartato a fine riga (la nuova riga
+     * ricampiona BPU all'apertura finestra).
      */
     private int bpuRelatchCck = -1;
+
+    /**
+     * Bitplane requests between the sequencer decision and the fetch. A request decided
+     * at CCK c is captured at c+1 and fetched at c+2: {@code bplReqNext} is fetched at the
+     * next CCK, {@code bplReqLater} at the one after. Encoded as plane index (bits 0-2) plus
+     * {@link #BPLREQ_HIRES} and {@link #BPLREQ_MOD}; {@code -1} means no request.
+     */
+    private int bplReqNext = -1, bplReqLater = -1;
+    private static final int BPLREQ_PLANE = 0x07;
+    private static final int BPLREQ_HIRES = 0x08;
+    private static final int BPLREQ_MOD = 0x10;
 
     /** true se il bus di sistema in questo CCK è occupato da un chip custom. */
     private boolean busTakenByCustom = false;
@@ -2258,13 +2266,21 @@ public abstract class AbstractAgnus {
             // resto di BPLCON0 (oracolo: expand_drga_early). Vedi emitBitplaneHalfCck().
             if (denise != null) denise.emitBitplaneHalfCck();
 
+            // The bitplane request fetched in this CCK (decided two CCKs ago; see
+            // bplReqNext) and BPLEN as the sequencer sees it: the value left by the writes of
+            // the previous CCK.
+            final int bplReq = bplReqNext;
+            bplReqNext = bplReqLater;
+            bplReqLater = -1;
+            dmaconBplSeq = bitplaneDmaEnabled;
+
             // 1. Slot fissi ad alta priorità (DAS: refresh/disk/audio) — tipo di
             //    slot letto dalla tabella sequencer precomputata DMA_SLOT_TABLE.
             //    Le condizioni dinamiche (DMACON enable, richiesta canale) restano
             //    invariate, quindi il comportamento è identico al vecchio if-chain.
             switch (DMA_SLOT_TABLE[cck]) {
                 case DMASLOT_REFRESH:
-                    handleRefreshDMA();
+                    handleRefreshDMA(cck, bplReq);
                     owner = BusOwner.REFRESH;
                     busTakenByCustom = true;
                     break;
@@ -2303,7 +2319,21 @@ public abstract class AbstractAgnus {
             // I due coincidono finché la riga va dritta da DDFSTRT a DDFSTOP, e divergono
             // esattamente dove il banco `Agnus/Registers/DMACON` guarda: quando BPLEN si
             // spegne e si riaccende dentro la riga. Vedi decideBpl().
-            if (!busTakenByCustom && bprun > 0) {
+            //
+            // The decision and the fetch are two CCKs apart: the sequencer decides the plane
+            // of a slot at CCK c, the pointer is captured at c+1 and the word is fetched at
+            // c+2. Here the request decided two CCKs ago is fetched first, then the sequencer
+            // decides the one for two CCKs from now. Everything the sequencer reacts to (DIW,
+            // BPLEN, DDFSTRT/DDFSTOP, the hard limits) is therefore compared on the same grid
+            // as the register writes, and only the fetch itself lags.
+            if (bplReq >= 0 && !busTakenByCustom) {
+                final int plane = bplReq & BPLREQ_PLANE;
+                handleBitplaneDMA(cck, plane, (bplReq & BPLREQ_HIRES) != 0,
+                        (bplReq & BPLREQ_MOD) != 0);
+                owner = OWNER_VALUES[BusOwner.BPL1.ordinal() + plane];
+                busTakenByCustom = true;
+            }
+            if (bprun > 0) {
                 // BPU and resolution are sampled once per line, when the fetch window opens,
                 // and used for the whole line. The sample is taken before the resolution is
                 // read below, so the first CCK of the window already fetches with the new
@@ -2341,8 +2371,9 @@ public abstract class AbstractAgnus {
                 boolean hires = fetchUnitHires;
                 boolean lastOfBlock = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
                 if (dmaconBplSeq) {
-                    // BPLCON0 scritto a finestra aperta: BPU efficace da write+4 CCK
-                    // (pipeline WinUAE; vedi setBPLCON0 per le misure [WRGA]).
+                    // BPLCON0 scritto a finestra aperta: BPU efficace sulla decisione da
+                    // write+2 CCK, cioè sul fetch da write+4 (vedi setBPLCON0 per le misure
+                    // [WRGA]).
                     if (bpuRelatchCck >= 0 && cck >= bpuRelatchCck) {
                         fetchUnitBpu = denise.getRawBpu();
                         fetchUnitHires = denise.isHires();
@@ -2350,12 +2381,13 @@ public abstract class AbstractAgnus {
                     }
                     int plane = bplSequence(bprunCycle, hires);
                     if (plane >= 0 && plane < bitplaneDmaPlaneLimit(fetchUnitBpu, hires)) {
-                        handleBitplaneDMA(cck, plane, hires);
-                        owner = OWNER_VALUES[BusOwner.BPL1.ordinal() + plane];
-                        busTakenByCustom = true;
+                        // The modulo belongs to the last block of the line, which is the
+                        // state the sequencer is in when it decides the slot.
+                        boolean domod = ddfStopping == 2 && (!hires || (bprunCycle & 7) >= 4);
+                        bplReqLater = plane | (hires ? BPLREQ_HIRES : 0) | (domod ? BPLREQ_MOD : 0);
                     }
                 }
-                bprunCycle++;
+                if (sequencerClock(cck)) bprunCycle++;
                 if (lastOfBlock) {
                     // `if (ddf_stopping == 2) bpl_dma_normal_stop(); if (ddf_stopping == 1)
                     // ddf_stopping = 2;` — in quest'ordine: il blocco che chiude con
@@ -2516,18 +2548,12 @@ public abstract class AbstractAgnus {
 
             // ⚠️ DOPO l'arbitraggio, non prima: in `do_cck()` l'ordine è
             // `generate_dma_requests()` (che contiene `generate_bpl`) e POI
-            // `decide_bpl(agnus_hpos)`. Una macchina armata al CCK X preleva la prima
-            // word al CCK X+1, ed è quel CCK di sfasamento a rendere giuste le finestre.
+            // `decide_bpl(agnus_hpos)`. Una macchina armata al CCK X decide il primo slot
+            // al CCK X+1, e la word di quello slot arriva due CCK dopo (bplReqNext).
             decideBpl(cck);
 
-            // Ricampionamento del latch BPLEN, nell'ordine dell'oracolo: DOPO decide_bpl e
-            // PRIMA che la scrittura del CCK corrente arrivi al registro. Due stadi perche'
-            // le nostre scritture sono immediate: vedi dmaconBplSeq.
-            dmaconBplSeq = dmaconBplPipe;
-            dmaconBplPipe = bitplaneDmaEnabled;
-
-            // Stessa forma per gli SPRITE, ma la ragione è un'altra: lì è un latch
-            // ricampionato, qui è la DECISIONE che sta due CCK prima del trasferimento.
+            // Lo SPRITE ha un latch a due stadi: la DECISIONE sta due CCK prima del
+            // trasferimento.
             spriteDmaSeq = spriteDmaPipe;
             spriteDmaPipe = spriteDmaEnabled;
         }
@@ -3276,9 +3302,44 @@ public abstract class AbstractAgnus {
     // DMA handlers
     // =========================================================================
 
-    private void handleRefreshDMA() {
-        refptr = (refptr + 1) & 0x1FF;
+    /**
+     * One DRAM refresh cycle. If the bitplane request fetched in this CCK lands on the same
+     * slot, the two share one bus cycle: the register addresses are ANDed and the refresh
+     * address drives the access, so the plane's pointer is loaded from the refresh counter.
+     * On the line strobe the ANDed address is no register at all and the pointer only steps
+     * by one word; on a plain refresh it is a BPLxDAT, which is fetched from the refresh
+     * address without stepping.
+     */
+    private void handleRefreshDMA(int cck, int bplReq) {
+        final int addr = refptr;
+        refptr = (refptr + refreshStep()) & refreshMask();
+        if (bplReq < 0 || denise == null) {
+            return;
+        }
+        final int plane = bplReq & BPLREQ_PLANE;
+        if (cck == SLOT_REFRESH_4) {
+            bplPtrInternal[plane] = addr + 2;
+        } else {
+            int data = chipRAM.readWord(dmaChipAddr(addr));
+            openBusLatch = data & 0xFFFF;
+            denise.writeRegisterAtPixel(0x110 + plane * 2, data, cck * 4 - 70);
+            bplPtrInternal[plane] = addr;
+        }
     }
+
+    /** Refresh address step per refresh cycle: one RAS row. */
+    protected int refreshStep() { return 0x002; }
+
+    /** Refresh address width. */
+    protected int refreshMask() { return 0x7FFFF; }
+
+    /** REFPTR as loaded by a register write. */
+    protected int refptrFromRegister(int v) {
+        return (v & 0xFFFE) | ((v & 0x7) << 16);
+    }
+
+    /** Installed Chip RAM in bytes. */
+    protected int chipRamBytes() { return chipRAM.size(); }
 
     /**
      * Gestisce un fetch DMA del disco.
@@ -3444,7 +3505,7 @@ public abstract class AbstractAgnus {
         return (addr & chipMask) & ~1;
     }
 
-    private void handleBitplaneDMA(int cck, int bplIdx, boolean hires) {
+    private void handleBitplaneDMA(int cck, int bplIdx, boolean hires, boolean domod) {
         if (denise == null) return;
         if (bplIdx < 0 || bplIdx >= 6) return;
 
@@ -3471,8 +3532,9 @@ public abstract class AbstractAgnus {
         // passato (generate_bpl). Col vecchio confronto posizionale
         // `cck >= effStop - (hires?4:8)` una riga che spegne e riaccende BPLEN nel mezzo
         // applicava il modulo dove capitava, perche' `effStop` non sa niente di quel che
-        // e' successo dentro la riga.
-        if (ddfStopping == 2 && (!hires || (bprunCycle & 7) >= 4)) {
+        // e' successo dentro la riga. Lo stato è quello della DECISIONE dello slot, che
+        // precede il fetch di due CCK: arriva qui con la richiesta (domod).
+        if (domod) {
             // ⛔ Il modulo è quello CAMPIONATO in cima al CCK (`bitplane_rga_ptmod`), non
             // il registro vivo: vedi bpl1modFetch. Leggendolo vivo, una scrittura del
             // Copper caduta nel CCK precedente entrava un CCK troppo presto.
@@ -4591,8 +4653,6 @@ public abstract class AbstractAgnus {
                 // determina sia il campo HP sia (con wrap a fine riga) il vpos restituito.
                 return ((beamPosVAhead(v, h) & 0xFF) << 8) | (beamPosHAhead(h) & 0xFF);
             }
-            case 0x028: // REFPTR (read-back)
-                return refptr;
             case 0x108: return bpl1mod & 0xFFFF;
             case 0x10A: return bpl2mod & 0xFFFF;
             case 0x0E0: case 0x0E4: case 0x0E8: case 0x0EC: case 0x0F0: case 0x0F4: {
@@ -4788,7 +4848,7 @@ public abstract class AbstractAgnus {
                 break;
 
             case 0x028: // REFPTR
-                refptr = value & refptrMask();
+                refptr = refptrFromRegister(value);
                 break;
 
             // Puntatori bitplane (BPLxPTH/BPLxPTL)
@@ -4930,9 +4990,10 @@ public abstract class AbstractAgnus {
         cpuRouteCacheValid = false;
         cpuCurrentRoute = null;
         bprun = 0; bprunCycle = 0; ddfStopping = 0; fetchUnitHires = false;
+        bplReqNext = -1; bplReqLater = -1;
         ddfEnableOn = false; ddfLimitIn = false; ddfLimitOut = false;
         hwiOld = false; dmaconBpl2 = false;
-        dmaconBplSeq = false; dmaconBplPipe = false;
+        dmaconBplSeq = false;
         spriteDmaSeq = false; spriteDmaPipe = false; spriteDmaOnDecisionCck = -1;
         diwStrt = 0; diwStop = 0; ddfStrt = 0; ddfStop = 0;
         diwVStart = 0; diwVStop = 0; ddfCckStart = 0; ddfCckStop = 0;
@@ -5322,8 +5383,6 @@ public abstract class AbstractAgnus {
         maxVpos = ntsc ? 262 : 312;
     }
 
-    /** Maschera del contatore REFPTR ($028). OCS: 9 bit ({@code 0x01FF}). */
-    protected int refptrMask() { return 0x01FF; }
 
     /**
      * Gestisce la scrittura di DIWHIGH ($1E4), registro ECS-only che estende i bit
@@ -5459,15 +5518,23 @@ public abstract class AbstractAgnus {
     private static final int FETCHUNIT_MASK = 7;
 
     /**
-     * ⚠️ <b>Sfasamento fra la nostra griglia di CCK e l'{@code hpos} dell'oracolo</b>, da
-     * sommare ai valori DDF prima di confrontarli. Non è una taratura libera: è
-     * l'ancora già misurata sul banco {@code BPLPTR} — «il nostro {@code hpos} per lo
-     * stesso evento è più basso di quello dell'oracolo, e il nostro <i>fetch</i>
-     * corrisponde al suo <i>write-back</i>, con la cattura un CCK prima».
-     * Il modello posizionale precedente lo assorbiva nella definizione della finestra
-     * ({@code relCck = cck - (ddfStrt & mask)}); il sequencer deve dichiararlo.
+     * Offset between our CCK and the chip's horizontal counter, added to the DDF values
+     * before comparing them. It is the offset of the register writes: the sequencer
+     * decides on the same grid the writes land on, and the fetch follows the decision two
+     * CCKs later (see {@link #bplReqNext}), so one offset serves both.
      */
-    private static final int SEQ_PHASE = -2;
+    private static final int SEQ_PHASE = -4;
+
+    /**
+     * Whether the bitplane sequencer steps at this CCK. It is clocked by the parity of the
+     * horizontal counter, so on a line of odd length the CCK that wraps the counter keeps
+     * the parity and the sequence holds for one CCK. The counter wraps {@code -SEQ_PHASE}
+     * CCKs before our line boundary.
+     */
+    private boolean sequencerClock(int cck) {
+        final int lineCck = maxHpos >> 1;
+        return (lineCck & 1) == 0 || cck != lineCck - 1 + SEQ_PHASE;
+    }
 
     /** Quale piano tocca al CCK di fase {@code bprunCycle}; -1 se lo slot è libero. */
     private static int bplSequence(int bprunCycle, boolean hires) {
@@ -5509,13 +5576,10 @@ public abstract class AbstractAgnus {
      * value to match»</i>, con una riga mancante nell'immagine), e cade fuori dai due operatori
      * invece che da una regola a parte. ⇒ { ddftimcop9} è <b>bit-exact</b>.
      *
-     * <p>⚠️ <b>Il { + 1} dell'oracolo diventa { 1 - SEQ_PHASE} da noi, e non è una
-     * taratura</b>: il §12 ha misurato che l'etichetta delle due griglie differisce di <b>+4 per
-     * una scrittura</b> e di <b>+2 per un fetch</b>, e qui l'istante della scrittura va confrontato
-     * sulla griglia del <b>match</b>. La conversione fra le due è { -SEQ_PHASE} = 2, la stessa
-     * costante che il sequencer usa per posizionare DDFSTRT e DDFSTOP. ⇒ { 1 + 2 = 3}.
+     * <p>The write and the match are on the same grid (see {@link #SEQ_PHASE}), so the
+     * delay is the one CCK of the register itself.
      */
-    private static final int DDF_WRITE_DELAY = 1 - SEQ_PHASE;
+    private static final int DDF_WRITE_DELAY = 1;
     private int ddfStrtVal = 1, ddfStrtValOld = 1, ddfStopVal, ddfStopValOld;
     private long ddfStrtChangeCck = Long.MIN_VALUE, ddfStopChangeCck = Long.MIN_VALUE;
 
@@ -5561,42 +5625,13 @@ public abstract class AbstractAgnus {
     private boolean dmaconBpl2;
 
     /**
-     * BPLEN <b>come lo vede il sequencer</b>, e non è il valore vivo del registro.
-     *
-     * <p>⛔ Nell'oracolo {@code dmacon_bpl} è un <b>latch ricampionato una volta per CCK</b>,
-     * e il punto in cui lo fa è quel che conta: in fondo a {@code do_cck()}, <b>dopo</b>
-     * {@code decide_bpl()}, dopo {@code inc_cck()} e <b>prima</b> di
-     * {@code handle_pipelined_custom_write()} — cioè prima che la scrittura del CCK corrente
-     * arrivi al registro:
-     * <pre>
-     *   generate_dma_requests();  // generate_bpl: usa il latch
-     *   decide_bpl(agnus_hpos);   // usa il latch
-     *   ...
-     *   inc_cck();
-     *   dmacon_bpl = (dmacon &amp; DMA_BITPLANE) &amp;&amp; (dmacon &amp; 0x200);   // ricampiona
-     *   handle_pipelined_custom_write(false);                        // e SOLO ORA scrive
-     * </pre>
-     * ⇒ una scrittura a DMACON al CCK X entra in {@code dmacon} dopo il ricampionamento di
-     * X, viene presa da quello di X+1 e il sequencer la vede a <b>X+2</b>. Due stadi.
-     *
-     * <p>⚠️ Misurato, non dedotto: su {@code reenable2} riga 64 il Copper spegne BPLEN a
-     * hpos $51 e l'oracolo reagisce a h=87 — sei CCK dopo — mentre noi, leggendo il registro
-     * vivo, reagivamo a quattro. Quei due CCK spostavano {@code bprun_cycle} di due, e con
-     * esso il blocco su cui cade {@code ddf_stopping}: il sequencer terminava nel punto
-     * sbagliato e {@code reenable2} passava dal 1,91% al 26,03%.
-     *
-     * <p>⚠️ È la stessa forma che l'oracolo usa già, dichiarata, per il ritardo in più di
-     * OCS ({@code dmacon_bpl2}, <i>«OCS BPLENA is delayed by extra 1 CCK»</i>): lì gli stadi
-     * diventano tre.
-     *
-     * <p>⛔ <b>I due stadi NON erano il surrogato di un caricamento PT/MOD mancante</b>, ed
-     * è stato rimisurato il 2026-09-03, subito dopo aver reso esplicito il campionamento del
-     * modulo ({@code bpl1modFetch}): tornando a <b>uno</b> stadio il banco peggiora —
-     * {@code DmaConBitplaneTest} 1/7 → 0/8 e {@code OldDmaConTest} 1/19 → 0/20, con
-     * {@code BplModTest} fermo a 6/0. Questo latch è di BPLEN, quello è di PT/MOD: due
-     * meccanismi diversi che vivono nello stesso CCK. Non ridurli.
+     * BPLEN as the sequencer sees it: sampled once per CCK, before the decision, so it holds
+     * the value left by the register writes of the previous CCK. A Copper write to DMACON is
+     * therefore seen by the decision of the next CCK, and both the plane request and the
+     * start or stop of the sequencer follow it by one CCK. On OCS BPLEN reaches the sequencer
+     * one CCK later still ({@link #dmaconBpl2}).
      */
-    private boolean dmaconBplSeq, dmaconBplPipe;
+    private boolean dmaconBplSeq;
 
     /**
      * Il bit di DMA sprite <b>come stava due CCK prima</b> dello slot che lo usa.
@@ -5644,7 +5679,7 @@ public abstract class AbstractAgnus {
      * bitplane è in corsa. Va chiamata <b>dopo</b> aver deciso lo slot del CCK corrente —
      * in {@code do_cck()} l'ordine è {@code generate_dma_requests()} (che contiene
      * {@code generate_bpl}) e <b>poi</b> {@code decide_bpl(agnus_hpos)} — quindi una
-     * macchina armata al CCK X preleva la prima word al CCK X+1.
+     * macchina armata al CCK X decide il primo slot al CCK X+1 (e lo preleva a X+3).
      *
      * <p>⛔ <b>Il cuore è che BPRUN parte sul FRONTE di salita di una condizione
      * composta</b>, non sul suo livello:

@@ -38,10 +38,9 @@ import io.github.zolfrik.amija.memory.ROM;
  *       la programmazione fine del beam — bit 5 PAL/NTSC, VARBEAMEN — è rinviata alla Fase 7).</li>
  *   <li><b>A5 Sprite V9</b>: gestito in {@code AbstractAgnus.setSPRxCTL} (gate {@code isECS()}).</li>
  *   <li><b>A6 DIWHIGH</b>: gestito in {@code AbstractAgnus.writeDIWHIGH} (gate {@code isECS()}).</li>
- *   <li><b>A8 REFPTR</b>: {@link #refptrMask()} estende il campo (l'ECS espone più bit del
- *       puntatore di refresh — rif. WinUAE {@code custom.cpp:2806-2824}). È solo questione di
- *       fedeltà in lettura del registro $028: nel nostro modello REFPTR non ha effetto
- *       funzionale (gli slot di refresh sono fissi a CCK 0/2/4/6).</li>
+ *   <li><b>A8 REFPTR</b>: the refresh address steps by one RAS row per refresh cycle and
+ *       spans 1 MB ({@link #refreshStep()}, {@link #refreshMask()}); a bitplane request that
+ *       lands on a refresh slot takes its pointer from it.</li>
  * </ul>
  * <b>A7 maxvpos programmabile</b> (lunghezza frame da VTOTAL/BEAMCON0) NON è implementato:
  * richiede l'infrastruttura di timing programmabile (VTOTAL + interazione con MasterClock)
@@ -100,9 +99,21 @@ public final class EcsAgnus extends AbstractAgnus {
     private static final int BPLCON0_SHRES      = 0x0080;
 
     @Override
-    protected int refptrMask() {
-        // A8 — su ECS il puntatore di refresh ha più bit dell'OCS (9 bit, 0x01FF).
-        // Valore senza effetto funzionale (refresh a slot fissi): solo readback di $028.
-        return 0x7FFF;
+    protected int refreshStep() {
+        return 0x200;
+    }
+
+    @Override
+    protected int refreshMask() {
+        return 0xFFFFF;
+    }
+
+    @Override
+    protected int refptrFromRegister(int v) {
+        int p = (v & 0xFFFE) | ((v & 0xF) << 16);
+        if (chipRamBytes() > 0x100000 && (v & 0x10) != 0) {
+            p |= 0x100000;
+        }
+        return p;
     }
 }
