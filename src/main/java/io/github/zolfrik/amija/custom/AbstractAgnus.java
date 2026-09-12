@@ -450,6 +450,39 @@ public abstract class AbstractAgnus {
     }
 
     /**
+     * Lo stesso di {@link #bplPointerWriteIsLost(int)} per SPRxPT, e non è un'analogia: è la
+     * <b>stessa</b> funzione dell'oracolo. {@code bitplane_rga_ptmod()} cattura il puntatore
+     * di ogni slot che uscirà dalla pipe al CCK dopo, e il suo {@code switch} ha tre rami —
+     * {@code CYCLE_BITPLANE}, {@code CYCLE_SPRITE} e i due insieme — che chiamano tutti
+     * {@code write_rga_update()}. Anche il commento che la motiva li nomina entrambi:
+     * <i>«Because BPL and SPR DMA is decided 1 CCK earlier than others, PT and MOD need to be
+     * loaded in following cycle»</i>.
+     *
+     * <p>⇒ Una scrittura del Copper che cade nel CCK della cattura arriva dopo di essa, e il
+     * write-back del CCK seguente la cancella. Vale per il Copper e non per la CPU, per
+     * l'ordine dentro {@code do_cck()} già misurato sui bitplane.
+     *
+     * <p>Lo misura lo sweep {@code Denise/Sprites/sprdrop1÷4}: quattro volte lo stesso
+     * programma con la WAIT del Copper a due CCK di distanza l'una dall'altra, attorno al
+     * primo slot DMA dello sprite.
+     */
+    private boolean sprPointerWriteIsLost(int sidx) {
+        if (!__inCopperWrite) {
+            return false;
+        }
+        final int next = (hpos >> 1) + 1;
+        if (next >= DMA_SLOT_TABLE.length || DMA_SLOT_TABLE[next] != DMASLOT_SPRITE) {
+            return false;
+        }
+        final int idx = (next - SLOT_SPRITE_0) / 4;
+        if (idx != sidx || idx < 0 || idx > 7) {
+            return false;
+        }
+        final int sub = ((next - SLOT_SPRITE_0) % 4) / 2;
+        return sprSlotFetch[idx][sub];
+    }
+
+    /**
      * ⚠️ <b>Percorso morto</b>: {@link #recordRegisterChange} non ha chiamanti, quindi
      * nessuna scrittura passa più di qui. Resta perché la coda dei cambi ritardati serve
      * ad altro; la regola dei puntatori di bitplane vive in
@@ -4904,6 +4937,7 @@ public abstract class AbstractAgnus {
             case 0x120: case 0x124: case 0x128: case 0x12C:
             case 0x130: case 0x134: case 0x138: case 0x13C: {
                 int sidx = (regAddr - 0x120) / 4;
+                if (sprPointerWriteIsLost(sidx)) break;
                 sprPt[sidx] = (sprPt[sidx] & 0x0000FFFF) | ((value << 16) & dmaPtrHiMask);
                 sprPtrInternal[sidx] = (sprPtrInternal[sidx] & 0x0000FFFF) | (sprPt[sidx] & dmaPtrHiMask);
                 break;
@@ -4911,6 +4945,7 @@ public abstract class AbstractAgnus {
             case 0x122: case 0x126: case 0x12A: case 0x12E:
             case 0x132: case 0x136: case 0x13A: case 0x13E: {
                 int sidx = (regAddr - 0x122) / 4;
+                if (sprPointerWriteIsLost(sidx)) break;
                 sprPt[sidx] = (sprPt[sidx] & dmaPtrHiMask) | (value & 0xFFFE);
                 sprPtrInternal[sidx] = sprPt[sidx];
                 break;
