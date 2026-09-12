@@ -691,6 +691,14 @@ public abstract class AbstractDenise {
                 break;
             case 0x104: // BPLCON2 (priorità)
                 conChanges.insert(pixel, address, value);
+                // ⛔ Sotto HAM+DPF la priorità NON passa da conChanges: il decoder HAM
+                // sceglie il playfield da sé, e leggeva PF2PRI dallo snapshot di inizio
+                // riga. Una scrittura dentro la riga arrivava quindi una riga tardi.
+                // Stessa forma di HAM/EHB qui sopra: si registra solo quando il bit
+                // cambia davvero, così dove la priorità è ferma non si spezza niente.
+                if (((bplcon2 ^ value) & 0x0040) != 0) {
+                    colChanges.insert(pixel, address, value);
+                }
                 bplcon2 = value;
                 break;
             case 0x106: bplcon3 = value; break;  // ECS
@@ -1829,9 +1837,11 @@ public abstract class AbstractDenise {
         // priorità: `decode_ham_pixel()` guarda `bpldualpf` (bit 10 di BPLCON0) anche quando
         // il modo è HAM. Vedi dualPlayfieldIndex().
         boolean hamDpf  = (initialBplcon0 & 0x0400) != 0;
-        // ⚠️ PF2PRI dallo snapshot di inizio riga, come lo `zpf` di colorizeHAM: BPLCON2
-        // cambia dentro la riga solo via conChanges, che qui non arrivano. Nessun test del
-        // banco lo muove sotto HAM+DPF; il giorno che servisse, va portato in colChanges.
+        // PF2PRI parte dallo snapshot di inizio riga e poi segue le scritture della riga:
+        // le porta colChanges, dove BPLCON2 entra quando il bit cambia. Lo pretendono
+        // `BPLCON2/dualpf3` e `dualpf7`, i due test DPF+HAM in cui il Copper abbassa
+        // PF2PRI a metà schermata: senza, la banda a PF1 davanti cominciava e finiva una
+        // riga dopo.
         boolean hamDpfPri = (initialBplcon2 & 0x0040) != 0;
         int     colIdx  = 0;
 
@@ -1846,6 +1856,7 @@ public abstract class AbstractDenise {
                 ehbMode = isEHB(c.value);
                 hamDpf  = (c.value & 0x0400) != 0;
             }
+            else if (c.reg == 0x104)  hamDpfPri = (c.value & 0x0040) != 0;
             else if (c.reg >= 0x180)  palette[(c.reg - 0x180) / 2] = c.value & 0xFFF;
         }
         if (hamMode) colorizeHAM(vpos, pixel, HPIXELS, hold, hamDpf, hamDpfPri);
