@@ -3599,13 +3599,15 @@ public abstract class AbstractAgnus {
         boolean drawOdd = (cck & mask) == ((subOdd >> 2) & mask);
         boolean drawEven = (cck & mask) == ((subEven >> 2) & mask);
         if (drawOdd || drawEven) {
-            // ⚠️ In SPF la parte FINE dei piani pari viene da PF1H (i piani pari scrollano
-            // coi dispari), mentre quella GROSSA viene da PF2H come per il DPF. È
-            // l'asimmetria che il codice aveva già, e la si conserva di proposito: non è la
-            // materia di questo passo, e con PF1H == PF2H — il caso di tutti i giochi e di
-            // tutto `BPLCON1/simple` — non è osservabile. ⏸ Da risolvere quando ci sarà un
-            // riferimento che la distingua.
-            int fineEven = ((bplcon0Val & 0x0400) != 0 ? subEven : subOdd) & 3;
+            // ⛔ Lo scroll dei piani PARI viene da PF2H SEMPRE, in entrambe le parti e in
+            // entrambi i modi. Qui la parte fine veniva da PF1H in single playfield — «i
+            // piani pari scrollano coi dispari» — e non è vero: `update_bplcon1()` calcola
+            // `bplcon1_shift[1]` dal solo nibble alto, senza mai guardare il dual playfield.
+            // Con PF1H == PF2H l'asimmetria non si vedeva, ed è il caso di tutti i giochi;
+            // la distingue `Denise/Misc/ThirdParty/losso`, che tiene PF1H a 0 e spazza PF2H
+            // da 0 a 15. Lì perdevamo i due sub-pixel di ogni PF2H DISPARI, cioè un pixel
+            // lores sul gruppo pari e su una banda ogni due: 5590 px.
+            int fineEven = subEven & 3;
             denise.drawBitplanesAtPixel(cck * 4 - 70, drawOdd, drawEven,
                     subOdd & 3, fineEven);
         }
