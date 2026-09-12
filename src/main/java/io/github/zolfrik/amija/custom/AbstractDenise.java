@@ -399,6 +399,14 @@ public abstract class AbstractDenise {
      */
     private static final int SPRITE_ENABLE_OFFSET = 0;
 
+    /**
+     * The same gap for the PLAYFIELD, which comes back one colour clock after the sprite:
+     * the bitplane output resumes from the CCK that follows the BPL1DAT write, in raw
+     * pixels (4 per CCK). MEASURED and bracketed on both sides - 2 leaves a lores pixel
+     * of playfield that should not be there, 6 eats one that should.
+     */
+    private static final int BPL_ENABLE_OFFSET = 4;
+
     /** Pixel totali resi per sprite per frame corrente (reset a ogni vsync). */
     private final long[] spritePixelsThisFrame = new long[8];
     /** Pixel totali resi per sprite nel frame completato più recente. */
@@ -1371,6 +1379,16 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     private void translate() {
+        // BPL1DAT gates the playfield output, not just the sprites: before the first
+        // BPL1DAT of the line Denise emits no bitplane pixel at all, so the shift
+        // registers contribute nothing even when they still hold a word from an earlier
+        // line. Zeroing dBuffer here covers the three consumers that read it - the
+        // playfield index, the playfield collisions and the HAM decoder - with one rule.
+        int bplGate = bpl1datPixelThisLine == Integer.MAX_VALUE
+                ? dBuffer.length
+                : Math.min(dBuffer.length, bpl1datPixelThisLine + BPL_ENABLE_OFFSET);
+        if (bplGate > 0) Arrays.fill(dBuffer, 0, bplGate, (byte) 0);
+
         System.arraycopy(dBuffer, 0, mBuffer, 0, mBuffer.length);
 
         int     pixel          = 0;
