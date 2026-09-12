@@ -710,11 +710,10 @@ public abstract class AbstractAgnus {
             // invece che della durata del freeze, ed è la causa dei 126 CCK di fase che
             // restavano dopo il §13.8 (docs/vamigats-paula-audio-plan.md §13.10.4).
             //
-            // Il resto di `setsyncstoppos()` — hpos inchiodato *durante* il freeze, e
-            // quindi nessuno slot DMA fisso per quelle ~21 righe — non è modellato: da
-            // noi il DMA di refresh/disco/audio continua. Non è osservabile qui (il
-            // rilevamento genlock della graphics.library gira senza disco né audio), e
-            // costerebbe mandare ogni ciclo nello slot 0.
+            // L'altra metà di `setsyncstoppos()` — hpos inchiodato *durante* il freeze,
+            // quindi nessuno slot DMA per tutta la sua durata — vive nell'arbitraggio del
+            // `risingEdge`, sul flag `beamFrozen`: mentre il freeze è in corso il bus non
+            // va a nessun canale di Agnus e resta di CPU e Blitter.
             // ⚠️ `maxHpos - 2`, non 0: il nostro `vpos++` vive nel WRAP della riga mentre
             // quello di WinUAE (`custom_trigger_start`) sta un CCK DENTRO — la stessa
             // convenzione di INITIAL_HPOS (piano §5.2). Tradotto in questa scala,
@@ -2245,6 +2244,16 @@ public abstract class AbstractAgnus {
         if (cckEdge) {
             BusOwner owner = BusOwner.NONE;
 
+            // ⛔ Sotto freeze ERSY Agnus non alloca NESSUN ciclo DMA. Il contatore
+            // orizzontale è fermo a inizio riga per tutta la durata del freeze, quindi
+            // nessuna posizione fa match: niente DDFSTRT, niente slot fisso, nessuna
+            // parità su cui il Copper possa chiedere il bus. Il bus resta della CPU e
+            // del Blitter, che di posizione non hanno bisogno.
+            // Lo misura `Agnus/Registers/VPOS/ersy2`: con le righe che scorrevano, i
+            // ~125 CCK di freeze prelevavano 16 word per piano, e da lì in poi il quadro
+            // usciva sfalsato di 32 byte — il testo dei valori spostato di 8 caratteri.
+            final boolean beamFrozen = syncsStopped;
+
             // `bitplane_rga_ptmod()`: il caricamento del modulo è la PRIMA cosa del CCK,
             // prima di qualunque slot. Vedi il campo bpl1modFetch per il perché di due
             // stadi e dell'iniezione della scrittura CPU.
@@ -2278,7 +2287,7 @@ public abstract class AbstractAgnus {
             //    slot letto dalla tabella sequencer precomputata DMA_SLOT_TABLE.
             //    Le condizioni dinamiche (DMACON enable, richiesta canale) restano
             //    invariate, quindi il comportamento è identico al vecchio if-chain.
-            switch (DMA_SLOT_TABLE[cck]) {
+            switch (beamFrozen ? DMASLOT_NONE : DMA_SLOT_TABLE[cck]) {
                 case DMASLOT_REFRESH:
                     handleRefreshDMA(cck, bplReq);
                     owner = BusOwner.REFRESH;
@@ -2326,14 +2335,14 @@ public abstract class AbstractAgnus {
             // decides the one for two CCKs from now. Everything the sequencer reacts to (DIW,
             // BPLEN, DDFSTRT/DDFSTOP, the hard limits) is therefore compared on the same grid
             // as the register writes, and only the fetch itself lags.
-            if (bplReq >= 0 && !busTakenByCustom) {
+            if (bplReq >= 0 && !busTakenByCustom && !beamFrozen) {
                 final int plane = bplReq & BPLREQ_PLANE;
                 handleBitplaneDMA(cck, plane, (bplReq & BPLREQ_HIRES) != 0,
                         (bplReq & BPLREQ_MOD) != 0);
                 owner = OWNER_VALUES[BusOwner.BPL1.ordinal() + plane];
                 busTakenByCustom = true;
             }
-            if (bprun > 0) {
+            if (bprun > 0 && !beamFrozen) {
                 // BPU and resolution are sampled once per line, when the fetch window opens,
                 // and used for the whole line. The sample is taken before the resolution is
                 // read below, so the first CCK of the window already fetches with the new
@@ -2420,7 +2429,7 @@ public abstract class AbstractAgnus {
             // rubano): di là `generate_sprites()` gira comunque, è solo il trasferimento a
             // essere gated da `dmaen()`. Vedi sprSlotFetch.
             final int sprDecideCck = cck + SPRITE_DECISION_LEAD_CCK;
-            if (sprDecideCck < DMA_SLOT_TABLE.length
+            if (!beamFrozen && sprDecideCck < DMA_SLOT_TABLE.length
                     && DMA_SLOT_TABLE[sprDecideCck] == DMASLOT_SPRITE) {
                 int latchIdx = (sprDecideCck - SLOT_SPRITE_0) / 4;
                 int latchSub = ((sprDecideCck - SLOT_SPRITE_0) % 4) / 2;
@@ -2452,7 +2461,7 @@ public abstract class AbstractAgnus {
                 }
             }
 
-            if (!busTakenByCustom && spriteDmaSeq
+            if (!busTakenByCustom && !beamFrozen && spriteDmaSeq
                     && vpos >= SPRITE_RESET_LINE && vpos < maxVpos
                     && DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE
                     // ⛔ ...e lo slot DECISO nel CCK subito dopo l'accensione del DMA
@@ -2495,7 +2504,7 @@ public abstract class AbstractAgnus {
             // A Copper cycle is allocated one CCK before it acts, and COPEN is checked at
             // the allocation: a cycle allocated while COPEN was on still acts after COPEN
             // goes off.
-            copperTickEnabled = copperAllocEnabled;
+            copperTickEnabled = copperAllocEnabled && !beamFrozen;
             copperAllocEnabled = isCopperEnabled();
             if (copperTickEnabled) {
                 // busFree = vAmiga busIsFree<COPPER>(): nessun DMA a priorità
@@ -2555,7 +2564,7 @@ public abstract class AbstractAgnus {
             // `generate_dma_requests()` (che contiene `generate_bpl`) e POI
             // `decide_bpl(agnus_hpos)`. Una macchina armata al CCK X decide il primo slot
             // al CCK X+1, e la word di quello slot arriva due CCK dopo (bplReqNext).
-            decideBpl(cck);
+            if (!beamFrozen) decideBpl(cck);
 
             // Lo SPRITE ha un latch a due stadi: la DECISIONE sta due CCK prima del
             // trasferimento.
