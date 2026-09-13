@@ -27,7 +27,7 @@ import java.util.Arrays;
  * Denise (8362 OCS / 8373 ECS) — Display Encoder dell'Amiga 500.
  *
  * Architettura line-buffered allineata a vAmiga:
- *   fillShiftRegisters → translate → drawSprites → checkCollisions → colorize
+ *   fillShiftRegisters → scanSprites → translate → blitSprites → checkCollisions → colorize
  *
  * Correzioni rispetto alla versione precedente:
  *  - zPF: mappatura priorità corretta per HW Amiga
@@ -92,7 +92,7 @@ import java.util.Arrays;
  *
  *  FIX 8 — checkP2PCollisions: stesse maschere errate di FIX 7.
  *
- *  FIX 9 — hsyncHandler VBlank: drawSprites() veniva chiamato durante il
+ *  FIX 9 — hsyncHandler VBlank: il disegno sprite veniva chiamato durante il
  *    VBlank, lasciando i sprChanges[i] sporchi per la scanline successiva.
  *    In VBlank i recorder vengono solo puliti, non consumati.
  *
@@ -266,6 +266,55 @@ public abstract class AbstractDenise {
     // PERF: maschera degli sprite che hanno disegnato pixel sulla scanline corrente
     // (azzerata in hsyncHandler). Usata per saltare i loop di collisione inutili.
     private int spritesOnLineMask;
+
+    /**
+     * I pixel che gli sprite emettono sulla riga, registrati nell'ordine in cui nascono.
+     *
+     * <p>Lo scorrimento degli shift register sprite ({@link #scanSprites}) gira <b>prima</b>
+     * di {@link #translate()}, perché la fine della finestra di display di uno sprite è uno
+     * degli istanti in cui Denise ri-seleziona la propria configurazione di resa (vedi
+     * {@link #renderPlanes}). La composizione su {@code mBuffer}/{@code zBuffer} invece deve
+     * restare <b>dopo</b>, perché il confronto di profondità legge lo z del playfield: i
+     * pixel emessi si accumulano qui e {@link #blitSprites()} li riversa a valle.
+     *
+     * <p>Un'entrata per chiamata: {@code sprEmitPos} è il pixel grezzo, {@code sprEmitValZ}
+     * impacchetta l'indice di colore (8 bit bassi) e la profondità (dal bit 8). La coppia di
+     * sub-pixel che ogni emissione copre è ricostruita dal blit, come faceva il disegno.
+     */
+    private int[] sprEmitPos  = new int[1024];
+    private int[] sprEmitValZ = new int[1024];
+    private int   sprEmitCount;
+
+    /**
+     * Le transizioni di stato degli sprite sulla riga, che {@link #translate()} consuma per
+     * sapere <b>quando</b> Denise ri-sceglie la configurazione di resa (vedi
+     * {@link #renderPlanes}). Una entrata per transizione: il pixel grezzo e, impacchettati,
+     * l'indice dello sprite (bit 0-2), il verso (bit 3) e quale dei due stati cambia
+     * (bit 4: 0 = <i>armato</i>, cioè SPRxDATA/SPRxCTL, 1 = <i>in disegno</i>, cioè lo shift
+     * register che si carica o si svuota).
+     *
+     * <p>Le transizioni nascono coppia per coppia, quindi fuori ordine; {@link #scanSprites()}
+     * le riordina per pixel prima di lasciarle a {@link #translate()}.
+     */
+    private int[] sprStateEvtPos = new int[64];
+    private int[] sprStateEvtKey = new int[64];
+    private int   sprStateEvtCount;
+    /** Sprite che stanno disegnando all'inizio della riga (shift register non vuoto). */
+    private int   armedsLineStart;
+
+    private static final int SPR_EVT_UP     = 0x08;
+    private static final int SPR_EVT_ARMEDS = 0x10;
+
+    private void recordSprStateEvt(int pos, int key) {
+        if (pos >= HPIXELS) return;
+        if (sprStateEvtCount == sprStateEvtPos.length) {
+            sprStateEvtPos = java.util.Arrays.copyOf(sprStateEvtPos, sprStateEvtCount * 2);
+            sprStateEvtKey = java.util.Arrays.copyOf(sprStateEvtKey, sprStateEvtCount * 2);
+        }
+        sprStateEvtPos[sprStateEvtCount] = pos;
+        sprStateEvtKey[sprStateEvtCount] = key;
+        sprStateEvtCount++;
+    }
 
     // Game port 1 (mouse) e port 2 (joystick) — opzionali
     private GamePort gamePort1 = null;
@@ -527,26 +576,61 @@ public abstract class AbstractDenise {
 
     private void updateBplcon0Derived() {
         bpu   = deniseBpu(bplcon0);
-        if (bpu > bpuMaxThisLine) {
-            bpuMaxThisLine = bpu;
-        }
         hires = (bplcon0 & 0x8000) != 0;
     }
 
     /**
-     * Il MASSIMO numero di piani visto in QUESTA riga.
+     * Il MASSIMO numero di piani, dall'ultimo decadimento a oggi.
      *
-     * <p>⛔ È {@code denise_max_planes} dell'oracolo, e non è un dettaglio: la routine di
-     * rendering si sceglie su di lui ({@code select_lts()}), e la regola è dichiarata nel
-     * sorgente — <i>«if plane count decreases mid-scanline, old data in higher plane count
-     * shifters must be still shifted out»</i>. Quindi <b>sale subito</b> e <b>non scende
-     * fino a fine riga</b>: {@code denise_draw_update()} lo riporta a
-     * {@code denise_planes} una volta per riga.
+     * <p>⛔ <b>Non sale quando BPLCON0 cambia: sale quando Denise ri-sceglie la propria
+     * configurazione di resa</b> ({@link #selectLts}). Le due cose coincidono quasi sempre —
+     * un cambio del numero di piani ri-seleziona sempre — ma non è la stessa regola, e la
+     * differenza si vede al confine di riga. La regola del <i>massimo</i> è dichiarata nel
+     * sorgente dell'oracolo: <i>«if plane count decreases mid-scanline, old data in higher
+     * plane count shifters must be still shifted out»</i>.
      *
-     * <p>È il valore che decide se le due funzioni non documentate della priorità ≥ 5 si
-     * applicano — vedi {@link #deniseSpecials}.
+     * <p>Decade all'<b>inizio</b> di ogni riga disegnata, riportandosi al conteggio vivo, e
+     * quel decadimento <b>non</b> ri-seleziona nulla in lores: è esattamente per questo che
+     * {@link #renderPlanes} può restare più alto per un pezzo della riga successiva.
      */
-    private int bpuMaxThisLine = 0;
+    private int deniseMaxPlanes = 0;
+
+    /**
+     * I piani con cui è stata scelta la <b>configurazione di resa</b> in carica, e il valore
+     * che decide se le due funzioni non documentate della priorità ≥ 5 si applicano — vedi
+     * {@link #deniseSpecials}.
+     *
+     * <p>⛔ <b>Sopravvive al confine di riga.</b> È la fotografia di {@link #deniseMaxPlanes}
+     * presa all'ultima {@link #selectLts}, e nulla la rinfresca finché non arriva la
+     * successiva: il decadimento d'inizio riga abbassa il massimo ma non ri-sceglie, così una
+     * riga può cominciare con una configurazione a cinque piani mentre ne compone quattro.
+     *
+     * <p>⚠️ È la ragione per cui questo valore non si può leggere vivo dentro
+     * {@link #translate()}: il punto in cui torna al conteggio reale non è una posizione
+     * dell'hardware ma il primo istante di ri-selezione, e in una riga con sprite quell'istante
+     * è la <b>fine della finestra di display</b> dell'ultimo sprite che stava disegnando.
+     */
+    private int renderPlanes = 0;
+
+    /**
+     * {@code true} se la configurazione di resa in carica è la variante <b>con sprite</b>:
+     * la sceglie {@link #selectLts} guardando se in quell'istante c'era almeno uno sprite
+     * armato o in disegno, ed è lei a decidere se un disarmo vale una ri-selezione.
+     */
+    private boolean spriteLtsSelected = false;
+
+    /**
+     * Ri-selezione della configurazione di resa di Denise.
+     *
+     * @param planesNow  i piani <b>vivi</b> nell'istante della ri-selezione
+     * @param armedCnt   sprite armati (SPRxDATA scritta, SPRxCTL non ancora)
+     * @param armedsCnt  sprite che stanno <b>disegnando</b> in questo istante
+     */
+    private void selectLts(int planesNow, int armedCnt, int armedsCnt) {
+        if (planesNow > deniseMaxPlanes) deniseMaxPlanes = planesNow;
+        renderPlanes      = deniseMaxPlanes;
+        spriteLtsSelected = armedCnt > 0 || armedsCnt > 0;
+    }
 
     /**
      * Numero di piani che <b>Denise</b> compone, ricavato da BPLCON0.
@@ -606,6 +690,12 @@ public abstract class AbstractDenise {
         Arrays.fill(ssrb, 0);
         armed = 0;
         armedLineStart = 0;
+        armedsLineStart = 0;
+        sprEmitCount = 0;
+        sprStateEvtCount = 0;
+        deniseMaxPlanes = 0;
+        renderPlanes = 0;
+        spriteLtsSelected = false;
         Arrays.fill(sprposLineStart,  0);
         Arrays.fill(sprctlLineStart,  0);
         Arrays.fill(sprdataLineStart, 0);
@@ -1016,13 +1106,18 @@ public abstract class AbstractDenise {
             // cursore/sprite NON vi compare. Cfr. WinUAE pfield_draw_line
             // (border = plfleft<0 → sprite solo con BRDSPRT/ECS).
             lineIsVBorder = !bpl1datWrittenThisLine;
-            translate();
             // Bit 1 di `sprites_hidden`: prima della prima BPL1DAT della riga lo sprite
             // non esce. Vedi bpl1datPixelThisLine.
             spriteClipBegin = bpl1datPixelThisLine == Integer.MAX_VALUE
                     ? Integer.MAX_VALUE
                     : bpl1datPixelThisLine + SPRITE_ENABLE_OFFSET;
-            drawSprites();
+            // Gli shift register sprite scorrono PRIMA del playfield: la fine della loro
+            // finestra di display e' uno degli istanti in cui Denise ri-seleziona la
+            // configurazione di resa che translate() consuma (vedi renderPlanes). La
+            // composizione sui buffer resta a valle, perche' confronta lo z del playfield.
+            scanSprites();
+            translate();
+            blitSprites();
             checkCollisions();
             colorize(vpos);
         } else {
@@ -1030,7 +1125,7 @@ public abstract class AbstractDenise {
             // VBlank: riempie con il colore di sfondo per evitare la banda nera.
             fillVBlankLine(vpos);
 
-            // FIX 9: In VBlank drawSprites() NON viene chiamato. Chiamarla
+            // FIX 9: In VBlank scanSprites() NON viene chiamato. Chiamarla
             // lasciava i sprChanges[i] sporchi perché renderSpriteChunk li
             // consumava (recorder.clear()) ma le scritture su mBuffer/zBuffer
             // avrebbero potuto sporcare i buffer per la prima scanline visibile.
@@ -1042,9 +1137,9 @@ public abstract class AbstractDenise {
             conChanges.clear();
         }
 
-        // `denise_draw_update()` dell'oracolo: il massimo dei piani vale UNA riga, e si
-        // riporta al valore vivo DOPO che la riga e' stata composta.
-        bpuMaxThisLine = bpu;
+        // Il decadimento del massimo dei piani (`denise_draw_update()`) NON sta qui: sta
+        // all'inizio della riga DISEGNATA, dentro translate(), dopo la ri-selezione di
+        // inizio riga. Vedi deniseMaxPlanes.
 
         // Pulizia buffer per la prossima scanline.
         //
@@ -1056,7 +1151,7 @@ public abstract class AbstractDenise {
         //    translate (arraycopy dBuffer→mBuffer). Richiede clear completo.
         //  • zBuffer: translate() ASSEGNA (non OR) zBuffer[0..HPIXELS) ad ogni riga
         //    visibile prima di qualsiasi lettura; la coda [HPIXELS, length) NON è
-        //    toccata da translate ma è usata da drawSprites (|=) e dalle letture,
+        //    toccata da translate ma è usata da blitSprites (|=) e dalle letture,
         //    quindi va azzerata. → si azzera solo la coda (risparmio: HPIXELS int).
         //  • mBuffer: translate() lo sovrascrive INTERAMENTE via arraycopy all'inizio
         //    della pipeline, prima di ogni lettura. → clear ridondante, rimosso.
@@ -1091,7 +1186,7 @@ public abstract class AbstractDenise {
         // fine riga; nel ramo VBlank palette[] contiene già i valori live. In
         // entrambi i casi questo è lo stato ereditato dalla scanline successiva.
         System.arraycopy(palette, 0, paletteLineStart, 0, 32);
-        // Stesso ragionamento per i registri sprite: nel ramo visibile drawSprites() ha
+        // Stesso ragionamento per i registri sprite: nel ramo visibile scanSprites() ha
         // appena riportato i registri vivi allo stato di fine riga rigiocando le change,
         // nel ramo VBlank sono già vivi. In entrambi i casi è lo stato ereditato dalla
         // scanline successiva. Vedi armedLineStart.
@@ -1425,23 +1520,89 @@ public abstract class AbstractDenise {
         System.arraycopy(dBuffer, 0, mBuffer, 0, mBuffer.length);
 
         int     pixel          = 0;
-        boolean dual           = isDualPlayfield(initialBplcon0);
+        int     currentBplcon0 = initialBplcon0;
         int     currentBplcon2 = initialBplcon2;
         int     conIdx         = 0;
+        int     sprIdx         = 0;
+        int     armedCnt       = Integer.bitCount(armedLineStart);
+        int     armedsCnt      = Integer.bitCount(armedsLineStart);
 
-        while (conIdx < conChanges.size()) {
-            int trigger = conChanges.keys[conIdx];
-            if (dual) translateDPF(pixel, trigger, currentBplcon2);
-            else      translateSPF(pixel, trigger, currentBplcon2);
-            pixel = trigger;
-            RegChange c = conChanges.elements[conIdx++];
-            if      (c.reg == 0x100) dual           = isDualPlayfield(c.value);
-            else if (c.reg == 0x104) currentBplcon2 = c.value;
+        // Inizio riga, nell'ordine dell'oracolo: prima la ri-selezione che scatta quando
+        // nessuno sprite e' piu' in gioco, POI il decadimento del massimo dei piani. E' la
+        // ragione per cui il massimo puo' sopravvivere alla riga: il decadimento non
+        // ri-seleziona nulla in lores.
+        if (armedCnt == 0 && armedsCnt == 0 && spriteLtsSelected) {
+            selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
         }
-        if (dual) translateDPF(pixel, HPIXELS, currentBplcon2);
-        else      translateSPF(pixel, HPIXELS, currentBplcon2);
+        deniseMaxPlanes = deniseBpu(currentBplcon0);
+
+        while (pixel < HPIXELS) {
+            int nextCon = conIdx < conChanges.size()  ? conChanges.keys[conIdx]  : HPIXELS;
+            int nextSpr = sprIdx < sprStateEvtCount   ? sprStateEvtPos[sprIdx]   : HPIXELS;
+            int trigger = Math.min(nextCon, nextSpr);
+
+            if (trigger > pixel) {
+                if (isDualPlayfield(currentBplcon0)) {
+                    translateDPF(pixel, trigger, currentBplcon2);
+                } else {
+                    translateSPF(pixel, trigger, currentBplcon2, deniseBpu(currentBplcon0));
+                }
+                pixel = trigger;
+            }
+            if (trigger >= HPIXELS) break;
+
+            if (nextCon == trigger) {
+                RegChange c = conChanges.elements[conIdx++];
+                if (c.reg == 0x100) {
+                    int old = currentBplcon0;
+                    currentBplcon0 = c.value;
+                    // `lts_request` di expand_bplcon0: risoluzione, numero di piani o modo.
+                    // BPLCON2 non compare perche' su OCS l'unico suo effetto sul modo e'
+                    // KILLEHB, che e' un bit ECS.
+                    if (deniseBpu(old) != deniseBpu(currentBplcon0)
+                            || ((old ^ currentBplcon0) & 0x8000) != 0
+                            || bplMode(old) != bplMode(currentBplcon0)) {
+                        selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
+                    }
+                } else if (c.reg == 0x104) {
+                    currentBplcon2 = c.value;
+                }
+            } else {
+                int key = sprStateEvtKey[sprIdx++];
+                boolean up = (key & SPR_EVT_UP) != 0;
+                if ((key & SPR_EVT_ARMEDS) != 0) {
+                    armedsCnt += up ? 1 : -1;
+                    // Fine della finestra di display dell'ultimo sprite che disegnava.
+                    // ⛔ Qui NON conta quanti sprite sono armati: conta solo che nessuno
+                    // stia piu' disegnando. Non c'e' da controllare `spriteLtsSelected`:
+                    // uno sprite non puo' arrivare a disegnare senza che una ri-selezione
+                    // precedente l'abbia gia' visto armato.
+                    if (!up && armedsCnt == 0) {
+                        selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
+                    }
+                } else {
+                    armedCnt += up ? 1 : -1;
+                    if (up && armedCnt == 1 && !spriteLtsSelected) {
+                        selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
+                    } else if (!up && armedCnt == 0 && armedsCnt == 0 && spriteLtsSelected) {
+                        selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
+                    }
+                }
+            }
+        }
 
         conChanges.clear();
+    }
+
+    /**
+     * Il modo di Denise come catena di priorità — {@code setbplmode()} dell'oracolo. Serve
+     * solo a sapere se un cambio di BPLCON0 ri-seleziona la configurazione di resa.
+     */
+    private static int bplMode(int bplcon0) {
+        if (isHAM(bplcon0))           return 3;
+        if (isDualPlayfield(bplcon0)) return 2;
+        if (isEHB(bplcon0))           return 1;
+        return 0;
     }
 
     /**
@@ -1454,16 +1615,20 @@ public abstract class AbstractDenise {
      * BPLCON2 in cui PF1P!=PF2P (es. Ultima VI menu, BPLCON2=0x0008 → PF1P=0,
      * PF2P=1) il cursore sprite finiva DIETRO al playfield invece che davanti.
      */
-    private void translateSPF(int from, int to, int bplcon2) {
+    private void translateSPF(int from, int to, int bplcon2, int planesNow) {
         int plf2pri = (bplcon2 >> 3) & 7;
         int zpf2    = zPF(plf2pri);
         // La regola «SWIV» vive qui: playfield singolo, almeno 5 piani e PF2P >= 5. Il
         // gemello per il dual-playfield sta in translateDPF. Vedi deniseSpecials().
-        boolean specials = bpuMaxThisLine >= 5 && plf2pri >= 5;
+        //
+        // ⛔ Le due condizioni sono di natura diversa e vanno tenute separate: il conteggio
+        // VIVO dei piani e PF2P sono `update_specials()`, mentre i piani della
+        // configurazione di resa in carica (renderPlanes) sono il gate della routine.
+        boolean specials = planesNow >= 5 && plf2pri >= 5 && renderPlanes >= 5;
         for (int i = from; i < to && i < mBuffer.length; i++) {
             int s = mBuffer[i] & 0x3F;
             if (specials) {
-                s = deniseSpecials(s, bpuMaxThisLine, false, bplcon2 & 7, plf2pri);
+                s = deniseSpecials(s, renderPlanes, false, bplcon2 & 7, plf2pri);
                 mBuffer[i] = (byte) s;
             }
             zBuffer[i] = (s != 0) ? zpf2 : 0;
@@ -1491,7 +1656,7 @@ public abstract class AbstractDenise {
             // HAM+DPF e che sa già leggere i bit 6/7 del playfield trasparente; la
             // PRIORITÀ (e quindi lo z per gli sprite) resta decisa dai piani veri, perché
             // un playfield trasparente continua a coprire quello dietro.
-            int pv  = deniseSpecials(s, bpuMaxThisLine, true, plf1pri, plf2pri);
+            int pv  = deniseSpecials(s, renderPlanes, true, plf1pri, plf2pri);
             byte colour = (byte) dualPlayfieldIndex(pv, pf2pri);
 
             if (idx1 != 0) {
@@ -1535,10 +1700,10 @@ public abstract class AbstractDenise {
     }
 
     // =========================================================================
-    // Fase 4: drawSprites — scrive sprite su mBuffer/zBuffer
+    // Fase 4: scanSprites — fa scorrere gli shift register sprite ed emette i pixel
     // =========================================================================
 
-    private void drawSprites() {
+    private void scanSprites() {
         // Riparti dallo stato EREDITATO dalla riga precedente: i write di questa riga
         // hanno già aggiornato i registri vivi, ma il replay dei sprChanges deve
         // applicarli ai loro trigger. Ripristinando lo snapshot di inizio riga il
@@ -1551,7 +1716,34 @@ public abstract class AbstractDenise {
         System.arraycopy(sprdatbLineStart, 0, sprdatb, 0, 8);
         for (int i = 0; i < 8; i++) updateSprHCoords(i);
 
+        sprStateEvtCount = 0;
+        armedsLineStart  = 0;
+        for (int i = 0; i < 8; i++) {
+            if ((ssra[i] | ssrb[i]) != 0) armedsLineStart |= (1 << i);
+        }
+
         for (int pair = 0; pair < 4; pair++) drawSpritePair(pair);
+
+        sortSprStateEvents();
+    }
+
+    /**
+     * Riordina per pixel le transizioni raccolte coppia per coppia. Sono poche (al più una
+     * manciata per riga) e quasi sempre già ordinate: un inserimento stabile basta e non
+     * alloca.
+     */
+    private void sortSprStateEvents() {
+        for (int i = 1; i < sprStateEvtCount; i++) {
+            int pos = sprStateEvtPos[i], key = sprStateEvtKey[i];
+            int j = i - 1;
+            while (j >= 0 && sprStateEvtPos[j] > pos) {
+                sprStateEvtPos[j + 1] = sprStateEvtPos[j];
+                sprStateEvtKey[j + 1] = sprStateEvtKey[j];
+                j--;
+            }
+            sprStateEvtPos[j + 1] = pos;
+            sprStateEvtKey[j + 1] = key;
+        }
     }
 
     private void drawSpritePair(int pair) {
@@ -1562,7 +1754,7 @@ public abstract class AbstractDenise {
         int     strt    = 0;
         int     strt1   = sprhppos[s1];
         int     strt2   = sprhppos[s2];
-        // `armed` è già stato riportato allo stato d'inizio riga da drawSprites(); il
+        // `armed` è già stato riportato allo stato d'inizio riga da scanSprites(); il
         // replay qui sotto lo rialza/riabbassa ai trigger e lo lascia, a fine ciclo,
         // allo stato di fine riga — che è quello che lo snapshot fotograferà per la
         // riga successiva. (Prima si lavorava su una copia locale tmpArmed, mai
@@ -1588,6 +1780,9 @@ public abstract class AbstractDenise {
             int sub = c.reg & 6;
             if (sub == 4) {                          // DATA
                 sprdata[sIdx] = c.value;
+                if ((armed & (1 << sIdx)) == 0) {
+                    recordSprStateEvt(trigger, sIdx | SPR_EVT_UP);
+                }
                 armed |= (1 << sIdx);
             } else if (sub == 6) {                   // DATB
                 sprdatb[sIdx] = c.value;
@@ -1601,6 +1796,9 @@ public abstract class AbstractDenise {
                 if (sIdx == s1) strt1 = sprhppos[s1]; else strt2 = sprhppos[s2];
                 // CTL write disarms the sprite for the remainder of this scanline.
                 // Matches vAmiga behavior: CLR_BIT(armed, sprite).
+                if ((armed & (1 << sIdx)) != 0) {
+                    recordSprStateEvt(trigger, sIdx);
+                }
                 armed &= ~(1 << sIdx);
             }
             a1 = (armed & (1 << s1)) != 0;
@@ -1636,10 +1834,24 @@ public abstract class AbstractDenise {
         boolean att = (sprctl[s2] & 0x80) != 0;
 
         for (int hpos = from; hpos < to; hpos += 2) {
-            if (hpos == strt1 && armed1) { ssra[s1] = sprdata[s1]; ssrb[s1] = sprdatb[s1]; }
-            if (hpos == strt2 && armed2) { ssra[s2] = sprdata[s2]; ssrb[s2] = sprdatb[s2]; }
+            if (hpos == strt1 && armed1) {
+                boolean was = (ssra[s1] | ssrb[s1]) != 0;
+                ssra[s1] = sprdata[s1]; ssrb[s1] = sprdatb[s1];
+                if (((ssra[s1] | ssrb[s1]) != 0) != was) {
+                    recordSprStateEvt(hpos, s1 | SPR_EVT_ARMEDS | (was ? 0 : SPR_EVT_UP));
+                }
+            }
+            if (hpos == strt2 && armed2) {
+                boolean was = (ssra[s2] | ssrb[s2]) != 0;
+                ssra[s2] = sprdata[s2]; ssrb[s2] = sprdatb[s2];
+                if (((ssra[s2] | ssrb[s2]) != 0) != was) {
+                    recordSprStateEvt(hpos, s2 | SPR_EVT_ARMEDS | (was ? 0 : SPR_EVT_UP));
+                }
+            }
 
-            if ((ssra[s1] | ssrb[s1] | ssra[s2] | ssrb[s2]) != 0) {
+            int r1 = ssra[s1] | ssrb[s1];
+            int r2 = ssra[s2] | ssrb[s2];
+            if ((r1 | r2) != 0) {
                 if (hpos >= spriteClipBegin && hpos < spriteClipEnd) {
                     if (att) drawAttachedSpritePixel(hpos, s2);
                     else   { drawSpritePixel(hpos, s1); drawSpritePixel(hpos, s2); }
@@ -1647,6 +1859,12 @@ public abstract class AbstractDenise {
                 // Shift dei registri sprite (1 bit per CCK = 2 sub-pixel in HPIXELS)
                 ssra[s1] = (ssra[s1] << 1) & 0xFFFF; ssrb[s1] = (ssrb[s1] << 1) & 0xFFFF;
                 ssra[s2] = (ssra[s2] << 1) & 0xFFFF; ssrb[s2] = (ssrb[s2] << 1) & 0xFFFF;
+                // Lo sprite smette di disegnare al pixel DOPO quello che ha svuotato il suo
+                // shift register: l'ultimo pixel uscito e' ancora quello appena scalato.
+                // Dopo lo scorrimento resta acceso solo cio' che stava sotto il bit 15,
+                // quindi non serve rileggere i registri.
+                if (r1 != 0 && (r1 & 0x7FFF) == 0) recordSprStateEvt(hpos + 2, s1 | SPR_EVT_ARMEDS);
+                if (r2 != 0 && (r2 & 0x7FFF) == 0) recordSprStateEvt(hpos + 2, s2 | SPR_EVT_ARMEDS);
             }
         }
     }
@@ -1657,13 +1875,40 @@ public abstract class AbstractDenise {
         if (col != 0) {
             int z    = Z_SP[x];
             int base = 16 + (x & 6) * 2;  // palette[16..19/20..23/24..27/28..31]
-            for (int p = hpos; p <= hpos + 1 && p < zBuffer.length; p++) {
-                if (z > zBuffer[p]) mBuffer[p] = (byte)(base | col);
-                zBuffer[p] |= z;
-            }
+            emitSpritePixel(hpos, base | col, z);
             spritePixelsThisFrame[x] += 2;
             spritesOnLineMask |= (1 << x);
         }
+    }
+
+    /** Accoda un'emissione sprite; il confronto di profondità avviene nel blit. */
+    private void emitSpritePixel(int hpos, int value, int z) {
+        if (sprEmitCount == sprEmitPos.length) {
+            sprEmitPos  = java.util.Arrays.copyOf(sprEmitPos,  sprEmitCount * 2);
+            sprEmitValZ = java.util.Arrays.copyOf(sprEmitValZ, sprEmitCount * 2);
+        }
+        sprEmitPos[sprEmitCount]  = hpos;
+        sprEmitValZ[sprEmitCount] = (value & 0xFF) | (z << 8);
+        sprEmitCount++;
+    }
+
+    /**
+     * Riversa su {@code mBuffer}/{@code zBuffer} i pixel che {@link #scanSprites()} ha
+     * emesso, nello stesso ordine e con lo stesso confronto di profondità di prima: lo z
+     * si accumula sempre, il colore vince solo su chi sta più indietro.
+     */
+    private void blitSprites() {
+        for (int i = 0; i < sprEmitCount; i++) {
+            int hpos  = sprEmitPos[i];
+            int valz  = sprEmitValZ[i];
+            byte val  = (byte) (valz & 0xFF);
+            int  z    = valz >>> 8;
+            for (int p = hpos; p <= hpos + 1 && p < zBuffer.length; p++) {
+                if (z > zBuffer[p]) mBuffer[p] = val;
+                zBuffer[p] |= z;
+            }
+        }
+        sprEmitCount = 0;
     }
 
     /**
@@ -1697,10 +1942,7 @@ public abstract class AbstractDenise {
             // EC8, diventava 31 842 → sprite arancione invece che incarnato). Cfr.
             // vAmiga Denise::drawAttachedSpritePixelPair (mBuffer = 0b10000 | col).
             int base = 16;
-            for (int p = hpos; p <= hpos + 1 && p < zBuffer.length; p++) {
-                if (z > zBuffer[p]) mBuffer[p] = (byte)(base | col);
-                zBuffer[p] |= z;
-            }
+            emitSpritePixel(hpos, base | col, z);
             spritePixelsThisFrame[x - 1] += 2;
             spritePixelsThisFrame[x]     += 2;
             spritesOnLineMask |= (1 << (x - 1)) | (1 << x);
@@ -2275,7 +2517,7 @@ public abstract class AbstractDenise {
     }
 
     // Disarmo esplicito (debug/harness). Tocca ANCHE lo snapshot d'inizio riga,
-    // altrimenti drawSprites() lo riporterebbe indietro al prossimo hsync.
+    // altrimenti scanSprites() lo riporterebbe indietro al prossimo hsync.
     public void disarmAllSprites()          { armed = 0; armedLineStart = 0; }
     public void disarmSprite(int idx)       {
         if (idx >= 0 && idx < 8) { armed &= ~(1 << idx); armedLineStart &= ~(1 << idx); }
