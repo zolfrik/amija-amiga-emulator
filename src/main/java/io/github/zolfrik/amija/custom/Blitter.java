@@ -95,6 +95,8 @@ public final class Blitter {
     private static final int BLTCON1_LINE    = 0x0001;
 
     private static final int BLTCON1_SIGN    = 0x0040;
+    /** Passo X pendente all'avvio del blit (`blit_ovf` dell'oracolo). */
+    private static final int BLTCON1_OVF     = 0x0020;
     private static final int BLTCON1_SUD     = 0x0010;
     private static final int BLTCON1_SUL     = 0x0008;
     private static final int BLTCON1_AUL     = 0x0004;
@@ -129,6 +131,24 @@ public final class Blitter {
      * {@code hblitsize}, tutte dallo STESSO indirizzo, e il modulo si applica una volta sola.
      */
     private static final int FETCH_B_NOMOD = 0x4000;
+    /**
+     * LINE: slot A del PRIMO passaggio del pixel. Lì lo stato del pixel si decide
+     * ({@code blitter_line_proc_status()}) e l'accumulatore Bresenham avanza
+     * ({@code blitter_line_proc_apt()}). Esiste solo con USEA: senza, quello slot è
+     * {@code c == 0} e nessuna delle due gira.
+     */
+    private static final int LINE_PROC_APT   = 0x00008000;
+    /**
+     * LINE: slot C del PRIMO passaggio. Il passo X si applica <b>dopo</b> la lettura,
+     * quindi i passaggi successivi leggono C dall'indirizzo già mosso.
+     */
+    private static final int LINE_PROC_CPT_X = 0x00010000;
+    /**
+     * LINE: slot C di un passaggio di MEZZO. Il passo Y si applica <b>prima</b> della
+     * lettura, e solo una volta per pixel ({@code blitlineloop}) e solo con SUD spento;
+     * altrimenti resta allo slot libero dell'ultimo passaggio.
+     */
+    private static final int LINE_PROC_CPT_Y = 0x00020000;
     private static final int FETCH   = FETCH_A | FETCH_B | FETCH_C;
 
     /**
@@ -284,14 +304,22 @@ public final class Blitter {
 
         for (int p = 0, i = 0; p < passes; p++) {
             boolean lastw = (p == passes - 1);
-            prog[i++] = lastw ? (HOLD_D | BUSIDLE) : (useA ? LINE_BUS_A : BUSIDLE);
+            boolean first = (p == 0);
+            int stage0 = lastw ? (HOLD_D | BUSIDLE) : (useA ? LINE_BUS_A : BUSIDLE);
+            if (first && !lastw && useA) stage0 |= LINE_PROC_APT;
+            prog[i++] = stage0;
             if (useB) prog[i++] = lastw ? FETCH_B : FETCH_B_NOMOD;
             // ⚠️ La D porta anche BUSIDLE: quando il pixel non si scrive (`lineWrite`
             // falso) lo slot resta comunque un ciclo che ATTENDE il bus, come il `c==6`
             // dell'oracolo. Senza, sarebbe l'unico slot del programma ad avanzare anche
             // sotto contesa, e il pixel accorcerebbe (misurato su bbusy7l).
-            prog[i++] = lastw ? (useC ? (WRITE_D | BUSIDLE) : BUSIDLE)
-                              : (useC ? FETCH_C : BUSIDLE);
+            int stage2 = lastw ? (useC ? (WRITE_D | BUSIDLE) : BUSIDLE)
+                               : (useC ? FETCH_C : BUSIDLE);
+            // ⛔ Solo con USEC: senza, `get_current_channel()` non restituisce mai lo slot
+            // C (`nreg` resta `0x1fe` e il ramo D esce con `c == 0`, idle), quindi i due
+            // passi non girano affatto — e infatti senza USEC la linea non si disegna.
+            if (!lastw && useC) stage2 |= first ? LINE_PROC_CPT_X : LINE_PROC_CPT_Y;
+            prog[i++] = stage2;
         }
 
         // LINE_LAST_BUS marca l'ULTIMO ciclo di bus del pixel: sull'ultimo pixel arma il
@@ -419,7 +447,13 @@ public final class Blitter {
     private boolean bzero = true;
     private boolean firstDot = true;   // line mode
     private int linePc = 0;            // step corrente nel micro-programma LINE_PROG
-    private boolean lineWrite = false; // esito shouldWriteLinePixel() latchato a HOLD_D
+    private boolean lineWrite = false; // `blitlinepixel2`: latchato allo slot libero
+    /** `blitlinepixel`: deciso da lineProcStatus(), consumato allo slot libero. */
+    private boolean linePixelPending = false;
+    /** `blit_ovf`: il passo X in attesa che lineOvfApply() lo faccia assorbire all'ASH. */
+    private int lineOvf = 0;
+    /** `blitlineloop`: il passo Y di questo pixel non è ancora stato applicato. */
+    private boolean lineLoop = true;
     private int lineWarmup = 0;        // slot idle post-BLTSIZE prima del primo pixel
     private int copyWarmup = 0;        // slot idle post-BLTSIZE prima della prima micro-op copy
 
@@ -647,6 +681,11 @@ public final class Blitter {
             state     = State.IDLE;
             linePc    = 0;
             lineWrite = false;
+            linePixelPending = false;
+            // `blit_ovf = (bltcon1 & BLTOVF) != 0` dell'oracolo: il passo X pendente
+            // all'avvio viene dal bit 5 di BLTCON1, non da zero.
+            lineOvf   = (bltcon1 & BLTCON1_OVF) != 0 ? 1 : 0;
+            lineLoop  = true;
             // Warmup idle post-BLTSIZE: DUE slot, sempre. Misurato con BLT LSLOT su
             // timing15l (B+C): fra `BLT START` e il primo slot del pixel ci sono due
             // ingressi idle. Il 3 che valeva per B+C compensava la vecchia forma del
@@ -879,12 +918,14 @@ public final class Blitter {
     // =========================================================================
 
     /**
-     * Esecuzione LINE per-CCK guidata dal micro-programma {@link #buildLineProg} (vAmiga
-     * lineBlitInstr). Il PERCORSO-DATI è identico al modello precedente (stesse letture
-     * B/C, stesso {@link #calculateLineWord()}, stessa {@link #shouldWriteLinePixel()},
-     * stesso {@link #executeLineStepping()} nello stesso ordine): cambia SOLO la cadenza
-     * di bus (cicli morti BUSIDLE + dummy BUS), quindi l'output è bit-identico e solo la
-     * contesa di bus si allinea all'hardware.
+     * Esecuzione LINE per-CCK guidata dal micro-programma {@link #buildLineProg}.
+     *
+     * <p>Lo stepping Bresenham è <b>distribuito sugli slot</b>, come nell'oracolo, e non
+     * eseguito tutto insieme in coda al pixel: lo stato e l'accumulatore allo slot A del
+     * primo passaggio, il passo X allo slot C del primo passaggio (dopo la lettura), il
+     * passo Y allo slot C di un passaggio di mezzo (prima della lettura) o allo slot
+     * libero, l'ASH allo slot libero. È quel che cambia <i>quale indirizzo C viene letto</i>
+     * dentro un pixel largo più di due, e per larghezza ≤ 2 coincide con lo stepping unico.
      */
     private boolean lineStepCck(boolean busFree) {
         // Warmup post-BLTSIZE (oracolo WinUAE): slot idle prima del primo ciclo
@@ -925,6 +966,16 @@ public final class Blitter {
             else clearBusyCountdown = 1;
         }
 
+        // Slot A del primo passaggio: lo stato del pixel e l'accumulatore Bresenham.
+        if ((op & LINE_PROC_APT) != 0) { lineProcStatus(); lineProcApt(); }
+
+        // Slot C di un passaggio di mezzo: il passo Y cade PRIMA della lettura, quindi
+        // quel passaggio legge C dall'indirizzo gia' mosso di BLTCMOD.
+        if ((op & LINE_PROC_CPT_Y) != 0 && lineLoop && (bltcon1 & BLTCON1_SUD) == 0) {
+            lineProcCptY();
+            lineLoop = false;
+        }
+
         if ((op & (FETCH_B | FETCH_B_NOMOD)) != 0) {
             bnew = agnus.blitterImmediateRead(getBpt()) & 0xFFFF;
             if ((op & FETCH_B) != 0) setBpt(getBpt() + bltbmod);
@@ -936,10 +987,28 @@ public final class Blitter {
         }
         if ((op & BUS) != 0) tookBus = true; // ciclo di bus fittizio (vAmiga)
 
+        // Slot C del primo passaggio: il passo X cade DOPO la lettura.
+        if ((op & LINE_PROC_CPT_X) != 0) lineProcCptX();
+
         if ((op & HOLD_D) != 0) {
+            // Slot libero dell'ultimo passaggio. L'ordine e' quello del `c == 5`
+            // dell'oracolo: `adat` usa l'ASH VECCHIO (ed e' dentro calculateLineWord),
+            // poi `ovf` lo aggiorna, poi lo stato/il passo Y residuo, poi il segno.
             dhold = calculateLineWord();
             if (dhold != 0) bzero = false;
-            lineWrite = shouldWriteLinePixel();
+            lineOvfApply();
+            if (bltsizeH <= 1) {
+                // w == 1: lo slot libero E' l'unico slot, e li' l'oracolo chiama
+                // proc_status() al posto del passo Y — che con w == 1 non esiste.
+                lineProcStatus();
+            } else if (lineLoop) {
+                lineProcCptY();
+                lineLoop = false;
+            }
+            lineSign();
+            lineWrite = linePixelPending;
+            linePixelPending = false;
+            lineLoop = true;
         }
 
         if ((op & WRITE_D) != 0 && lineWrite) {
@@ -966,99 +1035,90 @@ public final class Blitter {
     }
 
     /**
-     * Il pixel di line mode va scritto? È {@code blitlinepixel} dell'oracolo, e i suoi
-     * gate sono <b>due</b>, in due punti diversi di {@code blitter.cpp}:
-     *
-     * <ul>
-     *   <li><b>USEC</b> — {@code blitter_line_write()}: <i>«D-channel state has no effect on
-     *       linedraw, but C must be enabled or nothing is drawn!»</i>;</li>
-     *   <li>⛔ <b>USEA</b> — indiretto, ed è quello che mancava. {@code blitlinepixel} lo
-     *       calcola {@code blitter_line_proc_status()}, che gira <b>solo nello slot A</b>
-     *       (ramo {@code c == 1 && line}); e {@code get_current_channel()} restituisce lo
-     *       slot A <b>solo se {@code bltcon0 & BLTCHA}</b>. Senza USEA quello slot è idle
-     *       ({@code c == 0}), {@code blitlinepixel} resta a 0 — viene azzerato ogni pixel
-     *       nello slot 3/4 — e in {@code get_current_channel()} il ramo D restituisce 6
-     *       (nessuna scrittura). ⇒ <b>in line mode, senza canale A non si disegna niente.</b>
-     *       Misurato su {@code line/channels1}: l'oracolo disegna solo le tre barre di
-     *       sfondo, noi ci aggiungevamo una diagonale di 89 righe.</li>
-     * </ul>
-     *
-     * <p>⚠️ L'oracolo ha un'<b>eccezione</b> per {@code hblitsize == 1}, dove
-     * {@code blitter_line_proc_status()} viene chiamato dallo slot 3/4 invece che dallo
-     * slot A: appartiene alla famiglia della <b>larghezza illegale</b>, che questo motore
-     * la modella {@link #buildLineProg}: con {@code hblitsize == 1} il passaggio unico e'
-     * quello «last», e lo slot 0 e' il libero {@code c==5}.
+     * ⛔ Il passo X <b>non tocca l'ASH</b>: muove BLTCPT quando il contatore sta per
+     * traboccare e lascia il resto a {@link #lineOvfApply()}, che gira allo slot libero
+     * dell'ultimo passaggio ({@code blitter_line_ovf()}). È la separazione che rende
+     * portabile la distribuzione dello stepping: se l'ASH si scrivesse qui, spostare il
+     * passo X sposterebbe anche l'istante in cui il barrel shifter di A cambia, e il
+     * minterm di ogni pixel ne risentirebbe.
      */
-    private boolean shouldWriteLinePixel() {
-        // hblitsize == 1: il passaggio unico e' il «last», e li' proc_status() lo chiama lo
-        // slot libero c==5, non lo slot A — quindi USEA non entra nella decisione.
-        boolean useA = isUsed(BLTCON0_USEA) || bltsizeH <= 1;
-        boolean useC = isUsed(BLTCON0_USEC);
-        boolean sing = (bltcon1 & BLTCON1_SING) != 0;
-        return useA && useC && (!sing || firstDot);
-    }
-
-
     private void stepIncX() {
-        int current_ash = (bltcon0 & BLTCON0_ASH) >>> 12;
-        if (current_ash == 0xF) {
-            bltcon0 = (bltcon0 & ~BLTCON0_ASH);
-            setCpt(getCpt() + 2);
-        } else { bltcon0 += 0x1000; }
+        if (((bltcon0 & BLTCON0_ASH) >>> 12) == 0xF) setCpt(getCpt() + 2);
+        lineOvf = 1;
     }
     private void stepDecX() {
-        int current_ash = (bltcon0 & BLTCON0_ASH) >>> 12;
-        if (current_ash == 0) {
-            bltcon0 |= BLTCON0_ASH;
-            setCpt(getCpt() - 2);
-        } else { bltcon0 -= 0x1000; }
+        if (((bltcon0 & BLTCON0_ASH) >>> 12) == 0) setCpt(getCpt() - 2);
+        lineOvf = -1;
+    }
+    /** {@code blitter_line_ovf()}: l'ASH assorbe il passo X, allo slot libero. */
+    private void lineOvfApply() {
+        int ash = (((bltcon0 & BLTCON0_ASH) >>> 12) + lineOvf) & 0xF;
+        bltcon0 = (bltcon0 & ~BLTCON0_ASH) | (ash << 12);
+        lineOvf = 0;
     }
     private void stepIncY() { setCpt(getCpt() + bltcmod); fillCarry = 1; firstDot = true; }
     private void stepDecY() { setCpt(getCpt() - bltcmod); fillCarry = 1; firstDot = true; }
 
-    private void executeLineStepping() {
+    /**
+     * {@code blitter_line_proc_status()} — decide se il pixel si disegna e marca il punto
+     * come «già toccato». Gira allo slot A del primo passaggio, cioè <b>solo con USEA</b>;
+     * con {@code hblitsize == 1} lo chiama invece lo slot libero.
+     */
+    private void lineProcStatus() {
+        boolean sing = (bltcon1 & BLTCON1_SING) != 0;
+        linePixelPending = isUsed(BLTCON0_USEC) && (!sing || firstDot);
         firstDot = false;
+    }
 
+    /** {@code blitter_line_proc_apt()} — l'accumulatore Bresenham, allo slot A. */
+    private void lineProcApt() {
+        if (!isUsed(BLTCON0_USEA)) return;
+        int errDelta = (bltcon1 & BLTCON1_SIGN) != 0 ? bltbmod : bltamod;
+        short currentApt = (short) (bltapt & 0xFFFF);
+        currentApt += errDelta;
+        bltapt = (bltapt & 0xFFFF0000) | (currentApt & 0xFFFF);
+    }
+
+    /** {@code blitter_line_proc_cpt_x()} — slot C del primo passaggio, dopo la lettura. */
+    private void lineProcCptX() {
+        boolean sign = (bltcon1 & BLTCON1_SIGN) != 0;
+        if (!sign && (bltcon1 & BLTCON1_SUD) == 0) {
+            if ((bltcon1 & BLTCON1_SUL) != 0) stepDecX(); else stepIncX();
+        }
+        if ((bltcon1 & BLTCON1_SUD) != 0) {
+            if ((bltcon1 & BLTCON1_AUL) != 0) stepDecX(); else stepIncX();
+        }
+    }
+
+    /** {@code blitter_line_proc_cpt_y()} — slot C di un passaggio di mezzo, o slot libero. */
+    private void lineProcCptY() {
         boolean sign = (bltcon1 & BLTCON1_SIGN) != 0;
         fillCarry = 0;
-
-        // ⛔ Con hblitsize == 1 la linea NON si muove, e non e' un caso limite: e' la
-        // conseguenza della cadenza. Lo stepping vive in slot che con w=1 non esistono —
-        // `blitter_line_proc_cpt_x()` sta nel ramo `c == 3` (slot C, solo se !lastw) e
-        // `blitter_line_proc_apt()` nel ramo `c == 1` (slot A, idem); e allo slot libero
-        // l'oracolo scrive `if (hblitsize == 1) proc_status(); else { if (blitlineloop)
-        // proc_cpt_y(); }`, quindi con w=1 nemmeno la y si muove. Il pixel unico riscrive
-        // sempre lo stesso indirizzo. Misurato su line13 (tutti i blit a w=1): l'oracolo
-        // non disegna nulla dove noi tracciavamo le linee intere.
-        boolean steps = bltsizeH > 1;
-
-        if (steps && !sign) {
-            if ((bltcon1 & BLTCON1_SUD) != 0) {
-                if ((bltcon1 & BLTCON1_SUL) != 0) stepDecY(); else stepIncY();
-            } else {
-                if ((bltcon1 & BLTCON1_SUL) != 0) stepDecX(); else stepIncX();
-            }
+        if (!sign && (bltcon1 & BLTCON1_SUD) != 0) {
+            if ((bltcon1 & BLTCON1_SUL) != 0) stepDecY(); else stepIncY();
         }
-
-        if (steps) {
-            if ((bltcon1 & BLTCON1_SUD) != 0) {
-                if ((bltcon1 & BLTCON1_AUL) != 0) stepDecX(); else stepIncX();
-            } else {
-                if ((bltcon1 & BLTCON1_AUL) != 0) stepDecY(); else stepIncY();
-            }
+        if ((bltcon1 & BLTCON1_SUD) == 0) {
+            if ((bltcon1 & BLTCON1_AUL) != 0) stepDecY(); else stepIncY();
         }
+    }
 
-        if (steps && isUsed(BLTCON0_USEA)) {
-            int errDelta = sign ? bltbmod : bltamod;
-            short currentApt = (short) (bltapt & 0xFFFF);
-            currentApt += errDelta;
-            bltapt = (bltapt & 0xFFFF0000) | (currentApt & 0xFFFF);
-        }
+    /** {@code blitter_line_sign()} — allo slot libero, dopo che l'accumulatore è avanzato. */
+    private void lineSign() {
+        if ((short) (bltapt & 0xFFFF) < 0) bltcon1 |= BLTCON1_SIGN;
+        else                               bltcon1 &= ~BLTCON1_SIGN;
+    }
 
-        short newAptSigned = (short)(bltapt & 0xFFFF);
-        if (newAptSigned < 0) bltcon1 |= BLTCON1_SIGN;
-        else bltcon1 &= ~BLTCON1_SIGN;
-
+    /**
+     * Coda del pixel: il passo del barrel shifter di B ({@code blitter_nxline()}) e il
+     * puntatore D che insegue C.
+     *
+     * <p>⚠️ {@code setDpt(getCpt())} resta <b>qui</b> e non allo slot libero, ed è
+     * equivalente: l'oracolo allo slot libero <i>latcha</i> il vecchio {@code bltdpt} in
+     * {@code bltdptl} (che è quel che la scrittura D usa) e <i>solo dopo</i> fa
+     * {@code bltdpt = bltcpt}. Da noi la scrittura D sta dentro il pixel e legge
+     * {@code dpt} come lo ha lasciato il pixel precedente: stessa cosa, senza il latch.
+     */
+    private void executeLineStepping() {
         int bsh = ((bltcon1 & BLTCON1_BSH) >>> 12);
         bsh = (bsh - 1) & 0xF;
         bltcon1 = (bltcon1 & ~BLTCON1_BSH) | (bsh << 12);
