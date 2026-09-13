@@ -882,11 +882,29 @@ public abstract class AbstractDenise {
      * Istante in cui una scrittura a SPRxDATA/SPRxDATB agisce, in pixel dal confine di CCK.
      * Nell'oracolo è lo stadio {@code expand_drga_early} (idx0) e l'applicazione è
      * <b>immediata</b>: {@code case 0x144…: sprwrite(sreg, rd->v)}.
+     *
+     * <p>⚠️ <b>Valeva 8, ed erano UN CCK DI TROPPO.</b> Misurato il 2026-09-13 con lo sweep
+     * su {@code Denise/Sprites/timing} (POS/CTL disaccoppiato e inchiodato al suo valore,
+     * altrimenti si muovono tutt'e due):
+     * <pre>
+     *   SPR_DAT_PX        2  [4]  6   8  10  12
+     *   SprTimingTest     3   0   2   3   3   3        rossi
+     *   ManualTest        1   0   0   1   1   1
+     * </pre>
+     * ⇒ <b>4 chiude il gruppo intero</b> — `SprTimingTest` 9/0 e `manual6` con esso — con le
+     * pareti su tutti e due i lati.
+     *
+     * <p>⛔ <b>E il dato ricompone la diagnosi</b>: `4 + 2 = 6`, cioè la relazione
+     * {@link #SPR_POSCTL_PX} {@code = SPR_DAT_PX + 2} è quella <b>giusta</b> ed era giusta da
+     * sempre. Sbagliato era l'<b>offset comune</b>: entrambi gli istanti dei registri sprite
+     * stavano <b>un CCK intero troppo tardi</b>. Spostare il solo POS/CTL a 6 — come si era
+     * fatto poche ore prima — azzeccava il suo valore assoluto <i>rompendo</i> la relazione,
+     * ed era una compensazione: chiudeva i tre test POS/CTL e lasciava rossi i tre DAT.
      */
-    private static final int SPR_DAT_PX = 8;
+    private static final int SPR_DAT_PX = 4;
 
     /**
-     * Istante in cui una scrittura a SPRxPOS/SPRxCTL agisce: <b>mezzo CCK più PRESTO</b>
+     * Istante in cui una scrittura a SPRxPOS/SPRxCTL agisce: <b>mezzo CCK più tardi</b>
      * di SPRxDATA.
      *
      * <p>⛔ Nell'oracolo POS e CTL <b>non</b> si applicano allo stadio in cui arrivano:
@@ -902,37 +920,27 @@ public abstract class AbstractDenise {
      * </pre>
      * SPRxDATA/SPRxDATB quella deviazione non ce l'hanno: si applicano subito.
      *
-     * <p>⚠️ <b>Il SEGNO era sbagliato, e lo dice la misura.</b> Qui c'era
-     * {@code SPR_DAT_PX + 2}, con la motivazione «mezzo CCK più tardi»: la conseguenza era
-     * che su `sprtimpos1` e `sprtimctl1` <b>rifiutavamo</b> una scrittura che l'oracolo
-     * accetta, e lo sprite restava alla posizione vecchia mentre l'oracolo lo spostava —
-     * non uno scarto di mezzo CCK ma 192 px, perché una scadenza è un sì/no. Il README del
-     * banco lo dichiara: <i>«When the write happens early enough, the sprite is shifted to
-     * the right in the corresponding line»</i>.
+     * <p>⚠️ <b>La RELAZIONE è sempre stata giusta; sbagliato era l'OFFSET COMUNE.</b> La
+     * coppia valeva {@code (SPR_DAT_PX, SPR_POSCTL_PX) = (8, 10)} e vale <b>(4, 6)</b>:
+     * stessa distanza di mezzo CCK, ma <b>un CCK intero</b> più presto tutti e due. Vedi lo
+     * sweep in {@link #SPR_DAT_PX}.
      *
-     * <p>✅ <b>Sweep su tutto l'intervallo utile</b> (rossi di {@code SprTimingTest}):
-     * <pre>
-     *   SPR_POSCTL_PX   0   2   4  [6]  8  10  12  14
-     *   rossi           7   7   6   3   6   6   6   6      (+ Multiplex rosso da 12 in su)
-     * </pre>
-     * ⚠️ È un <b>minimo secco</b>, e la regola del progetto direbbe «taratura». Non lo è, e
-     * il discriminante non è la forma dello sweep ma <b>quali</b> test si muovono: a 6
-     * diventano bit-exact <b>esattamente i tre POS/CTL</b> ({@code oldsprtimpos},
-     * {@code sprtimctl1}, {@code sprtimpos1}) e restano rossi <b>esattamente i tre DAT</b>
-     * ({@code oldsprtimdat}, {@code sprtimdat1/2}), che dipendono da {@link #SPR_DAT_PX} e
-     * non da questa costante. Una compensazione non separa così le due famiglie.
+     * <p>⛔ <b>E questa è la lezione che è costata un commit da rettificare.</b> Spostando il
+     * <i>solo</i> POS/CTL a 6 — con DAT fermo a 8 — si chiudono i tre test POS/CTL e restano
+     * rossi i tre DAT, e sembra una cura: il valore assoluto di POS/CTL è quello giusto. Ma
+     * la relazione risulta invertita ({@code −2}) e va inventata una spiegazione che il
+     * sorgente non sostiene. ⇒ <b>Quando una costante è espressa in funzione di un'altra,
+     * spazzarne una sola non distingue «offset sbagliato» da «relazione sbagliata»</b>:
+     * vanno disaccoppiate e spazzate entrambe.
      *
-     * <p>⚠️ E il minimo <b>deve</b> essere secco: questi test <b>sono</b> uno sweep della
-     * posizione di scrittura a passi di 2 px attorno alla scadenza, quindi risolvono il
-     * confine per costruzione. Un altopiano, qui, vorrebbe dire che il test non misura
-     * quel che dichiara.
-     *
-     * <p>⏸ Resta da derivare <b>perché</b> il segno sia negativo quando il sorgente
-     * dell'oracolo descrive un consumo <i>posticipato</i>: la differenza sta nel fatto che
-     * POS/CTL alimentano un <b>comparatore</b> (la posizione di match) e non un dato, e i
-     * due offset non si compongono allo stesso modo. Va chiuso con la sonda sui due lati.
+     * <p>✅ Il sintomo che aveva portato fuori strada resta vero e vale come misura: su
+     * `sprtimpos1` riga 73 lo sprite restava a `x = 322` mentre l'oracolo lo porta a
+     * `x = 514`. Una <b>scadenza è un sì/no</b>, non uno scarto di mezzo CCK, e il README lo
+     * dichiara: <i>«When the write happens early enough, the sprite is shifted to the right
+     * in the corresponding line»</i>. Con la coppia a `(8, 10)` <b>rifiutavamo</b> una
+     * scrittura che l'oracolo accetta.
      */
-    private static final int SPR_POSCTL_PX = SPR_DAT_PX - 2;
+    private static final int SPR_POSCTL_PX = SPR_DAT_PX + 2;
 
     private void pokeSPRxPOS(int x, int value, int pixel) {
         sprpos[x] = value;
