@@ -2165,13 +2165,25 @@ public abstract class AbstractDenise {
             // bBuffer[i] != 0xFF → pixel bordo → usa borderColor (indice 0)
             int cIdx  = lineIsVBorder ? (borderColor & 0x3F)
                       : (bBuffer[i] == (byte) 0xFF) ? (mBuffer[i] & 0x3F) : (bBuffer[i] & 0x3F);
-            int color = palette[cIdx & 0x1F];
-            if (ehb && (cIdx & 0x20) != 0) {
+            int color;
+            if ((cIdx & 0x20) == 0) {
+                color = palette[cIdx];
+            } else if (ehb) {
                 // Extra-Half-Brite: luminosità dimezzata su tutti e tre i canali
+                color = palette[cIdx & 0x1F];
                 int r = ((color >> 8) & 0xF) >> 1;
                 int g = ((color >> 4) & 0xF) >> 1;
                 int b =  (color       & 0xF) >> 1;
                 color = (r << 8) | (g << 4) | b;
+            } else {
+                // The palette index does not wrap to five bits. The chip owns thirty-two
+                // colour registers, so a six-bit index outside EHB and HAM addresses a
+                // register that does not exist and the pixel is black. A sixth plane can
+                // reach here with a low BPU too: the render configuration stays at the
+                // last maximum (see renderPlanes) while the shift register finishes
+                // emptying, which is what a six-plane dual-playfield line does when it
+                // turns into single playfield in its last colour clock.
+                color = 0;
             }
             rgbLine[i] = amigaToRGB(color);
         }
