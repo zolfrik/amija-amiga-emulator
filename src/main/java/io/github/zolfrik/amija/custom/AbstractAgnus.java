@@ -1099,6 +1099,14 @@ public abstract class AbstractAgnus {
     private boolean cpuAccessTransferred = false;
 
     /**
+     * The value a CIA read took when E rose, and whether it has been taken. A synchronous
+     * access samples the chip at the rising edge of E while the bus cycle only ends at the
+     * following falling edge; the transfer hands over this value instead of reading again.
+     */
+    private int ciaReadSample;
+    private boolean ciaReadSampled;
+
+    /**
      * PERF (Fase 2): true quando il path "CPU non sul bus" di handleCpuBusCycle ha
      * già azzerato le linee di handshake e la cache route. handleCpuBusCycle è
      * chiamato 2× per master-cycle e per la maggior parte dei cicli la CPU non
@@ -3998,6 +4006,19 @@ public abstract class AbstractAgnus {
         if (!cpuBusReq.as || cpuBusReq.iack || cpuAccessTransferred) {
             return;
         }
+        // A CIA read takes its data when E rises, two and a half CCKs before the cycle ends
+        // at the next fall of E: a register that changes in between, such as a TOD
+        // increment, is not seen by this access.
+        if (cpuBusReq.read && cpuBusReq.vma && !ciaReadSampled
+                && cpu.getBusCycleState() == Motorola68000.BusCycleState.S_VMA
+                && cpu.getEClockCounter() == 6
+                && cpuCurrentRoute != null
+                && (cpuCurrentRoute.target == Gary.Target.CIA_A
+                    || cpuCurrentRoute.target == Gary.Target.CIA_B
+                    || cpuCurrentRoute.target == Gary.Target.CIA_BOTH)) {
+            ciaReadSample = readCiaData(cpuCurrentRoute.target, cpuBusReq.address);
+            ciaReadSampled = true;
+        }
         // Banco FAST16: la scrittura cade all'inizio del ciclo bus, un CCK prima dello slot
         // chip-bus. Sta PRIMA del controllo sulla route perché a S2 la route non c'è ancora:
         // la calcola maybeTransferFastBankWrite(). Vedi il suo javadoc.
@@ -4063,9 +4084,13 @@ public abstract class AbstractAgnus {
             // long-word il 68000 asserisce entrambi, quindi il comportamento è
             // identico a quello di un accesso word (entrambe le CIA vengono selezionate
             // se il Gary ha riportato CIA_BOTH come target).
-            int word = isCia
-                    ? readCiaData(cpuCurrentRoute.target, addr)
-                    : readBusData(cpuCurrentRoute, addr);
+            int word;
+            if (isCia) {
+                word = ciaReadSampled ? ciaReadSample : readCiaData(cpuCurrentRoute.target, addr);
+                ciaReadSampled = false;
+            } else {
+                word = readBusData(cpuCurrentRoute, addr);
+            }
             word &= 0xFFFF;
 
             // Post-lettura del pennello: VPOSR appena letto → arma il latch (vpos live)
@@ -5063,7 +5088,7 @@ public abstract class AbstractAgnus {
         updateLineLength(false);             // LOL: si riparte sempre da riga corta
         vposFrozen = false; frozenVpos = 0; frozenHpos = 0;
         beamReadLatchVpos = -1; beamReadLatchHpos = -1;
-        cpuAccessTransferred = false; copperBusProcessed = false;
+        cpuAccessTransferred = false; copperBusProcessed = false; ciaReadSampled = false;
         cpuRouteCacheValid = false;
         cpuCurrentRoute = null;
         bprun = 0; bprunCycle = 0; ddfStopping = 0; fetchUnitHires = false;
