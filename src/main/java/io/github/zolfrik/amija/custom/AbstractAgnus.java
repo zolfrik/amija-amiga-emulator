@@ -2537,6 +2537,7 @@ public abstract class AbstractAgnus {
             // A Copper cycle is allocated one CCK before it acts, and COPEN is checked at
             // the allocation: a cycle allocated while COPEN was on still acts after COPEN
             // goes off.
+            copper.advanceStrobe();
             copperTickEnabled = copperAllocEnabled && !beamFrozen;
             copperAllocEnabled = isCopperEnabled();
             if (copperTickEnabled) {

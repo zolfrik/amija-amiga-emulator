@@ -65,7 +65,7 @@ import io.github.zolfrik.amija.common.BusResponse;
  *   COP_WAIT2          → WAIT2          (valuta: match immediato → FETCH, altrimenti → WAKEUP)
  *   COP_WAKEUP(_BLIT)  → WAKEUP         (polling del comparatore ad ogni CCK pari libero)
  *   COP_SKIP1/2        → SKIP1/SKIP2    (cicli idle bus-gated)
- *   COP_JMP1/2         → JMP1/JMP2      (COPJMP interno via MOVE a $88/$8A)
+ *   COPJMPx (CPU or Copper MOVE) latches a strobe; see armStrobe()/advanceStrobe()
  *   COP_VBLANK         → onVBlank()     (restart da COP1LC a inizio frame)
  *   cancel<SLOT_COP>   → DORMANT        (Copper fermo: MOVE illegale, fino a VBlank/COPJMP)
  *
@@ -196,9 +196,6 @@ public final class Copper {
     /** Copia locale del bit COPEN (per rilevare il fronte OFF→ON). */
     private boolean dmaEnabled = false;
 
-    /** Lista target di un COPJMP interno del Copper (MOVE a $88/$8A). */
-    private int pendingList = 1;
-
     /** Indirizzo/valore della MOVE in corso (per debugger/save state). */
     private int pendingWriteAddr = 0;
     private int pendingWriteData = 0;
@@ -218,9 +215,7 @@ public final class Copper {
         WAIT2,          // COP_WAIT2: valuta condizione
         WAKEUP,         // COP_WAKEUP: polling del comparatore
         SKIP1,          // COP_SKIP1: ciclo idle
-        SKIP2,          // COP_SKIP2: ciclo idle
-        JMP1,           // COP_JMP1: COPJMP interno (1° ciclo)
-        JMP2            // COP_JMP2: COPJMP interno (2° ciclo) → switch list
+        SKIP2           // COP_SKIP2: ciclo idle
     }
 
     private State state = State.DORMANT;
@@ -273,7 +268,8 @@ public final class Copper {
         forbiddenMoveDetected = false;
         activeInThisFrame     = false;
         dmaEnabled            = false;
-        pendingList           = 1;
+        strobeList            = 0;
+        strobeCountdown       = 0;
         pendingWriteAddr      = 0;
         pendingWriteData      = 0;
         busReq.clear();
@@ -318,15 +314,13 @@ public final class Copper {
                 if (!activeInThisFrame && copList == 2) setPC(cop2lc);
                 break;
 
-            // ── COPJMP (strobe dalla CPU) ───────────────────────────────────
-            case 0x088: // COPJMP1 — riavvia dalla lista 1
-                copList = 1;
-                strobeCopperList(cop1lc);
+            // ── COPJMP (strobe) ─────────────────────────────────────────────
+            case 0x088: // COPJMP1
+                armStrobe(1);
                 break;
 
-            case 0x08A: // COPJMP2 — riavvia dalla lista 2
-                copList = 2;
-                strobeCopperList(cop2lc);
+            case 0x08A: // COPJMP2
+                armStrobe(2);
                 break;
 
             // ── COPCON ──────────────────────────────────────────────────────
@@ -350,6 +344,7 @@ public final class Copper {
      */
     private void strobeCopperList(int address) {
         setPC(address);
+        strobeList = 0;
         // A strobe restarts the machine: the first Copper slot after it is the allocated
         // cycle whose data is discarded, as on the frame restart, and nothing of the
         // previous state's cadence survives.
@@ -358,6 +353,42 @@ public final class Copper {
         skip                  = false;
         forbiddenMoveDetected = false;
         busReq.clear();
+    }
+
+    /**
+     * CCKs between an access to COPJMPx and the restart of the machine. The strobe is
+     * latched first, the interrupted instruction may still take the Copper slot that
+     * follows the access, and only then is the machine reset; the first slot the restart
+     * can use lies three CCKs after the access. The same path serves the CPU, which may
+     * also strobe by reading the register, and a Copper MOVE to COPJMPx.
+     */
+    private static final int STROBE_LATENCY_CCK = 3;
+
+    /** Lists selected by the strobes still in the latch: bit 0 = list 1, bit 1 = list 2. */
+    private int strobeList = 0;
+
+    /** CCKs left before the latched strobe restarts the machine; 0 = none pending. */
+    private int strobeCountdown = 0;
+
+    private void armStrobe(int list) {
+        strobeList |= list;
+        if (strobeCountdown == 0) {
+            strobeCountdown = STROBE_LATENCY_CCK;
+        }
+    }
+
+    /**
+     * Advances the strobe latch. Called by Agnus once per CCK, before the Copper cycle of
+     * that CCK and whether or not COPEN is set.
+     */
+    public void advanceStrobe() {
+        if (strobeCountdown == 0 || --strobeCountdown > 0) {
+            return;
+        }
+        final int list = strobeList;
+        copList = list == 2 ? 2 : 1;
+        final int address = list == 3 ? (cop1lc | cop2lc) : list == 2 ? cop2lc : cop1lc;
+        strobeCopperList(address);
     }
 
     /**
@@ -374,8 +405,7 @@ public final class Copper {
         skip              = false;
         forbiddenMoveDetected = false;
         // Restart via strobe: prima del primo fetch reale c'è lo slot allocato
-        // "Initial DMA request" (vedi State.STROBE). NB: i COPJMP (interni JMP1/2
-        // e strobe CPU) restano sul modello vAmiga senza slot extra — da misurare.
+        // "Initial DMA request" (vedi State.STROBE).
         state             = State.STROBE;
         // The restart discards the cadence of the interrupted state, as a COPJMP strobe
         // does: a machine halted by an illegal MOVE still carries the +2 of that last bus
@@ -526,21 +556,6 @@ public final class Copper {
                 tickDelay = 1;
                 return;
 
-            case JMP1:
-                // COP_JMP1: il ciclo è allocato al Copper ma non serve un fetch.
-                // (Il quirk $E0 → schedule(COP_JMP2, 1) di vAmiga resta trascurato.)
-                state = State.JMP2;
-                tickDelay = 1;
-                return;
-
-            case JMP2:
-                if (!busFree) return;
-                copList = pendingList;
-                setPC(pendingList == 1 ? cop1lc : cop2lc);
-                state = State.FETCH;
-                tickDelay = 1;
-                return;
-
             case FETCH:
             case MOVE:
             case WAIT_OR_SKIP:
@@ -639,9 +654,10 @@ public final class Copper {
             return;
         }
 
-        // COPJMP interno (MOVE a $88/$8A): sequenza JMP1/JMP2.
-        if (reg == 0x088) { pendingList = 1; state = State.JMP1; return; }
-        if (reg == 0x08A) { pendingList = 2; state = State.JMP1; return; }
+        // A MOVE to COPJMPx strobes like any other access: the machine goes on with the
+        // next fetch until the latched strobe restarts it.
+        if (reg == 0x088) { armStrobe(1); return; }
+        if (reg == 0x08A) { armStrobe(2); return; }
 
         // Scrittura del registro custom (interna ad Agnus, nessun ciclo bus extra).
         pendingWriteAddr = reg;
