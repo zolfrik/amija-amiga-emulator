@@ -377,6 +377,10 @@ public final class Copper {
         // "Initial DMA request" (vedi State.STROBE). NB: i COPJMP (interni JMP1/2
         // e strobe CPU) restano sul modello vAmiga senza slot extra — da misurare.
         state             = State.STROBE;
+        // The restart discards the cadence of the interrupted state, as a COPJMP strobe
+        // does: a machine halted by an illegal MOVE still carries the +2 of that last bus
+        // cycle, which would push the first slot of the new frame one Copper cycle late.
+        tickDelay         = 0;
         busReq.clear();
     }
 

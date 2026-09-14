@@ -5183,14 +5183,14 @@ public abstract class AbstractAgnus {
      * Spostare il contatore intero è stato provato ed è un <b>veto della rete</b>:
      * {@code Agnus/Copper} 94/20 → 87/27 ({@code cross2}, {@code steal7}, {@code coptim4/5},
      * {@code oldcoptim3/5}), {@code Paula/Interrupts} 82/0 → 77/5 (i cinque
-     * {@code intreqcia}), {@code Agnus/Registers} 123/3 → 122/4. La causa è nominata e
-     * misurata: la catena «WAIT soddisfatta → MOVE» del nostro Copper è <b>un CCK più
-     * corta</b> di quella dell'oracolo, e oggi il {@code +2} del comparatore orizzontale la
-     * compensa; sul risveglio VERTICALE quella compensazione non c'è, e i quattro
-     * {@code coptim} sbagliano di 4 px per riga, cioè di UN CCK. Muovere il contatore vuole
-     * quindi, nella stessa passata, la catena del Copper, l'offset del comparatore,
-     * {@code BEAM_AHEAD_CCK} e le ancore degli sprite. Vedi
-     * {@code docs/vamigats-import-order.md}, §La riga del contatore verticale.
+     * {@code intreqcia}), {@code Agnus/Registers} 123/3 → 122/4.
+     *
+     * <p>The Copper is one of the consumers that must stay on {@code vpos}: its vertical
+     * comparator has to see the old line at the Copper slot of CCK 225 and the new one at
+     * CCK 0, which is exactly what {@code vpos} gives, and the horizontal comparator
+     * ({@code bh + 2}, wrapping at {@code $E0}) is taken at the same instant. The wake-up
+     * chain from a satisfied WAIT to the MOVE has no missing CCK to compensate. See
+     * {@code docs/vamigats-import-order.md}, section 23.
      */
     private static final int TRIGGER_VPOS_LEAD_HPOS = 6;
 
