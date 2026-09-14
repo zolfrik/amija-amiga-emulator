@@ -4076,7 +4076,15 @@ public abstract class AbstractAgnus {
                 // CIA-A (LDS, lane bassa) o CIA-B (UDS, lane alta).
                 writeCiaData(cpuCurrentRoute.target, addr, word);
             } else {
+                // The first refresh cycle of the line drives the horizontal strobe into
+                // Denise's slot of the RGA bus, and it overwrites whatever register write
+                // lands in the same CCK: the Agnus side of the register still takes the
+                // value, Denise never sees it. A cycle synchronised to the chip bus cannot be
+                // granted there, so only an unsynchronised one (a FAST16 bank) meets it.
+                final boolean strobeSlot = denise != null && (hpos >> 1) == SLOT_REFRESH_4;
+                if (strobeSlot) denise.setRgaSlotTakenByStrobe(true);
                 writeBusData(cpuCurrentRoute, addr, word, busUds, busLds);
+                if (strobeSlot) denise.setRgaSlotTakenByStrobe(false);
             }
 
             // lastBusData riflette i 16 bit effettivamente pilotati sul bus dati

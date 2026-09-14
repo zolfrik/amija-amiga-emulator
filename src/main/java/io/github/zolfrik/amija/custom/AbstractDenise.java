@@ -718,7 +718,21 @@ public abstract class AbstractDenise {
     // Accesso registri
     // =========================================================================
 
+    /**
+     * True while Agnus transfers a register write in the CCK whose Denise slot on the RGA
+     * bus is already taken by the horizontal strobe: the strobe overwrites the slot, so the
+     * write never reaches Denise. See {@link AbstractAgnus} handleCpuDataTransfer.
+     */
+    private boolean rgaSlotTakenByStrobe;
+
+    void setRgaSlotTakenByStrobe(boolean taken) {
+        rgaSlotTakenByStrobe = taken;
+    }
+
     public void writeRegister(int address, int value) {
+        if (rgaSlotTakenByStrobe) {
+            return;
+        }
         // vAmiga mappa i register-change al pixel con Beam::pixel = 4*(h - HBLANK_MIN),
         // dove h è il DMA-cycle INTERO (CCK, 0..227): NON ha risoluzione sub-CCK. Il
         // nostro hpos ha invece granularità di mezzo-CCK (0..454, 2 per CCK) e i write
