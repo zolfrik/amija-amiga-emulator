@@ -2744,29 +2744,46 @@ public abstract class AbstractAgnus {
      * multiplo di 20, quindi la posizione ruota di 7 CCK a ogni riga.
      *
      * <pre>
-     * hoff   = hoffset + 1                    // il pin HSYNC/VSYNC di Agnus ritarda di 1 CCK
-     * div10  = (cck + 3 + hoff) mod 20        // 6 * E_CYCLE_UNIT = 3 CCK
+     * hoff   = hoffset + 1                    // the HSYNC/VSYNC pin is one CCK late
+     * div10  = (handler + 3 + hoff) mod 20    // handler = lineStartCck + TOD_HANDLER_LEAD_CCK
      * offset = hoff + 60 + (20 - div10) - 2
      * </pre>
      *
-     * <p>Sviluppandola, l'istante assoluto dell'incremento è l'unico CCK <b>≡ 14 (mod 20)</b>
-     * nella finestra {@code [A+58, A+77]} con {@code A = cckInizioRiga + hoff}: una griglia
-     * rigida in tempo assoluto, di cui la posizione nella riga è solo la lettura relativa.
+     * <p>The increment lands on a rigid 20-CCK grid of absolute time, and its position within
+     * the line is only the relative reading of it. The offset counts from horizontal
+     * position 1; {@link #todPulseRiseHpos(int)} turns it into our {@code hpos}.
      *
-     * @param hoffset      quello che l'oracolo passa a {@code CIAx_tod_handler}
-     * @param lineStartCck il CCK a cui l'oracolo esegue {@code cia_hsync_do()}, cioè il suo
-     *                     {@code agnus_hpos == 1}: da noi lo wrap di {@code hpos}
+     * @param hoffset      the pulse source's offset within the line (hsync or vsync end)
+     * @param lineStartCck the absolute CCK of our wrap of {@code hpos}
      */
     private static int todIncOffsetCck(int hoffset, long lineStartCck) {
         final int hoff = hoffset + 1;
-        final int div10 = (int) Math.floorMod(lineStartCck + 3 + hoff, TOD_ALIGN_CCK);
+        // The alignment grid is taken at the instant the line's CIA handler runs, which is
+        // TOD_HANDLER_LEAD_CCK after our wrap of hpos on the absolute CCK counter.
+        final int div10 = (int) Math.floorMod(lineStartCck + TOD_HANDLER_LEAD_CCK + 3 + hoff, TOD_ALIGN_CCK);
         return hoff + TOD_INC_DELAY_CCK + (TOD_ALIGN_CCK - div10) + TOD_ECLOCK_TOD_CCK;
     }
 
     /**
-     * Traduce l'offset dell'oracolo (un {@code agnus_hpos}, in CCK) nel nostro {@code hpos},
-     * che conta system clock e va un CCK indietro: il suo wrap è a {@code cck ≡ 0}, il nostro
-     * a {@code cck ≡ 1}, quindi {@code hpos = 2 * (offset - 1)}.
+     * Absolute CCKs between our wrap of {@code hpos} and the instant the line's CIA handler runs,
+     * the point from which the TOD increment offset is counted. The handler runs at horizontal
+     * position 1, three CCKs before our wrap on the beam, but on the absolute counter it lies
+     * seven CCKs after it: the TOD grid is 20 CCKs long, so the alignment has to be read there
+     * and not at the wrap.
+     */
+    private static final int TOD_HANDLER_LEAD_CCK = 7;
+
+    /**
+     * CCKs to subtract from a TOD increment offset to obtain our CCK within the line: the offset
+     * counts from horizontal position 1, and horizontal position {@code p} is our CCK
+     * {@code p - 4}.
+     */
+    private static final int TOD_OFFSET_TO_CCK = 3;
+
+    /**
+     * Turns a TOD increment offset, counted from horizontal position 1, into our {@code hpos}:
+     * horizontal position {@code p} is our CCK {@code p - 4}, so the CCK is
+     * {@code offset - TOD_OFFSET_TO_CCK} and {@code hpos} counts system clocks.
      *
      * @return -1 se l'impulso non ci sta nella riga. ⚠️ In PAL e in NTSC <b>non succede</b>:
      *         l'offset vale al massimo 114 CCK per CIA-B e 211 per CIA-A contro i 227 della
@@ -2776,7 +2793,7 @@ public abstract class AbstractAgnus {
      *         servirebbe una riga programmata con {@code BEAMCON0}, che non emuliamo.
      */
     private int todPulseRiseHpos(int offsetCck) {
-        final int rise = 2 * (offsetCck - 1);
+        final int rise = 2 * (offsetCck - TOD_OFFSET_TO_CCK);
         return (rise < 1 || rise + TOD_PULSE_WIDTH_SC >= maxHpos) ? -1 : rise;
     }
 
