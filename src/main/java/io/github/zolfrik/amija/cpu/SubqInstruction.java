@@ -116,9 +116,11 @@ public class SubqInstruction extends AbstractM68kInstruction {
                 }
                 case 10 -> { // .L or An gap: nn
                     if (!cpu.isBusCycleIdle()) return false;
-                    if (eaMode == 1 && sizeBit == 2) {
-                        cpu.idleCycles(2); // SUBQ.L to An seems to be 6 cycles (np n) in some tests
+                    if (eaMode == 1 && sizeBit == 2 && !cpu.seamOverlapEnabled) {
+                        // JSON single-instruction path keeps the historic 6-cycle (np n) count.
+                        cpu.idleCycles(2);
                     } else {
+                        // SUBQ.L to An is 8 cycles (np + nn) on real hardware, same as ADDQ.L.
                         cpu.idleCycles(4);
                     }
                     nextStep(cpu);

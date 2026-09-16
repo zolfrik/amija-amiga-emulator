@@ -258,6 +258,40 @@ public final class RAM {
         Arrays.fill(mem, (byte)0);
     }
 
+    /**
+     * Fills the RAM with what dynamic RAM chips hold after power-on, before anything has
+     * been written: stripes of all-zero and all-one cells whose layout follows how Agnus
+     * multiplexes the address onto the rows and columns of the chips.
+     *
+     * <p>With an ECS Agnus the pattern repeats every 1024 bytes and flips every two
+     * longwords; with an OCS Agnus rows and columns are swapped, and whole 256-byte blocks
+     * alternate. Software that reads memory before writing it takes different paths on a
+     * zeroed RAM: the Kickstart's slow RAM sizing reads INTENAR through the custom chip
+     * mirror and, on RAM, sees this pattern.
+     *
+     * @param ecsAgnus {@code true} for the ECS layout, {@code false} for the OCS one
+     */
+    public void fillPowerOnPattern(boolean ecsAgnus) {
+        if (ecsAgnus) {
+            int fill = 0;
+            for (int bank = 0; bank < size / 1024; bank++) {
+                fill = ~fill;
+                for (int row = bank * 1024; row < (bank + 1) * 1024; row += 4) {
+                    writeLong(row, fill);
+                    if ((row & 7) == 0) fill = ~fill;
+                }
+            }
+        } else {
+            int fill = 0;
+            for (int bank = 0; bank < size / 256; bank++) {
+                fill = ~fill & 0xFFFF;
+                for (int row = bank * 256; row < (bank + 1) * 256; row += 2) {
+                    writeWord(row, fill);
+                }
+            }
+        }
+    }
+
     // =========================================================================
     // Debug
     // =========================================================================

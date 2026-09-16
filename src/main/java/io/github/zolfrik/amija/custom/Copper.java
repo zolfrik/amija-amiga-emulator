@@ -65,8 +65,8 @@ import io.github.zolfrik.amija.common.BusResponse;
  *   COP_WAIT2          → WAIT2          (valuta: match immediato → FETCH, altrimenti → WAKEUP)
  *   COP_WAKEUP(_BLIT)  → WAKEUP         (polling del comparatore ad ogni CCK pari libero)
  *   COP_SKIP1/2        → SKIP1/SKIP2    (cicli idle bus-gated)
- *   COPJMPx (CPU or Copper MOVE) latches a strobe; see armStrobe()/advanceStrobe()
- *   COP_VBLANK         → onVBlank()     (restart da COP1LC a inizio frame)
+ *   COPJMPx (CPU or Copper MOVE) enters the strobe pipeline; see armStrobe()/advanceStrobe()
+ *   frame restart      → armFrameStrobe() (list 1, through the same pipeline)
  *   cancel<SLOT_COP>   → DORMANT        (Copper fermo: MOVE illegale, fino a VBlank/COPJMP)
  *
  * Il WAIT non usa uno scheduler assoluto: il polling del comparatore (stato
@@ -268,8 +268,11 @@ public final class Copper {
         forbiddenMoveDetected = false;
         activeInThisFrame     = false;
         dmaEnabled            = false;
-        strobeList            = 0;
-        strobeCountdown       = 0;
+        startStrobe           = 0;
+        strobe                = 0;
+        haltAfterRequest      = false;
+        halted                = false;
+        restartStarted        = false;
         pendingWriteAddr      = 0;
         pendingWriteData      = 0;
         busReq.clear();
@@ -336,82 +339,91 @@ public final class Copper {
         pc = address & (agnus.getChipMask() & ~1);
     }
 
+    // =========================================================================
+    // Strobe pipeline
+    // =========================================================================
+    //
+    // A restart travels through a register of four-bit stages, one stage per CCK: in each
+    // stage bit 3 stops the machine and bits 0-1 select the list. The stop comes one CCK
+    // before the list, the list is held in `strobe` until the first Copper cycle of the
+    // restart reads it, and the first real fetch after that cycle discards whatever strobe
+    // is still held. An access to COPJMPx enters one stage later than the frame restart,
+    // and stages that meet are merged: a strobe that lands just after the frame restart has
+    // taken its list is lost, one that lands later restarts the machine again.
+
+    /** Stages of the pending restarts, lowest stage first. */
+    private int startStrobe = 0;
+
+    /** Lists selected by the last stage, held for the restart's first Copper cycle. */
+    private int strobe = 0;
+
+    /** A stop stage was reached: the machine stops after this CCK's request. */
+    private boolean haltAfterRequest = false;
+
+    /** The machine is stopped and waits for a strobe. */
+    private boolean halted = false;
+
+    /** The restart's first cycle has been read; its first fetch has not started yet. */
+    private boolean restartStarted = false;
+
+    private static final int STROBE_STOP = 8;
+
+    /** COPJMPx accessed by the CPU, or written by a Copper MOVE. */
+    private void armStrobe(int list) {
+        startStrobe |= (STROBE_STOP | list << 4) << 4;
+    }
+
+    /** Restart of list 1 at the start of the frame. */
+    public void armFrameStrobe() {
+        startStrobe |= STROBE_STOP | 1 << 4;
+    }
+
     /**
-     * Strobe COPJMP dalla CPU (vAmiga switchToCopperList via pokeCOPJMPx<CPU>):
-     * carica il PC dalla lista e schedula COP_REQ_DMA. NON tocca
-     * activeInThisFrame (come vAmiga): un COPJMP avviene di norma a Copper già
-     * attivo nel frame.
+     * Advances the strobe pipeline by one stage. Called by Agnus once per CCK, before the
+     * Copper cycle of that CCK and whether or not COPEN is set.
+     *
+     * @param ticking the Copper runs in this CCK
+     * @param slot    a Copper cycle may land on this CCK
      */
-    private void strobeCopperList(int address) {
-        setPC(address);
-        strobeList = 0;
-        // A strobe restarts the machine: the first Copper slot after it is the allocated
-        // cycle whose data is discarded, as on the frame restart, and nothing of the
-        // previous state's cadence survives.
+    public void advanceStrobe(boolean ticking, boolean slot) {
+        if (restartStarted && ticking && slot && state == State.FETCH && tickDelay == 0) {
+            restartStarted = false;
+            strobe = 0;
+        }
+        if (startStrobe == 0) {
+            return;
+        }
+        if ((startStrobe & STROBE_STOP) != 0) {
+            startStrobe &= ~STROBE_STOP;
+            haltAfterRequest = true;
+            restartStarted = false;
+        }
+        if ((startStrobe & 0xF) != 0) {
+            strobe = startStrobe;
+        }
+        startStrobe >>>= 4;
+    }
+
+    /** Enters the restart: the next Copper cycle is allocated and its data discarded. */
+    private void enterRestart() {
+        final int list = strobe & 3;
+        copList = list == 2 ? 2 : 1;
+        setPC(list == 3 ? (cop1lc | cop2lc) : list == 2 ? cop2lc : cop1lc);
         state                 = State.STROBE;
         tickDelay             = 0;
         skip                  = false;
         forbiddenMoveDetected = false;
+        haltAfterRequest      = false;
+        halted                = false;
         busReq.clear();
     }
 
     /**
-     * CCKs between an access to COPJMPx and the restart of the machine. The strobe is
-     * latched first, the interrupted instruction may still take the Copper slot that
-     * follows the access, and only then is the machine reset; the first slot the restart
-     * can use lies three CCKs after the access. The same path serves the CPU, which may
-     * also strobe by reading the register, and a Copper MOVE to COPJMPx.
-     */
-    private static final int STROBE_LATENCY_CCK = 3;
-
-    /** Lists selected by the strobes still in the latch: bit 0 = list 1, bit 1 = list 2. */
-    private int strobeList = 0;
-
-    /** CCKs left before the latched strobe restarts the machine; 0 = none pending. */
-    private int strobeCountdown = 0;
-
-    private void armStrobe(int list) {
-        strobeList |= list;
-        if (strobeCountdown == 0) {
-            strobeCountdown = STROBE_LATENCY_CCK;
-        }
-    }
-
-    /**
-     * Advances the strobe latch. Called by Agnus once per CCK, before the Copper cycle of
-     * that CCK and whether or not COPEN is set.
-     */
-    public void advanceStrobe() {
-        if (strobeCountdown == 0 || --strobeCountdown > 0) {
-            return;
-        }
-        final int list = strobeList;
-        copList = list == 2 ? 2 : 1;
-        final int address = list == 3 ? (cop1lc | cop2lc) : list == 2 ? cop2lc : cop1lc;
-        strobeCopperList(address);
-    }
-
-    /**
-     * Chiamato da Agnus a ogni VBlank (vAmiga COP_VBLANK / eofHandler): il
-     * Copper riparte SEMPRE dalla lista 1 con PC=COP1LC. activeInThisFrame
-     * riflette lo stato del DMA Copper (copdma()). Se il DMA è spento lo stato
-     * resta comunque FETCH ma l'arbitraggio non ticka il Copper (busIsFree
-     * negato) finché COPEN non torna on → pure resume.
+     * Called by Agnus at every VBlank: PC-following tracks the Copper DMA state. The restart
+     * from list 1 goes through the strobe pipeline, see {@link #armFrameStrobe()}.
      */
     public void onVBlank(boolean copperEnabled) {
-        copList           = 1;
-        setPC(cop1lc);
         activeInThisFrame = copperEnabled;
-        skip              = false;
-        forbiddenMoveDetected = false;
-        // Restart via strobe: prima del primo fetch reale c'è lo slot allocato
-        // "Initial DMA request" (vedi State.STROBE).
-        state             = State.STROBE;
-        // The restart discards the cadence of the interrupted state, as a COPJMP strobe
-        // does: a machine halted by an illegal MOVE still carries the +2 of that last bus
-        // cycle, which would push the first slot of the new frame one Copper cycle late.
-        tickDelay         = 0;
-        busReq.clear();
     }
 
     /**
@@ -471,6 +483,20 @@ public final class Copper {
      *                  bus cycle, although no Copper cycle can land there
      */
     public void risingEdge(boolean busFree, boolean slot, boolean wrapDummy) {
+        // A held strobe takes the first Copper slot, whatever the machine is doing.
+        if (strobe != 0 && slot) {
+            enterRestart();
+        }
+        if (!halted) {
+            step(busFree, slot, wrapDummy);
+        }
+        if (haltAfterRequest) {
+            haltAfterRequest = false;
+            halted = true;
+        }
+    }
+
+    private void step(boolean busFree, boolean slot, boolean wrapDummy) {
         final boolean evenCck = slot;
         if (state == State.DORMANT) return;
 
@@ -573,12 +599,21 @@ public final class Copper {
      * Gli altri stati sono già avanzati in {@link #risingEdge(boolean)}.
      */
     public void fallingEdge() {
+        // A cycle requested just before the machine stopped is read without effect.
+        if (halted) {
+            busReq.clear();
+            return;
+        }
         if (state == State.STROBE || state == State.FETCH || state == State.MOVE
                 || state == State.WAIT_OR_SKIP) {
             if (busResp.ack && busReq.as && busReq.read) {
                 int data = busResp.dataIn & 0xFFFF;
                 switch (state) {
-                    case STROBE:       state = State.FETCH; break; // dato scartato, PC fermo
+                    case STROBE:                                  // data discarded, PC held
+                        state = State.FETCH;
+                        strobe = 0;
+                        restartStarted = true;
+                        break;
                     case FETCH:        onFetch(data);      break;
                     case MOVE:         onMove(data);       break;
                     case WAIT_OR_SKIP: onWaitOrSkip(data); break;
@@ -655,7 +690,7 @@ public final class Copper {
         }
 
         // A MOVE to COPJMPx strobes like any other access: the machine goes on with the
-        // next fetch until the latched strobe restarts it.
+        // next fetch until the strobe pipeline stops it.
         if (reg == 0x088) { armStrobe(1); return; }
         if (reg == 0x08A) { armStrobe(2); return; }
 
