@@ -1148,11 +1148,19 @@ public final class Paula {
         dsklenWriteCount++;
 
         if ((oldValue & value & 0x8000) != 0) {
-            // Second consecutive write with bit 15 set → DMA start.
-            // Flush the serial shift register and FIFO so the new transfer
-            // starts from a clean state (matches real Paula behaviour).
-            dsk_dataReg      = 0;
-            dsk_dataRegCount = 0;
+            // Second consecutive write with bit 15 set → DMA start. Only the FIFO
+            // is emptied here.
+            //
+            // ⛔ The READ shift register and its bit counter are NOT touched. They
+            // free-run with the head from the moment the drive is selected, and the
+            // word boundary of the data the DMA transfers is the one they already
+            // carry. Clearing them re-anchored that boundary to the DSKLEN write, so
+            // a whole track landed in Chip RAM shifted by a few bits. Kickstart reads
+            // the raw track with WORDSYNC off and re-aligns the sector headers in
+            // software, so the machine still boots — but through the slow
+            // re-alignment path, which costs about 890 cck on the instant the loaded
+            // program starts (measured on the CIA/TOD/latch1 boot chain).
+            // A WRITE does clear the shifter: see below.
             dsk_fifo         = 0;
             dsk_fifoCount    = 0;
             dsk_writeShift   = 0;
@@ -1174,6 +1182,9 @@ public final class Paula {
 
             if (!isRead) {
                 diskState = DriveDmaState.WRITE;
+                // Writing clears the read shift register and the DSKBYT flag.
+                dsk_dataReg = 0;
+                dskbytr_incoming &= 0x7FFF;
                 // Il drive selezionato passa in scrittura: da qui in avanti la sua
                 // testina consuma le celle da nextWriteBit() invece di leggerle.
                 // Come per la lettura, il lato comandato ha effetto immediato.
