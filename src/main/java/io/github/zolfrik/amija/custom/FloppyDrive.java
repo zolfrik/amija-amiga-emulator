@@ -79,7 +79,18 @@ public final class FloppyDrive {
     // -------------------------------------------------------------------------
 
     private static final long   CYCLES_INDEX_PULSE       =    14_187L;   // durata impulso INDEX (~2 ms)
-    private static final long   CYCLES_MOTOR_RAMP        = 3_546_896L;   // rampa avvio motore (~500 ms)
+    /**
+     * /RDY spin-up: the drive asserts DSKRDY a FIXED time after the motor is
+     * commanded on, and that time restarts <b>in full</b> at every off-&gt;on
+     * transition. It is not a speed ramp resumed from the residual spin: a
+     * loader that drops and re-raises MTR between two tracks pays it whole
+     * every time, which is several tenths of a second per track.
+     *
+     * <p>18 frames of 312 scanlines, and a PAL scanline is 454 master-cycles
+     * (7 093 790 / 15 625).
+     */
+    private static final long   CYCLES_DSKREADY_UP       = 18L * 312L * 454L; // ~0,36 s
+
     /** FIX #2: il motore reale impiega ~3 s per fermarsi completamente. */
     private static final long   CYCLES_MOTOR_STOP        = 21_000_000L;  // rampa arresto motore (~3 s)
     private static final long   CYCLES_SETTLE_STEP       =    21_281L;   // settle dopo step stesso verso (~3 ms)
@@ -128,8 +139,9 @@ public final class FloppyDrive {
 
     private boolean motorTarget  = false;
     private boolean motorAtSpeed = false;
+    /** Master-cycle left before /RDY rises; reloaded whole at every motor-on. */
+    private long    readyUpCycles = 0L;
     private long    switchCycle  = 0L;
-    private double  switchSpeed  = 0.0;
     private long    totalCycles  = 0L;
     /** {@code steplimitcycle}: istante dell'ultimo impulso di STEP ACCETTATO. */
     private long    lastAcceptedStepCycle = Long.MIN_VALUE / 4;
@@ -319,8 +331,8 @@ public final class FloppyDrive {
         // il corpo sottostante si limiterebbe a ri-azzerare campi già a zero. Vale
         // per i drive vuoti df1-df3 E per df0 a motore spento col disco inserito
         // (la condizione tipica durante il gioco, dopo il caricamento). Elimina la
-        // maggior parte delle ~28M chiamate "piene"/s (motorSpeed con divisione +
-        // rami). totalCycles è già avanzato, quindi la rampa motore al riavvio è ok.
+        // maggior parte delle ~28M chiamate "piene"/s. totalCycles è già avanzato,
+        // quindi il conto alla rovescia del /RDY al riavvio è corretto.
         if (!motorTarget && !motorAtSpeed && settleCounter <= 0
                 && (totalCycles - switchCycle) >= CYCLES_MOTOR_STOP) {
             return;
@@ -333,19 +345,20 @@ public final class FloppyDrive {
         // caricamento a regime.
         if (!(motorTarget && motorAtSpeed)) statusDirty = true;
 
-        // PERF: a regime (motore acceso e già a velocità) la velocità è
-        // costante 100: evitiamo la divisione FP di motorSpeed() — eseguita
-        // ~7M volte/s durante un caricamento — che il profiler mostra come
-        // costo dominante del tick floppy. Nessun cambio di comportamento:
-        // in questo stato nessuna delle transizioni sotto si applica comunque.
-        if (!(motorAtSpeed && motorTarget)) {
-            double currentSpeed = motorSpeed();
-            // Transizioni stato motore
-            if (motorTarget && !motorAtSpeed && currentSpeed >= 100.0) {
-                motorAtSpeed = true;
-            } else if (!motorTarget && motorAtSpeed) {
-                motorAtSpeed = false;
+        // /RDY spin-up. A countdown, not a ramp: setMotor() reloads it whole at
+        // every motor-on, so a brief motor-off costs the full delay again even
+        // though the platter never slowed down. The motor going off drops
+        // DSKRDY at once; an empty drive never asserts it (isReadyRaw).
+        if (motorTarget) {
+            if (readyUpCycles > 0) {
+                readyUpCycles -= cycles;
+                if (readyUpCycles <= 0) {
+                    readyUpCycles = 0;
+                    motorAtSpeed = true;
+                }
             }
+        } else if (motorAtSpeed) {
+            motorAtSpeed = false;
         }
 
         // Rotazione del supporto. Modello di vAmiga (FloppyDrive::read8AndRotate:
@@ -514,21 +527,15 @@ public final class FloppyDrive {
                 || (totalCycles - switchCycle) < CYCLES_MOTOR_STOP;
     }
 
-    public double motorSpeed() {
-        long elapsed = totalCycles - switchCycle;
-        if (motorTarget) {
-            return Math.min(switchSpeed + 100.0 * ((double) elapsed / CYCLES_MOTOR_RAMP), 100.0);
-        } else {
-            return Math.max(switchSpeed - 100.0 * ((double) elapsed / CYCLES_MOTOR_STOP), 0.0);
-        }
-    }
-
     private void setMotor(boolean value) {
         if (motorTarget == value) return;
         statusDirty = true;
-        switchSpeed = motorSpeed();
         switchCycle = totalCycles;
         motorTarget = value;
+        // /RDY: the spin-up delay is reloaded WHOLE on every motor-on, and
+        // DSKRDY drops the instant the motor is commanded off.
+        motorAtSpeed  = false;
+        readyUpCycles = value ? CYCLES_DSKREADY_UP : 0L;
         if (floppySound != null) floppySound.onMotor(value, diskInserted);
     }
 
@@ -745,10 +752,8 @@ public final class FloppyDrive {
     public boolean isReadyRaw() {
         if (!connected) return false;
         if (motorTarget) {
-            // Motore comandato acceso: /RDY è DSKRDY, che WinUAE alza al termine
-            // della rampa (dskready_up_time) e solo se un disco è presente.
-            // motorAtSpeed è vero SOLO a velocità 100 — nessuna motorSpeed() qui,
-            // che a ogni CCK costava una divisione FP nel percorso caldo.
+            // Motore comandato acceso: /RDY è DSKRDY, che sale allo scadere del
+            // conto alla rovescia dello spin-up e solo se un disco è presente.
             return motorAtSpeed && diskInserted;
         }
         // Motore comandato spento: DSKRDY è già caduto, la linea porta il bit ID.
@@ -994,6 +999,8 @@ public final class FloppyDrive {
         // Modello FDC attivo solo per gli IPF; per gli ADF è bypassato (rate fisso).
         densityModel   = (image != null) && image.getFormat() == DiskImage.Format.IPF;
         if (diskInserted) { loadCurrentTrack(); randomiseAngularPosition(); }
+        // A disk dropped into a spinning drive restarts the /RDY delay.
+        if (motorTarget) { readyUpCycles = CYCLES_DSKREADY_UP; motorAtSpeed = false; }
         if (floppySound != null) floppySound.onDiskChange(diskInserted);
     }
 
@@ -1137,8 +1144,8 @@ public final class FloppyDrive {
 
         motorTarget          = false;
         motorAtSpeed         = false;
+        readyUpCycles        = 0L;
         switchCycle          = 0;
-        switchSpeed          = 0.0;
         totalCycles          = 0;
         currentTrack         = 0;
         targetTrack          = 0;
