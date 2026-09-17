@@ -804,9 +804,13 @@ public final class Paula {
             return;
         }
         dsk_dataReg = ((dsk_dataReg << 1) | (bit & 1)) & 0xFFFF;
-        dsk_dataRegCount++;
+        // The bit counter is ONE modulo-16 counter, shared with the active path: it is the
+        // index of the bit just shifted in, and nothing re-anchors it when the drive
+        // selection changes. The word boundary the raw track lands on therefore carries
+        // across every idle stretch.
+        dsk_dataRegCount = (dsk_dataRegCount + 1) & 15;
 
-        // loaddskbytr() dell'oracolo, gated da canloaddskbytr(): al confine di byte.
+        // DSKBYT (readable via 0x01A) is updated every byte.
         if ((dsk_dataRegCount & 7) == 0) {
             dskbytr_incoming = 0x8000 | (dsk_dataReg & 0xFF);
         }
@@ -828,7 +832,9 @@ public final class Paula {
         // word corrente — aggiornamento di DSKBYT e travaso nella FIFO — e solo dopo
         // si valuta il match di sync. Così la seconda word di sync dei settori
         // standard (che ne hanno due consecutive) viene comunque trasferita.
-        dsk_dataRegCount++;
+        // Same modulo-16 counter as the idle path (see shiftInDiskBitIdle): the word
+        // boundary is continuous across a change of drive selection.
+        dsk_dataRegCount = (dsk_dataRegCount + 1) & 15;
 
         // DSKBYT (readable via 0x01A) is updated every byte (8 bits).
         if ((dsk_dataRegCount & 7) == 0) {
@@ -837,8 +843,7 @@ public final class Paula {
         }
 
         // The real Paula writes a complete 16-bit word to the FIFO, not individual bytes.
-        if (dsk_dataRegCount >= 16) {
-            dsk_dataRegCount = 0;
+        if (dsk_dataRegCount == 0) {
             writeFifo(dsk_dataReg & 0xFFFF);
         }
 

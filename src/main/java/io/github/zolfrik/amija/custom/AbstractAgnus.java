@@ -2215,11 +2215,15 @@ public abstract class AbstractAgnus {
         // `word=0000 dsksync=0000` — possibili solo perche' DSKSYNC al reset vale ZERO
         // (vedi Paula.dsksync). Un drive DISCONNESSO non conta, come il `disabled`
         // dell'oracolo. Vedi docs/vamigats-paula-audio-plan.md §7.1.24.
-        if (++idleDiskBitAccum >= IDLE_DISK_CYCLES_PER_BIT) {
+        // The accumulator STANDS STILL while the bits come from somewhere else: it is this
+        // source's own cell fraction, not an absolute grid. While a drive is selected the
+        // shifter takes that drive's bits (or none, if the drive is empty) and the idle
+        // fraction keeps its value; on deselection it resumes from there. Counting it on
+        // absolute time threw the phase away at every selection window.
+        if (paula != null && !isAnyDriveSelected(ciab_prb)
+                && ++idleDiskBitAccum >= IDLE_DISK_CYCLES_PER_BIT) {
             idleDiskBitAccum = 0;
-            if (paula != null && !isAnyDriveSelected(ciab_prb)) {
-                paula.shiftInDiskBitIdle(0);
-            }
+            paula.shiftInDiskBitIdle(0);
         }
 
         // ── Paula tick (solo period-counter dei canali audio) ───────────────
@@ -3327,7 +3331,11 @@ public abstract class AbstractAgnus {
         if (drive == null) return;
         if (!drive.isConnected()) return;
         if (!drive.isSelected() && !drive.isBusy()) return;
-        if (drive.isSelected() && paula != null) {
+        // An empty drive has no medium and therefore no flux transitions: it clocks
+        // nothing into Paula's read shift register. While it is the selected drive the
+        // shifter stands still — the idle shifter does not run either, because a drive
+        // IS selected (see isAnyDriveSelected) — so the bit counter keeps its phase.
+        if (drive.isSelected() && drive.isDiskInserted() && paula != null) {
             drive.tick(cycles, diskBitConsumer);
         } else {
             drive.tick(cycles);
