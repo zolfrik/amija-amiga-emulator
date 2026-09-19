@@ -1175,6 +1175,19 @@ public abstract class AbstractAgnus {
     /** Posizione orizzontale corrente in system clock (0 – maxHpos-1). */
     private int hpos;
 
+    /**
+     * Il reset software ha ri-ancorato il contatore orizzontale: al prossimo {@code hpos 1}
+     * la riga interrotta va contata. Vedi {@code updateBeam()} e {@code internalReset()}.
+     */
+    private boolean resetRowPending = false;
+
+    /**
+     * L'accensione è passata. La prima volta che la CPU alza la linea di reset siamo alla
+     * costruzione della macchina — l'oracolo lì fa un reset HARD, e l'origine del pennello
+     * è {@code INITIAL_HPOS} per costruzione — quindi quel reset non ri-ancora niente.
+     */
+    private boolean poweredOn = false;
+
     /** Posizione verticale corrente in righe (0 – maxVpos-1). */
     private int vpos;
 
@@ -2901,6 +2914,20 @@ public abstract class AbstractAgnus {
         int nextHpos = hpos + 1;
         hpos = nextHpos;
 
+        // ⛔ Il reset dei chip custom RI-ANCORA il contatore orizzontale all'istante del
+        // reset: la riga in corso finisce lì e i CCK che le restavano spariscono, mentre
+        // il contatore verticale avanza come a un normale confine di riga. Oracolo:
+        // `custom_reset` fa `agnus_hpos = 0` (fuori da `if (hardreset)`) insieme a
+        // `agnus_hsync_start`/`hsync_counter`, e `custom_trigger_start()` — che contiene
+        // `vpos++` — gira al CCK dopo, su `agnus_hpos == 1`. Misurato sul ColdReboot della
+        // demo Jesus On E's: reset a `hpos 155` di 227, e il fotogramma dura 70 979 invece
+        // di 71 051, cioè 72 CCK in meno. Vedi docs/vamigats-import-order.md §26.
+        if (resetRowPending && nextHpos == 1) {
+            resetRowPending = false;
+            advanceTriggerVpos();
+            advanceRow();
+        }
+
         // ── Impulsi TOD verso le due CIA ────────────────────────────────────
         // Quale RIGA porta l'impulso lo decide la sorgente (CIA-B: ogni hsync; CIA-A:
         // la fine del vsync, riga CIAA_TOD_VPOS). DOVE cade dentro la riga lo calcola
@@ -3019,6 +3046,15 @@ public abstract class AbstractAgnus {
             return;
         }
 
+        advanceRow();
+    }
+
+    /**
+     * Avanza il contatore verticale di una riga e, se il fotogramma finisce, lo chiude.
+     * È la coda normale della fine riga; la chiama anche il reset software, che ri-ancora
+     * il contatore orizzontale e fa contare la riga interrotta (vedi {@code resetRowPending}).
+     */
+    private void advanceRow() {
         vpos++;
 
         // Numero di righe del frame dipendente da LOF (Long Frame), come hardware:
@@ -5197,6 +5233,15 @@ public abstract class AbstractAgnus {
             for (HdController c : hdControllers) c.reset();
             if (gary != null) gary.unmapHdControllers();
         }
+
+        // ⛔ Il /RES che l'istruzione CPU RESET porta ai chip custom ri-ancora il contatore
+        // orizzontale: la riga in corso finisce qui. Non all'accensione, dove l'origine del
+        // pennello è INITIAL_HPOS per costruzione. Vedi updateBeam() e §26 del piano.
+        if (!hardware && poweredOn) {
+            hpos = 0;
+            resetRowPending = true;
+        }
+        poweredOn = true;
 
         if (gary != null) updateAutoconfigPresence();
     }
