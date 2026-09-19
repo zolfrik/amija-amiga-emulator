@@ -5196,7 +5196,7 @@ public abstract class AbstractAgnus {
         if (copper  != null) copper.reset();
         if (blitter != null) blitter.reset();
         if (denise  != null) denise.reset(hardware);
-        if (paula   != null) paula.reset();
+        if (paula   != null) paula.reset(hardware);
 
         // Le CIA vengono resettate sia all'hard reset che via istruzione CPU RESET.
         if (ciaA != null) ciaA.reset();

@@ -252,7 +252,18 @@ public final class Paula {
         reset();
     }
 
-    public void reset() {
+    public void reset() { reset(true); }
+
+    /**
+     * Reset di Paula. {@code hardware} distingue l'accensione dal reset che l'istruzione CPU
+     * RESET porta ai peripheral: <b>DSKSYNC non sta su quella linea</b> e sopravvive al reset
+     * software, come nell'oracolo, dove {@code custom_reset} azzera {@code adkcon} e chiama
+     * {@code DSKLEN(0, 0)} ma non tocca {@code dsksync} ne' il suo latch {@code dsksync_on}.
+     * Azzerandolo anche a caldo, lo shifter di lettura a riposo — che scorre zeri — faceva
+     * match su {@code $0000} e alzava un DSKSYN che l'oracolo non ha: misurato 7 CCK dopo il
+     * ColdReboot della demo `Jesus On E's` (docs/vamigats-import-order.md §26).
+     */
+    public void reset(boolean hardware) {
         intena = 0;
         intreq = 0;
         intena2 = 0;
@@ -275,7 +286,9 @@ public final class Paula {
         }
 
         dskpth = dskptl = dsklen = 0;
-        dsksync = 0x0000;
+        if (hardware) {
+            dsksync = 0x0000;
+        }
         diskState = DriveDmaState.OFF;
         dsklenWriteCount = 0;
         dsk_fifo = 0;
@@ -287,7 +300,9 @@ public final class Paula {
         dsk_writeShift = 0;
         dsk_writeBits = 0;
         dsk_syncCycle = 0;
-        dsksyncOn = false;
+        if (hardware) {
+            dsksyncOn = false;
+        }
         dskbytr_incoming = 0;
 
         serper = 0;
