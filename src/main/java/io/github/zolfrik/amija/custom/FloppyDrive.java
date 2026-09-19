@@ -387,11 +387,12 @@ public final class FloppyDrive {
                 }
             }
         } else {
+            // A stopped motor freezes the platter, fraction of cell included: it
+            // resumes from the same phase at the next motor-on.
             if (indexPulse) {
                 indexPulse  = false;
                 statusDirty = true;
             }
-            resetBitClock();
         }
 
         // Settle: il seek è già applicato all'impulso di STEP (vedi executeStep);
@@ -704,6 +705,14 @@ public final class FloppyDrive {
         bitCyclesAccumulatorFixed = 0;
     }
 
+    /**
+     * Disk DMA start on this (selected) drive: the time accumulated towards the next
+     * cell is dropped, so the first cell of the transfer is counted from this instant.
+     */
+    public void restartBitCell() {
+        resetBitClock();
+    }
+
     // =========================================================================
     // Segnali di uscita
     // =========================================================================
@@ -929,7 +938,9 @@ public final class FloppyDrive {
         } else {
             cellCycles = null;
         }
-        resetBitClock();
+        // The cell phase is not touched either: the platter keeps turning while the
+        // head steps or the side changes (only a disk DMA start re-phases it, see
+        // restartBitCell).
 
         // Il cambio traccia/lato NON sposta il supporto: la testina resta allo stesso
         // angolo di rotazione. Se la nuova traccia ha una lunghezza diversa (long track

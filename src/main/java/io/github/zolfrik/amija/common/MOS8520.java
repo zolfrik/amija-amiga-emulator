@@ -156,6 +156,11 @@ public class MOS8520 {
     private int imr;    // Interrupt Mask Register (write only mask)
     private int icr;    // Interrupt Control Register (read state / write clear)
     private int icrAck; // ICR bits pending clear
+    /**
+     * Source bits of timer underflows counted by the CIA clock, raised in the current clock
+     * and not yet readable. They reach {@link #icr} one clock later (see {@link #tick()}).
+     */
+    private int icrStaged;
 
     private int pra, prb;   // Data registers
     private int ddra, ddrb; // Data direction registers
@@ -205,6 +210,7 @@ public class MOS8520 {
         imr = 0;
         icr = 0;
         icrAck = 0;
+        icrStaged = 0;
 
         pra = 0x00;
         prb = 0x00;
@@ -280,11 +286,9 @@ public class MOS8520 {
      * cui 5 sono questo clock di CIA e 1 è l'evento {@code INTREQ_INT} dal lato di Paula.
      * Prima di questa cura la linea scendeva nello <b>stesso</b> tick dell'evento.
      *
-     * <p>⚠️ Quel che <b>non</b> è portato: il bit di <i>sorgente</i> dell'ICR (0x01…0x10)
-     * resta visibile a una lettura nel tick dell'evento, mentre in WinUAE è staged anche lui
-     * (vive in {@code icr2} fino al travaso). Serve un {@code icr} differito e tocca il
-     * pipeline di lettura/ack (CIAReadIcr/CIAClearIcr/CIAAckIcr): non c'è misura che oggi lo
-     * chieda, e finché non c'è non si tocca.
+     * <p>Clock-driven timer underflows do not come through here: their source bit is staged
+     * for one clock as well ({@link #icrStaged}) and raises /IRQ when it becomes readable,
+     * in {@link #tick()}.
      */
     private void triggerIrq() {
         delay |= CIASetInt0 | CIASetIcr0;
@@ -699,6 +703,11 @@ public class MOS8520 {
      */
     public void tick() {
 
+        // Timer underflow bits raised in the previous clock; they become readable in
+        // this one, after its pending ICR clears (see the end of this method).
+        final int icrTransfer = icrStaged;
+        icrStaged = 0;
+
         // ── Timer A Pipeline Processing ───────────────────────────────────────
 
         // (0) Un caricamento dal latch cancella il decremento del PROPRIO clock.
@@ -845,11 +854,10 @@ public class MOS8520 {
 
         // ── Interrupt Logic ─────────────────────────────────────────────────
 
-        if (timerAOutput) { icr |= 0x01; }
-        if (timerBOutput) { icr |= 0x02; diagTimerBUnderflows++; }
-        if ((timerAOutput && (imr & 0x01) != 0) || (timerBOutput && (imr & 0x02) != 0)) {
-            triggerIrq();
-        }
+        // A timer underflow is not readable in the clock it happens: its source bit is
+        // staged and reaches the ICR one clock later, together with the interrupt.
+        if (timerAOutput) { icrStaged |= 0x01; }
+        if (timerBOutput) { icrStaged |= 0x02; diagTimerBUnderflows++; }
         if ((delay & CIATODInt0) != 0) {
             icr |= 0x04;
             if ((imr & 0x04) != 0) triggerIrq();
@@ -865,6 +873,17 @@ public class MOS8520 {
             if ((delay & CIASetIcr1) != 0) { icr |= 0x80; }
             if ((delay & CIASetInt1) != 0) { irq = false; }
             if ((delay & CIAClearInt0) != 0) { irq = true; }
+        }
+
+        // Staged timer bits become readable after this clock's clears, so an ICR read
+        // made before they arrived neither returns nor acknowledges them, and cannot
+        // cancel their interrupt: an enabled source asserts /IRQ here.
+        if (icrTransfer != 0) {
+            icr |= icrTransfer;
+            if ((icrTransfer & imr) != 0) {
+                icr |= 0x80;
+                irq = false;
+            }
         }
 
         // Shift pipeline and update pin sync

@@ -147,6 +147,16 @@ public final class Paula {
     private int dsk_dataRegCount;
     private long dsk_fifo;
     private int dsk_fifoCount;
+    /**
+     * Words the current read DMA still has to assemble: DSKLEN's length at the start, one
+     * less for every word the read shifter completes into the FIFO.
+     */
+    private int dskWordsLeft;
+    /**
+     * Disk read slots requested for the current line: the FIFO fill level Paula reports
+     * to Agnus once per line (DMAL). See {@link #latchDmaRequests()}.
+     */
+    private int dskSlotRequests;
 
     // ── Shift register di SCRITTURA (Paula → testina) ────────────────────────
     // Speculare a dsk_dataReg: la DMA carica una word alla volta (loadWriteWord,
@@ -270,6 +280,8 @@ public final class Paula {
         dsklenWriteCount = 0;
         dsk_fifo = 0;
         dsk_fifoCount = 0;
+        dskWordsLeft = 0;
+        dskSlotRequests = 0;
         dsk_dataReg = 0;
         dsk_dataRegCount = 0;
         dsk_writeShift = 0;
@@ -842,9 +854,10 @@ public final class Paula {
             dskbytr_incoming = 0x8000 | byteVal; // DSKBYT set
         }
 
-        // The real Paula writes a complete 16-bit word to the FIFO, not individual bytes.
-        if (dsk_dataRegCount == 0) {
-            writeFifo(dsk_dataReg & 0xFFFF);
+        // A completed word enters the FIFO only while the read DMA is transferring.
+        if (dsk_dataRegCount == 0 && diskState == DriveDmaState.READ
+                && (getDmacon() & 0x0210) == 0x0210) {
+            assembleReadWord(dsk_dataReg & 0xFFFF);
         }
 
         // ── Rilevamento del sync, un bit alla volta ──────────────────────────────
@@ -904,6 +917,69 @@ public final class Paula {
      * On overflow (FIFO already full) the oldest word is silently discarded —
      * this matches real hardware where Agnus must drain the FIFO fast enough.
      */
+    /**
+     * A word completed by the read shifter during a read DMA. With the FIFO full the word
+     * is lost and not counted. When it is the last word of the transfer and the FIFO is
+     * empty, the DMA ends right here and that word never reaches the FIFO: Paula checks the
+     * FIFO before storing the last word.
+     */
+    private void assembleReadWord(int word) {
+        if (dskWordsLeft <= 0 || dsk_fifoCount == 3) return;
+        dskWordsLeft--;
+        if (dskWordsLeft == 0 && dsk_fifoCount == 0) {
+            finishDiskDma();
+            return;
+        }
+        writeFifo(word);
+    }
+
+    /** End of a disk DMA transfer: DSKBLK follows two CCK later. */
+    private void finishDiskDma() {
+        diskState = DriveDmaState.OFF;
+        dsklen &= 0xC000;
+        dskWordsLeft = 0;
+        scheduleIntreq(1, DSKBLK_DELAY_CYCLES);
+    }
+
+    /** Delay of DSKBLK after the end of the transfer, in master cycles (2 CCK). */
+    private static final int DSKBLK_DELAY_CYCLES = 4;
+
+    /**
+     * DMAL, once per line: Paula reports to Agnus the DMA slots it wants in this line. For
+     * the disk, the number of words waiting in the read FIFO; for audio, the channels with
+     * a word request pending. A word assembled or a request raised later waits for the
+     * next line.
+     */
+    public void latchDmaRequests() {
+        dskSlotRequests = diskState == DriveDmaState.READ ? dsk_fifoCount : 0;
+        syncAudioChannels();
+        for (AudioChannel ch : audioChannels) {
+            ch.dmalRequest = ch.dmaRequest;
+        }
+    }
+
+    /**
+     * Whether read slot {@code slot} (0..2) carries a request: the requested slots are the
+     * last ones of the three.
+     */
+    public boolean isDiskReadSlotRequested(int slot) {
+        return dskSlotRequests >= 3 - slot;
+    }
+
+    /**
+     * A requested disk read slot: the oldest FIFO word, or -1 with the FIFO empty. The
+     * transfer ends when every word has been assembled and the FIFO is drained, or in the
+     * third slot with one word still queued, which is then never transferred.
+     */
+    public int serviceDiskReadSlot(int slot) {
+        int word = readFifo();
+        if (word >= 0 && diskState == DriveDmaState.READ && dskWordsLeft == 0
+                && (dsk_fifoCount == 0 || (slot == 2 && dsk_fifoCount == 1))) {
+            finishDiskDma();
+        }
+        return word;
+    }
+
     private void writeFifo(int word) {
         if (dsk_fifoCount == 3) {
             // Overflow: discard oldest (top 16 bits), keep two most-recent words.
@@ -1170,10 +1246,13 @@ public final class Paula {
             dsk_fifoCount    = 0;
             dsk_writeShift   = 0;
             dsk_writeBits    = 0;
+            // The selected drive's cell clock restarts from this write.
+            if (agnus != null) agnus.restartSelectedDrivesBitCell();
 
             diskState = DriveDmaState.READ; // Default; overridden below
             dsklenWriteCount = 0;
             int length = dsklen & 0x3FFF;
+            dskWordsLeft = length;
 
             if (length == 0) {
                 raiseInterrupt(0x0002); // DSKBLK
@@ -1518,8 +1597,7 @@ public final class Paula {
         dsklen = (dsklen & 0xC000) | (count & 0x3FFF);
 
         if (count <= 0) {
-            diskState = DriveDmaState.OFF;
-            raiseInterrupt(0x0002); // DSKBLK
+            finishDiskDma();
         }
     }
 
@@ -1531,7 +1609,19 @@ public final class Paula {
         return new int[]{addr, len};
     }
 
+    /** Whether the audio slot of {@code chan} carries a request reported at this line's DMAL. */
     public boolean isAudioDmaRequest(int chan) {
+        return chan >= 0 && chan < 4 && audioChannels[chan].dmalRequest
+                && audioChannels[chan].dmaRequest;
+    }
+
+    /**
+     * Whether channel {@code chan} is <b>asking</b> for a word, regardless of the DMAL.
+     * The two levels are distinct: the channel raises the request as soon as its period
+     * expires, while {@link #isAudioDmaRequest} also requires the request to have been
+     * reported at the start of this line — a request raised later waits for the next one.
+     */
+    public boolean isAudioChannelDmaRequest(int chan) {
         return chan >= 0 && chan < 4 && audioChannels[chan].dmaRequest;
     }
 
@@ -1658,6 +1748,8 @@ public final class Paula {
         private final int index;
         private boolean dmaEnabled;
         private boolean dmaRequest;
+        /** The request as reported at this line's DMAL: only then does the slot fetch. */
+        private boolean dmalRequest;
         private int dmaPointer;
         private int remainingWords;
         private int nextWord;
@@ -1716,6 +1808,7 @@ public final class Paula {
         private void reset() {
             dmaEnabled = false;
             dmaRequest = false;
+            dmalRequest = false;
             dmaPointer = 0;
             remainingWords = 0;
             nextWord = 0;
@@ -2105,6 +2198,7 @@ public final class Paula {
          */
         private void receiveDmaWord(int value) {
             if (!dmaRequest) return;
+            dmalRequest = false;
             audDAT[index] = value & 0xFFFF;
             nextWord = value & 0xFFFF;
             nextWordValid = true;

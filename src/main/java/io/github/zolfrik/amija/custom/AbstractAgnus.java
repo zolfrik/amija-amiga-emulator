@@ -1041,6 +1041,7 @@ public abstract class AbstractAgnus {
     // Il confronto per ordinali è equivalente al confronto per reference enum.
     // 228 e non 227: la riga lunga NTSC (LOL) ha un CCK in più, indice 227.
     private final int[] busOwners = new int[228];
+    public final int[] diagDmaOwners = new int[228]; // DIAG-TEMP
 
 
     /** DIAG (Fase F): conta, per gli accessi del loop firework ($3000-$31FF), quante
@@ -1179,9 +1180,13 @@ public abstract class AbstractAgnus {
 
     /**
      * Campo corrente per l'interlace: 0 = frame pari (lungo), 1 = frame dispari (corto).
-     * In modalità non-interlace è sempre 0.
+     * In modalità non-interlace non alterna: resta al valore che l'ultima VPOSW ha scritto.
+     * ⛔ All'ACCENSIONE vale 1, cioè LOF = 0 e fotogramma CORTO (312 righe PAL, 262 NTSC):
+     * è lo stato da cui il bootblock del Kickstart passa, e da qui in avanti lo muove solo
+     * una VPOSW. Il valore sta nella dichiarazione, non nel reset, perché il reset dei chip
+     * custom NON lo tocca — vedi {@code internalReset()} e docs/vamigats-import-order.md §26.
      */
-    private int field = 0;
+    private int field = 1;
 
     /**
      * {@code agnus_vsync} dell'oracolo: l'impulso di vsync è in corso. Serve solo a far
@@ -1432,6 +1437,13 @@ public abstract class AbstractAgnus {
     private static final int SLOT_REFRESH_2 = 3;
     private static final int SLOT_REFRESH_3 = 5;
     private static final int SLOT_REFRESH_4 = 226; // 0xE2, fine riga (oltre la max fetch bitplane)
+
+    /**
+     * CCK at which Paula's DMA requests (DMAL) are latched for the disk and audio slots of
+     * the line: the cycle after the strobe slot ({@link #SLOT_REFRESH_4}) that opens the
+     * line's fixed DMA slots.
+     */
+    private static final int DMAL_LATCH_CCK = 0;
 
     // Disk DMA: 3 slot per riga (vAmiga p[0x07/09/0B] = CCK 7, 9, 11).
     private static final int SLOT_DISK_1 = 7;
@@ -2319,6 +2331,9 @@ public abstract class AbstractAgnus {
             bplReqLater = -1;
             dmaconBplSeq = bitplaneDmaEnabled;
 
+            // DMAL: Paula reports the disk and audio requests for this line.
+            if (cck == DMAL_LATCH_CCK && paula != null) paula.latchDmaRequests();
+
             // 1. Slot fissi ad alta priorità (DAS: refresh/disk/audio) — tipo di
             //    slot letto dalla tabella sequencer precomputata DMA_SLOT_TABLE.
             //    Le condizioni dinamiche (DMACON enable, richiesta canale) restano
@@ -2330,10 +2345,16 @@ public abstract class AbstractAgnus {
                     busTakenByCustom = true;
                     break;
                 case DMASLOT_DISK:
-                    if (isDiskDMAEnabled() && paula != null && paula.isDiskDmaEnabled()) {
-                        handleDiskDMA(cck);
-                        owner = BusOwner.DISK;
-                        busTakenByCustom = true;
+                    // A write DMA owns all three slots; a read uses only the slots Paula
+                    // requested for this line (DMAL).
+                    if (isDiskDMAEnabled() && paula != null) {
+                        int slot = (cck - SLOT_DISK_1) / 2;
+                        if (paula.isDiskDmaWrite() ? paula.isDiskDmaEnabled()
+                                                   : paula.isDiskReadSlotRequested(slot)) {
+                            handleDiskDMA(cck);
+                            owner = BusOwner.DISK;
+                            busTakenByCustom = true;
+                        }
                     }
                     break;
                 case DMASLOT_AUDIO:
@@ -2599,6 +2620,7 @@ public abstract class AbstractAgnus {
             }
 
             busOwners[cck] = owner.ordinal();
+            diagDmaOwners[cck] = owner.ordinal(); // DIAG-TEMP
 
             // ⚠️ DOPO l'arbitraggio, non prima: in `do_cck()` l'ordine è
             // `generate_dma_requests()` (che contiene `generate_bpl`) e POI
@@ -2636,11 +2658,12 @@ public abstract class AbstractAgnus {
             }
         }
 
-        // BLS (vAmiga executeUntilBusIsFree): conteggio dei CCK in cui la CPU vuole il
-        // bus ma non lo ottiene. Alimenta `bls` (calcolato a inizio del prossimo CCK).
-        // Aggiornato una sola volta per CCK.
+        // BLS: CCKs in which a pending chip-bus access of the CPU has been denied. Feeds
+        // `bls` (computed at the start of the next CCK), updated once per CCK. A
+        // synchronous CIA cycle (VPA) waits for the E clock, not for the chip bus: it
+        // does not count, and like any access off the chip bus it leaves the count at 0.
         if (cckEdge) {
-            boolean cpuWants = cpuBusReq.as && !cpuBusReq.iack;
+            boolean cpuWants = cpuBusReq.as && !cpuBusReq.iack && !cpuBusResp.vpa;
             if (cpuWants && !cpuBusResp.ack) cpuBusWaitCck++;
             else                             cpuBusWaitCck = 0;
         }
@@ -3331,11 +3354,11 @@ public abstract class AbstractAgnus {
         if (drive == null) return;
         if (!drive.isConnected()) return;
         if (!drive.isSelected() && !drive.isBusy()) return;
-        // An empty drive has no medium and therefore no flux transitions: it clocks
-        // nothing into Paula's read shift register. While it is the selected drive the
-        // shifter stands still — the idle shifter does not run either, because a drive
-        // IS selected (see isAnyDriveSelected) — so the bit counter keeps its phase.
-        if (drive.isSelected() && drive.isDiskInserted() && paula != null) {
+        // The selected drive clocks Paula's read shift register at its own cell rate
+        // whenever its motor turns, disk or no disk: an empty drive delivers zero cells.
+        // With the motor stopped it delivers nothing, and the idle shifter does not run
+        // either, because a drive IS selected (see isAnyDriveSelected).
+        if (drive.isSelected() && paula != null) {
             drive.tick(cycles, diskBitConsumer);
         } else {
             drive.tick(cycles);
@@ -3420,29 +3443,31 @@ public abstract class AbstractAgnus {
      * Legge una word dalla Chip RAM e la invia al controller disco di Paula.
      */
     private void handleDiskDMA(int cck) {
-        if (paula == null || !paula.isDiskDmaEnabled()) return;
+        if (paula == null) return;
         int addr = paula.getDiskDmaPointer();
 
-        if (paula.isDiskDmaWrite()) {
-            // WRITE: Chip RAM → drive. Una word viene prelevata solo quando lo shift
-            // register di scrittura di Paula si è svuotato (16 celle MFM), così il
-            // trasferimento procede al ritmo di rotazione del supporto e non a quello
-            // degli slot DMA.
-            if (!paula.isWriteWordNeeded()) return;
-            int data = chipRAM.readWord(dmaChipAddr(addr));
-            openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
-            paula.loadWriteWord(data);
-            paula.advanceDiskDma();
-        } else {
-            // READ: FIFO → Chip RAM — only in READ state (not WAIT).
-            // In WAIT, bits are still shifted in looking for sync, but no DMA transfer to RAM.
-            if (paula.isDiskDmaReading() && paula.fifoWordCount() > 0 && paula.getDiskLen() > 0) {
-                int word = paula.readFifo();
+        if (!paula.isDiskDmaWrite()) {
+            // READ: the oldest FIFO word goes to Chip RAM, and the pointer moves on even if
+            // the FIFO was emptied meanwhile.
+            int word = paula.serviceDiskReadSlot((cck - SLOT_DISK_1) / 2);
+            if (word >= 0) {
                 chipRAM.writeWord(dmaChipAddr(addr), word);
-                openBusLatch = word & 0xFFFF; // scrittura DMA su bus dati
-                paula.advanceDiskDma();
+                openBusLatch = word & 0xFFFF;
             }
+            paula.setDiskDmaPointer((addr + 2) & 0x1FFFFE);
+            return;
         }
+        if (!paula.isDiskDmaEnabled()) return;
+
+        // WRITE: Chip RAM → drive. Una word viene prelevata solo quando lo shift
+        // register di scrittura di Paula si è svuotato (16 celle MFM), così il
+        // trasferimento procede al ritmo di rotazione del supporto e non a quello
+        // degli slot DMA.
+        if (!paula.isWriteWordNeeded()) return;
+        int data = chipRAM.readWord(dmaChipAddr(addr));
+        openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
+        paula.loadWriteWord(data);
+        paula.advanceDiskDma();
     }
 
     private FloppyDrive getSelectedDrive() {
@@ -5088,14 +5113,19 @@ public abstract class AbstractAgnus {
         updateDmaFlags();
         bitplaneDmaEnabledLateThisFrame = false;
         lastCompletedFrameHadLateBitplaneDma = false;
-        // LOF=0 al reset, cioè frame CORTO (312 righe PAL, 262 NTSC): WinUAE
-        // `custom_reset` fa `lof_store = lof_display = 0;`. Il frame diventa lungo quando
-        // il software scrive VPOSW con il bit 15, ed è così che il bootblock del Kickstart
-        // ci passa. Partivamo invece dal frame lungo — il default di vAmiga — e finché
-        // nessuno scriveva VPOSW l'intera fase CPU↔pennello del boot era spostata:
-        // misurato fotogramma per fotogramma contro l'oracolo in
-        // docs/vamigats-paula-audio-plan.md §13.3.
-        field = 1;
+        // LOF=0 SOLO all'accensione, cioè frame CORTO (312 righe PAL, 262 NTSC). Il frame
+        // diventa lungo quando il software scrive VPOSW con il bit 15, ed è così che il
+        // bootblock del Kickstart ci passa; l'intera fase CPU↔pennello del boot dipende
+        // da qui (docs/vamigats-paula-audio-plan.md §13.3).
+        // ⛔ Il bit NON appartiene al reset dei chip custom: la linea /RES che l'istruzione
+        // CPU RESET porta ai peripheral non lo tocca. Azzerarlo anche sul soft reset dava
+        // 312 righe per fotogramma finché il Kickstart non riscriveva VPOSW — un centinaio
+        // di fotogrammi dopo ogni ColdReboot, con lo sfasamento in tempo assoluto che ne
+        // segue (docs/vamigats-import-order.md §26). Il valore d'accensione sta nella
+        // dichiarazione di `field`, perché la costruzione non passa da qui.
+        if (hardware) {
+            field = 1;
+        }
         vsyncActive = false;
         displayRowShift = 0;
         syncsStopped = false;
@@ -5129,7 +5159,7 @@ public abstract class AbstractAgnus {
         lastCiaADdra = -1;
         if (copper  != null) copper.reset();
         if (blitter != null) blitter.reset();
-        if (denise  != null) denise.reset();
+        if (denise  != null) denise.reset(hardware);
         if (paula   != null) paula.reset();
 
         // Le CIA vengono resettate sia all'hard reset che via istruzione CPU RESET.
@@ -6104,6 +6134,14 @@ public abstract class AbstractAgnus {
     public void commitSelectedDriveSideForRead() {
         FloppyDrive d = getSelectedDrive();
         if (d != null) d.commitPendingSideForRead();
+    }
+
+    /** Disk DMA start: re-phases the cell clock of every selected drive. */
+    public void restartSelectedDrivesBitCell() {
+        if (df0.isSelected()) df0.restartBitCell();
+        if (df1.isSelected()) df1.restartBitCell();
+        if (df2.isSelected()) df2.restartBitCell();
+        if (df3.isSelected()) df3.restartBitCell();
     }
 
     /** DIAG (Fase A-ter): stato side del drive selezionato all'avvio DMA. cmdSide =

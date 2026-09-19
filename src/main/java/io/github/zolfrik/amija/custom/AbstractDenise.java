@@ -659,7 +659,17 @@ public abstract class AbstractDenise {
         return Math.min(planes, 6);
     }
 
-    public void reset() {
+    public void reset() { reset(true); }
+
+    /**
+     * Reset di Denise. {@code hardware} distingue l'accensione dal reset che l'istruzione CPU
+     * RESET porta ai peripheral: i <b>registri di colore</b> non stanno su quella linea e
+     * sopravvivono al reset software, come sull'hardware. Misurato sulla demo `Jesus On E's`,
+     * che si riavvia per caricare la seconda parte: dopo il RESET lo schermo resta del COLOR00
+     * del programma (`$800`) finché il Kickstart non scrive il proprio `$444`, mentre azzerando
+     * la palette diventava nero. Vedi docs/vamigats-import-order.md §26.
+     */
+    public void reset(boolean hardware) {
         bplcon0 = bplcon1 = bplcon2 = 0;
         updateBplcon0Derived();
         bplcon3 = 0x0C00;
@@ -667,12 +677,15 @@ public abstract class AbstractDenise {
         initialBplcon0 = initialBplcon2 = 0;
         hstrt = 0; hstop = 0;
         hstrtLineStart = 0; hstopLineStart = 0;
+        mainStartHstrt = -1; mainStartHstop = -1;
         hflop = true;
         borderBufferIsDirty = 0;
         borderColor = 0;
         clxdat = 0; clxcon = 0;
-        Arrays.fill(palette,  0);
-        Arrays.fill(paletteLineStart, 0);
+        if (hardware) {
+            Arrays.fill(palette,  0);
+            Arrays.fill(paletteLineStart, 0);
+        }
         Arrays.fill(bpldat,   0);
         Arrays.fill(bpldatPipe, 0);
         Arrays.fill(shiftReg, 0);
@@ -741,8 +754,12 @@ public abstract class AbstractDenise {
         // write del Copper sono già su hpos pari, perciò la quantizzazione è un no-op
         // per loro: cambia solo i write CPU, allineandoli a vAmiga. (cck = hpos/2)
         int cck   = (agnus != null) ? agnus.getHpos() >> 1 : 0;
-        int pixel = Math.max(0, cck * 4 - 4 * HBLANK_MIN);
-        writeRegisterAtPixel(address, value, pixel);
+        int rawPixel = cck * 4 - 4 * HBLANK_MIN;
+        // The horizontal window comparator also runs before HBLANK_MIN, at the head of
+        // the line (see updateBorderBuffer): the DIW writes keep their real position there.
+        int reg = address & 0x1FE;
+        boolean diw = reg == 0x08E || reg == 0x090 || reg == 0x1E4;
+        writeRegisterAtPixel(address, value, diw ? rawPixel : Math.max(0, rawPixel));
     }
 
     public void writeRegisterAtPixel(int address, int value, int pixel) {
@@ -1410,110 +1427,80 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     /**
-     * First horizontal-counter value a line's rendering no longer compares: the window
-     * closes at the HSSTRT of the following line. See {@link #updateBorderBuffer()}.
+     * Sub-pixels of the line's own part of the horizontal comparator: counter
+     * {@code 2 * HBLANK_MIN} up to the wrap at 0x1C8. Past the wrap the counter belongs to
+     * the head of the next line.
      */
-    private static final int HDIW_SCAN_END_COUNTER = 10;
+    private static final int HDIW_MAIN_SUBPIXELS = 2 * (0x1C8 - 2 * HBLANK_MIN);
 
+    /** Inputs and outcome of the last main-part scan, to reuse bBuffer when nothing moved. */
+    private boolean mainStartFlop, mainEndFlop;
+    private int     mainStartHstrt = -1, mainStartHstop = -1;
+
+    /**
+     * Border mask of the line: the horizontal display window is a flip-flop that the
+     * counter comparisons set (start) and clear (stop), and that carries its state from
+     * one line to the next.
+     *
+     * <p>The comparator runs on every counter value the beam sweeps, not only on those of
+     * the rendered buffer. The head of the line - the counter values 2 to 35 after the
+     * wrap, 0 to 35 on the first line of a frame - precedes HBLANK_MIN and produces no
+     * pixel, but it is compared with the DIW coordinates in force at that instant, writes
+     * made there included (they are recorded at their real, negative, position). A start
+     * coordinate in the head therefore opens the window for the rest of the line.
+     *
+     * <p>The main part starts from the state the head leaves, with the coordinates of that
+     * instant, and applies the later DIW writes at their positions. With equal coordinates
+     * the stop wins, the two comparisons being separate and in that order.
+     */
     private void updateBorderBuffer(boolean frameStart) {
-        // On the first line of a frame the beam sweeps the counter values below the start
-        // of the buffer as well, so a horizontal start coordinate of 0 or 1 - which a
-        // normal line never reaches, the counter wrapping 0x1C8 to 2 - matches here and
-        // opens the window for the whole frame. No pixel comes out of this pass: it only
-        // carries the flip-flop, so it runs before the dirty check.
-        if (frameStart) {
-            boolean hf0 = hflop;
-            for (int c = 0; c < HBLANK_MIN * 2; c++) {
-                if (c == hstrtLineStart) hflop = true;
-                if (c == hstopLineStart) hflop = false;
-            }
-            if (hflop != hf0) borderBufferIsDirty = Math.max(borderBufferIsDirty, 1);
-        }
-        if (borderBufferIsDirty == 0) return;
-        borderBufferIsDirty--;
+        int     hs = hstrtLineStart;
+        int     he = hstopLineStart;
+        boolean hf = hflop;
+        int     diwIdx = 0;
 
-        // ⛔ La finestra orizzontale è un FLIP-FLOP che ATTRAVERSA la riga: si parte dallo
-        // stato in cui la riga precedente l'ha lasciata, non da un confronto di livello.
-        // È `denise_hdiw` dell'oracolo — una variabile persistente che cambia SOLO nelle due
-        // transizioni (`do_hstrt_ecs`/`do_hstop_ecs`) e non viene mai ricalcolata a inizio
-        // riga.
-        //
-        // Il counter itera [2..455] (wrap $1C8→2) e non raggiunge mai valori come 0 o $1FF:
-        // con hstrt/hstop fuori da quel range i fronti non scattano MAI, e il flip-flop
-        // resta dov'è per sempre. È esattamente il comportamento che serve nei due casi che
-        // il banco §17 e i giochi mettono alla prova:
-        //   - Barbarian (DIWSTRT H=$00, DIWSTOP H=$FF→$1FF): nessuna transizione, la
-        //     finestra resta APERTA perché lo era (hflop parte a true al reset) → schermo
-        //     visibile. Un confronto di livello dava lo stesso esito, ma per un'altra strada;
-        //   - DIWH/minmax (DIWSTRT H=$FF, DIWSTOP oltre $1C7): la finestra si apre a 255 e
-        //     NON si richiude, quindi la riga dopo comincia già aperta. ⛔ Qui il confronto
-        //     di livello sbagliava — ricalcolava "chiusa" a inizio riga — ed è il rosso che
-        //     ha fatto scoprire la forma giusta: 4 righe su minmax, l'oracolo che disegna
-        //     dalla colonna 30 dove noi partivamo dalla 314 (= hstart 255).
-        //
-        // ⚠️ hflop è aggiornato in coda a questo metodo con lo stato di fine riga, quindi
-        // qui porta esattamente ciò che la riga precedente ha lasciato.
-        // ⛔ E le COORDINATE si prendono dallo stato di inizio riga, non da quello vivo:
-        // vedi hstrtLineStart.
-        int     hs      = hstrtLineStart;
-        int     he      = hstopLineStart;
-        int     counter = HBLANK_MIN * 2;
-        boolean hf      = hflop;
-        int     diwIdx  = 0;
-
-        // A line's rendering is shorter than the buffer, so the comparator does not run
-        // over all 912 sub-pixels. The rendered window closes at the HSSTRT of the
-        // FOLLOWING line, not at the line wrap, and the start/stop comparison happens only
-        // inside it: a coordinate the counter reaches outside that window is never
-        // compared at all.
-        //
-        // The window therefore spans counter 28 to 463 (= 9 after the wrap), 436 units out
-        // of 454, which leaves a hole of 18 units - counters 10 to 27 - that no line
-        // renders. Small DIWSTRT coordinates that fall in the hole never open the window.
-        //
-        // The buffer starts at HBLANK_MIN (counter 36, cck 18); scanning all 912 sub-pixels
-        // would cover 456 units, with no hole and twenty units too many, so the counter
-        // would reach 37 and coordinates 10 to 37 would produce transitions that carry into
-        // the next line through hflop.
-        //
-        // The truncated tail lies entirely outside the regression crop (raw indices 856 to
-        // 911), including the right-border wrap cell at 836 to 839, which stays inside the
-        // window. Only the state handed to the next line changes.
-        //
-        // The eight head units (counters 28 to 35, cck 14 to 17) stay out as well: they
-        // precede HBLANK_MIN, so they are outside the framebuffer.
-        final int scanPixels = Math.min(HPIXELS, 2 * ((0x1C8 - HBLANK_MIN * 2)
-                                                      + (HDIW_SCAN_END_COUNTER - 2)));
-
-        int i = 0;
-        for (; i < scanPixels; i++) {
-            // Applica eventuali modifiche DIW in questo pixel
+        // Head: no pixel comes out of it, only the flip-flop state.
+        for (int counter = frameStart ? 0 : 2; counter < 2 * HBLANK_MIN; counter++) {
+            final int i = 2 * (counter - 2 * HBLANK_MIN);
             while (diwIdx < diwChanges.size() && i >= diwChanges.keys[diwIdx]) {
                 RegChange c = diwChanges.elements[diwIdx++];
                 if      (c.reg == 0x08E) hs = c.value;
                 else if (c.reg == 0x090) he = c.value;
             }
-            // L'ordine è quello dell'oracolo (drawing.cpp, lts_*_ecs): prima lo start, poi
-            // lo stop, ed entrambi `if` separati ⇒ a coordinate uguali lo STOP vince.
             if (counter == hs) hf = true;
             if (counter == he) hf = false;
+        }
 
-            // Incrementa counter ogni 2 pixel (1 CCK)
-            if ((i & 1) == 1) {
-                counter = (counter + 1) & 0x1FF;
-                if (counter == 0x1C8) counter = 2;  // wrap PAL
+        // Same inputs as the previous line and no DIW write in between: same mask.
+        if (borderBufferIsDirty == 0 && hf == mainStartFlop
+                && hs == mainStartHstrt && he == mainStartHstop) {
+            hflop = mainEndFlop;
+            return;
+        }
+        if (borderBufferIsDirty > 0) borderBufferIsDirty--;
+        mainStartFlop  = hf;
+        mainStartHstrt = hs;
+        mainStartHstop = he;
+
+        int counter = 2 * HBLANK_MIN;
+        int i = 0;
+        for (; i < HDIW_MAIN_SUBPIXELS; i++) {
+            while (diwIdx < diwChanges.size() && i >= diwChanges.keys[diwIdx]) {
+                RegChange c = diwChanges.elements[diwIdx++];
+                if      (c.reg == 0x08E) hs = c.value;
+                else if (c.reg == 0x090) he = c.value;
             }
+            if (counter == hs) hf = true;
+            if (counter == he) hf = false;
+            if ((i & 1) == 1) counter++;
             bBuffer[i] = hf ? (byte) 0xFF : (byte) borderColor;
         }
-        // Tail outside the rendered window: no comparison, the state stays as it is.
-        if (i < HPIXELS) {
-            Arrays.fill(bBuffer, i, HPIXELS, hf ? (byte) 0xFF : (byte) borderColor);
-        }
+        // Past the wrap: the next line's head decides, this line keeps its final state.
+        Arrays.fill(bBuffer, i, HPIXELS, hf ? (byte) 0xFF : (byte) borderColor);
 
-        if (hflop != hf) {
-            hflop = hf;
-            borderBufferIsDirty = Math.max(borderBufferIsDirty, 1);
-        }
+        if (hflop != hf) borderBufferIsDirty = Math.max(borderBufferIsDirty, 1);
+        hflop       = hf;
+        mainEndFlop = hf;
     }
 
     // =========================================================================

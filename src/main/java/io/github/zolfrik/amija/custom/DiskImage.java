@@ -714,6 +714,12 @@ public final class DiskImage implements AutoCloseable {
             prevBit = encodeSector(physicalTrack, s, base + s * SECTOR_SIZE, words, wordPos, prevBit);
             wordPos += 544;
         }
+        // The last sector ends at the end of the track, so the gap word it runs into is
+        // word 0: its first clock bit follows the sector's last data bit, like the word
+        // before every other sector.
+        if (sectorsPerTrack > 0) {
+            words[0] = prevBit != 0 ? 0x2AAA : 0xAAAA;
+        }
 
         for (int i = 0; i < words.length; i++) {
             encoded[i * 2] = (byte) ((words[i] >>> 8) & 0xFF);
