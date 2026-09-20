@@ -465,6 +465,21 @@ public abstract class AbstractAgnus {
      * <p>Lo misura lo sweep {@code Denise/Sprites/sprdrop1÷4}: quattro volte lo stesso
      * programma con la WAIT del Copper a due CCK di distanza l'una dall'altra, attorno al
      * primo slot DMA dello sprite.
+     *
+     * <p>⛔ <b>Solo se quello slot è un ciclo DMA ALLOCATO</b>, e non è un dettaglio: nel
+     * {@code bitplane_rga_ptmod()} dell'oracolo la cattura sta dentro {@code if (r->alloc > 0)},
+     * e uno slot sprite entra nella pipe RGA solo quando {@code generate_sprites()} viene
+     * chiamata — cioè quando {@code handle_dmal()} lo consente ({@code !agnus_vb_active}),
+     * quando {@code dmaen(DMA_SPRITE)} è vero e quando il sequencer del canale lo chiede.
+     * Dove non c'è slot non c'è cattura, non c'è write-back, e la scrittura del Copper
+     * <b>sopravvive</b>. È esattamente la stessa lista di condizioni che decide il
+     * trasferimento, e per questo la domanda si fa una volta sola, in
+     * {@link #spriteSlotAllocated(int, boolean, long)}.
+     *
+     * <p>⚠️ Misurato su Agony: la sua lista Copper riarma SPRxPT dei canali 3 e 4 a
+     * {@code vpos 0}, in pieno VBlank, ai CCK 32 e 36 — cioè il CCK prima dei rispettivi
+     * slot. Guardando il solo latch del sequencer buttavamo via entrambe le scritture a
+     * ogni quadro, e gli sprite del gufo disegnavano residui della riga precedente.
      */
     private boolean sprPointerWriteIsLost(int sidx) {
         if (!__inCopperWrite) {
@@ -474,12 +489,47 @@ public abstract class AbstractAgnus {
         if (next >= DMA_SLOT_TABLE.length || DMA_SLOT_TABLE[next] != DMASLOT_SPRITE) {
             return false;
         }
-        final int idx = (next - SLOT_SPRITE_0) / 4;
-        if (idx != sidx || idx < 0 || idx > 7) {
+        if ((next - SLOT_SPRITE_0) / 4 != sidx) {
             return false;
         }
-        final int sub = ((next - SLOT_SPRITE_0) % 4) / 2;
-        return sprSlotFetch[idx][sub];
+        // Lo slot è quello del CCK prossimo, quindi lo si interroga con i valori che avrà
+        // allora: il bit di DMA sprite deciso per lui è quello che oggi sta nel primo
+        // stadio del pipe, e la sua decisione è caduta al CCK precedente.
+        return spriteSlotAllocated(next, spriteDmaPipe, (masterClock >> 1) - 1);
+    }
+
+    /**
+     * Vero se lo slot sprite al CCK {@code cck} è un ciclo DMA <b>allocato</b>: quello in cui
+     * Agnus preleva davvero una word e fa avanzare SPRxPT. È il {@code r->alloc} dell'oracolo,
+     * e mette in fila tutte le condizioni che di là governano la nascita dello slot:
+     * {@code handle_dmal()} non chiama {@code generate_sprites()} durante il VBlank di Agnus,
+     * {@code generate_sprites()} richiede {@code dmaen(DMA_SPRITE)} e il proprio sequencer di
+     * canale ({@link #sprSlotFetch}, che porta già {@code dmacycle} e il conflitto col
+     * bitplane), e l'accensione di SPREN proprio sul CCK di decisione lascia lo slot
+     * <b>deciso ma non allocato</b> (vedi {@link #spriteDmaOnDecisionCck}).
+     *
+     * <p>La risposta serve in due punti, e devono darla insieme: l'arbitraggio, per sapere se
+     * prelevare, e {@link #sprPointerWriteIsLost(int)}, per sapere se quello slot catturerà il
+     * puntatore un CCK prima. Sono lo stesso {@code alloc}, quindi è una funzione sola.
+     *
+     * @param dmaSeq       il bit di DMA sprite <b>deciso</b> per quello slot, due CCK prima
+     * @param decisionCck  il CCK globale in cui quello slot è stato deciso
+     */
+    private boolean spriteSlotAllocated(int cck, boolean dmaSeq, long decisionCck) {
+        if (syncsStopped || !dmaSeq) {
+            return false;
+        }
+        if (vpos < SPRITE_RESET_LINE || vpos >= maxVpos) {
+            return false;
+        }
+        if (decisionCck == spriteDmaOnDecisionCck) {
+            return false;
+        }
+        final int idx = (cck - SLOT_SPRITE_0) / 4;
+        if (idx < 0 || idx > 7) {
+            return false;
+        }
+        return sprSlotFetch[idx][((cck - SLOT_SPRITE_0) % 4) / 2];
     }
 
     /**
@@ -2531,20 +2581,17 @@ public abstract class AbstractAgnus {
                 }
             }
 
-            if (!busTakenByCustom && !beamFrozen && spriteDmaSeq
-                    && vpos >= SPRITE_RESET_LINE && vpos < maxVpos
-                    && DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE
-                    // ⛔ ...e lo slot DECISO nel CCK subito dopo l'accensione del DMA
-                    // sprite è «deciso ma NON allocato»: nessun prelievo e nessun
-                    // avanzamento del puntatore. Vedi spriteDmaOnDecisionCck.
-                    && (masterClock >> 1) - 2 != spriteDmaOnDecisionCck) {
+            // ⛔ Le condizioni di allocazione dello slot — VBlank, DMA sprite deciso due CCK
+            // prima, sequencer di canale, e l'accensione di SPREN che lascia lo slot «deciso
+            // ma NON allocato» — stanno tutte in spriteSlotAllocated(), perché la stessa
+            // domanda la fa anche sprPointerWriteIsLost(): dove non c'è slot non c'è cattura
+            // del puntatore, e la scrittura del Copper sopravvive.
+            if (!busTakenByCustom && DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE
+                    && spriteSlotAllocated(cck, spriteDmaSeq, (masterClock >> 1) - 2)) {
                 int sprIdx = (cck - SLOT_SPRITE_0) / 4;
-                int sprSub = ((cck - SLOT_SPRITE_0) % 4) / 2;
-                if (sprIdx >= 0 && sprIdx <= 7 && sprSlotFetch[sprIdx][sprSub]) {
-                    handleSpriteDMA(cck);
-                    owner = OWNER_VALUES[BusOwner.SPRITE0.ordinal() + sprIdx];
-                    busTakenByCustom = true;
-                }
+                handleSpriteDMA(cck);
+                owner = OWNER_VALUES[BusOwner.SPRITE0.ordinal() + sprIdx];
+                busTakenByCustom = true;
             }
 
             // 3. Copper — CADENZA PARI (modello vAmiga; Fase 1 refactoring timing, C1/C2/A2).
