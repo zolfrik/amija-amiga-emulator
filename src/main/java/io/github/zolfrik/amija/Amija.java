@@ -124,6 +124,11 @@ public class Amija implements RemotePlayControl {
     private java.awt.Component inputComponent;
 
     // --- Componenti della macchina corrente (ricreati a ogni avvio a freddo) ---
+    // I supporti montati sulla macchina accesa, fotografati alla sua costruzione;
+    // null quando non c'è macchina. Sono l'hardware in vigore: il popup ci confronta
+    // la lista dei supporti per sapere che cosa l'utente sta aggiungendo, e quello
+    // aspetta il prossimo avvio invece di cambiare la macchina sotto al gioco.
+    private ConfigDialog.DriveHardware activeHardware;
     private MasterClock clock;
     private Paula paula;
     private VirtualCRT virtualCRT;
@@ -1188,9 +1193,11 @@ public class Amija implements RemotePlayControl {
         int oldSlowRam = config.slowRamKb();
         int oldFastRam = config.fastRamKb();
 
+        boolean oldAuto = config.autoEnabled();
+
         ConfigDialog.Result result = ConfigDialog.show(frame, config,
                 this::takeScreenshotFile, this::updateShaderParam,
-                this::saveState, this::loadState, this);
+                this::saveState, this::loadState, this, activeHardware);
 
         // Mentre il popup era aperto una sessione di gioco a distanza può essersi aperta
         // (il pulsante «Collega» agisce subito) o essere caduta. Montare e smontare
@@ -1218,12 +1225,23 @@ public class Amija implements RemotePlayControl {
                                 oldMonitorIndex)
                         || oldVideoMode != config.videoMode()
                         || oldRenderer != config.renderer();
+                // Fuori da Expert i parametri della macchina non li sceglie l'utente: li
+                // deduce l'emulatore dalla lista dei supporti. Cambiarli subito
+                // vorrebbe dire spegnere e riaccendere l'Amiga perché è stato aggiunto
+                // un drive, cioè buttare via la partita in corso per una modifica che
+                // l'utente credeva innocua. Restano quindi scritti in configurazione e
+                // diventano effettivi al prossimo avvio; la lista li marca con un
+                // asterisco perché si sappia che stanno aspettando. Il ragionamento vale
+                // finché si resta nella stessa modalità: accendere o spegnere Expert
+                // ridefinisce la macchina da capo, e lì il riavvio è il punto.
+                boolean deferHardware = oldAuto && config.autoEnabled();
                 boolean needsColdRestart = windowChanged
-                        || oldChipset != config.chipset()
-                        || !oldKickstart.equals(config.kickstartPath())
-                        || oldChipRam != config.chipRamKb()
-                        || oldSlowRam != config.slowRamKb()
-                        || oldFastRam != config.fastRamKb();
+                        || (!deferHardware
+                            && (oldChipset != config.chipset()
+                                || !oldKickstart.equals(config.kickstartPath())
+                                || oldChipRam != config.chipRamKb()
+                                || oldSlowRam != config.slowRamKb()
+                                || oldFastRam != config.fastRamKb()));
                 if (guestMode) {
                     // Un ospite non ha macchina da riavviare: dei parametri qui sopra gli
                     // riguardano solo quelli della finestra, e la sola cosa che va rifatta
@@ -1253,7 +1271,7 @@ public class Amija implements RemotePlayControl {
                     }
                     if (wasRunning) {
                         clock.resume();
-                        applyFloppyChanges(oldDisks, oldEnabled, oldReadOnly);
+                        applyFloppyChanges(oldDisks, oldEnabled, oldReadOnly, -1, deferHardware);
                     } else {
                         resumeOrStart();
                     }
@@ -1330,7 +1348,7 @@ public class Amija implements RemotePlayControl {
      * daemon per non bloccare l'EDT, mentre la macchina è già in esecuzione.
      */
     private void applyFloppyChanges(String[] oldDisks, boolean[] oldEnabled, boolean[] oldReadOnly) {
-        applyFloppyChanges(oldDisks, oldEnabled, oldReadOnly, -1);
+        applyFloppyChanges(oldDisks, oldEnabled, oldReadOnly, -1, false);
     }
 
     /**
@@ -1339,6 +1357,21 @@ public class Amija implements RemotePlayControl {
      */
     private void applyFloppyChanges(String[] oldDisks, boolean[] oldEnabled,
                                     boolean[] oldReadOnly, int skipIndex) {
+        applyFloppyChanges(oldDisks, oldEnabled, oldReadOnly, skipIndex, false);
+    }
+
+    /**
+     * @param deferHardware collegare e scollegare un drive è una modifica all'hardware:
+     *                      con {@code true} non si tocca, e i drive restano quelli con
+     *                      cui la macchina è stata accesa fino al prossimo avvio. Il
+     *                      disco dentro un drive collegato continua a cambiare a caldo,
+     *                      compreso il drive che la configurazione considera ormai
+     *                      staccato: lì il disco viene espulso e il lettore resta,
+     *                      vuoto, pronto a riceverne un altro.
+     */
+    private void applyFloppyChanges(String[] oldDisks, boolean[] oldEnabled,
+                                    boolean[] oldReadOnly, int skipIndex,
+                                    boolean deferHardware) {
         if (agnus == null) return;
         // Prima del diff: propaga agli altri drive i dischi dello zip multi-disco
         // eventualmente inserito in DF0 (o rimuove quelli dello zip precedente).
@@ -1364,11 +1397,13 @@ public class Amija implements RemotePlayControl {
             for (int i = 0; i < 4; i++) {
                 FloppyDrive drive = dfs[i];
                 if (drive == null || i == skipIndex) continue;
-                if (newEnabled[i] != oldEnabled[i]) {
+                if (!deferHardware && newEnabled[i] != oldEnabled[i]) {
                     drive.setConnected(newEnabled[i]);
                 }
                 applyFloppySound(drive, i);
-                if (!newEnabled[i]) {
+                // Rimandando l'hardware conta il drive che c'è, non quello che la
+                // configurazione descrive: è ancora lì e il suo disco si cambia.
+                if (!(deferHardware ? drive.isConnected() : newEnabled[i])) {
                     // Drive scollegato: niente disco dentro.
                     if (drive.isDiskInserted()) {
                         System.out.println("[CONFIG] DF" + i + ": espulsione (drive scollegato)");
@@ -2107,6 +2142,9 @@ public class Amija implements RemotePlayControl {
                 }
             }
             display.setDrives(dfs[0], dfs[1], dfs[2], dfs[3]);
+            // Da qui in poi questo è l'hardware in vigore: quello che il popup non può
+            // più cambiare senza un riavvio.
+            activeHardware = captureDriveHardware();
 
             // LED di stato + suoni estetici del floppy (entrambi da configurazione).
             // Il LED HD riflette gli hard disk presenti (WHDLoad e/o master/slave, in ordine).
@@ -2283,6 +2321,26 @@ public class Amija implements RemotePlayControl {
         gamePort2 = null;
         cpu = null;
         agnus = null;
+        activeHardware = null;
+    }
+
+    /**
+     * Fotografa i supporti appena montati sulla macchina: quanti drive per floppy sono
+     * collegati, le immagini degli hard disk in ordine di unità e l'archivio WHDLoad in
+     * esecuzione. È il metro con cui il popup distingue una modifica immediata (il disco
+     * dentro un drive che c'è già) da una che pretende hardware nuovo.
+     */
+    private ConfigDialog.DriveHardware captureDriveHardware() {
+        int floppies = 0;
+        for (int i = 0; i < 4; i++) {
+            if (config.driveEnabled(i)) floppies++;
+        }
+        java.util.List<String> hds = new java.util.ArrayList<>();
+        for (int u = 0; u < AmigaConfig.HD_UNITS.length; u++) {
+            if (config.hdEnabled(u)) hds.add(norm(config.hdDisk(u)));
+        }
+        String whd = config.whdloadEnabled() ? norm(config.whdloadFile()) : "";
+        return new ConfigDialog.DriveHardware(floppies, hds, whd);
     }
 
     /**

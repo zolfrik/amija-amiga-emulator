@@ -179,6 +179,28 @@ public final class ConfigDialog {
     private static final Color FG        = new Color(0xE6, 0xE6, 0xE8);
     private static final Color ACCENT    = new Color(0x4D, 0x9D, 0xE0);
 
+    /**
+     * I supporti montati sulla macchina accesa: quanti drive per floppy esistono, quali
+     * immagini di hard disk sono collegate e quale archivio WHDLoad è in esecuzione.
+     *
+     * <p>È il metro con cui la lista unica distingue ciò che sta già girando da ciò che
+     * l'utente sta aggiungendo: aggiungere un drive è una modifica all'hardware, e
+     * l'hardware di una macchina accesa non cambia. Le voci che ne pretendono uno nuovo
+     * sono marcate con un asterisco e diventano effettive al prossimo avvio.
+     *
+     * @param floppyDrives numero di drive per floppy collegati
+     * @param hdDisks      immagini degli hard disk montati, nell'ordine delle unità
+     * @param whdloadFile  archivio WHDLoad in esecuzione; stringa vuota se nessuno
+     */
+    public record DriveHardware(int floppyDrives, java.util.List<String> hdDisks,
+            String whdloadFile) {
+
+        public DriveHardware {
+            hdDisks = java.util.List.copyOf(hdDisks);
+            whdloadFile = whdloadFile == null ? "" : whdloadFile.trim();
+        }
+    }
+
     private ConfigDialog() {}
 
     /**
@@ -191,13 +213,16 @@ public final class ConfigDialog {
      *                            parametri dello shader OpenGL (popup "...").
      * @param onSaveState         salva lo slot e ritorna il messaggio di esito.
      * @param onLoadState         carica lo slot; vedi {@link LoadStateOutcome}.
+     * @param hardware            i supporti della macchina accesa, o {@code null} se non
+     *                            ce n'è una: senza macchina non c'è niente da rimandare
+     *                            e la lista non marca nulla.
      */
     public static Result show(JFrame parent, AmigaConfig config,
             java.util.function.Supplier<java.io.File> onScreenshot,
             java.util.function.BiConsumer<String, Float> shaderParamUpdater,
             java.util.function.Supplier<String> onSaveState,
             java.util.function.Supplier<LoadStateOutcome> onLoadState,
-            RemotePlayControl remotePlay) {
+            RemotePlayControl remotePlay, DriveHardware hardware) {
         final Result[] result = { Result.CANCEL };
 
         // Prima di costruire qualsiasi cosa: i tooltip di questo popup vanno letti, non
@@ -515,7 +540,7 @@ public final class ConfigDialog {
         // delle tre sezioni qui sopra. Vedi DriveList.
         // -------------------------------------------------------------------
         JPanel media = section(Messages.t("section.media"));
-        DriveList driveList = new DriveList(dialog, config, media);
+        DriveList driveList = new DriveList(dialog, config, media, hardware);
         driveList.seed(MediaState.fromConfig(config));
 
         // I supporti come li vedono le tre sezioni classiche, e come rimetterceli.
@@ -1790,6 +1815,13 @@ public final class ConfigDialog {
      * WHDLoad non convivono, perché sarebbero entrambi il volume di avvio. Quello che
      * non è più aggiungibile sparisce dal filtro del browser, quindi la lista non può
      * arrivare in uno stato che la macchina non saprebbe montare.
+     *
+     * <p>Aggiungere una voce che pretende un drive nuovo è una modifica all'hardware, e
+     * su una macchina accesa non si fa: la voce viene marcata con un asterisco, la
+     * legenda in fondo alla sezione dice perché, e il drive compare al prossimo avvio.
+     * Quello che invece resta immediato è il contenuto dei drive che già esistono —
+     * togliere e rimettere un floppy mentre il gioco gira è la cosa più normale del
+     * mondo, e il drive rimasto vuoto non sparisce prima del riavvio.
      */
     private static final class DriveList {
 
@@ -1837,12 +1869,15 @@ public final class ConfigDialog {
         private final JDialog owner;
         private final AmigaConfig config;
         private final JPanel panel;
+        /** I supporti della macchina accesa, o {@code null} se non ce n'è una. */
+        private final DriveHardware hardware;
         private final java.util.List<Item> items = new java.util.ArrayList<>();
 
-        DriveList(JDialog owner, AmigaConfig config, JPanel panel) {
+        DriveList(JDialog owner, AmigaConfig config, JPanel panel, DriveHardware hardware) {
             this.owner = owner;
             this.config = config;
             this.panel = panel;
+            this.hardware = hardware;
         }
 
         /**
@@ -1965,21 +2000,51 @@ public final class ConfigDialog {
             return n;
         }
 
+        /** Posizione della voce fra quelle del suo stesso tipo (0 = la prima). */
+        private int ordinal(int index) {
+            Kind kind = items.get(index).kind;
+            int nth = 0;
+            for (int i = 0; i < index; i++) {
+                if (items.get(i).kind == kind) nth++;
+            }
+            return nth;
+        }
+
+        /**
+         * {@code true} se la voce pretende un drive che la macchina accesa non ha, o un
+         * supporto che non si sostituisce a caldo: diventerà effettiva al prossimo avvio.
+         *
+         * <p>Il floppy fa eccezione a metà: il drive è hardware, il disco che ci sta
+         * dentro no. Una voce che sta in un drive già collegato è quindi immediata, e lo
+         * resta anche dopo averla tolta e rimessa. Hard disk e WHDLoad invece vengono
+         * montati alla costruzione della macchina: lì basta che il file sia diverso.
+         */
+        private boolean pending(int index) {
+            if (hardware == null || index >= items.size()) return false;
+            Item item = items.get(index);
+            int nth = ordinal(index);
+            return switch (item.kind) {
+                // Uno zip multi-disco in DF0 vuole un drive per ciascun disco.
+                case FLOPPY -> nth >= hardware.floppyDrives()
+                        || (nth == 0 && zipDiskCount(item.path) > hardware.floppyDrives());
+                case HARDDISK -> nth >= hardware.hdDisks().size()
+                        || !hardware.hdDisks().get(nth).equals(item.path);
+                case WHDLOAD -> !hardware.whdloadFile().equals(item.path);
+            };
+        }
+
         /** Etichetta della riga: il posto in cui il file è finito, o "Drive n" se vuota. */
         private String labelFor(int index) {
             if (index >= items.size()) {
                 return Messages.t("drive.entry.generic", index + 1);
             }
-            Item item = items.get(index);
-            int nth = 0;
-            for (int i = 0; i < index; i++) {
-                if (items.get(i).kind == item.kind) nth++;
-            }
-            return switch (item.kind) {
+            int nth = ordinal(index);
+            String text = switch (items.get(index).kind) {
                 case FLOPPY -> Messages.t("drive.entry.floppy", nth);
                 case HARDDISK -> Messages.t(nth == 0 ? "drive.entry.hd.master" : "drive.entry.hd.slave");
                 case WHDLOAD -> Messages.t("drive.entry.whdload");
             };
+            return pending(index) ? text + " *" : text;
         }
 
         /** Chiave del tooltip della riga, per tipo (le etichette sono dinamiche). */
@@ -1995,8 +2060,17 @@ public final class ConfigDialog {
         void rebuild() {
             panel.removeAll();
             int rows = items.size() + (allowed(items.size()).isEmpty() ? 0 : 1);
+            boolean anyPending = false;
             for (int row = 0; row < rows; row++) {
                 addEntryRow(row);
+                anyPending |= pending(row);
+            }
+            // La legenda compare solo quando c'è un asterisco da spiegare.
+            if (anyPending) {
+                JLabel legend = label(Messages.t("drive.entry.pending.legend"));
+                legend.setForeground(ACCENT);
+                tip("drive.entry.pending.legend", legend);
+                addRow(panel, rows, legend, null, null);
             }
             panel.revalidate();
             panel.repaint();
