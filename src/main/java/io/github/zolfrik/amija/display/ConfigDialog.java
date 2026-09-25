@@ -784,22 +784,19 @@ public final class ConfigDialog {
         tip("label.overscan", overscanCheck);
         addRow(av, 5, overscanCheck, null, null);
 
-        JCheckBox ledCheck = check(Messages.t("label.leds"), config.ledsVisible());
-        tip("label.leds", ledCheck);
-        addRow(av, 6, ledCheck, null, null);
-
         JSpinner soundSpinner = new JSpinner(
                 new SpinnerNumberModel(config.floppySoundVolume(), 0, 10, 1));
         soundSpinner.setPreferredSize(dim(56, 26));
         JPanel soundWrap = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
         soundWrap.setOpaque(false);
         soundWrap.add(soundSpinner);
-        addRow(av, 7, "label.sound", soundWrap, null);
+        addRow(av, 6, "label.sound", soundWrap, null);
 
         // -------------------------------------------------------------------
         // Sezione: GUI — l'aspetto del popup e delle finestre di AmiJa, non della
-        // macchina emulata. Per ora la sola lingua; le prossime voci di interfaccia
-        // vanno qui invece che in "Sistema".
+        // macchina emulata: lingua, scala dell'interfaccia e il pannello dei LED, che
+        // è un ornamento della finestra e non un dispositivo. Le prossime voci di
+        // interfaccia vanno qui invece che in "Sistema".
         // -------------------------------------------------------------------
         JPanel gui = section(Messages.t("section.gui"));
 
@@ -836,6 +833,10 @@ public final class ConfigDialog {
             }
         });
         addRow(gui, 1, "label.uiScale", uiScaleCombo, null);
+
+        JCheckBox ledCheck = check(Messages.t("label.leds"), config.ledsVisible());
+        tip("label.leds", ledCheck);
+        addRow(gui, 2, ledCheck, null, null);
 
         // -------------------------------------------------------------------
         // Sezione: Stato salvato (i cinque slot, ognuno con la sua foto e la sua data)
