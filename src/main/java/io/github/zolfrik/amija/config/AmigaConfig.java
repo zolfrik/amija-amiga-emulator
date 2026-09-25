@@ -1306,8 +1306,8 @@ public final class AmigaConfig {
         }
 
         sb.append("\n# ABSOLUTE path of the .adf/.ipf/.zip inserted automatically at startup (empty = no disk).\n");
-        sb.append("# A zip holding several disks is a set: the first goes into DF0, the rest into the\n");
-        sb.append("# free connected drives, addressed as <archive>.zip!<n> (n = index inside the zip).\n");
+        sb.append("# A zip holding several disks is a set: the bootable one goes into DF0, the rest\n");
+        sb.append("# into the free connected drives, addressed as <archive>.zip!<n> (n = index in the zip).\n");
         for (int i = 0; i < 4; i++) {
             String d = driveDisk(i);
             line(sb, String.format(K_DRIVE_DISK, i), d == null ? "" : d);

@@ -152,9 +152,16 @@ public final class DiskImage implements AutoCloseable {
      * Apre un'immagine disco da uno <i>spec</i>: un normale percorso file oppure la
      * forma {@code <archivio>.zip!<n>} che indirizza l'n-esimo disco contenuto nello
      * zip (vedi {@link #zipEntrySpec(String, int)}).
+     *
+     * <p>Uno zip <b>senza</b> indice non è il suo primo disco ma il suo disco di
+     * <b>avvio</b> ({@link #zipDiskOrder}): è quello che si mette in DF0.
      */
     public static DiskImage open(String spec, boolean forceReadOnly) throws IOException {
-        return open(pathOf(spec), forceReadOnly, zipEntryIndexOf(spec));
+        Path path = pathOf(spec);
+        int index = hasZipEntryIndex(spec) ? zipEntryIndexOf(spec)
+                  : isZipDisk(spec)        ? zipBootDiskIndex(path)
+                  : 0;
+        return open(path, forceReadOnly, index);
     }
 
     /**
@@ -202,6 +209,11 @@ public final class DiskImage implements AutoCloseable {
         return java.nio.file.Paths.get(m.matches() ? m.group(1) : s);
     }
 
+    /** {@code true} se lo spec porta il suffisso {@code !n} con l'indice del disco. */
+    public static boolean hasZipEntryIndex(String spec) {
+        return spec != null && ZIP_SPEC.matcher(spec.trim()).matches();
+    }
+
     /** Indice del disco indirizzato dallo spec; 0 se non specificato. */
     public static int zipEntryIndexOf(String spec) {
         var m = ZIP_SPEC.matcher(spec.trim());
@@ -222,6 +234,48 @@ public final class DiskImage implements AutoCloseable {
             }
         }
         return names;
+    }
+
+    /**
+     * Ordine in cui i dischi di uno zip vanno inseriti nei drive: per primo quello
+     * <b>avviabile</b> (blocco di boot AmigaDOS valido), poi tutti gli altri
+     * nell'ordine in cui compaiono nell'archivio.
+     *
+     * <p>Serve perché dentro un archivio l'ordine è quello dei nomi, e il disco da
+     * cui si parte non è quasi mai il primo: «Data Disk 1..3» precede «Program
+     * Disk», «Data Disk» precede «Program Disk», e così via. Chi inserisce i
+     * floppy a mano mette in DF0 quello di avvio; questo metodo fa lo stesso.
+     *
+     * <p>Se nessun disco è avviabile — set di dischi dati, disco addon, gioco che
+     * si avvia da un'altra immagine — l'ordine resta quello dell'archivio.
+     *
+     * @return gli indici dei dischi, lunghezza pari al numero di dischi nello zip
+     */
+    public static int[] zipDiskOrder(Path zipPath) throws IOException {
+        int count = listZipDiskEntries(zipPath).size();
+        int boot = 0;
+        for (int i = 0; i < count; i++) {
+            try (DiskImage image = open(zipPath, true, i)) {
+                if (image.isBootable()) { boot = i; break; }
+            } catch (IOException | RuntimeException ignored) {
+                // Disco illeggibile: non è candidato all'avvio, si prosegue.
+            }
+        }
+        int[] order = new int[count];
+        int k = 0;
+        if (count > 0) order[k++] = boot;
+        for (int i = 0; i < count; i++) if (i != boot) order[k++] = i;
+        return order;
+    }
+
+    /** Indice del disco avviabile dello zip, 0 se non ce n'è (o se lo zip è illeggibile). */
+    public static int zipBootDiskIndex(Path zipPath) {
+        try {
+            int[] order = zipDiskOrder(zipPath);
+            return order.length > 0 ? order[0] : 0;
+        } catch (IOException e) {
+            return 0;
+        }
     }
 
     private static boolean isIpfMagic(byte[] raw) {
@@ -538,6 +592,55 @@ public final class DiskImage implements AutoCloseable {
             out[i * 4 + 3] = (byte)  value;
         }
         return num;
+    }
+
+    /**
+     * Blocco di boot: i settori 0 e 1 della traccia 0, decodificati dal MFM come
+     * fa il drive. Vale per ogni formato, perché parte dal bitstream.
+     *
+     * @return 1024 byte, oppure {@code null} se uno dei due settori non c'è
+     */
+    public byte[] readBootBlock() {
+        byte[] mfm = readTrackMFM(0);
+        int bits = getTrackBits(0);
+        if (bits <= 0) bits = mfm.length * 8;
+        byte[] boot = new byte[2 * SECTOR_SIZE];
+        byte[] sector = new byte[SECTOR_SIZE];
+        boolean[] found = new boolean[2];
+        for (int pos = 0; pos < bits; pos++) {
+            if (mfmWord(mfm, bits, pos) != MFM_SYNC) continue;
+            int start = pos;
+            while (mfmWord(mfm, bits, start) == MFM_SYNC) start += 16;
+            int num = decodeSectorMFM(0, mfm, bits, start, sector);
+            if (num < 0) continue;
+            if (num < 2 && !found[num]) {
+                System.arraycopy(sector, 0, boot, num * SECTOR_SIZE, SECTOR_SIZE);
+                found[num] = true;
+                if (found[0] && found[1]) return boot;
+            }
+            pos = start + SECTOR_MFM_WORDS * 16 - 1;
+        }
+        return found[0] && found[1] ? boot : null;
+    }
+
+    /**
+     * {@code true} se il disco si avvia: firma {@code DOS} e checksum del blocco
+     * di boot valido, gli stessi due controlli che fa lo strap del Kickstart. Un
+     * disco formattato ma senza {@code install}, o riempito dal duplicatore con
+     * un motivo di filler, non li supera — ed è per quello che il Kickstart
+     * continua a chiedere un disco.
+     */
+    public boolean isBootable() {
+        byte[] boot = readBootBlock();
+        if (boot == null) return false;
+        if (boot[0] != 'D' || boot[1] != 'O' || boot[2] != 'S') return false;
+        long sum = 0;
+        for (int i = 0; i < boot.length; i += 4) {
+            sum += ((boot[i]     & 0xFFL) << 24) | ((boot[i + 1] & 0xFFL) << 16)
+                 | ((boot[i + 2] & 0xFFL) << 8)  |  (boot[i + 3] & 0xFFL);
+            if (sum > 0xFFFFFFFFL) sum = (sum & 0xFFFFFFFFL) + 1; // riporto di fine giro
+        }
+        return sum == 0xFFFFFFFFL;
     }
 
     /** Cella MFM alla posizione indicata; la traccia è circolare. */

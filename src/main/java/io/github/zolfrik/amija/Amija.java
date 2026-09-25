@@ -1443,9 +1443,12 @@ public class Amija implements RemotePlayControl {
     /**
      * Distribuisce su DF1..DF3 i dischi di uno zip multi-disco inserito in DF0.
      *
-     * <p>Uno zip che contiene più .adf/.ipf è un set di dischi: il primo va in DF0
-     * (comportamento storico) e i successivi, nell'ordine in cui compaiono
-     * nell'archivio, nei drive seguenti — ma solo se collegati e vuoti. I dischi
+     * <p>Uno zip che contiene più .adf/.ipf è un set di dischi: in DF0 va quello di
+     * <b>avvio</b> e gli altri, nell'ordine in cui compaiono nell'archivio, nei
+     * drive seguenti — ma solo se collegati e vuoti. L'ordine è quello che dà
+     * {@link DiskImage#zipDiskOrder}: dentro l'archivio i nomi mettono spesso i
+     * dischi dati prima del disco programma, e partire dal primo lascerebbe il
+     * Kickstart a chiedere un disco per sempre. I dischi
      * così montati sono identificati dal percorso {@code <zip>!<n>}: quando lo zip
      * di DF0 viene sostituito o espulso vengono rimossi automaticamente, mentre
      * restano modificabili/espellibili uno a uno con la procedura normale.
@@ -1464,9 +1467,11 @@ public class Amija implements RemotePlayControl {
         String previous = norm(oldDf0);
 
         java.util.List<String> entries = java.util.List.of();
+        int[] order = new int[0];
         if (DiskImage.isZipDisk(df0)) {
             try {
                 entries = DiskImage.listZipDiskEntries(DiskImage.pathOf(df0));
+                order   = DiskImage.zipDiskOrder(DiskImage.pathOf(df0));
             } catch (IOException e) {
                 System.err.println("[CONFIG] ZIP non leggibile (" + df0 + "): " + e.getMessage());
             }
@@ -1480,12 +1485,14 @@ public class Amija implements RemotePlayControl {
                 disk = "";
                 config.setDriveDisk(i, "");
             }
-            // 2. l'i-esimo disco dello zip va nell'i-esimo drive, se libero e collegato.
-            if (i < entries.size() && disk.isEmpty() && config.driveEnabled(i)) {
-                config.setDriveDisk(i, DiskImage.zipEntrySpec(df0, i));
+            // 2. l'i-esimo disco dell'ordine di inserimento (DF0 ha preso il primo)
+            //    va nell'i-esimo drive, se libero e collegato.
+            if (i < order.length && disk.isEmpty() && config.driveEnabled(i)) {
+                int entry = order[i];
+                config.setDriveDisk(i, DiskImage.zipEntrySpec(df0, entry));
                 config.setDriveReadOnly(i, true);
-                System.out.println("[CONFIG] DF" + i + ": disco " + i + " dello zip -> "
-                        + entries.get(i));
+                System.out.println("[CONFIG] DF" + i + ": disco " + entry + " dello zip -> "
+                        + entries.get(entry));
             }
         }
     }
