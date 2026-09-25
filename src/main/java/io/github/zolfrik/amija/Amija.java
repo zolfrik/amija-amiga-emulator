@@ -1711,7 +1711,10 @@ public class Amija implements RemotePlayControl {
     private void applyFloppySound(FloppyDrive drive, int index) {
         if (drive == null || index < 0 || index >= floppySounds.length) return;
 
-        boolean enabled = config.floppySoundEnabled() && config.driveEnabled(index);
+        // Conta il lettore che c'è, non quello che la configurazione descrive: un drive
+        // rimasto vuoto sopravvive fino al prossimo avvio, e finché c'è fa rumore.
+        boolean enabled = config.floppySoundEnabled()
+                && (drive.isConnected() || config.driveEnabled(index));
         float gainDb = config.floppySoundGainDb();
         synchronized (floppySounds) {
             FloppySound sound = floppySounds[index];

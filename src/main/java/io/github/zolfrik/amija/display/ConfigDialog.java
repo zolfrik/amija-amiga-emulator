@@ -1945,7 +1945,12 @@ public final class ConfigDialog {
             String df0 = MediaState.text(state.floppyDisk[0]);
             for (int i = 0; i < 4; i++) {
                 String path = MediaState.text(state.floppyDisk[i]);
-                if (path.isEmpty() || !state.floppyConnected[i]) continue;
+                if (path.isEmpty() || !state.floppyConnected[i]) {
+                    // Il lettore che la macchina accesa ha davvero resta in lista anche
+                    // senza disco: quello che si è espulso è il floppy, non il drive.
+                    if (i < liveFloppyDrives()) items.add(emptyFloppy());
+                    continue;
+                }
                 if (i > 0 && isZipEntryOf(path, df0)) continue;
                 add(path, state.floppyReadOnly[i]);
             }
@@ -1961,6 +1966,21 @@ public final class ConfigDialog {
         private void add(String path, boolean readOnly) {
             Kind kind = Kind.of(path);
             if (kind != null) items.add(new Item(kind, path, readOnly));
+        }
+
+        /** Un drive per floppy collegato e vuoto: c'è, ma non ha niente dentro. */
+        private static Item emptyFloppy() {
+            return new Item(Kind.FLOPPY, "", false);
+        }
+
+        /** {@code true} se la voce è un lettore vuoto e non un disco. */
+        private static boolean isEmptyDrive(Item item) {
+            return item.path.isEmpty();
+        }
+
+        /** Quanti drive per floppy ha la macchina accesa (0 se non ce n'è una). */
+        private int liveFloppyDrives() {
+            return hardware == null ? 0 : hardware.floppyDrives();
         }
 
         /** I supporti della lista, distribuiti sui drive della macchina. */
@@ -2001,8 +2021,18 @@ public final class ConfigDialog {
             // possibile di un disco trascinato sulla finestra, e senza di lui il
             // drag-and-drop non avrebbe dove atterrare (AmigaDisplay rifiuta il drop sui
             // drive non collegati).
-            int connected = floppies;
-            if (floppies > 0) connected = Math.max(connected, zipDiskCount(s.floppyDisk[0]));
+            //
+            // Un lettore rimasto vuoto tiene il proprio posto nella lista finché la
+            // macchina è accesa — è lì davvero, e ci si può rimettere un disco — ma al
+            // prossimo avvio non viene più chiesto: si arriva quindi fino all'ultimo
+            // drive che ha un disco, e i vuoti che lo precedono restano collegati
+            // perché senza di loro non esisterebbe nemmeno quello.
+            int lastDisk = -1;
+            for (int i = 0; i < 4; i++) {
+                if (!MediaState.text(s.floppyDisk[i]).isEmpty()) lastDisk = i;
+            }
+            int connected = lastDisk + 1;
+            if (lastDisk >= 0) connected = Math.max(connected, zipDiskCount(s.floppyDisk[0]));
             if (items.isEmpty()) connected = 1;
             for (int i = 0; i < Math.min(4, connected); i++) s.floppyConnected[i] = true;
             return s;
@@ -2114,7 +2144,11 @@ public final class ConfigDialog {
 
         void rebuild() {
             panel.removeAll();
-            int rows = items.size() + (allowed(items.size()).isEmpty() ? 0 : 1);
+            // La riga vuota in coda serve ad aggiungere: se l'ultima voce è già un
+            // lettore vuoto, quella riga c'è di suo e una seconda sarebbe un doppione.
+            boolean trailing = !allowed(items.size()).isEmpty()
+                    && (items.isEmpty() || !isEmptyDrive(items.get(items.size() - 1)));
+            int rows = items.size() + (trailing ? 1 : 0);
             boolean anyPending = false;
             for (int row = 0; row < rows; row++) {
                 addEntryRow(row);
@@ -2142,22 +2176,31 @@ public final class ConfigDialog {
             JButton browse = browseButton();
             browse.addActionListener(e -> browseInto(index));
 
+            boolean hasMedia = filled && !isEmptyDrive(items.get(index));
             JToggleButton readOnly = readOnlyButton(filled && items.get(index).readOnly);
             // Il WHDLoad non si monta: AmiJa gli costruisce un hard disk suo, che deve
             // poter scrivere i salvataggi.
-            readOnly.setEnabled(filled && items.get(index).kind != Kind.WHDLOAD);
+            readOnly.setEnabled(hasMedia && items.get(index).kind != Kind.WHDLOAD);
             readOnly.addItemListener(e -> {
                 if (index < items.size()) items.get(index).readOnly = readOnly.isSelected();
             });
 
             JButton eject = ejectButton();
-            eject.setToolTipText(Messages.t("eject.entry.tooltip"));
-            eject.setEnabled(filled);
+            boolean liveDrive = filled && items.get(index).kind == Kind.FLOPPY
+                    && ordinal(index) < liveFloppyDrives();
+            eject.setToolTipText(Messages.t(liveDrive ? "eject.tooltip" : "eject.entry.tooltip"));
+            eject.setEnabled(hasMedia);
             eject.addActionListener(e -> {
-                if (index < items.size()) {
+                if (index >= items.size()) return;
+                // Su un lettore che la macchina ha davvero si espelle il disco e basta:
+                // il drive resta, vuoto, pronto a riceverne un altro. Sparisce al
+                // prossimo avvio, quando la lista non chiede più quel posto.
+                if (liveDrive) {
+                    items.set(index, emptyFloppy());
+                } else {
                     items.remove(index);
-                    rebuild();
                 }
+                rebuild();
             });
 
             JPanel trailing = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
