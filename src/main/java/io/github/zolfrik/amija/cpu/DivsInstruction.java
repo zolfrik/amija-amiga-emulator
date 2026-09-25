@@ -124,8 +124,12 @@ public class DivsInstruction extends AbstractM68kInstruction {
                         // Exception 5 (Divide by Zero) - Group 2
                         // Timing: 8-cycle sync gap (nn nn) then 38-cycle stacking
                         cpu.idleCycles(4); // First nn
-                        // triggerException(5) adds the second nn (4 cycles) and handles the Group 2 PC push (opcodeAddress)
-                        cpu.triggerException(5, cpu.getOpcodeAddress());
+                        // triggerException(5) adds the second nn (4 cycles) and stacks the PC.
+                        // Group 2: il PC impilato e' quello dell'istruzione SEGUENTE, non
+                        // quella che ha fallito — un RTE deve proseguire, non ridividere.
+                        int extensions = (hasExt1(eaMode, eaReg) ? 1 : 0)
+                                + (hasExt2(eaMode, eaReg, 2) ? 1 : 0);
+                        cpu.triggerException(5, cpu.getOpcodeAddress() + 2 + extensions * 2);
                         return false;
                     }
                     nextStep(cpu);

@@ -105,7 +105,12 @@ public class DivuInstruction extends AbstractM68kInstruction {
                     if (divisor == 0) {
                         cpu.writeCCR(cpu.x ? 0x10 : 0);
                         cpu.addInternalCycles(4);
-                        cpu.triggerException(5, cpu.getOpcodeAddress());
+                        // Group 2: il PC impilato e' quello dell'istruzione SEGUENTE, non
+                        // quella che ha fallito — un RTE deve proseguire, non ridividere.
+                        int extensions = (hasExt1(eaMode, eaReg) ? 1 : 0)
+                                + (hasExt2(eaMode, eaReg, 2) ? 1 : 0);
+                        int nxt = cpu.getOpcodeAddress() + 2 + extensions * 2;
+                        cpu.triggerException(5, nxt);
                         return false;
                     }
                     int msw = (int)(regVal >>> 16) & 0xFFFF;
