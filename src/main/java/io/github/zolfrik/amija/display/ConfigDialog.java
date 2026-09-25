@@ -30,7 +30,6 @@ import io.github.zolfrik.amija.assets.AssetPackage;
 import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.common.Chipset;
 import io.github.zolfrik.amija.common.VideoMode;
-import io.github.zolfrik.amija.common.Version;
 import io.github.zolfrik.amija.config.AmigaConfig;
 import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.i18n.Messages;
@@ -231,8 +230,7 @@ public final class ConfigDialog {
         // anche per le finestre figlie (tasti joystick, parametri shader, download).
         ToolTipManager.sharedInstance().setDismissDelay(TOOLTIP_DISMISS_MS);
 
-        String title = Messages.t("dialog.title") + " - " + Version.version();
-        JDialog dialog = new JDialog(parent, title, true);
+        JDialog dialog = new JDialog(parent, Messages.t("dialog.title"), true);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
 
         // -------------------------------------------------------------------

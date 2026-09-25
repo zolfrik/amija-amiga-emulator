@@ -337,7 +337,8 @@ public class AmigaDisplay {
             return;
         }
 
-        JFrame f = new JFrame(io.github.zolfrik.amija.i18n.Messages.t("app.title"));
+        JFrame f = new JFrame(io.github.zolfrik.amija.i18n.Messages.t("app.title")
+                + " - " + io.github.zolfrik.amija.common.Version.version());
         f.setUndecorated(this.windowMode != AmigaWindowMode.WINDOWED);
         AppIcons.apply(f);
         AppIcons.applyToTaskbar();
