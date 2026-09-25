@@ -85,7 +85,10 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.List;
 import java.util.Properties;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
@@ -108,6 +111,37 @@ import javax.swing.UnsupportedLookAndFeelException;
 public class Amija implements RemotePlayControl {
 
     private static final boolean VERBOSE = false;
+
+    /**
+     * JIT tuning passed to every JVM that runs the emulator. These options change only how
+     * HotSpot generates machine code: the emulated behaviour, and therefore every reference
+     * the project is validated against, is untouched by construction.
+     *
+     * <p>The emulation loop is one very large method ({@code AbstractAgnus.risingEdge},
+     * ~1880 bytecodes) invoked 7.09 million times a second. At the default limits the
+     * per-cycle helpers it calls stay real call instructions: raising the limits lets them
+     * fold into the loop body. Measured on a demo workload with the A/B bench in
+     * {@code tools/ab-bench}: <b>-2 %</b> of wall-time, reproduced in two independent
+     * sessions with six adjacent pairs agreeing in sign each time.
+     *
+     * <p><b>The optimum is not monotonic: more inlining is worse.</b> Doubling these values
+     * ({@code MaxInlineSize=200 FreqInlineSize=1000 InlineSmallCode=5000 MaxInlineLevel=20})
+     * measures <b>+3.8 %</b>, a slowdown twice the size of the gain, because the compiled
+     * body outgrows the register file and the instruction cache. Neither half of the set
+     * pays on its own — the effect belongs to the combination. Re-measure before changing a
+     * number, and never extrapolate one.
+     *
+     * <p>The same four options are passed by the native launcher, so they must be kept in
+     * step with {@code packaging/build-image.sh} and {@code packaging/build-image.ps1} in
+     * the public tree. Details and method: {@code docs/performance-jit-plan-2026-09-25.md}.
+     */
+    static final String[] JIT_OPTIONS = {
+        "-XX:MaxInlineSize=100",
+        "-XX:FreqInlineSize=500",
+        "-XX:InlineSmallCode=3000",
+        "-XX:MaxInlineLevel=15",
+    };
+
     // Modalita' video corrente (PAL/NTSC): letta da config a ogni avvio a freddo
     // (bootMachine). Il cambio nel popup F12 ha effetto solo dopo un cold restart.
     private VideoMode videoMode = VideoMode.PAL;
@@ -1735,17 +1769,21 @@ public class Amija implements RemotePlayControl {
         try {
             String javaBin = System.getProperty("java.home")
                     + File.separator + "bin" + File.separator + "java";
+            List<String> command = new ArrayList<>();
+            command.add(javaBin);
             // La home va RIPASSATA esplicitamente: qui si rilancia "java -cp ...", non il
             // launcher nativo, quindi le --java-options impostate da jpackage (fra cui
             // -Damija.home=$ROOTDIR) andrebbero perse e il nuovo processo ripiegherebbe
             // sulla cartella del jar, che dentro un'app-image e' <root>/app.
             // inheritIO: il nuovo processo riusa console/stdio correnti. La working dir
             // viene ereditata, quindi amiga.properties (gia' salvata) e' la stessa.
-            new ProcessBuilder(javaBin,
-                    "-D" + AppHome.PROPERTY + "=" + AppHome.home(),
-                    "--enable-native-access=ALL-UNNAMED",
-                    "-cp", System.getProperty("java.class.path"),
-                    Amija.class.getName())
+            command.add("-D" + AppHome.PROPERTY + "=" + AppHome.home());
+            command.add("--enable-native-access=ALL-UNNAMED");
+            command.addAll(Arrays.asList(JIT_OPTIONS));
+            command.add("-cp");
+            command.add(System.getProperty("java.class.path"));
+            command.add(Amija.class.getName());
+            new ProcessBuilder(command)
                     .inheritIO()
                     .start();
             System.exit(0); // lo shutdown hook spegne la macchina corrente

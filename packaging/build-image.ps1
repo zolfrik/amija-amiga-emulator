@@ -136,6 +136,13 @@ Write-Host "-- jpackage --type app-image"
 # NB: '-Damija.home=$ROOTDIR' e' fra apici SINGOLI di proposito. $ROOTDIR non e' una
 # variabile PowerShell: e' il segnaposto che il launcher jpackage sostituisce A RUNTIME
 # con la radice dell'immagine. E' cio' che rende la home indipendente dalla working dir.
+#
+# Le quattro -XX:*Inline* sono taratura del JIT: cambiano solo come HotSpot genera il
+# codice, non il comportamento emulato. Valgono -2% di wall-time (misurate col banco
+# tools/ab-bench, due sessioni, 6/6 coppie concordi ciascuna). ATTENZIONE: l'ottimo NON
+# e' monotono — raddoppiarle misura +3,8%, cioe' un rallentamento. Vanno tenute allineate
+# con Amija.JIT_OPTIONS, che le ripassa quando la JVM si rilancia da sola.
+# Metodo e numeri: docs/performance-jit-plan-2026-09-25.md (tree privato).
 & $JPackage --type app-image --name AmiJa --app-version $AppVersion `
             --input $InputDir --main-jar 'AmiJa.jar' `
             --runtime-image $Jre `
@@ -145,6 +152,10 @@ Write-Host "-- jpackage --type app-image"
             --copyright 'Copyright (C) 2026 zolfrik - GPL-3.0-or-later' `
             --java-options '--enable-native-access=ALL-UNNAMED' `
             --java-options '-Damija.home=$ROOTDIR' `
+            --java-options '-XX:MaxInlineSize=100' `
+            --java-options '-XX:FreqInlineSize=500' `
+            --java-options '-XX:InlineSmallCode=3000' `
+            --java-options '-XX:MaxInlineLevel=15' `
             --dest $Stage
 if ($LASTEXITCODE -ne 0) { throw "jpackage fallito." }
 
