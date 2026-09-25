@@ -21,6 +21,7 @@
 package io.github.zolfrik.amija.whdload;
 
 import io.github.zolfrik.amija.common.AppHome;
+import io.github.zolfrik.amija.common.VideoMode;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -47,7 +48,8 @@ import java.util.zip.CRC32;
  *       {@code DEFAULT_RESOURCE_DIR};</li>
  *   <li>il contenuto del gioco estratto dall'archivio;</li>
  *   <li>una {@code S/Startup-Sequence} generata che entra nella cartella del gioco
- *       e lancia {@code WHDLoad <gioco>.slave PRELOAD};</li>
+ *       e lancia {@code WHDLoad <gioco>.slave} con gli argomenti che l'installazione
+ *       dichiara nelle tooltype della propria icona (vedi {@link #findLaunch});</li>
  *   <li>una {@code S/WHDLoad.prefs} <b>generata</b> dai parametri di configurazione
  *       (sezione {@code whdload.prefs.*} di {@code amiga.properties}, iniettati con
  *       {@link #withPrefs(String)}); in assenza, un set di ripiego per l'avvio immediato.</li>
@@ -98,7 +100,10 @@ public final class WhdLoadManager {
     private static final int SAVES_BLOCKS = 8192;   // ~4 MB
 
     /** Versione del costruttore: cambiandola si invalida la cache degli .hdf. */
-    private static final int BUILD_VERSION = 9;
+    private static final int BUILD_VERSION = 10;
+
+    /** Profondità massima esplorata cercando le dump dei kickstart. */
+    private static final int KICKSTART_SCAN_DEPTH = 3;
 
     /** Lunghezza massima dei nomi file/cartella su AmigaDOS FFS. */
     private static final int FFS_MAX_NAME = 30;
@@ -107,17 +112,29 @@ public final class WhdLoadManager {
     private static volatile boolean cleanupHookRegistered = false;
 
     /**
+     * Memoria delle risposte di {@link #declaredVideoMode}, per archivio+data di
+     * modifica. L'array di un elemento distingue "letto, non dice nulla" da "mai letto".
+     */
+    private static final Map<String, VideoMode[]> declaredVideoModeCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
      * Mappa CRC32 → nome del file kickstart atteso da WHDLoad in {@code DEVS:Kickstarts}.
      * I {@code .RTB} di accompagnamento sono già nei file di sistema WHDLoad; serve la
      * dump grezza del ROM. (Come RetroArch, i ROM dell'utente sono associati per CRC.)
      */
     private static final Map<Long, String> KICKSTART_BY_CRC = new HashMap<>();
     static {
-        KICKSTART_BY_CRC.put(0x9ED783D0L, "kick33180.A500");   // KS 1.2 33.180 (256 KB)
+        KICKSTART_BY_CRC.put(0xA6CE1636L, "kick33180.A500");   // KS 1.2 33.180 (256 KB)
         KICKSTART_BY_CRC.put(0xC4F0F55FL, "kick34005.A500");   // KS 1.3 34.5  (256 KB)
         KICKSTART_BY_CRC.put(0xFC24AE0DL, "kick40063.A600");   // KS 3.1 40.63 (512 KB)
-        KICKSTART_BY_CRC.put(0xE40A5DFBL, "kick40068.A1200");  // KS 3.1 40.68 A1200 (512 KB)
-        KICKSTART_BY_CRC.put(0x5FE04842L, "kick40068.A4000");  // KS 3.1 40.68 A4000 (512 KB)
+        KICKSTART_BY_CRC.put(0x1483A091L, "kick40068.A1200");  // KS 3.1 40.68 A1200 (512 KB)
+        KICKSTART_BY_CRC.put(0xD6BAE334L, "kick40068.A4000");  // KS 3.1 40.68 A4000 (512 KB)
+        // Sono esattamente i cinque per cui i file di sistema WHDLoad portano la
+        // tabella di rilocazione .RTB (SoftKick 3.46, vedi AssetCatalog). Un install
+        // che ne chieda un altro — p.es. kick31034.A1000 — non diventa avviabile
+        // fornendogli il ROM: senza il .RTB corrispondente WHDLoad si ferma comunque,
+        // e con un'immagine che non riconosce risponde "invalid kickstart image".
     }
 
     private final Path resourceDir;
@@ -161,6 +178,51 @@ public final class WhdLoadManager {
     public WhdLoadManager withPrefs(String content) {
         this.prefsContent = content;
         return this;
+    }
+
+    /**
+     * Standard video che l'archivio WHDLoad {@code lhaPath} dichiara nelle tooltype
+     * della propria icona: {@link VideoMode#NTSC} per {@code NTSC},
+     * {@link VideoMode#PAL} per {@code PAL}, {@code null} se non dice nulla.
+     *
+     * <p>È una dichiarazione, non un indizio: su una macchina vera quella tooltype fa
+     * aprire a WHDLoad uno schermo di quello standard, e senza il monitor
+     * corrispondente in {@code DEVS:Monitors} il gioco non parte affatto. In un
+     * emulatore l'equivalente è accendere la macchina in quello standard, perché è la
+     * macchina stessa a fare da monitor. Vale più della convenzione sul <i>nome</i> del
+     * file, che resta il ripiego quando l'icona tace.
+     *
+     * <p>Legge le sole icone dell'archivio (pochi KB): non estrae il gioco e non
+     * costruisce alcun disco. Se l'archivio non è leggibile restituisce {@code null} —
+     * qui non sapere è un esito normale, non un errore.
+     */
+    public static VideoMode declaredVideoMode(String lhaPath) {
+        if (lhaPath == null || lhaPath.isEmpty()) return null;
+        // La modalità Auto interroga il profilo a ogni ridisegno: senza memoria
+        // rileggeremmo l'archivio da disco ogni volta. La chiave include la data di
+        // modifica, così sostituire il file invalida la risposta.
+        String key = lhaPath + '\0' + new java.io.File(lhaPath).lastModified();
+        VideoMode[] cached = declaredVideoModeCache.get(key);
+        if (cached != null) return cached[0];
+
+        VideoMode found = null;
+        try {
+            outer:
+            for (byte[] data : LhaExtractor.extractIcons(lhaPath).values()) {
+                AmigaIcon icon = AmigaIcon.parse(data);
+                if (icon == null || !isWhdLoadTool(icon.defaultTool())) continue;
+                for (String tt : icon.toolTypes()) {
+                    if (!isRealToolType(tt)) continue;
+                    String s = tt.trim();
+                    if (s.equalsIgnoreCase("NTSC")) { found = VideoMode.NTSC; break outer; }
+                    if (s.equalsIgnoreCase("PAL"))  { found = VideoMode.PAL;  break outer; }
+                }
+            }
+        } catch (IOException | RuntimeException e) {
+            return null;   // archivio illeggibile: non sapere è un esito normale
+        }
+        declaredVideoModeCache.put(key, new VideoMode[] { found });
+        return found;
     }
 
     /** {@code true} se le risorse di sistema WHDLoad sono presenti. */
@@ -213,21 +275,18 @@ public final class WhdLoadManager {
         // 2. Gioco estratto dall'archivio.
         List<LhaExtractor.Entry> entries = LhaExtractor.extract(lhaPath, work);
 
-        // 3. Individua lo slave e calcola cartella/nome.
-        String slaveRel = findSlave(entries);
-        if (slaveRel == null) {
+        // 3. Individua come va lanciato il gioco.
+        Launch launch = findLaunch(entries, work);
+        if (launch == null) {
             throw new IOException("Nessun file .slave trovato nell'archivio " + lhaPath);
         }
-        int slash = slaveRel.lastIndexOf('/');
-        String gameDir = slash >= 0 ? slaveRel.substring(0, slash) : "";
-        String slaveName = slash >= 0 ? slaveRel.substring(slash + 1) : slaveRel;
         // AmigaDOS FFS limita i nomi di file/cartella a 30 caratteri e FfsBuilder
         // (writeName) li tronca di conseguenza. La Startup-Sequence DEVE riferirsi
         // agli stessi nomi troncati, altrimenti WHDLoad non trova lo slave
         // (es. "...AdvIt.slave" = 31 char -> su disco "...AdvIt.slav" -> DOS-Error
         // #205, object not found). Tronchiamo qui ogni componente come l'FFS.
-        gameDir = ffsTruncatePath(gameDir);
-        slaveName = ffsName(slaveName);
+        String gameDir = ffsTruncatePath(launch.gameDir);
+        String slaveName = ffsTruncatePath(launch.slaveName);
 
         // 4. WHDLoad.prefs GENERATA dai parametri di configurazione (sezione
         //    whdload.prefs.* di amiga.properties, via withPrefs()) + Startup-Sequence
@@ -236,7 +295,7 @@ public final class WhdLoadManager {
         writeText(work.resolve("S/WHDLoad.prefs"),
                 prefsContent != null ? prefsContent : buildPrefs());
         writeText(work.resolve("S/Startup-Sequence"),
-                buildStartupSequence(gameDir, slaveName, savesVolumeName()));
+                buildStartupSequence(gameDir, slaveName, launch.options, savesVolumeName()));
 
         // 5. Costruzione dell'immagine FFS avviabile.
         Path tmpHdf = cacheDir.resolve(baseName + ".hdf.tmp");
@@ -290,7 +349,11 @@ public final class WhdLoadManager {
     private void copyKickstarts(Path destKickstarts) throws IOException {
         for (Path dir : kickstartDirs) {
             if (!Files.isDirectory(dir)) continue;
-            try (var s = Files.list(dir)) {
+            // Ricerca ricorsiva: le collezioni di ROM tengono le versioni meno comuni
+            // in sottocartelle, ed è lì che stanno i kickstart che i pochi install
+            // esigenti chiedono (A1200, A4000, 1.2). Il limite di profondità evita di
+            // percorrere un albero enorme se la cartella indicata è una radice.
+            try (var s = Files.walk(dir, KICKSTART_SCAN_DEPTH)) {
                 for (Path rom : (Iterable<Path>) s::iterator) {
                     if (!Files.isRegularFile(rom)) continue;
                     long size = Files.size(rom);
@@ -333,13 +396,104 @@ public final class WhdLoadManager {
         return String.join("/", parts);
     }
 
-    private static String findSlave(List<LhaExtractor.Entry> entries) {
+    /** Come lanciare il gioco: cartella, nome dello slave e argomenti per WHDLoad. */
+    private record Launch(String gameDir, String slaveName, List<String> options) { }
+
+    /**
+     * Ricava dall'archivio estratto il comando WHDLoad da mettere nella
+     * Startup-Sequence.
+     *
+     * <p>La fonte autorevole è l'<b>icona del pacchetto</b>: quella il cui tool di
+     * default è {@code WHDLoad} porta nelle tooltype gli argomenti con cui
+     * l'installazione va lanciata. Non sono facoltativi — un pacchetto che tiene le
+     * immagini dei dischi in una sottocartella dichiara {@code DATA=data}, e senza
+     * quell'argomento WHDLoad le cerca accanto allo slave e fallisce con DOS-Error
+     * #205 appena il gioco chiede il primo file.
+     *
+     * <p>Se nessuna icona lo dice (pacchetti vecchi, o icone assenti) si ripiega sul
+     * solo file {@code .slave} meno profondo, senza argomenti: è il comportamento
+     * storico ed è giusto per i pacchetti che tengono tutto in una cartella sola.
+     */
+    private Launch findLaunch(List<LhaExtractor.Entry> entries, Path work) {
+        Launch fromIcon = launchFromIcons(entries, work);
+        if (fromIcon != null) return fromIcon;
+
         // Preferisci lo slave meno profondo (percorso più corto).
-        return entries.stream()
+        String slaveRel = entries.stream()
                 .filter(e -> !e.directory && e.path.toLowerCase(Locale.ROOT).endsWith(".slave"))
                 .map(e -> e.path)
                 .min(Comparator.comparingInt((String p) -> p.length()))
                 .orElse(null);
+        if (slaveRel == null) return null;
+        int slash = slaveRel.lastIndexOf('/');
+        return new Launch(slash >= 0 ? slaveRel.substring(0, slash) : "",
+                slash >= 0 ? slaveRel.substring(slash + 1) : slaveRel, List.of());
+    }
+
+    /**
+     * Cerca fra le icone estratte quella che lancia WHDLoad e ne traduce le tooltype
+     * in un {@link Launch}. Restituisce {@code null} se non ce n'è nessuna utilizzabile.
+     */
+    private Launch launchFromIcons(List<LhaExtractor.Entry> entries, Path work) {
+        Launch best = null;
+        for (LhaExtractor.Entry e : entries) {
+            if (e.directory || !e.path.toLowerCase(Locale.ROOT).endsWith(".info")) continue;
+            byte[] data;
+            try {
+                data = Files.readAllBytes(work.resolve(e.diskPath.replace('/', java.io.File.separatorChar)));
+            } catch (IOException ioe) {
+                continue;
+            }
+            AmigaIcon icon = AmigaIcon.parse(data);
+            if (icon == null || !isWhdLoadTool(icon.defaultTool())) continue;
+
+            String dir = e.path.contains("/") ? e.path.substring(0, e.path.lastIndexOf('/')) : "";
+            String slave = null;
+            List<String> options = new ArrayList<>();
+            for (String tt : icon.toolTypes()) {
+                if (!isRealToolType(tt)) continue;
+                if (tt.regionMatches(true, 0, "SLAVE=", 0, 6)) {
+                    slave = tt.substring(6).trim();
+                } else {
+                    options.add(tt);
+                }
+            }
+            if (slave == null || slave.isEmpty()) continue;
+            // Lo SLAVE= può contenere un percorso relativo alla cartella dell'icona.
+            // La verifica va fatta sul percorso COME STA SU DISCO (diskPath), che per
+            // i nomi che Windows non sa scrivere differisce da quello Amiga.
+            String diskDir = e.diskPath.contains("/")
+                    ? e.diskPath.substring(0, e.diskPath.lastIndexOf('/')) : "";
+            String slaveOnDisk = diskDir.isEmpty() ? slave : diskDir + "/" + slave;
+            if (!Files.isRegularFile(work.resolve(slaveOnDisk.replace('/', java.io.File.separatorChar)))) continue;
+            Launch candidate = new Launch(dir, slave, options);
+            // A parità di validità vince l'icona meno profonda.
+            if (best == null || candidate.gameDir().length() < best.gameDir().length()) best = candidate;
+        }
+        return best;
+    }
+
+    /** {@code true} se il tool di default dell'icona è WHDLoad (con o senza percorso). */
+    private static boolean isWhdLoadTool(String tool) {
+        if (tool == null) return false;
+        String leaf = tool;
+        int cut = Math.max(leaf.lastIndexOf('/'), leaf.lastIndexOf(':'));
+        if (cut >= 0) leaf = leaf.substring(cut + 1);
+        return leaf.equalsIgnoreCase("WHDLoad");
+    }
+
+    /**
+     * {@code true} se la tooltype è un argomento vero. Vanno scartate le voci
+     * disattivate (che il Workbench conserva fra parentesi), i separatori e i dati
+     * delle icone NewIcon, che vivono nello stesso elenco ({@code IM1=}/{@code IM2=}
+     * e la riga di intestazione che li precede).
+     */
+    private static boolean isRealToolType(String tt) {
+        if (tt == null) return false;
+        String s = tt.trim();
+        if (s.isEmpty() || s.startsWith("(") || s.startsWith(";")) return false;
+        if (s.regionMatches(true, 0, "IM1=", 0, 4) || s.regionMatches(true, 0, "IM2=", 0, 4)) return false;
+        return !s.startsWith("*** ");
     }
 
     /**
@@ -354,9 +508,11 @@ public final class WhdLoadManager {
      * schermo con errori che non indicano alcun problema reale. Servono solo a
      * preparare {@code T:} e {@code ENV:}, di cui WHDLoad non ha bisogno.
      *
+     * @param options     argomenti WHDLoad dell'icona del pacchetto, vedi {@link #findLaunch}
      * @param savesVolume nome del volume dei salvataggi, da {@link #savesVolumeName()}
      */
-    private String buildStartupSequence(String gameDir, String slaveName, String savesVolume) {
+    private String buildStartupSequence(String gameDir, String slaveName,
+                                        List<String> options, String savesVolume) {
         String cd = gameDir.isEmpty() ? "SYS:" : "SYS:" + gameDir;
         StringBuilder sb = new StringBuilder();
         sb.append(";; Startup-Sequence generata automaticamente per l'avvio WHDLoad.\n");
@@ -378,8 +534,25 @@ public final class WhdLoadManager {
             sb.append("C:Assign >NIL: WHDSaves: \"").append(savesVolume).append(":\"\n");
         }
         sb.append("CD \"").append(cd).append("\"\n");
-        sb.append("C:WHDLoad \"").append(slaveName).append("\" PRELOAD\n");
+        sb.append("C:WHDLoad \"").append(slaveName).append('"');
+        boolean preload = false;
+        for (String opt : options) {
+            if (opt.equalsIgnoreCase("PRELOAD")) preload = true;
+            sb.append(' ').append(quoteArg(opt));
+        }
+        // PRELOAD carica tutto in memoria una volta sola: evita gli accessi al disco
+        // durante il gioco. Lo aggiungiamo solo se l'icona non lo chiede già.
+        if (!preload) sb.append(" PRELOAD");
+        sb.append('\n');
         return sb.toString();
+    }
+
+    /**
+     * Racchiude fra virgolette un argomento che contiene spazi, come vuole ReadArgs
+     * di AmigaDOS; gli altri restano nudi.
+     */
+    private static String quoteArg(String arg) {
+        return arg.indexOf(' ') >= 0 ? "\"" + arg + "\"" : arg;
     }
 
     /** {@code true} se il comando AmigaOS {@code name} è tra i file di sistema forniti. */

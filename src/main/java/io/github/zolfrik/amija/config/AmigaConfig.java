@@ -496,7 +496,23 @@ public final class AmigaConfig {
         AutoDefaults d = expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
         return new AutoProfile(autoKickstartPath(expanded), expanded,
                 d.chipRamKb(this), d.slowRamKb(this), d.fastRamKb(this), d.chipset(this),
-                impliesNtsc(activeFiles) ? VideoMode.NTSC : VideoMode.PAL);
+                autoVideoMode(activeFiles));
+    }
+
+    /**
+     * Standard video dedotto dalla modalità Auto. Un archivio WHDLoad lo <b>dichiara</b>
+     * nelle tooltype della propria icona, e quella dichiarazione vince: dice come il
+     * gioco va visto, mentre {@link #impliesNtsc} può solo leggere il nome del file.
+     * Quando l'icona tace — o non c'è alcun archivio WHDLoad — resta la convenzione sul
+     * nome.
+     */
+    private VideoMode autoVideoMode(java.util.List<String> activeFiles) {
+        if (whdloadEnabled()) {
+            VideoMode declared = io.github.zolfrik.amija.whdload.WhdLoadManager
+                    .declaredVideoMode(whdloadFile());
+            if (declared != null) return declared;
+        }
+        return impliesNtsc(activeFiles) ? VideoMode.NTSC : VideoMode.PAL;
     }
 
     /** Impostazioni dedotte dalla modalità Auto per il supporto attualmente configurato. */

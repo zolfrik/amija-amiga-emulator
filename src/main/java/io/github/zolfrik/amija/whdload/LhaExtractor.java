@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 
@@ -48,11 +49,14 @@ public final class LhaExtractor {
 
     /** Una voce estratta (file regolare o directory). */
     public static final class Entry {
-        public final String path;     // percorso relativo con separatore '/'
+        public final String path;     // percorso relativo con separatore '/', nome Amiga
+        /** Stesso percorso come sta sul disco host (vedi {@link #windowsSafePath}). */
+        public final String diskPath;
         public final boolean directory;
         public final long size;
-        Entry(String path, boolean directory, long size) {
-            this.path = path; this.directory = directory; this.size = size;
+        Entry(String path, String diskPath, boolean directory, long size) {
+            this.path = path; this.diskPath = diskPath;
+            this.directory = directory; this.size = size;
         }
     }
 
@@ -85,6 +89,34 @@ public final class LhaExtractor {
         return ex.entries;
     }
 
+    /**
+     * Decodifica le sole icone ({@code .info}) dell'archivio, senza scrivere nulla su
+     * disco e senza decomprimere il resto. Serve a leggere le tooltype con cui
+     * l'installazione si descrive (vedi {@link AmigaIcon}) prima ancora di costruire
+     * la macchina: le icone sono pochi KB, il gioco decine di MB.
+     *
+     * @return percorso Amiga dell'icona → contenuto
+     */
+    static Map<String, byte[]> extractIcons(String lhaPath) throws IOException {
+        byte[] data = Files.readAllBytes(Paths.get(lhaPath));
+        LhaExtractor ex = new LhaExtractor(data);
+        Map<String, byte[]> icons = new LinkedHashMap<>();
+        int off = 0;
+        while (off + 1 < ex.archive.length) {
+            int headerSize = ex.archive[off] & 0xFF;
+            if (headerSize == 0) break;
+            Header h = ex.parseHeader(off);
+            if (h == null) break;
+            String relPath = sanitize(h.name);
+            boolean dir = h.isDirectory || h.method.equals("-lhd-");
+            if (!dir && relPath.toLowerCase(Locale.ROOT).endsWith(".info")) {
+                icons.put(relPath, ex.decode(h));
+            }
+            off = h.nextOffset;
+        }
+        return icons;
+    }
+
     private void run(Path destDir) throws IOException {
         Path base = destDir.toAbsolutePath().normalize();
         int off = 0;
@@ -97,16 +129,18 @@ public final class LhaExtractor {
             String relPath = sanitize(h.name);
             if (h.isDirectory || h.method.equals("-lhd-")) {
                 if (!relPath.isEmpty()) {
-                    Path d = resolveInside(base, windowsSafePath(relPath));
+                    String safe = windowsSafePath(relPath);
+                    Path d = resolveInside(base, safe);
                     Files.createDirectories(d);
-                    entries.add(new Entry(relPath, true, 0));
+                    entries.add(new Entry(relPath, safe, true, 0));
                 }
             } else {
                 byte[] out = decode(h);
-                Path f = resolveInside(base, windowsSafePath(relPath));
+                String safe = windowsSafePath(relPath);
+                Path f = resolveInside(base, safe);
                 if (f.getParent() != null) Files.createDirectories(f.getParent());
                 Files.write(f, out);
-                entries.add(new Entry(relPath, false, out.length));
+                entries.add(new Entry(relPath, safe, false, out.length));
             }
             off = h.nextOffset;
         }
