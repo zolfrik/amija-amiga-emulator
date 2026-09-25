@@ -123,8 +123,9 @@ CONTENTS
                          few shared include files it needs; see
                          shaders/Mega_Bezel_Packs/readme.txt.
     screenshots/         PNG files written by "Take Screenshot".
-    savestate/           state1.a5s (the single save-state slot) and
-                         state1.png (a thumbnail of the saved screen).
+    savestate/           Slot1/ ... Slot5/, one folder per save-state slot,
+                         each holding state.a5s and state.png (a thumbnail of
+                         the saved screen).
     whdload-saves/       persistent WHDSaves: volume for WHDLoad games.
     floppysounds/        the drive samples behind the mechanical noise. Ships
                          filled; replace them with your own if you like, or
@@ -509,19 +510,31 @@ CONTENTS
   3.7   SAVED STATE
   ---------------------------------------------------------------------------
 
-  There is one slot, savestate/state1.a5s, and the section shows what is in it:
-  a thumbnail of the screen as it was, and the date it was taken, or "No state
-  saved yet" if you have never used it.
+  There are five slots, one per tab - "Slot 1" to "Slot 5" - living in
+  savestate/Slot1/ ... savestate/Slot5/. Each tab shows what is in its slot: a
+  thumbnail of the screen as it was, and the date it was taken, or "No state
+  saved yet" if that slot has never been used. A tab whose slot is taken carries
+  a dot in its title, so you can see at a glance which ones are full.
 
-     Save State        Freezes the whole machine into the slot - memory, chips,
-                       CPU, the disks that were inserted - so you can come back
-                       to this exact moment. It replaces whatever was there,
-                       picture and all.
+  The tab you open is the slot the three buttons act on, and AmiJa remembers it
+  in savestate.slot for the next run.
 
-     Load State        Puts the machine back to the slot and throws away what
-                       is running now.
+     Save State        Freezes the whole machine into the open slot - memory,
+                       chips, CPU, the disks that were inserted - so you can
+                       come back to this exact moment. It replaces whatever was
+                       in that slot, picture and all.
 
-  The slot also carries the machine setup it was saved with. That is what makes
+     Load State        Puts the machine back to the state in the open slot and
+                       throws away what is running now.
+
+     Clear Slot        Empties the open slot, thumbnail included, after asking.
+                       It cannot be undone.
+
+  A state saved by an earlier AmiJa, when there was a single slot
+  (savestate/state1.a5s), is moved into Slot 1 the first time this version
+  starts.
+
+  Every slot also carries the machine setup it was saved with. That is what makes
   it survive your changing things afterwards: load a state taken on a different
   configuration and AmiJa puts that configuration back, rebuilds the machine
   and then restores the state, telling you it has done so. A state written by

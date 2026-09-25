@@ -58,6 +58,7 @@ import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSpinner;
+import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
 import javax.swing.JToggleButton;
 import javax.swing.KeyStroke;
@@ -837,9 +838,9 @@ public final class ConfigDialog {
         addRow(gui, 1, "label.uiScale", uiScaleCombo, null);
 
         // -------------------------------------------------------------------
-        // Sezione: Stato salvato (lo slot unico, con la sua foto e la sua data)
+        // Sezione: Stato salvato (i cinque slot, ognuno con la sua foto e la sua data)
         // -------------------------------------------------------------------
-        JPanel state = stateSection(dialog, result, onSaveState, onLoadState);
+        JPanel state = stateSection(dialog, result, config, onSaveState, onLoadState);
 
         // -------------------------------------------------------------------
         // Sezione: Gioco a distanza (docs/remote-play-plan.md §9)
@@ -1163,45 +1164,93 @@ public final class ConfigDialog {
     // =========================================================================
 
     /**
-     * La sezione dello slot di stato: a sinistra la foto della macchina com'era quando
-     * lo stato è stato preso, a destra il momento in cui è successo e i due pulsanti che
-     * lo scrivono e lo rileggono.
+     * La sezione degli slot di stato: una linguetta per slot ({@link
+     * SaveStateManager#SLOT_COUNT} in tutto), e dentro ognuna la foto della macchina
+     * com'era quando quello stato è stato preso e il momento in cui è successo. I pulsanti
+     * stanno sotto le linguette e agiscono sempre sullo slot aperto.
      *
-     * <p>Lo slot è uno solo ({@code savestate/state1.a5s}), quindi qui non c'è una lista
-     * da sfogliare: c'è un'istantanea, e la si guarda per riconoscerla prima di
-     * sovrascriverla o di tornarci. Foto e data si rileggono dal disco a ogni
-     * salvataggio, così la sezione mostra sempre lo slot vero e non quello che c'era
-     * all'apertura del popup.
+     * <p>La linguetta scelta non è una modifica in sospeso: viene scritta subito in
+     * configurazione ({@code savestate.slot}), perché è lì che "Salva stato" e "Carica
+     * stato" — che agiscono immediatamente, popup aperto — vanno a leggere quale slot
+     * usare. Per lo stesso motivo resta valida anche se il popup si chiude con Annulla.
+     *
+     * <p>Foto, data e titolo delle linguette si rileggono dal disco a ogni operazione,
+     * così la sezione mostra sempre gli slot veri e non quelli che c'erano all'apertura
+     * del popup. Il titolo di una linguetta occupata porta un pallino: quali slot sono
+     * pieni si vede senza aprirli uno per uno.
      *
      * <p>Il caricamento può non finire qui: se lo stato pretende una macchina diversa da
      * quella accesa, il popup si chiude con {@link Result#STATE_RESTORE} e prosegue il
      * chiamante (vedi {@link LoadStateOutcome}).
      */
-    private static JPanel stateSection(JDialog dialog, Result[] result,
+    private static JPanel stateSection(JDialog dialog, Result[] result, AmigaConfig config,
             java.util.function.Supplier<String> onSaveState,
             java.util.function.Supplier<LoadStateOutcome> onLoadState) {
         JPanel panel = section(Messages.t("section.state"));
 
-        StatePreview preview = new StatePreview();
-        JLabel when = label("");
-        when.setAlignmentX(Component.LEFT_ALIGNMENT);
+        final int slots = SaveStateManager.SLOT_COUNT;
+        StatePreview[] previews = new StatePreview[slots];
+        JLabel[] whens = new JLabel[slots];
+
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.setBackground(PANEL_BG);
+        tabs.setOpaque(false);
+        for (int i = 0; i < slots; i++) {
+            previews[i] = new StatePreview();
+            whens[i] = label("");
+            JPanel tab = new JPanel(new GridBagLayout());
+            tab.setOpaque(false);
+            GridBagConstraints tc = new GridBagConstraints();
+            tc.gridx = 0;
+            tc.gridy = 0;
+            tc.insets = new Insets(px(6), px(6), px(6), px(10));
+            tc.anchor = GridBagConstraints.NORTHWEST;
+            tab.add(previews[i], tc);
+            tc.gridx = 1;
+            tc.weightx = 1;
+            tc.fill = GridBagConstraints.HORIZONTAL;
+            tc.insets = new Insets(px(6), px(0), px(6), px(6));
+            tab.add(whens[i], tc);
+            tabs.addTab(Messages.t("state.slot.name", i + 1), tab);
+        }
 
         JButton save = button(Messages.t("button.savestate"), false);
         JButton load = button(Messages.t("button.loadstate"), false);
+        JButton clear = button(Messages.t("button.clearstate"), false);
         tip("button.savestate", save);
         tip("button.loadstate", load);
+        tip("button.clearstate", clear);
 
-        // Rilegge lo slot dal disco: foto, data e disponibilità del caricamento.
+        // Rilegge TUTTI gli slot dal disco: foto, date, titoli delle linguette e
+        // disponibilità dei pulsanti per lo slot aperto. Costa cinque letture d'header e
+        // avviene solo a ogni operazione dell'utente, non in continuazione.
         Runnable refresh = () -> {
-            File slot = SaveStateManager.slotFile();
-            boolean present = slot.isFile();
-            preview.setImage(present ? readImage(SaveStateManager.slotScreenshot()) : null);
-            preview.setEmptyText(Messages.t("state.empty.short"));
-            when.setText(present
-                    ? Messages.t("state.savedOn", formatTimestamp(slotTimestamp(slot)))
-                    : Messages.t("state.empty"));
-            load.setEnabled(present);
+            for (int i = 0; i < slots; i++) {
+                int slot = i + 1;
+                boolean present = SaveStateManager.slotPresent(slot);
+                previews[i].setImage(present
+                        ? readImage(SaveStateManager.slotScreenshot(slot)) : null);
+                previews[i].setEmptyText(Messages.t("state.empty.short"));
+                whens[i].setText(present
+                        ? Messages.t("state.savedOn", formatTimestamp(
+                                slotTimestamp(SaveStateManager.slotFile(slot))))
+                        : Messages.t("state.empty"));
+                tabs.setTitleAt(i, present
+                        ? Messages.t("state.slot.name.full", slot)
+                        : Messages.t("state.slot.name", slot));
+            }
+            boolean current = SaveStateManager.slotPresent(tabs.getSelectedIndex() + 1);
+            load.setEnabled(current);
+            clear.setEnabled(current);
         };
+
+        // La linguetta aperta all'apertura del popup è lo slot attivo; cambiarla lo
+        // cambia. clampSlot() perché il valore arriva da un file di testo.
+        tabs.setSelectedIndex(SaveStateManager.clampSlot(config.saveStateSlot()) - 1);
+        tabs.addChangeListener(e -> {
+            config.setSaveStateSlot(tabs.getSelectedIndex() + 1);
+            refresh.run();
+        });
         refresh.run();
 
         save.addActionListener(e -> {
@@ -1226,40 +1275,47 @@ public final class ConfigDialog {
             }
             if (outcome.message() != null) message(dialog, outcome.message());
         });
+        clear.addActionListener(e -> {
+            int slot = tabs.getSelectedIndex() + 1;
+            // Svuotare uno slot è l'unica azione di questa sezione che non si può disfare
+            // in nessun modo: la conferma è d'obbligo.
+            int answer = JOptionPane.showConfirmDialog(dialog,
+                    Messages.t("savestate.clear.confirm", slot), Messages.t("app.title"),
+                    JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (answer != JOptionPane.YES_OPTION) return;
+            String msg;
+            try {
+                msg = SaveStateManager.deleteSlot(slot)
+                        ? Messages.t("savestate.clear.ok", slot)
+                        : Messages.t("savestate.load.none");
+            } catch (IOException ex) {
+                msg = Messages.t("savestate.clear.fail", String.valueOf(ex.getMessage()));
+            }
+            refresh.run();
+            message(dialog, msg);
+        });
 
         JPanel buttons = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 6, 0));
         buttons.setOpaque(false);
-        buttons.setAlignmentX(Component.LEFT_ALIGNMENT);
         buttons.add(save);
         buttons.add(load);
-        // Senza tetto all'altezza, un pannello a flusso si lascia stirare dal BoxLayout e
-        // il glue non lo spinge più in fondo: i pulsanti resterebbero a mezz'aria.
-        buttons.setMaximumSize(new Dimension(Integer.MAX_VALUE,
-                buttons.getPreferredSize().height));
+        buttons.add(clear);
 
-        // Colonna di destra: la data in alto, i pulsanti in basso, il vuoto in mezzo —
-        // così restano allineati ai bordi della foto qualunque sia l'altezza del testo.
-        JPanel side = new JPanel();
-        side.setOpaque(false);
-        side.setLayout(new BoxLayout(side, BoxLayout.Y_AXIS));
-        side.add(when);
-        side.add(Box.createVerticalGlue());
-        side.add(buttons);
-
-        tip("state.slot", preview, when);
+        tip("state.slot", tabs);
 
         GridBagConstraints gc = new GridBagConstraints();
         gc.gridx = 0;
         gc.gridy = 0;
-        gc.insets = new Insets(px(2), px(4), px(2), px(10));
-        gc.anchor = GridBagConstraints.NORTHWEST;
-        panel.add(preview, gc);
-
-        gc.gridx = 1;
         gc.weightx = 1;
-        gc.fill = GridBagConstraints.BOTH;
-        gc.insets = new Insets(px(2), px(0), px(2), px(4));
-        panel.add(side, gc);
+        gc.fill = GridBagConstraints.HORIZONTAL;
+        gc.insets = new Insets(px(2), px(4), px(2), px(4));
+        gc.anchor = GridBagConstraints.NORTHWEST;
+        panel.add(tabs, gc);
+
+        gc.gridy = 1;
+        gc.fill = GridBagConstraints.NONE;
+        gc.insets = new Insets(px(4), px(0), px(2), px(4));
+        panel.add(buttons, gc);
         return panel;
     }
 

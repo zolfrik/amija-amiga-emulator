@@ -52,9 +52,12 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * Salvataggio e ripristino dell'intero stato della macchina A500 su un singolo file
- * (uno slot). Formato binario custom compresso (gzip), <b>non</b> serializzazione Java:
- * lo stato è raccolto dal {@link ReflectiveState} sui componenti reali della macchina.
+ * Salvataggio e ripristino dell'intero stato della macchina A500 su file. Ci sono
+ * {@link #SLOT_COUNT} slot indipendenti, uno per cartella ({@code savestate/Slot1/} …
+ * {@code savestate/Slot5/}); quale sia quello attivo lo dice la configurazione
+ * ({@code savestate.slot}), qui si ricevono solo numeri di slot. Formato binario custom
+ * compresso (gzip), <b>non</b> serializzazione Java: lo stato è raccolto dal
+ * {@link ReflectiveState} sui componenti reali della macchina.
  *
  * <p>Header: magic {@code A500SAVE}, versione formato, l'istante del salvataggio, un
  * <b>fingerprint</b> della configurazione (chipset, dimensioni RAM, modo video, Kickstart,
@@ -81,29 +84,95 @@ public final class SaveStateManager {
      */
     private static final int VERSION = 3;
 
-    /**
-     * Nome file dello slot unico, dentro la cartella {@code savestate/} della home
-     * dell'applicazione. Relativo: usare {@link #slotFile()} per il file vero.
-     */
-    public static final String SLOT_FILE = "savestate/state1.a5s";
+    /** Quanti slot di stato esistono. Sono numerati da 1 a {@code SLOT_COUNT}. */
+    public static final int SLOT_COUNT = 5;
+
+    /** Cartella che contiene le cartelle degli slot, relativa alla home. */
+    public static final String STATE_DIR = "savestate";
+
+    /** Nome del file di stato, dentro la cartella del proprio slot. */
+    private static final String STATE_NAME = "state.a5s";
 
     /**
-     * Screenshot che accompagna lo slot unico: nome fisso (nessuna componente variabile),
-     * così ogni salvataggio sovrascrive l'immagine precedente. Relativo alla home:
-     * usare {@link #slotScreenshot()}.
+     * Screenshot che accompagna lo stato, dentro la cartella del proprio slot: nome
+     * fisso, così ogni salvataggio sovrascrive l'immagine precedente di quello slot.
      */
-    public static final String SLOT_SCREENSHOT = "savestate/state1.png";
+    private static final String SHOT_NAME = "state.png";
+
+    /**
+     * Lo slot unico di prima che gli slot fossero cinque. Se esiste viene trasferito
+     * nello Slot 1 da {@link #migrateLegacySlot()}: era l'unica partita congelata
+     * dell'utente e non c'è ragione di perderla.
+     */
+    private static final String LEGACY_FILE = "savestate/state1.a5s";
+    private static final String LEGACY_SHOT = "savestate/state1.png";
 
     private SaveStateManager() {}
 
-    /** Lo slot unico, risolto nella home dell'applicazione ({@link AppHome}). */
-    public static File slotFile() {
-        return AppHome.file(SLOT_FILE);
+    /**
+     * Il numero di slot riportato dentro l'intervallo valido. Un valore fuori scala
+     * arriva solo da un {@code amiga.properties} scritto a mano: si preferisce ricadere
+     * su uno slot esistente piuttosto che sollevare un'eccezione in faccia all'utente.
+     */
+    public static int clampSlot(int slot) {
+        return Math.min(SLOT_COUNT, Math.max(1, slot));
     }
 
-    /** Lo screenshot dello slot unico, risolto nella home ({@link AppHome}). */
-    public static File slotScreenshot() {
-        return AppHome.file(SLOT_SCREENSHOT);
+    /** La cartella dello slot, risolta nella home dell'applicazione ({@link AppHome}). */
+    public static File slotDir(int slot) {
+        return AppHome.file(STATE_DIR + "/Slot" + clampSlot(slot));
+    }
+
+    /** Il file di stato dello slot, risolto nella home ({@link AppHome}). */
+    public static File slotFile(int slot) {
+        return new File(slotDir(slot), STATE_NAME);
+    }
+
+    /** Lo screenshot dello slot, risolto nella home ({@link AppHome}). */
+    public static File slotScreenshot(int slot) {
+        return new File(slotDir(slot), SHOT_NAME);
+    }
+
+    /** {@code true} se in quello slot c'è uno stato da caricare. */
+    public static boolean slotPresent(int slot) {
+        return slotFile(slot).isFile();
+    }
+
+    /**
+     * Svuota uno slot: stato e screenshot. Ritorna {@code true} se c'era uno stato e ora
+     * non c'è più. La cartella resta: è dove il prossimo salvataggio scriverà.
+     */
+    public static boolean deleteSlot(int slot) throws IOException {
+        boolean had = slotPresent(slot);
+        Files.deleteIfExists(slotFile(slot).toPath());
+        Files.deleteIfExists(slotScreenshot(slot).toPath());
+        return had;
+    }
+
+    /**
+     * Porta nello Slot 1 lo stato scritto quando lo slot era uno solo
+     * ({@code savestate/state1.a5s}). Non fa niente se quel file non c'è o se lo Slot 1
+     * è già occupato — in quel caso l'utente ha già salvato nel nuovo schema e sarebbe la
+     * copia vecchia a essere di troppo, non il contrario. Da chiamare una volta all'avvio;
+     * un errore qui non impedisce nulla e viene solo segnalato a console.
+     */
+    public static void migrateLegacySlot() {
+        File legacy = AppHome.file(LEGACY_FILE);
+        if (!legacy.isFile() || slotPresent(1)) return;
+        try {
+            Files.createDirectories(slotDir(1).toPath());
+            Files.move(legacy.toPath(), slotFile(1).toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
+            File shot = AppHome.file(LEGACY_SHOT);
+            if (shot.isFile()) {
+                Files.move(shot.toPath(), slotScreenshot(1).toPath(),
+                        StandardCopyOption.REPLACE_EXISTING);
+            }
+            System.out.println("[STATE] stato preesistente spostato nello Slot 1");
+        } catch (IOException e) {
+            System.err.println("[STATE] impossibile spostare lo stato preesistente"
+                    + " nello Slot 1: " + e.getMessage());
+        }
     }
 
     /** Rifiuto di uno slot incompatibile con la macchina/versione correnti. */
@@ -136,9 +205,9 @@ public final class SaveStateManager {
         Path dir = target.getParent() != null ? target.getParent() : Path.of(".");
         Files.createDirectories(dir);
         // Si scrive su un temporaneo accanto alla destinazione e lo si sposta alla fine.
-        // Lo slot e' unico: scrivendo direttamente su di esso, un'interruzione a meta' —
-        // crash, disco pieno, la JVM che esce — distruggerebbe la partita precedente
-        // senza averne salvata una nuova, cioe' perderebbe tutto il valore della funzione.
+        // Scrivendo direttamente sullo slot, un'interruzione a meta' — crash, disco pieno,
+        // la JVM che esce — distruggerebbe la partita che c'era senza averne salvata una
+        // nuova, cioe' perderebbe tutto il valore della funzione.
         // Con lo spostamento o si vede lo slot nuovo o si vede ancora quello vecchio.
         Path tmp = Files.createTempFile(dir, file.getName(), ".tmp");
         try {

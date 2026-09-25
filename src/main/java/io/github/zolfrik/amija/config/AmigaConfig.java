@@ -115,6 +115,8 @@ public final class AmigaConfig {
     private static final String K_MONITOR = "video.monitor";
     private static final String K_RENDERER = "video.renderer";
     private static final String K_SHADER = "video.shader";
+    /** Slot di stato su cui agiscono "Salva stato" e "Carica stato" (1..5). */
+    private static final String K_STATE_SLOT = "savestate.slot";
     // Overlay diagnostici (NON esposti nel popup F12): solo da file.
     private static final String K_OVERLAY_FPS = "overlay.fps.enabled";
     private static final String K_OVERLAY_FRAMECOUNTER = "overlay.framecounter.enabled";
@@ -898,6 +900,17 @@ public final class AmigaConfig {
         return v.isEmpty() ? "none" : v;
     }
 
+    /**
+     * Slot di stato attivo: quello su cui agiscono "Salva stato" e "Carica stato"
+     * (1 = il primo, default). Lo scelgono le linguette della sezione "Stato salvato" del
+     * popup F12; qui si conserva perché all'avvio successivo si riparta dallo stesso slot.
+     * Il valore non è un parametro della macchina — l'intervallo valido lo impone
+     * {@code SaveStateManager}, che è l'unico a sapere quanti slot esistono.
+     */
+    public int saveStateSlot() {
+        return Math.max(1, getInt(K_STATE_SLOT, 1));
+    }
+
     /** {@code true} se l'overlay degli FPS reali deve essere mostrato (default false). */
     public boolean fpsOverlayEnabled() {
         return getBool(K_OVERLAY_FPS, false);
@@ -1041,6 +1054,15 @@ public final class AmigaConfig {
 
     public void setIntegerScaling(int scale) {
         props.setProperty(K_INTEGER_SCALING, Integer.toString(Math.max(1, scale)));
+    }
+
+    /**
+     * Sceglie lo slot di stato attivo. A differenza delle altre impostazioni del popup
+     * questa ha effetto subito, anche se il popup viene chiuso con Annulla: scegliere una
+     * linguetta non è una modifica in sospeso alla macchina, è dire dove salvare adesso.
+     */
+    public void setSaveStateSlot(int slot) {
+        props.setProperty(K_STATE_SLOT, Integer.toString(Math.max(1, slot)));
     }
 
     /**
@@ -1436,6 +1458,12 @@ public final class AmigaConfig {
         sb.append("#   video.shader=Mega_Bezel/Presets/MBZ__5__POTATO\n");
         sb.append("# \"none\" = no shader (passthrough). Can be applied on the fly from the F12 popup.\n");
         line(sb, K_SHADER, shader());
+
+        sb.append("\n# Active save state slot: 1..5 (default 1). \"Save State\" and \"Load State\"\n");
+        sb.append("# in the F12 popup act on this slot, whose files live in\n");
+        sb.append("# savestate/Slot<N>/ next to amiga.properties. Picking a tab in the popup\n");
+        sb.append("# changes it.\n");
+        line(sb, K_STATE_SLOT, Integer.toString(saveStateSlot()));
 
         sb.append("\n# Diagnostic overlays (not present in the F12 popup). Disabled by default:\n");
         sb.append("# no performance impact when false.\n");

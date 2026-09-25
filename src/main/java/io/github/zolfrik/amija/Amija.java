@@ -270,6 +270,8 @@ public class Amija implements RemotePlayControl {
 
         config = AmigaConfig.load();
         Messages.setLanguage(config.language()); // prima di creare qualsiasi UI
+        // Lo stato salvato quando lo slot era uno solo finisce nello Slot 1: una volta, qui.
+        SaveStateManager.migrateLegacySlot();
         boolean overscan = config.overscanEnabled();
         int fw = config.videoMode().displayWidth(overscan);
         int fh = config.videoMode().displayHeight(overscan);
@@ -1821,20 +1823,22 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Salva l'intero stato della macchina nello slot unico ({@code savestate/state1.a5s}).
-     * Invocato dal pulsante F12 "Save State" a macchina in pausa (il popup è aperto).
-     * Ritorna il messaggio di esito localizzato da mostrare all'utente.
+     * Salva l'intero stato della macchina nello slot attivo
+     * ({@code savestate/Slot<N>/state.a5s}, con N da {@code savestate.slot}). Invocato dal
+     * pulsante F12 "Save State" a macchina in pausa (il popup è aperto). Ritorna il
+     * messaggio di esito localizzato da mostrare all'utente.
      */
     private String saveState() {
+        int slot = config.saveStateSlot();
         if (cpu == null || agnus == null) {
             return Messages.t("savestate.save.fail", Messages.t("savestate.nomachine"));
         }
         try {
-            File file = SaveStateManager.slotFile();
+            File file = SaveStateManager.slotFile(slot);
             SaveStateManager.save(file, cpu, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] salvato " + file.getAbsolutePath());
-            saveStateScreenshot();
-            return Messages.t("savestate.save.ok", file.getAbsolutePath());
+            saveStateScreenshot(slot);
+            return Messages.t("savestate.save.ok", slot, file.getAbsolutePath());
         } catch (Exception e) {
             System.err.println("[STATE] salvataggio fallito: " + e.getMessage());
             return Messages.t("savestate.save.fail", String.valueOf(e.getMessage()));
@@ -1842,14 +1846,15 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Salva accanto allo slot uno screenshot dello schermo ({@code savestate/state1.png}),
-     * a nome fisso: ogni salvataggio sovrascrive l'immagine precedente. Un errore qui non
-     * invalida lo slot già scritto, quindi viene solo segnalato a console.
+     * Salva accanto allo stato uno screenshot dello schermo
+     * ({@code savestate/Slot<N>/state.png}), a nome fisso: ogni salvataggio sovrascrive
+     * l'immagine precedente di quello slot. Un errore qui non invalida lo stato già
+     * scritto, quindi viene solo segnalato a console.
      */
-    private void saveStateScreenshot() {
+    private void saveStateScreenshot(int slot) {
         if (display == null) return;
         try {
-            File shot = SaveStateManager.slotScreenshot();
+            File shot = SaveStateManager.slotScreenshot(slot);
             display.saveScreenshot(shot);
             System.out.println("[STATE] screenshot " + shot.getAbsolutePath());
         } catch (Exception e) {
@@ -1858,7 +1863,7 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Ripristina lo stato della macchina dallo slot unico, sovrascrivendo i componenti
+     * Ripristina lo stato della macchina dallo slot attivo, sovrascrivendo i componenti
      * correnti (macchina in pausa). Invocato dal pulsante F12 "Load State".
      *
      * <p>Se lo stato è stato preso su una macchina diversa da quella accesa — altra
@@ -1870,18 +1875,20 @@ public class Amija implements RemotePlayControl {
      * e il seguito è in {@link #restoreStateAfterRebuild()}.
      */
     private ConfigDialog.LoadStateOutcome loadState() {
+        int slot = config.saveStateSlot();
         if (cpu == null || agnus == null) {
             return ConfigDialog.LoadStateOutcome.done(
                     Messages.t("savestate.load.fail", Messages.t("savestate.nomachine")));
         }
-        File file = SaveStateManager.slotFile();
+        File file = SaveStateManager.slotFile(slot);
         if (!file.isFile()) {
             return ConfigDialog.LoadStateOutcome.done(Messages.t("savestate.load.none"));
         }
         try {
             SaveStateManager.load(file, cpu, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] caricato " + file.getAbsolutePath());
-            return ConfigDialog.LoadStateOutcome.done(Messages.t("savestate.load.ok"));
+            return ConfigDialog.LoadStateOutcome.done(
+                    Messages.t("savestate.load.ok", slot));
         } catch (SaveStateManager.IncompatibleStateException e) {
             if (canRebuildMachineFor(file)) {
                 System.out.println("[STATE] macchina diversa da quella dello slot ("
@@ -1922,7 +1929,12 @@ public class Amija implements RemotePlayControl {
      * {@link AmigaConfig#restoreMachineSettings}.
      */
     private String restoreStateAfterRebuild() {
-        File file = SaveStateManager.slotFile();
+        // Lo slot è quello scelto nel popup: la scelta ha effetto subito, quindi è ancora
+        // in configurazione anche se il popup si è chiuso senza applicare il resto. Lo si
+        // legge PRIMA di restoreMachineSettings — che rimette in vigore le sole chiavi di
+        // macchina, e savestate.slot non è una di quelle.
+        int slot = config.saveStateSlot();
+        File file = SaveStateManager.slotFile(slot);
         try {
             Properties saved = SaveStateManager.readInfo(file).config();
             config.restoreMachineSettings(saved);
