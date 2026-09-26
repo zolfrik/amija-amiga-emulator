@@ -514,6 +514,17 @@ public abstract class AbstractDenise {
     private static final int Z_SP7 = 0x0010;
     private static final int Z_4   = 0x0008;
 
+    /** All eight sprite depth bits. */
+    private static final int Z_SP_ALL = Z_SP0 | Z_SP1 | Z_SP2 | Z_SP3 | Z_SP4 | Z_SP5 | Z_SP6 | Z_SP7;
+
+    /** How many pixels before the opening of the display window the sprite output is taken. */
+    private static final int DIW_OPEN_SPRITE_SAMPLE_PX = 1;
+
+    /** Pixel sampled for the display-window opening collision, -1 if none on this line. */
+    private int diwOpenSamplePx = -1;
+    /** Depth bits of the sprites that had a pixel there, whether clipped or not. */
+    private int diwOpenSpriteZ;
+
     private static final int[] Z_SP = {
         Z_SP0, Z_SP1, Z_SP2, Z_SP3, Z_SP4, Z_SP5, Z_SP6, Z_SP7
     };
@@ -1147,6 +1158,7 @@ public abstract class AbstractDenise {
             spriteClipBegin = bpl1datPixelThisLine == Integer.MAX_VALUE
                     ? Integer.MAX_VALUE
                     : bpl1datPixelThisLine + SPRITE_ENABLE_OFFSET;
+            findDiwOpeningSample();
             // Gli shift register sprite scorrono PRIMA del playfield: la fine della loro
             // finestra di display e' uno degli istanti in cui Denise ri-seleziona la
             // configurazione di resa che translate() consuma (vedi renderPlanes). La
@@ -1858,6 +1870,11 @@ public abstract class AbstractDenise {
             int r1 = ssra[s1] | ssrb[s1];
             int r2 = ssra[s2] | ssrb[s2];
             if ((r1 | r2) != 0) {
+                // The sprite output exists under the border too; only its display is clipped.
+                if (diwOpenSamplePx >= hpos && diwOpenSamplePx <= hpos + 1) {
+                    if ((((ssra[s1] >> 15) & 1) | ((ssrb[s1] >> 14) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s1];
+                    if ((((ssra[s2] >> 15) & 1) | ((ssrb[s2] >> 14) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s2];
+                }
                 if (hpos >= spriteClipBegin && hpos < spriteClipEnd) {
                     if (att) drawAttachedSpritePixel(hpos, s2);
                     else   { drawSpritePixel(hpos, s1); drawSpritePixel(hpos, s2); }
@@ -1989,6 +2006,60 @@ public abstract class AbstractDenise {
             }
         }
         checkP2PCollisions();
+        checkDiwOpeningCollisions();
+    }
+
+    /**
+     * Where the horizontal display window opens, the sprite output of the pixel before it
+     * collides once with a bitplane pixel of value 0, even though that pixel is border and
+     * no BPL1DAT has been written yet: sprite against sprite, and sprite against the playfield
+     * through CLXCON as for any other pixel. OCS/ECS behaviour, and the only collision that
+     * does not need a rendered pixel.
+     */
+    private void checkDiwOpeningCollisions() {
+        if (diwOpenSamplePx >= 0 && diwOpenSpriteZ != 0) {
+            collideSpritesWithZeroPixel(diwOpenSpriteZ, (initialBplcon0 & 0x0400) != 0);
+        }
+    }
+
+    /**
+     * Finds the pixel whose sprite output {@link #checkDiwOpeningCollisions()} uses: the one
+     * before the first opening of the horizontal display window on this line, or -1.
+     */
+    private void findDiwOpeningSample() {
+        diwOpenSamplePx = -1;
+        diwOpenSpriteZ = 0;
+        for (int pos = DIW_OPEN_SPRITE_SAMPLE_PX; pos < HPIXELS; pos++) {
+            if (bBuffer[pos] == (byte) 0xFF && bBuffer[pos - 1] != (byte) 0xFF) {
+                diwOpenSamplePx = pos - DIW_OPEN_SPRITE_SAMPLE_PX;
+                return;
+            }
+        }
+    }
+
+    /** Collisions of the sprites present in depth mask {@code z} with a playfield pixel of 0. */
+    private void collideSpritesWithZeroPixel(int z, boolean dpf) {
+        int z_s01 = Z_SP0 | ((clxcon & 0x1000) != 0 ? Z_SP1 : 0);
+        int z_s23 = Z_SP2 | ((clxcon & 0x2000) != 0 ? Z_SP3 : 0);
+        int z_s45 = Z_SP4 | ((clxcon & 0x4000) != 0 ? Z_SP5 : 0);
+        int z_s67 = Z_SP6 | ((clxcon & 0x8000) != 0 ? Z_SP7 : 0);
+        if ((z & z_s01) != 0 && (z & z_s23) != 0) clxdat |= 0x0200;
+        if ((z & z_s01) != 0 && (z & z_s45) != 0) clxdat |= 0x0400;
+        if ((z & z_s01) != 0 && (z & z_s67) != 0) clxdat |= 0x0800;
+        if ((z & z_s23) != 0 && (z & z_s45) != 0) clxdat |= 0x1000;
+        if ((z & z_s23) != 0 && (z & z_s67) != 0) clxdat |= 0x2000;
+        if ((z & z_s45) != 0 && (z & z_s67) != 0) clxdat |= 0x4000;
+
+        // A pixel value of 0 matches a playfield when the enabled match bits are all 0.
+        final boolean pf1 = (clxcon & 0x15 & ((clxcon >> 6) & 0x15)) == 0;
+        final boolean pf2 = (clxcon & 0x2A & ((clxcon >> 6) & 0x2A)) == 0;
+        for (int x = 0; x < 8; x++) {
+            if ((z & Z_SP[x]) == 0) continue;
+            if ((x & 1) != 0 && (clxcon & (1 << (12 + (x >> 1)))) == 0) continue;
+            if (pf2) clxdat |= 1 << (5 + (x >> 1));
+            // In single playfield the PF1 comparison is nested in the PF2 one.
+            if (pf1 && (dpf || pf2)) clxdat |= 1 << (1 + (x >> 1));
+        }
     }
 
     /**
