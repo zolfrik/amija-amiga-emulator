@@ -802,22 +802,40 @@ public abstract class AbstractAgnus {
             // origin (see INITIAL_HPOS), and two for BPLCON0 reaching the sync generator
             // after the write that clears ERSY.
             hpos = maxHpos - 12;
-            // `resetfulllinestate()`: la riga che riparte non eredita i latch di quella
-            // interrotta.
-            fetchWindowOpened = false;
-            bpuRelatchCck = -1;
         }
-        // Una scrittura di BPLCON0 a finestra di fetch già aperta diventa efficace
-        // sul fetch da write+4 CCK: WinUAE pipelinea la write di +2
-        // (`pipelined_custom_write(BPLCON0_delayed, v, 2)`, custom.cpp:3585) e la
-        // decisione di fetch per il cck X avviene a X−2 (generate_bpl) → effetto
-        // visibile dai fetch con cck ≥ W+4. Misurato sui [WRGA] (write a cck 210
-        // in entrambi i casi): bbusy1f v96, BPU 0→1 → l'hardware fetcha BPL1DAT
-        // a 215 (≥214 ✓); bbusy4 v160, BPU 2→3 → il piano extra a 213 (<214) NON
-        // è fetchato. Né il latch immediato né il vecchio latch solo-a-DDFSTRT
-        // riproducono entrambi.
-        if (fetchWindowOpened) {
-            bpuRelatchCck = (hpos >> 1) + 2;
+        // The bitplane sequencer sees BPLCON0 two CCKs after the write, and it sees every write:
+        // plane count and resolution are live, not latched per line. A write lands on the
+        // decision of write+2, i.e. on the fetch of write+4. Measured on bbusy1f (BPU 0->1 at
+        // CCK 210, fetched at 215) and bbusy4 (BPU 2->3 at 210, the extra plane at 213 is not).
+        queueSequencerBplcon0(value);
+    }
+
+    /** A BPLCON0 write on its way to the bitplane sequencer, which sees it two CCKs later. */
+    private void queueSequencerBplcon0(int value) {
+        drainSequencerBplcon0();
+        if (seqBplcon0Count == seqBplcon0Pending.length) {
+            // Cannot happen: at most one write per CCK and each waits two. Apply the oldest.
+            seqBplcon0 = seqBplcon0Pending[0];
+            System.arraycopy(seqBplcon0Pending, 1, seqBplcon0Pending, 0, seqBplcon0Count - 1);
+            System.arraycopy(seqBplcon0Due, 1, seqBplcon0Due, 0, seqBplcon0Count - 1);
+            seqBplcon0Count--;
+        }
+        seqBplcon0Pending[seqBplcon0Count] = value;
+        seqBplcon0Due[seqBplcon0Count] = (masterClock >> 1) + 2;
+        seqBplcon0Count++;
+    }
+
+    /** Applies the BPLCON0 writes that have reached the sequencer by this CCK. */
+    private void drainSequencerBplcon0() {
+        final long now = masterClock >> 1;
+        int n = 0;
+        while (n < seqBplcon0Count && seqBplcon0Due[n] <= now) {
+            seqBplcon0 = seqBplcon0Pending[n++];
+        }
+        if (n > 0) {
+            seqBplcon0Count -= n;
+            System.arraycopy(seqBplcon0Pending, n, seqBplcon0Pending, 0, seqBplcon0Count);
+            System.arraycopy(seqBplcon0Due, n, seqBplcon0Due, 0, seqBplcon0Count);
         }
     }
 
@@ -1806,24 +1824,6 @@ public abstract class AbstractAgnus {
      * Tiene traccia di quanti fetch sono stati fatti per determinare
      * quale bitplane fetchare al prossimo slot.
      */
-    /**
-     * BPU <b>grezzo</b> campionato all'apertura della finestra di fetch
-     * (CCK == ddfCckStart) e usato per tutta la riga. Evita che un cambio di BPU a metà
-     * riga avvii un fetch parziale che disallinea i piani. Vedi "2. Bitplane DMA".
-     *
-     * <p>⚠️ Grezzo: quanti piani il DMA prelevi davvero lo decide
-     * {@link #bitplaneDmaPlaneLimit(int, boolean)} al momento dell'uso, perché dipende
-     * anche dalla risoluzione — che può cambiare dentro la riga.
-     */
-    private int fetchUnitBpu = 0;
-
-    /**
-     * Risoluzione LATCHATA che il sequencer usa per maschera e sequenza di fetch. Segue
-     * esattamente { #fetchUnitBpu}: vengono dalla stessa scrittura di BPLCON0 e dalla
-     * stessa pipeline dell'oracolo ({ pipelined_custom_write(BPLCON0_delayed, v, 2)}
-     * -> { setup_fmodes()}).
-     */
-    private boolean fetchUnitHires = false;
 
     /**
      * ddfCckStart CAMPIONATO all'apertura della finestra di fetch (al primo CCK in
@@ -1842,16 +1842,13 @@ public abstract class AbstractAgnus {
      */
     private int fetchUnitDdfStart = 0;
 
-    /** true dopo l'apertura della finestra di fetch nella riga corrente (reset a fine riga). */
-    private boolean fetchWindowOpened = false;
+    /** BPLCON0 as the bitplane sequencer sees it: each write reaches it two CCKs later. */
+    private int seqBplcon0 = 0;
 
-    /**
-     * CCK (della riga corrente) da cui un BPLCON0 scritto a finestra aperta diventa
-     * efficace sulla decisione di fetch: write+2, cioè sul fetch write+4 (vedi
-     * setBPLCON0). −1 = nessun re-latch pendente. Scartato a fine riga (la nuova riga
-     * ricampiona BPU all'apertura finestra).
-     */
-    private int bpuRelatchCck = -1;
+    /** Writes of BPLCON0 still on their way to the sequencer: value and the CCK they land on. */
+    private final int[] seqBplcon0Pending = new int[4];
+    private final long[] seqBplcon0Due = new long[4];
+    private int seqBplcon0Count = 0;
 
     /**
      * Bitplane requests between the sequencer decision and the fetch. A request decided
@@ -2496,30 +2493,10 @@ public abstract class AbstractAgnus {
                 busTakenByCustom = true;
             }
             if (bprun > 0 && !beamFrozen) {
-                // BPU and resolution are sampled once per line, when the fetch window opens,
-                // and used for the whole line. The sample is taken before the resolution is
-                // read below, so the first CCK of the window already fetches with the new
-                // line's sequence: with the previous line's value, a hires line followed by a
-                // lores one fetched an extra BPL4 word at sequence step 0, shifting that plane
-                // by 16 pixels for the rest of the screen.
-                //
-                // L'intro di Monkey Island accende i bitplani (BPU 0→5) a metà della riga di
-                // transizione del bordo (riga 43, a CCK 124, ben oltre DDFSTRT a CCK 56).
-                // Campionando BPU vivo ad ogni slot, quella riga prelevava ~11 word parziali:
-                // questo (a) disallineava i piani pari/dispari di 16px e (b) faceva avanzare
-                // TUTTI i puntatori di 11 word, traslando l'intera immagine per il resto del
-                // frame (testo "sdoppiato" con frange di colore).
-                // ⚠️ L'oracolo il BPU lo tiene VIVO (`bplcon0_planes_limit`, ricalcolato a
-                // ogni scrittura di BPLCON0): il latch è una nostra deroga, misurata su quel
-                // caso e tenuta separata dal porto del sequencer perché due modelli cambiati
-                // insieme non si sanno più attribuire. È il prossimo passo, non questo.
-                if (dmaconBplSeq && !fetchWindowOpened) {
-                    fetchWindowOpened = true;
-                    fetchUnitBpu = denise.getRawBpu();  // grezzo: il limite è di Agnus
-                    fetchUnitHires = denise.isHires();
-                    bpuRelatchCck = -1;
-                }
-                // ⛔ La RISOLUZIONE che conta qui è quella LATCHATA, non quella viva.
+                // Plane count and resolution are the sequencer's own copy of BPLCON0, which
+                // every write reaches two CCKs later (queueSequencerBplcon0): live, not latched.
+                drainSequencerBplcon0();
+                // ⛔ La RISOLUZIONE che conta qui è quella della copia del sequencer, non quella viva.
                 // Non è una scelta nostra: nell'oracolo BPLCON0 arriva ad Agnus da
                 // `pipelined_custom_write(BPLCON0_delayed, v, 2)` e **solo** il gestore
                 // ritardato chiama `setup_fmodes()`, che è ciò che fissa `bplcon0_res`,
@@ -2530,19 +2507,11 @@ public abstract class AbstractAgnus {
                 // ⚠️ Leggendola viva il cambio di risoluzione a metà riga entrava 4 CCK
                 // troppo presto, ed è tutto il residuo di `DMACON/resmod1÷4` — che di
                 // DMACON non hanno niente: scrivono `BPLCON0 $A200 → $2200`.
-                boolean hires = fetchUnitHires;
+                boolean hires = (seqBplcon0 & 0x8000) != 0;
                 boolean lastOfBlock = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
                 if (dmaconBplSeq) {
-                    // BPLCON0 scritto a finestra aperta: BPU efficace sulla decisione da
-                    // write+2 CCK, cioè sul fetch da write+4 (vedi setBPLCON0 per le misure
-                    // [WRGA]).
-                    if (bpuRelatchCck >= 0 && cck >= bpuRelatchCck) {
-                        fetchUnitBpu = denise.getRawBpu();
-                        fetchUnitHires = denise.isHires();
-                        bpuRelatchCck = -1;
-                    }
                     int plane = bplSequence(bprunCycle, hires);
-                    if (plane >= 0 && plane < bitplaneDmaPlaneLimit(fetchUnitBpu, hires)) {
+                    if (plane >= 0 && plane < bitplaneDmaPlaneLimit((seqBplcon0 >> 12) & 7, hires)) {
                         // The modulo belongs to the last block of the line, which is the
                         // state the sequencer is in when it decides the slot.
                         boolean domod = ddfStopping == 2 && (!hires || (bprunCycle & 7) >= 4);
@@ -3086,8 +3055,6 @@ public abstract class AbstractAgnus {
         updateLineLength(beamNtsc && (beamcon0 & BEAMCON0_LOLDIS) == 0 && !lol);
 
         hpos = 0;
-        fetchWindowOpened = false;   // riarma il latch della finestra di fetch per la nuova riga
-        bpuRelatchCck = -1;          // un re-latch BPU mai maturato non sopravvive alla riga
 
         // Sblocca il latch light pen dopo la riga 20
         // (il Kickstart usa vpos >= 20 come condizione di reset del freeze)
@@ -5288,7 +5255,8 @@ public abstract class AbstractAgnus {
         cpuAccessTransferred = false; copperBusProcessed = false; ciaReadSampled = false; ciaWriteDone = false;
         cpuRouteCacheValid = false;
         cpuCurrentRoute = null;
-        bprun = 0; bprunCycle = 0; ddfStopping = 0; fetchUnitHires = false;
+        bprun = 0; bprunCycle = 0; ddfStopping = 0;
+        seqBplcon0 = 0; seqBplcon0Count = 0;
         bplReqNext = -1; bplReqLater = -1;
         dasSlotAllocated = false;
         ddfEnableOn = false; ddfLimitIn = false; ddfLimitOut = false;
