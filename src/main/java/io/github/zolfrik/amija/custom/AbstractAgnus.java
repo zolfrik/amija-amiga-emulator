@@ -1855,11 +1855,17 @@ public abstract class AbstractAgnus {
     private boolean dasSlotAllocated;
 
     /**
-     * DSKPT as the allocation of the pending disk slot captured it. The slot transfers at this
-     * address and writes it back plus two, so a DSKPT write that falls between allocation and
-     * transfer is lost.
+     * DSKPT or the audio pointer as the allocation of the pending disk or audio slot captured
+     * it. The slot transfers at this address and writes it back plus two, so a DSKPT write
+     * that falls between allocation and transfer is lost.
      */
     private int dasSlotPointer;
+
+    /**
+     * The modulo left in each of the four RGA slot buffers by the last plain bitplane fetch
+     * that went through it, indexed by the absolute CCK modulo 4. A merged slot reuses it.
+     */
+    private final int[] rgaSlotBplMod = new int[4];
     private static final int BPLREQ_PLANE = 0x07;
     private static final int BPLREQ_HIRES = 0x08;
     private static final int BPLREQ_MOD = 0x10;
@@ -2428,14 +2434,20 @@ public abstract class AbstractAgnus {
                     break;
                 case DMASLOT_DISK:
                     if (dasAllocated) {
-                        handleDiskDMA(cck);
+                        if (bplReq >= 0) mergeBitplaneWithDasSlot(bplReq);
+                        else handleDiskDMA(cck);
                         owner = BusOwner.DISK;
                         busTakenByCustom = true;
                     }
                     break;
                 case DMASLOT_AUDIO:
                     if (dasAllocated) {
-                        handleAudioDMA(cck);
+                        if (bplReq >= 0) {
+                            mergeBitplaneWithDasSlot(bplReq);
+                            paula.dropAudioDmaSlot((cck - SLOT_AUDIO_0) / 2);
+                        } else {
+                            handleAudioDMA(cck);
+                        }
                         owner = OWNER_VALUES[BusOwner.AUDIO0.ordinal()
                                 + (cck - SLOT_AUDIO_0) / 2];
                         busTakenByCustom = true;
@@ -3598,6 +3610,7 @@ public abstract class AbstractAgnus {
                 return isDiskDMAEnabled() && (paula.isDiskDmaWrite() ? paula.isDiskDmaEnabled()
                         : paula.isDiskReadSlotRequested((slotCck - SLOT_DISK_1) / 2));
             case DMASLOT_AUDIO:
+                dasSlotPointer = paula.getAudioDmaAddress((slotCck - SLOT_AUDIO_0) / 2);
                 return isAudioDMAEnabled()
                         && paula.isAudioDmaRequest((slotCck - SLOT_AUDIO_0) / 2);
             default:
@@ -3755,7 +3768,22 @@ public abstract class AbstractAgnus {
             // primo megabyte — è il caso di WHDLoad, che riserva la Chip bassa al gioco
             // e alloca lo schermo Workbench più in alto.
             bplPtrInternal[bplIdx] = bplPtrInternal[bplIdx] + mod;
+            rgaSlotBplMod[(int) (masterClock >> 1) & 3] = mod;
+        } else {
+            rgaSlotBplMod[(int) (masterClock >> 1) & 3] = 0;
         }
+    }
+
+    /**
+     * A bitplane fetch and a disk or audio cycle allocated in the same slot. The two requests
+     * merge into one cycle whose register address is the AND of theirs, which names neither
+     * channel: the plane receives no data, the disk or audio word is not moved and that
+     * channel's pointer stays where it was, while the plane pointer takes the other channel's
+     * pointer plus one word and the modulo left in this slot buffer.
+     */
+    private void mergeBitplaneWithDasSlot(int bplReq) {
+        bplPtrInternal[bplReq & BPLREQ_PLANE] =
+                dasSlotPointer + 2 + rgaSlotBplMod[(int) (masterClock >> 1) & 3];
     }
 
     /**

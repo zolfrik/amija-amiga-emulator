@@ -1663,6 +1663,20 @@ public final class Paula {
         }
     }
 
+    /**
+     * An audio DMA slot whose cycle merged with a bitplane fetch: the request is consumed and
+     * no word arrives. A channel still waiting for its first words keeps waiting.
+     */
+    public void dropAudioDmaSlot(int chan) {
+        if (chan >= 0 && chan < 4) {
+            syncAudioChannels();
+            AudioChannel ch = audioChannels[chan];
+            ch.dmaRequest = false;
+            ch.dmalRequest = false;
+            ch.refreshActiveMask();
+        }
+    }
+
     public void startAudioOutput() {
         audioOutput.start();
     }
