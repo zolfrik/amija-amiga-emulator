@@ -1495,15 +1495,30 @@ public abstract class AbstractAgnus {
     // in CCK = pos.h. vAmiga mette TUTTA la DMA DAS su CCK DISPARI, con refresh anche a fine
     // riga (0xE2=226). La vecchia scelta 0/2/4/6 (refresh a inizio riga, pari) era un'euristica
     // per evitare una collisione con la fetch bitplane in overscan; sostituita dal modello
-    // rigoroso, verificato dai test vAmigaTS. Refresh: 1,3,5,226.
+    // rigoroso, verificato dai test vAmigaTS. Refresh: 1,3,5 e lo strobe sull'ultimo CCK della riga (strobeCck).
     private static final int SLOT_REFRESH_1 = 1;
     private static final int SLOT_REFRESH_2 = 3;
     private static final int SLOT_REFRESH_3 = 5;
-    private static final int SLOT_REFRESH_4 = 226; // 0xE2, fine riga (oltre la max fetch bitplane)
+    /**
+     * The fourth refresh slot, the strobe, is the LAST CCK of the line: 226 on a short line
+     * and 227 on an NTSC long one. It opens the next line's fixed slots, so a long line
+     * moves it along with the line end and leaves CCK 226 free.
+     */
+    private int strobeCck() {
+        return (maxHpos >> 1) - 1;
+    }
+
+    /**
+     * The cycle the Copper cannot use, three CCKs before the line end: $E0 on a short line,
+     * $E1 on an NTSC long one. It moves with the line end like the strobe.
+     */
+    private int copperBlockedCck() {
+        return (maxHpos >> 1) - 3;
+    }
 
     /**
      * CCK at which Paula's DMA requests (DMAL) are latched for the disk and audio slots of
-     * the line: the cycle after the strobe slot ({@link #SLOT_REFRESH_4}) that opens the
+     * the line: the cycle after the strobe slot ({@link #strobeCck()}) that opens the
      * line's fixed DMA slots.
      */
     private static final int DMAL_LATCH_CCK = 0;
@@ -1560,13 +1575,13 @@ public abstract class AbstractAgnus {
     private static final byte[] DMA_SLOT_TABLE = buildDmaSlotTable();
 
     private static byte[] buildDmaSlotTable() {
-        // 228 posizioni: 227 CCK della riga corta più il CCK extra della riga lunga
-        // NTSC (LOL), che non ospita alcuno slot DMA fisso e resta DMASLOT_NONE.
+        // 228 posizioni: 227 CCK della riga corta più il CCK extra della riga lunga NTSC
+        // (LOL). Lo strobe non sta in tabella: occupa l'ultimo CCK della riga, che dipende
+        // dalla sua lunghezza (strobeCck).
         byte[] t = new byte[228];
         t[SLOT_REFRESH_1] = DMASLOT_REFRESH;
         t[SLOT_REFRESH_2] = DMASLOT_REFRESH;
         t[SLOT_REFRESH_3] = DMASLOT_REFRESH;
-        t[SLOT_REFRESH_4] = DMASLOT_REFRESH;
         t[SLOT_DISK_1] = DMASLOT_DISK;
         t[SLOT_DISK_2] = DMASLOT_DISK;
         t[SLOT_DISK_3] = DMASLOT_DISK;
@@ -2426,7 +2441,8 @@ public abstract class AbstractAgnus {
 
             // 1. Slot fissi ad alta priorità (DAS: refresh/disk/audio) — tipo di
             //    slot letto dalla tabella sequencer precomputata DMA_SLOT_TABLE.
-            switch (beamFrozen ? DMASLOT_NONE : DMA_SLOT_TABLE[cck]) {
+            switch (beamFrozen ? DMASLOT_NONE
+                    : cck == strobeCck() ? DMASLOT_REFRESH : DMA_SLOT_TABLE[cck]) {
                 case DMASLOT_REFRESH:
                     handleRefreshDMA(cck, bplReq);
                     owner = BusOwner.REFRESH;
@@ -2651,17 +2667,17 @@ public abstract class AbstractAgnus {
                 // avanzano solo se il bus è libero; gli stati di lettura memoria
                 // (FETCH/MOVE/WAIT_OR_SKIP) assertano comunque la richiesta e la
                 // concessione è decisa qui sotto.
-                boolean copperBusFree = !busTakenByCustom && cck != 0xE0;
-                copper.risingEdge(copperBusFree, copperRequestParity(cck), cck == 0xE0);
+                final boolean copperBlocked = cck == copperBlockedCck();
+                boolean copperBusFree = !busTakenByCustom && !copperBlocked;
+                copper.risingEdge(copperBusFree, copperRequestParity(cck), copperBlocked);
                 // Fix 1: ensure stale ACK doesn't lead to false ownership if bus is taken.
                 copperBusResp.ack = false;
 
-                // Regola $E0/$E1 (vAmiga busIsFree<COPPER>): se il Copper RICHIEDE il bus
-                // nell'ultimo CCK utile della riga ($E0 = 224; su long line sarebbe $E1,
-                // ma la nostra riga PAL è fissa a 227 CCK senza lol), il bus diventa
-                // BLOCKED per TUTTI — né il Copper né la CPU lo ottengono. Il Copper non
-                // riceve ack e ritenta al prossimo CCK pari.
-                if (cck == 0xE0 && copperBusReq.as) {
+                // If the Copper REQUESTS the bus in the blocked cycle of the line ($E0 = 224
+                // on a short line, $E1 = 225 on an NTSC long one) the bus is BLOCKED for
+                // everyone: neither the Copper nor the CPU get it. The Copper gets no ack and
+                // retries at the next CCK.
+                if (copperBlocked && copperBusReq.as) {
                     owner            = BusOwner.BLOCKED;
                     busTakenByCustom = true;
                 } else if (!busTakenByCustom) {
@@ -3514,7 +3530,7 @@ public abstract class AbstractAgnus {
             return;
         }
         final int plane = bplReq & BPLREQ_PLANE;
-        if (cck == SLOT_REFRESH_4) {
+        if (cck == strobeCck()) {
             bplPtrInternal[plane] = addr + 2;
         } else {
             int data = chipRAM.readWord(dmaChipAddr(addr));
@@ -4299,7 +4315,7 @@ public abstract class AbstractAgnus {
                 // lands in the same CCK: the Agnus side of the register still takes the
                 // value, Denise never sees it. A cycle synchronised to the chip bus cannot be
                 // granted there, so only an unsynchronised one (a FAST16 bank) meets it.
-                final boolean strobeSlot = denise != null && (hpos >> 1) == SLOT_REFRESH_4;
+                final boolean strobeSlot = denise != null && (hpos >> 1) == strobeCck();
                 if (strobeSlot) denise.setRgaSlotTakenByStrobe(true);
                 writeBusData(cpuCurrentRoute, addr, word, busUds, busLds);
                 if (strobeSlot) denise.setRgaSlotTakenByStrobe(false);
