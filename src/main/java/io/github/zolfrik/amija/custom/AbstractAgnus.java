@@ -2487,8 +2487,14 @@ public abstract class AbstractAgnus {
             // as the register writes, and only the fetch itself lags.
             if (bplReq >= 0 && !busTakenByCustom && !beamFrozen) {
                 final int plane = bplReq & BPLREQ_PLANE;
-                handleBitplaneDMA(cck, plane, (bplReq & BPLREQ_HIRES) != 0,
-                        (bplReq & BPLREQ_MOD) != 0);
+                if (DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE
+                        && spriteSlotAllocated(cck, spriteDmaSeq, (masterClock >> 1) - 2)) {
+                    // The sprite kept its slot at the end of the fetch (bplConflict below).
+                    mergeBitplaneWithSpriteSlot(cck, plane);
+                } else {
+                    handleBitplaneDMA(cck, plane, (bplReq & BPLREQ_HIRES) != 0,
+                            (bplReq & BPLREQ_MOD) != 0);
+                }
                 owner = OWNER_VALUES[BusOwner.BPL1.ordinal() + plane];
                 busTakenByCustom = true;
             }
@@ -3764,6 +3770,32 @@ public abstract class AbstractAgnus {
      * channel's pointer stays where it was, while the plane pointer takes the other channel's
      * pointer plus one word and the modulo left in this slot buffer.
      */
+    /**
+     * A bitplane fetch and a sprite cycle allocated in the same slot, which happens when the
+     * sprite keeps its slot at the end of the bitplane fetch. The two pointers merge into their
+     * OR and the register address into the AND of the two. When that address is still a
+     * BPLxDAT, the word is fetched from the merged pointer and goes to that register; otherwise
+     * nothing is transferred. Either way the sprite receives no data, and the plane and the
+     * sprite both continue from the merged pointer plus one word and the modulo left in this
+     * slot buffer.
+     */
+    private void mergeBitplaneWithSpriteSlot(int cck, int plane) {
+        final int idx = (cck - SLOT_SPRITE_0) / 4;
+        final int sub = ((cck - SLOT_SPRITE_0) % 4) / 2;
+        final int sprReg = 0x140 + idx * 8 + (sub != 0 ? 2 : 0)
+                + (sprSlotDataPhase[idx][sub] ? 4 : 0);
+        final int reg = (0x110 + plane * 2) & sprReg;
+        int pv = bplPtrInternal[plane] | sprPtrInternal[idx];
+        if (reg >= 0x110 && reg < 0x120 && denise != null) {
+            int data = chipRAM.readWord(dmaChipAddr(pv));
+            openBusLatch = data & 0xFFFF;
+            denise.writeRegisterAtPixel(reg, data, cck * 4 - 70);
+        }
+        pv += 2 + rgaSlotBplMod[(int) (masterClock >> 1) & 3];
+        bplPtrInternal[plane] = pv;
+        sprPtrInternal[idx] = pv;
+    }
+
     private void mergeBitplaneWithDasSlot(int bplReq) {
         bplPtrInternal[bplReq & BPLREQ_PLANE] =
                 dasSlotPointer + 2 + rgaSlotBplMod[(int) (masterClock >> 1) & 3];
