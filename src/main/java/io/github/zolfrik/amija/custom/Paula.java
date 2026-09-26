@@ -1644,10 +1644,22 @@ public final class Paula {
         return chan >= 0 && chan < 4 ? audioChannels[chan].dmaPointer : 0;
     }
 
+    /**
+     * The word of an audio DMA slot. The slot is allocated one CCK before it runs, so a
+     * DMACON write in between can turn the channel's DMA off while its cycle still happens:
+     * the pointer moves on and the word reaches the channel as a CPU write to AUDxDAT would.
+     */
     public void receiveAudioDmaWord(int chan, int value) {
         if (chan >= 0 && chan < 4) {
             syncAudioChannels();
-            audioChannels[chan].receiveDmaWord(value);
+            AudioChannel ch = audioChannels[chan];
+            if (ch.dmaEnabled) {
+                ch.receiveDmaWord(value);
+            } else {
+                ch.dmaPointer = (ch.dmaPointer + 2) & 0x1FFFFE;
+                audDAT[chan] = value & 0xFFFF;
+                ch.writeData(value);
+            }
         }
     }
 

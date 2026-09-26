@@ -1543,9 +1543,9 @@ public abstract class AbstractAgnus {
     // confronti `if (cck==SLOT_REFRESH_1 || cck==SLOT_REFRESH_2 ...)` per ogni
     // CCK, si fa un singolo lookup. La POSIZIONE degli slot è costante per riga
     // (refresh 0/2/4/6, disk 1/5/9, audio 15/17/19/21, sprite 23..53 dispari);
-    // le condizioni dinamiche (DMACON enable, richiesta canale audio, fase/VSTOP
-    // sprite) restano valutate al dispatch, quindi la tabella è BIT-NEUTRALE
-    // rispetto al vecchio if-chain.
+    // le condizioni dinamiche (DMACON enable, richiesta canale, fase/VSTOP sprite)
+    // restano fuori dalla tabella: disco e audio le valutano all'allocazione, un CCK
+    // prima dello slot (allocateDasSlot), gli sprite alla loro decisione.
     //
     // NB: la priorità di arbitraggio NON cambia. Refresh/disk/audio restano
     // dispatchati PRIMA del bitplane; lo sprite DOPO (il bitplane vince sullo
@@ -1845,6 +1845,14 @@ public abstract class AbstractAgnus {
      * {@link #BPLREQ_HIRES} and {@link #BPLREQ_MOD}; {@code -1} means no request.
      */
     private int bplReqNext = -1, bplReqLater = -1;
+
+    /**
+     * Whether the disk or audio slot of the next CCK has been allocated. A disk or audio
+     * cycle is allocated one CCK before it runs, with DMACON and Paula's request as they
+     * are at that point: a DMACON write in the CCK just before the slot neither cancels an
+     * allocated cycle nor creates one. See {@link #allocateDasSlot(int)}.
+     */
+    private boolean dasSlotAllocated;
     private static final int BPLREQ_PLANE = 0x07;
     private static final int BPLREQ_HIRES = 0x08;
     private static final int BPLREQ_MOD = 0x10;
@@ -2397,10 +2405,14 @@ public abstract class AbstractAgnus {
             // DMAL: Paula reports the disk and audio requests for this line.
             if (cck == DMAL_LATCH_CCK && paula != null) paula.latchDmaRequests();
 
+            // Disk and audio cycles are allocated one CCK ahead: this CCK runs the slot
+            // allocated at the previous one, and allocates the next. Both happen before the
+            // Copper and the CPU of this CCK, so their writes reach the slot after next.
+            final boolean dasAllocated = dasSlotAllocated;
+            dasSlotAllocated = !beamFrozen && allocateDasSlot(cck + 1);
+
             // 1. Slot fissi ad alta priorità (DAS: refresh/disk/audio) — tipo di
             //    slot letto dalla tabella sequencer precomputata DMA_SLOT_TABLE.
-            //    Le condizioni dinamiche (DMACON enable, richiesta canale) restano
-            //    invariate, quindi il comportamento è identico al vecchio if-chain.
             switch (beamFrozen ? DMASLOT_NONE : DMA_SLOT_TABLE[cck]) {
                 case DMASLOT_REFRESH:
                     handleRefreshDMA(cck, bplReq);
@@ -2408,32 +2420,18 @@ public abstract class AbstractAgnus {
                     busTakenByCustom = true;
                     break;
                 case DMASLOT_DISK:
-                    // A write DMA owns all three slots; a read uses only the slots Paula
-                    // requested for this line (DMAL).
-                    if (isDiskDMAEnabled() && paula != null) {
-                        int slot = (cck - SLOT_DISK_1) / 2;
-                        if (paula.isDiskDmaWrite() ? paula.isDiskDmaEnabled()
-                                                   : paula.isDiskReadSlotRequested(slot)) {
-                            handleDiskDMA(cck);
-                            owner = BusOwner.DISK;
-                            busTakenByCustom = true;
-                        }
+                    if (dasAllocated) {
+                        handleDiskDMA(cck);
+                        owner = BusOwner.DISK;
+                        busTakenByCustom = true;
                     }
                     break;
                 case DMASLOT_AUDIO:
-                    // Lo slot audio va rubato alla CPU SOLO quando il canale ha davvero
-                    // un fetch in corso (period scaduto, dmaRequest), non ad ogni riga:
-                    // su HW reale il canale preleva una word per periodo (ogni N righe),
-                    // negli altri casi lo slot è libero per la CPU. Rubarlo sempre (col
-                    // solo DMACON abilitato) sovra-caricava la CPU di ~4 slot/riga (firework
-                    // IK+: blocco AUDIO ~5% → ~1%). FIX cycle-exact. Vedi docs/sae-dskr-sequence.md.
-                    if (isAudioDMAEnabled()) {
-                        int chan = (cck - SLOT_AUDIO_0) / 2;
-                        if (paula != null && paula.isAudioDmaRequest(chan)) {
-                            handleAudioDMA(cck);
-                            owner = OWNER_VALUES[BusOwner.AUDIO0.ordinal() + chan];
-                            busTakenByCustom = true;
-                        }
+                    if (dasAllocated) {
+                        handleAudioDMA(cck);
+                        owner = OWNER_VALUES[BusOwner.AUDIO0.ordinal()
+                                + (cck - SLOT_AUDIO_0) / 2];
+                        busTakenByCustom = true;
                     }
                     break;
                 default:
@@ -3570,12 +3568,31 @@ public abstract class AbstractAgnus {
     private void handleAudioDMA(int cck) {
         if (paula != null) {
             int chan = (cck - SLOT_AUDIO_0) / 2;
-            if (chan >= 0 && chan < 4 && paula.isAudioDmaRequest(chan)) {
-                int addr = paula.getAudioDmaAddress(chan);
-                int data = chipRAM.readWord(dmaChipAddr(addr));
-                openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
-                paula.receiveAudioDmaWord(chan, data);
-            }
+            int addr = paula.getAudioDmaAddress(chan);
+            int data = chipRAM.readWord(dmaChipAddr(addr));
+            openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
+            paula.receiveAudioDmaWord(chan, data);
+        }
+    }
+
+    /**
+     * Allocation of the disk or audio cycle at CCK {@code slotCck}, decided one CCK before
+     * it runs. A write DMA owns all three disk slots; a read uses only the slots Paula
+     * requested for this line (DMAL). An audio slot is taken only when its channel has a
+     * fetch pending and reported it at the DMAL, so a line without a fetch leaves the slot
+     * to the CPU.
+     */
+    private boolean allocateDasSlot(int slotCck) {
+        if (slotCck >= DMA_SLOT_TABLE.length || paula == null) return false;
+        switch (DMA_SLOT_TABLE[slotCck]) {
+            case DMASLOT_DISK:
+                return isDiskDMAEnabled() && (paula.isDiskDmaWrite() ? paula.isDiskDmaEnabled()
+                        : paula.isDiskReadSlotRequested((slotCck - SLOT_DISK_1) / 2));
+            case DMASLOT_AUDIO:
+                return isAudioDMAEnabled()
+                        && paula.isAudioDmaRequest((slotCck - SLOT_AUDIO_0) / 2);
+            default:
+                return false;
         }
     }
 
@@ -5220,6 +5237,7 @@ public abstract class AbstractAgnus {
         cpuCurrentRoute = null;
         bprun = 0; bprunCycle = 0; ddfStopping = 0; fetchUnitHires = false;
         bplReqNext = -1; bplReqLater = -1;
+        dasSlotAllocated = false;
         ddfEnableOn = false; ddfLimitIn = false; ddfLimitOut = false;
         hwiOld = false; dmaconBpl2 = false;
         dmaconBplSeq = false;
