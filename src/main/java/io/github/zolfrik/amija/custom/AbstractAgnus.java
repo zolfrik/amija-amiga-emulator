@@ -1853,6 +1853,13 @@ public abstract class AbstractAgnus {
      * allocated cycle nor creates one. See {@link #allocateDasSlot(int)}.
      */
     private boolean dasSlotAllocated;
+
+    /**
+     * DSKPT as the allocation of the pending disk slot captured it. The slot transfers at this
+     * address and writes it back plus two, so a DSKPT write that falls between allocation and
+     * transfer is lost.
+     */
+    private int dasSlotPointer;
     private static final int BPLREQ_PLANE = 0x07;
     private static final int BPLREQ_HIRES = 0x08;
     private static final int BPLREQ_MOD = 0x10;
@@ -3525,7 +3532,7 @@ public abstract class AbstractAgnus {
      */
     private void handleDiskDMA(int cck) {
         if (paula == null) return;
-        int addr = paula.getDiskDmaPointer();
+        int addr = dasSlotPointer;
 
         if (!paula.isDiskDmaWrite()) {
             // READ: the oldest FIFO word goes to Chip RAM, and the pointer moves on even if
@@ -3548,6 +3555,7 @@ public abstract class AbstractAgnus {
         int data = chipRAM.readWord(dmaChipAddr(addr));
         openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
         paula.loadWriteWord(data);
+        paula.setDiskDmaPointer(addr);
         paula.advanceDiskDma();
     }
 
@@ -3586,6 +3594,7 @@ public abstract class AbstractAgnus {
         if (slotCck >= DMA_SLOT_TABLE.length || paula == null) return false;
         switch (DMA_SLOT_TABLE[slotCck]) {
             case DMASLOT_DISK:
+                dasSlotPointer = paula.getDiskDmaPointer();
                 return isDiskDMAEnabled() && (paula.isDiskDmaWrite() ? paula.isDiskDmaEnabled()
                         : paula.isDiskReadSlotRequested((slotCck - SLOT_DISK_1) / 2));
             case DMASLOT_AUDIO:
