@@ -596,6 +596,15 @@ public final class VirtualCRT {
      * non include il blanking né l'overscan esterno alla finestra di confronto.
      */
     public void saveRegressionScreenshot(File file) throws IOException {
+        saveRegressionScreenshot(file, 0);
+    }
+
+    /**
+     * As {@link #saveRegressionScreenshot(File)}, with the crop moved {@code xOffset} pixels to
+     * the right: a reference dump taken with a horizontal display offset starts that much later.
+     */
+    public void saveRegressionScreenshot(File file, int xOffset) throws IOException {
+        final int cropX = REGRESSION_CROP_X + xOffset;
         Objects.requireNonNull(file, "file");
         File dir = file.getParentFile();
         if (dir != null && !dir.exists()) {
@@ -606,10 +615,10 @@ public final class VirtualCRT {
         BufferedImage cropped = new BufferedImage(
                 REGRESSION_CROP_W, REGRESSION_CROP_H, BufferedImage.TYPE_INT_RGB);
         int[] dst = ((DataBufferInt) cropped.getRaster().getDataBuffer()).getData();
-        int wrapCropCol = RIGHT_HBLANK_WRAP_COL - REGRESSION_CROP_X; // 836-124 = 712
+        int wrapCropCol = RIGHT_HBLANK_WRAP_COL - cropX; // 836-124 = 712 without offset
         for (int row = 0; row < REGRESSION_CROP_H; row++) {
             int srcY = REGRESSION_CROP_Y + row;
-            System.arraycopy(snapshot, srcY * RAW_WIDTH + REGRESSION_CROP_X,
+            System.arraycopy(snapshot, srcY * RAW_WIDTH + cropX,
                     dst, row * REGRESSION_CROP_W, REGRESSION_CROP_W);
             // Bordo-destro deep-HBLANK wrap (vAmiga dumpTexture): l'ultimo CCK visibile
             // (col 836-839 = beam cck 0) mostra il COLOR00 al confine di riga, campionato

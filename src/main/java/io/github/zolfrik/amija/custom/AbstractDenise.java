@@ -828,6 +828,11 @@ public abstract class AbstractDenise {
                 if (((bplcon2 ^ value) & 0x0040) != 0) {
                     colChanges.insert(pixel, address, value);
                 }
+                // KILLEHB changes the colour mode on the BPLCON stage, like HAM and EHB from
+                // BPLCON0 above.
+                if (isECS && ((bplcon2 ^ value) & 0x0200) != 0) {
+                    colChanges.insert(pixel + CON_DELAY_PX, COLCHANGE_KILLEHB, value);
+                }
                 bplcon2 = value;
                 break;
             case 0x106: bplcon3 = value; break;  // ECS
@@ -2126,7 +2131,9 @@ public abstract class AbstractDenise {
         // piani di `BPLPTR/drop6x` e `dropcpu6x` (riga 22), $88F invece di $447.
         // Nell'oracolo `bplehb` è ricalcolato da `update_mode()` a ogni scrittura di
         // BPLCON0 e il decoder lo legge vivo (drawing.cpp:2791).
-        boolean ehbMode = isEHB(initialBplcon0);
+        int curBplcon0 = initialBplcon0;
+        boolean killEhb = ehbKilled(initialBplcon2);
+        boolean ehbMode = isEHB(curBplcon0) && !killEhb;
         // ⛔ Il bit DPF serve al decoder HAM ed è quello GREZZO, non quello della catena di
         // priorità: `decode_ham_pixel()` guarda `bpldualpf` (bit 10 di BPLCON0) anche quando
         // il modo è HAM. Vedi dualPlayfieldIndex().
@@ -2142,24 +2149,29 @@ public abstract class AbstractDenise {
         while (colIdx < colChanges.size()) {
             int trigger = colChanges.keys[colIdx];
             if (hamMode) hold = colorizeHAM(vpos, pixel, trigger, hold, hamDpf, hamDpfPri);
-            else              colorizeNormal(vpos, pixel, trigger, ehbMode);
+            else              colorizeNormal(vpos, pixel, trigger, ehbMode, killEhb);
             pixel = trigger;
             RegChange c = colChanges.elements[colIdx++];
             if      (c.reg == 0x100) {
+                curBplcon0 = c.value;
                 hamMode = isHamActive(c.value);
-                ehbMode = isEHB(c.value);
+                ehbMode = isEHB(c.value) && !killEhb;
                 hamDpf  = (c.value & 0x0400) != 0;
             }
             else if (c.reg == 0x104)  hamDpfPri = (c.value & 0x0040) != 0;
+            else if (c.reg == COLCHANGE_KILLEHB) {
+                killEhb = ehbKilled(c.value);
+                ehbMode = isEHB(curBplcon0) && !killEhb;
+            }
             else if (c.reg >= 0x180)  palette[(c.reg - 0x180) / 2] = c.value & 0xFFF;
         }
         if (hamMode) colorizeHAM(vpos, pixel, HPIXELS, hold, hamDpf, hamDpfPri);
-        else         colorizeNormal(vpos, pixel, HPIXELS, ehbMode);
+        else         colorizeNormal(vpos, pixel, HPIXELS, ehbMode, killEhb);
 
         colChanges.clear();
     }
 
-    private void colorizeNormal(int vpos, int from, int to, boolean ehb) {
+    private void colorizeNormal(int vpos, int from, int to, boolean ehb, boolean killEhb) {
         for (int i = from; i < to && i < HPIXELS; i++) {
             // lineIsVBorder → riga senza output bitplane: tutta bordo (niente sprite)
             // bBuffer[i] == 0xFF → pixel interno al DIW → usa mBuffer (indice finale)
@@ -2176,6 +2188,10 @@ public abstract class AbstractDenise {
                 int g = ((color >> 4) & 0xF) >> 1;
                 int b =  (color       & 0xF) >> 1;
                 color = (r << 8) | (g << 4) | b;
+            } else if (killEhb) {
+                // KILLEHB: the sixth plane is ignored and the colour is the one of the
+                // five low bits.
+                color = palette[cIdx & 0x1F];
             } else {
                 // The palette index does not wrap to five bits. The chip owns thirty-two
                 // colour registers, so a six-bit index outside EHB and HAM addresses a
@@ -2370,6 +2386,17 @@ public abstract class AbstractDenise {
      * automaticamente quando si usano 6 piani senza HAM.
      * (Rif: HW Ref Manual §7, "Extra Half-Brite Mode")
      */
+    /**
+     * KILLEHB (BPLCON2 bit 9), an ECS Denise bit: it turns Extra-Half-Brite off and the sixth
+     * plane is then ignored (see colorizeNormal).
+     */
+    /** Colour-change key for the KILLEHB bit of a BPLCON2 write: not a register address. */
+    private static final int COLCHANGE_KILLEHB = 0x105;
+
+    private boolean ehbKilled(int bplcon2) {
+        return isECS && (bplcon2 & 0x0200) != 0;
+    }
+
     private static boolean isEHB(int bplcon0) {
         final int planes = deniseBpu(bplcon0);
         return !isHAM(bplcon0)
@@ -2403,8 +2430,7 @@ public abstract class AbstractDenise {
      * B del §16: {@code block3}, {@code block3m}, {@code modes3/3b/3c}, {@code modes4},
      * {@code invprio3}, cioè tutti e soli i test in cui BPLCON0 ha bit 11 e bit 10 alti.
      *
-     * <p>⏸ Su ECS manca ancora il ramo {@code bplehb_eke} (KILLEHB, bit 9 di BPLCON2), che
-     * qui non serve: l'harness monta {@code OcsDenise}.
+     * <p>Su ECS KILLEHB (bit 9 di BPLCON2) spegne l'Extra-Half-Brite: vedi {@link #ehbKilled}.
      */
     private static boolean isDualPlayfield(int bplcon0) {
         return (bplcon0 & 0x0400) != 0 && !isHAM(bplcon0);
