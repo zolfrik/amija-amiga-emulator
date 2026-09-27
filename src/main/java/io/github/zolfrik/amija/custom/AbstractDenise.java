@@ -688,7 +688,7 @@ public abstract class AbstractDenise {
         initialBplcon0 = initialBplcon2 = 0;
         hstrt = 0; hstop = 0;
         hstrtLineStart = 0; hstopLineStart = 0;
-        mainStartHstrt = -1; mainStartHstop = -1;
+        mainStartHstrt = -1; mainStartHstop = -1; mainStartCounter = -1;
         hflop = true;
         borderBufferIsDirty = 0;
         borderColor = 0;
@@ -755,13 +755,15 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Denise's horizontal counter at the start of the head of the line in progress. It is a
-     * free-running 9-bit counter, two steps per CCK, that only a strobe resets to 2: OCS Denise
-     * on STRHOR and STRVBL, ECS Denise on every strobe. A line whose strobe does not reset it
-     * starts where the counter got to, one line length further on. Not read by the renderer
-     * yet, which assumes the reset on every line.
+     * Denise's horizontal counter at the start of the head of a line. It is a free-running 9-bit
+     * counter, two steps per CCK, that only a strobe resets to 2: OCS Denise on STRHOR and
+     * STRVBL, ECS Denise on every strobe. A line whose strobe does not reset it starts where the
+     * counter got to, one line length further on. The strobe comes at the end of a line, so this
+     * is the head of the next line from then on; the line it ended keeps its own in
+     * {@link #hcounterRenderHead}, which is what renders it.
      */
     private int hcounterHead = 2;
+    private int hcounterRenderHead = 2;
 
     /**
      * The strobe of the line's first refresh slot, 0 when the slot carried none; it sets the
@@ -769,6 +771,7 @@ public abstract class AbstractDenise {
      * counter steps.
      */
     void receiveLineStrobe(int reg, int lineSteps) {
+        hcounterRenderHead = hcounterHead;
         final boolean reset = reg == 0x03C || reg == 0x03A || (isECS && reg == 0x038);
         hcounterHead = reset ? 2 : (hcounterHead + lineSteps) & 0x1FF;
     }
@@ -1172,7 +1175,7 @@ public abstract class AbstractDenise {
         // serve solo a NON introdurre una seconda differenza. Vedi srCount.
         flushShiftOut();
 
-        updateBorderBuffer(vpos == 0);
+        updateBorderBuffer();
 
         if (agnus != null && !agnus.inVBlankArea(vpos)) {
             // Scanline visibile: pipeline completa.
@@ -1474,41 +1477,53 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     /**
-     * Sub-pixels of the line's own part of the horizontal comparator: counter
-     * {@code 2 * HBLANK_MIN} up to the wrap at 0x1C8. Past the wrap the counter belongs to
-     * the head of the next line.
+     * Counter steps of the head of a line: after the strobe resets the counter to 2, the steps
+     * before the rendered buffer starts at {@code 2 * HBLANK_MIN}.
+     */
+    private static final int HDIW_HEAD_STEPS = 2 * HBLANK_MIN - 2;
+
+    /**
+     * Sub-pixels of the line's own part of the horizontal comparator: from the end of the head
+     * to where the next line's head begins, 0x1C8 on a line whose counter was reset.
      */
     private static final int HDIW_MAIN_SUBPIXELS = 2 * (0x1C8 - 2 * HBLANK_MIN);
 
     /** Inputs and outcome of the last main-part scan, to reuse bBuffer when nothing moved. */
     private boolean mainStartFlop, mainEndFlop;
-    private int     mainStartHstrt = -1, mainStartHstop = -1;
+    private int     mainStartHstrt = -1, mainStartHstop = -1, mainStartCounter = -1;
 
     /**
      * Border mask of the line: the horizontal display window is a flip-flop that the
      * counter comparisons set (start) and clear (stop), and that carries its state from
      * one line to the next.
      *
-     * <p>The comparator runs on every counter value the beam sweeps, not only on those of
-     * the rendered buffer. The head of the line - the counter values 2 to 35 after the
-     * wrap, 0 to 35 on the first line of a frame - precedes HBLANK_MIN and produces no
-     * pixel, but it is compared with the DIW coordinates in force at that instant, writes
-     * made there included (they are recorded at their real, negative, position). A start
-     * coordinate in the head therefore opens the window for the rest of the line.
+     * <p>The comparator runs on every value Denise's horizontal counter takes, not only on
+     * those of the rendered buffer, and the counter is Denise's own: it starts the line at
+     * {@link #hcounterRenderHead} and wraps at 512. After a reset that is 2, and the line sweeps
+     * 2 to 455; on a line whose strobe did not reset it (the equalization lines on OCS Denise, a
+     * strobe lost to a bitplane fetch) it sweeps other values, 456 to 511 included.
+     *
+     * <p>The head of the line - its first {@link #HDIW_HEAD_STEPS} counter steps - precedes
+     * HBLANK_MIN and produces no pixel, but it is compared with the DIW coordinates in force
+     * at that instant, writes made there included (they are recorded at their real, negative,
+     * position). A start coordinate in the head therefore opens the window for the rest of the
+     * line.
      *
      * <p>The main part starts from the state the head leaves, with the coordinates of that
      * instant, and applies the later DIW writes at their positions. With equal coordinates
      * the stop wins, the two comparisons being separate and in that order.
      */
-    private void updateBorderBuffer(boolean frameStart) {
+    private void updateBorderBuffer() {
+        final int head = hcounterRenderHead;
         int     hs = hstrtLineStart;
         int     he = hstopLineStart;
         boolean hf = hflop;
         int     diwIdx = 0;
 
         // Head: no pixel comes out of it, only the flip-flop state.
-        for (int counter = frameStart ? 0 : 2; counter < 2 * HBLANK_MIN; counter++) {
-            final int i = 2 * (counter - 2 * HBLANK_MIN);
+        for (int s = 0; s < HDIW_HEAD_STEPS; s++) {
+            final int counter = (head + s) & 0x1FF;
+            final int i = 2 * (s - HDIW_HEAD_STEPS);
             while (diwIdx < diwChanges.size() && i >= diwChanges.keys[diwIdx]) {
                 RegChange c = diwChanges.elements[diwIdx++];
                 if      (c.reg == 0x08E) hs = c.value;
@@ -1519,17 +1534,19 @@ public abstract class AbstractDenise {
         }
 
         // Same inputs as the previous line and no DIW write in between: same mask.
-        if (borderBufferIsDirty == 0 && hf == mainStartFlop
+        final int mainCounter = (head + HDIW_HEAD_STEPS) & 0x1FF;
+        if (borderBufferIsDirty == 0 && hf == mainStartFlop && mainCounter == mainStartCounter
                 && hs == mainStartHstrt && he == mainStartHstop) {
             hflop = mainEndFlop;
             return;
         }
         if (borderBufferIsDirty > 0) borderBufferIsDirty--;
-        mainStartFlop  = hf;
-        mainStartHstrt = hs;
-        mainStartHstop = he;
+        mainStartFlop    = hf;
+        mainStartHstrt   = hs;
+        mainStartHstop   = he;
+        mainStartCounter = mainCounter;
 
-        int counter = 2 * HBLANK_MIN;
+        int counter = mainCounter;
         int i = 0;
         for (; i < HDIW_MAIN_SUBPIXELS; i++) {
             while (diwIdx < diwChanges.size() && i >= diwChanges.keys[diwIdx]) {
@@ -1539,7 +1556,7 @@ public abstract class AbstractDenise {
             }
             if (counter == hs) hf = true;
             if (counter == he) hf = false;
-            if ((i & 1) == 1) counter++;
+            if ((i & 1) == 1) counter = (counter + 1) & 0x1FF;
             bBuffer[i] = hf ? (byte) 0xFF : (byte) borderColor;
         }
         // Past the wrap: the next line's head decides, this line keeps its final state.
