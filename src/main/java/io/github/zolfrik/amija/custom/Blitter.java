@@ -65,6 +65,15 @@ public final class Blitter {
     // Moduli (16 bit con segno)
     private int bltamod, bltbmod, bltcmod, bltdmod;
 
+    /**
+     * The last cycle stepCck() spent on the bus: whether it was a copy-mode channel transfer, and
+     * the modulo of that channel as the address logic adds it (negated when descending).
+     */
+    private boolean lastCopyChannel;
+    private int lastChannelModulo;
+    /** Whether the last copy-mode step was an idle cycle: a bus request that transfers nothing. */
+    private boolean lastIdleCycle;
+
     // Dimensioni blocco
     private int bltsizeH, bltsizeV;
 
@@ -741,6 +750,8 @@ public final class Blitter {
      */
     public boolean stepCck(boolean busFree) {
         if (!running) return false;
+        lastCopyChannel = false;
+        lastIdleCycle = false;
         if ((bltcon1 & BLTCON1_LINE) != 0) {
             return lineStepCck(busFree);
         }
@@ -776,6 +787,7 @@ public final class Blitter {
         if (copyWarmup > 0) {
             if (!busFree) return false;
             copyWarmup--;
+            lastIdleCycle = true;
             return false;
         }
         int op = COPY_PROG[(bltcon0 >>> 8) & 0xF][bltconFE()][bltpc];
@@ -795,6 +807,7 @@ public final class Blitter {
         if (needIdle && !busFree) return false; // stallo
 
         boolean tookBus = false;
+        lastIdleCycle = needIdle && !needBus;
         bltpc++;
 
         boolean desc = cachedDesc;
@@ -803,6 +816,7 @@ public final class Blitter {
             int addr = getDpt();
             agnus.blitterImmediateWrite(addr, dhold & 0xFFFF);
             tookBus = true;
+            noteCopyChannel(desc ? -bltdmod : bltdmod);
             setDpt(addr + (desc ? -2 : 2));
             if (--cntD == 0) {
                 setDpt(getDpt() + (desc ? -bltdmod : bltdmod));
@@ -814,18 +828,21 @@ public final class Blitter {
         if ((op & FETCH_A) != 0) {
             anew = agnus.blitterImmediateRead(getApt()) & 0xFFFF;
             tookBus = true;
+            noteCopyChannel(desc ? -bltamod : bltamod);
             setApt(getApt() + (desc ? -2 : 2));
             if (--cntA == 0) { setApt(getApt() + (desc ? -bltamod : bltamod)); cntA = bltsizeH; }
         }
         if ((op & FETCH_B) != 0) {
             bnew = agnus.blitterImmediateRead(getBpt()) & 0xFFFF;
             tookBus = true;
+            noteCopyChannel(desc ? -bltbmod : bltbmod);
             setBpt(getBpt() + (desc ? -2 : 2));
             if (--cntB == 0) { setBpt(getBpt() + (desc ? -bltbmod : bltbmod)); cntB = bltsizeH; }
         }
         if ((op & FETCH_C) != 0) {
             chold = agnus.blitterImmediateRead(getCpt()) & 0xFFFF;
             tookBus = true;
+            noteCopyChannel(desc ? -bltcmod : bltcmod);
             setCpt(getCpt() + (desc ? -2 : 2));
             if (--cntC == 0) { setCpt(getCpt() + (desc ? -bltcmod : bltcmod)); cntC = bltsizeH; }
         }
@@ -879,6 +896,26 @@ public final class Blitter {
         }
 
         return tookBus;
+    }
+
+    private void noteCopyChannel(int modulo) {
+        lastCopyChannel = true;
+        lastChannelModulo = modulo;
+    }
+
+    /** Whether the last cycle on the bus was a copy-mode A, B, C or D transfer. */
+    public boolean lastCycleWasCopyChannel() {
+        return lastCopyChannel;
+    }
+
+    /** Whether the last step was a copy-mode idle cycle, which requests the bus but leaves it unused. */
+    public boolean lastCycleWasIdle() {
+        return lastIdleCycle;
+    }
+
+    /** The modulo of the channel of that transfer, sign-extended. */
+    public int lastCycleChannelModulo() {
+        return lastChannelModulo;
     }
 
     private void computeMask() {

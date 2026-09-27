@@ -516,13 +516,23 @@ public abstract class AbstractAgnus {
      * @param decisionCck  il CCK globale in cui quello slot è stato deciso
      */
     private boolean spriteSlotAllocated(int cck, boolean dmaSeq, long decisionCck) {
+        return decisionCck != spriteDmaOnDecisionCck && spriteSlotDecided(cck, dmaSeq);
+    }
+
+    /**
+     * The sprite slot at {@code cck} is decided but not allocated: SPREN came on in the CCK of
+     * its decision. Nobody owns the cycle, so a lower-priority channel can take it.
+     */
+    private boolean spriteSlotDecidedNotAllocated(int cck, boolean dmaSeq, long decisionCck) {
+        return decisionCck == spriteDmaOnDecisionCck && spriteSlotDecided(cck, dmaSeq);
+    }
+
+    /** Whether the sprite channel decided a transfer for the slot at {@code cck}. */
+    private boolean spriteSlotDecided(int cck, boolean dmaSeq) {
         if (syncsStopped || !dmaSeq) {
             return false;
         }
         if (vpos < SPRITE_RESET_LINE || vpos >= maxVpos) {
-            return false;
-        }
-        if (decisionCck == spriteDmaOnDecisionCck) {
             return false;
         }
         final int idx = (cck - SLOT_SPRITE_0) / 4;
@@ -2447,7 +2457,7 @@ public abstract class AbstractAgnus {
                     break;
                 case DMASLOT_DISK:
                     if (dasAllocated) {
-                        if (bplReq >= 0) mergeBitplaneWithDasSlot(bplReq);
+                        if (bplReq >= 0) mergeBitplaneWithDasSlot(bplReq, cck);
                         else handleDiskDMA(cck);
                         owner = BusOwner.DISK;
                         busTakenByCustom = true;
@@ -2456,7 +2466,7 @@ public abstract class AbstractAgnus {
                 case DMASLOT_AUDIO:
                     if (dasAllocated) {
                         if (bplReq >= 0) {
-                            mergeBitplaneWithDasSlot(bplReq);
+                            mergeBitplaneWithDasSlot(bplReq, cck);
                             paula.dropAudioDmaSlot((cck - SLOT_AUDIO_0) / 2);
                         } else {
                             handleAudioDMA(cck);
@@ -2594,12 +2604,19 @@ public abstract class AbstractAgnus {
             // ma NON allocato» — stanno tutte in spriteSlotAllocated(), perché la stessa
             // domanda la fa anche sprPointerWriteIsLost(): dove non c'è slot non c'è cattura
             // del puntatore, e la scrittura del Copper sopravvive.
-            if (!busTakenByCustom && DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE
-                    && spriteSlotAllocated(cck, spriteDmaSeq, (masterClock >> 1) - 2)) {
+            // A slot left decided but not allocated stays free, and the sprite whose slot it
+            // was keeps its pointer register tied to it (see the Blitter below).
+            int sprUnallocatedIdx = -1;
+            if (!busTakenByCustom && DMA_SLOT_TABLE[cck] == DMASLOT_SPRITE) {
+                final long sprDecisionCck = (masterClock >> 1) - 2;
                 int sprIdx = (cck - SLOT_SPRITE_0) / 4;
-                handleSpriteDMA(cck);
-                owner = OWNER_VALUES[BusOwner.SPRITE0.ordinal() + sprIdx];
-                busTakenByCustom = true;
+                if (spriteSlotAllocated(cck, spriteDmaSeq, sprDecisionCck)) {
+                    handleSpriteDMA(cck);
+                    owner = OWNER_VALUES[BusOwner.SPRITE0.ordinal() + sprIdx];
+                    busTakenByCustom = true;
+                } else if (spriteSlotDecidedNotAllocated(cck, spriteDmaSeq, sprDecisionCck)) {
+                    sprUnallocatedIdx = sprIdx;
+                }
             }
 
             // 3. Copper — CADENZA PARI (modello vAmiga; Fase 1 refactoring timing, C1/C2/A2).
@@ -2684,6 +2701,18 @@ public abstract class AbstractAgnus {
                     owner = BusOwner.BLITTER;
                     busTakenByCustom = true;
                     if (cpuWantsBus) cpuBlockedByBlitterCount++;
+                    // A copy-mode channel transfer in a sprite slot left decided but not
+                    // allocated: the transfer is the Blitter's, and the sprite's pointer is
+                    // then loaded with the modulo of that channel. The sprite gets no data.
+                    if (sprUnallocatedIdx >= 0 && blitter.lastCycleWasCopyChannel()) {
+                        sprPtrInternal[sprUnallocatedIdx] = blitter.lastCycleChannelModulo();
+                    }
+                } else if (sprUnallocatedIdx >= 0 && blitter.lastCycleWasIdle()) {
+                    // An idle Blitter cycle in that slot names no register, so the sprite's own
+                    // transfer goes ahead with no pointer behind it: the word comes from address
+                    // 0, and the pointer continues from there. The bus stays free for the CPU.
+                    sprPtrInternal[sprUnallocatedIdx] = 0;
+                    handleSpriteDMA(cck);
                 }
             }
 
@@ -2962,7 +2991,7 @@ public abstract class AbstractAgnus {
      *
      * Gestisce:
      *   - Fine riga: reset hpos, moduli bitplane, incremento vpos
-     *   - Fine frame: reset vpos, ricarica puntatori DMA, VERTB, COPJMP1
+     *   - Fine frame: reset vpos, VERTB, COPJMP1 (the DMA pointers are counters: nothing reloads them)
      *   - TOD CIA-A: impulso a inizio di ogni nuovo frame (segnale di rete 50 Hz)
      */
     private void updateBeam() {
@@ -3148,9 +3177,6 @@ public abstract class AbstractAgnus {
 
         // Nuovo frame: tutti gli sprite in fase POS/CTL (sprDmaEnabled=false).
         Arrays.fill(sprDmaEnabled, false);
-
-        // Ricarica tutti i puntatori DMA dai registri base
-        reloadDmaPointers();
 
         updateSpriteDMA(0);
 
@@ -3519,6 +3545,16 @@ public abstract class AbstractAgnus {
     /** Refresh address width. */
     protected int refreshMask() { return 0x7FFFF; }
 
+    /**
+     * Whether a refresh cycle is allocated in CCK {@code cck}, one CCK before it runs. A REFPTR
+     * write in that CCK is lost.
+     */
+    private boolean refreshSlotAllocatedAt(int cck) {
+        final int slot = cck + 1;
+        return slot == strobeCck()
+                || (slot < DMA_SLOT_TABLE.length && DMA_SLOT_TABLE[slot] == DMASLOT_REFRESH);
+    }
+
     /** REFPTR as loaded by a register write. */
     protected int refptrFromRegister(int v) {
         return (v & 0xFFFE) | ((v & 0x7) << 16);
@@ -3796,9 +3832,32 @@ public abstract class AbstractAgnus {
         sprPtrInternal[idx] = pv;
     }
 
-    private void mergeBitplaneWithDasSlot(int bplReq) {
-        bplPtrInternal[bplReq & BPLREQ_PLANE] =
-                dasSlotPointer + 2 + rgaSlotBplMod[(int) (masterClock >> 1) & 3];
+    /**
+     * A bitplane fetch and a disk or audio cycle allocated in the same slot. The register address
+     * is the AND of the two, and the plane continues from the DAS pointer plus one word and the
+     * modulo left in this slot buffer. For planes 1 to 4 the AND names no register and nothing is
+     * transferred. For plane 5 or 6 with a disk read slot ($118 or $11A with $008), or plane 5
+     * with AUD0 or AUD2, it is $008, the disk read register itself: the slot is then a disk read
+     * transfer to the merged address, and the DAS pointer continues one word past it.
+     */
+    private void mergeBitplaneWithDasSlot(int bplReq, int cck) {
+        final int plane = bplReq & BPLREQ_PLANE;
+        final int pv = dasSlotPointer + 2 + rgaSlotBplMod[(int) (masterClock >> 1) & 3];
+        bplPtrInternal[plane] = pv;
+        final boolean disk = DMA_SLOT_TABLE[cck] == DMASLOT_DISK;
+        final int dasReg = disk ? (paula.isDiskDmaWrite() ? 0x026 : 0x008)
+                : 0x0AA + ((cck - SLOT_AUDIO_0) / 2) * 0x10;
+        if (((0x110 + plane * 2) & dasReg) != 0x008) return;
+        final int word = paula.serviceDiskReadSlot(disk ? (cck - SLOT_DISK_1) / 2 : 0);
+        if (word >= 0) {
+            chipRAM.writeWord(dmaChipAddr(pv), word);
+            openBusLatch = word & 0xFFFF;
+        }
+        if (disk) {
+            paula.setDiskDmaPointer((pv + 2) & 0x1FFFFE);
+        } else {
+            paula.setAudioDmaAddress((cck - SLOT_AUDIO_0) / 2, pv + 2);
+        }
     }
 
     /**
@@ -3848,11 +3907,6 @@ public abstract class AbstractAgnus {
             denise.drawBitplanesAtPixel(cck * 4 - 70, drawOdd, drawEven,
                     subOdd & 3, fineEven);
         }
-    }
-
-    private void reloadDmaPointers() {
-        System.arraycopy(bplPt, 0, bplPtrInternal, 0, 6);
-        System.arraycopy(sprPt, 0, sprPtrInternal, 0, 8);
     }
 
     // =========================================================================
@@ -5139,7 +5193,7 @@ public abstract class AbstractAgnus {
                 break;
 
             case 0x028: // REFPTR
-                refptr = refptrFromRegister(value);
+                if (!refreshSlotAllocatedAt(hpos >> 1)) refptr = refptrFromRegister(value);
                 break;
 
             // Puntatori bitplane (BPLxPTH/BPLxPTL)
@@ -5482,8 +5536,18 @@ public abstract class AbstractAgnus {
             next = 0;
         }
         triggerVpos = next;
+        vdiwBeforeTrigger = bitplaneVerticalActive;
+        vdiwTriggerCck = masterClock >> 1;
         updateBitplaneVerticalWindow();
     }
+
+    /**
+     * The vertical window as it was before the line trigger of CCK {@link #vdiwTriggerCck}. The
+     * bitplane sequencer decides that CCK before the trigger compares the new line, so a window
+     * that opens or closes there reaches the sequencer one CCK later.
+     */
+    private boolean vdiwBeforeTrigger;
+    private long vdiwTriggerCck = -1;
 
     private void updateBitplaneVerticalWindow() {
         // Flip-flop verticale del DMA bitplane (cfr. vAmiga Sequencer::eolHandler):
@@ -6059,13 +6123,14 @@ public abstract class AbstractAgnus {
         // 32 CCK prima, cioè il crollo di `BbusyTest`. Il modello posizionale non ne aveva
         // bisogno perché la sua finestra non arrivava fin lì per altra via.
         final boolean lastFrameLine = vpos == (field == 0 ? maxVpos : maxVpos - 1);
-        final boolean diw = bitplaneVerticalActive && !lastFrameLine;
-        final boolean harddis = ddfHardLimitsDisabled();
         // ⛔ Il `| 1`: l'oracolo confronta contro `ddfstrt_val = (ddfstrt & ddf_mask) | 1`
         // (DDFSTRT(), commento «DDFSTRT (odd cycle)»), mentre DDFSTOP resta pari. Il modello
         // posizionale non aveva mai avuto bisogno di saperlo perché non confrontava una
         // posizione con un match, ricavava una fase da una sottrazione.
         final long cyc = masterClock >> 1;
+        final boolean vdiw = cyc == vdiwTriggerCck ? vdiwBeforeTrigger : bitplaneVerticalActive;
+        final boolean diw = vdiw && !lastFrameLine;
+        final boolean harddis = ddfHardLimitsDisabled();
         final boolean ddfStrtMatch =
                    (cck == ddfMatchCck(ddfStrtVal)    && cyc >  ddfStrtChangeCck)
                 || (cck == ddfMatchCck(ddfStrtValOld) && cyc <  ddfStrtChangeCck);

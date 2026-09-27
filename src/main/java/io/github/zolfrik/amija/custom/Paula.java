@@ -1644,6 +1644,14 @@ public final class Paula {
         return chan >= 0 && chan < 4 ? audioChannels[chan].dmaPointer : 0;
     }
 
+    /** Moves a channel's DMA pointer, as a merged RGA slot that transferred elsewhere does. */
+    public void setAudioDmaAddress(int chan, int address) {
+        if (chan >= 0 && chan < 4) {
+            syncAudioChannels();
+            audioChannels[chan].dmaPointer = address & 0x1FFFFE;
+        }
+    }
+
     /**
      * The word of an audio DMA slot. The slot is allocated one CCK before it runs, so a
      * DMACON write in between can turn the channel's DMA off while its cycle still happens:
