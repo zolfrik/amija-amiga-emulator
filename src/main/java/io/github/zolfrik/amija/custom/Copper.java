@@ -336,7 +336,7 @@ public final class Copper {
 
     /** Imposta il PC del Copper (vAmiga setPC). */
     private void setPC(int address) {
-        pc = address & (agnus.getChipMask() & ~1);
+        pc = address & (agnus.getDmaPtrMask() & ~1);
     }
 
     // =========================================================================

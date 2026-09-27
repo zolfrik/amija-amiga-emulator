@@ -129,21 +129,30 @@ public abstract class AbstractAgnus {
         }
     };
 
-    // Maschera di wrap per gli accessi DMA alla Chip RAM (size-1; la dimensione è
-    // sempre una potenza di 2). L'address counter di Agnus avvolge entro la Chip RAM
-    // installata come sull'hardware OCS: un puntatore DMA che esce dal range non
-    // genera un fault ma rilegge la RAM in mirror. Gli accessi del 68000 sono già
-    // mascherati da Gary (vedi physicalSize), ma il DMA bypassa Gary e legge qui
-    // direttamente, quindi la maschera va applicata in questo punto.
-    private final int chipMask;
+    /**
+     * The DMA address space of Agnus, which every DMA channel reaches without going through
+     * Gary. An address is masked with {@link #dmaMask}; below the Chip RAM size it is Chip
+     * RAM, up to {@link #dmaEnd} it is Slow RAM, and above that nothing answers: a read gives
+     * 0 and a write is lost.
+     * <ul>
+     *   <li>ECS with 512 KB of Chip RAM and at least 512 KB of Slow RAM: the Agnus space is
+     *       1 MB and its upper half is the trapdoor RAM, so {@code $80000-$FFFFF} reaches the
+     *       Slow RAM at {@code $C00000}. The mask is twice the Slow RAM size minus one.</li>
+     *   <li>ECS otherwise: a 1 MB space, or the Chip RAM size when that is larger.</li>
+     *   <li>OCS: a 512 KB space. Larger Chip RAM on OCS is an AmiJa configuration no OCS
+     *       Agnus can address; the space then follows the Chip RAM.</li>
+     * </ul>
+     */
+    private final int dmaMask;
+    private final int dmaEnd;
 
-    // Maschera dei bit ALTI (16-20) del puntatore DMA scrivibili da BPLxPTH/SPRxPTH/
-    // DSKPTH, dimensionata sulla Chip RAM installata. L'OCS (512 KB) usa solo i bit
-    // 16-18 (0x07), ma l'ECS/A500+ con 1 MB (es. boot WHDLoad da HDF con KS3.1) colloca
-    // i bitplane in chip alta (>512 KB) e richiede il bit 19 (0x80000): mascherare a
-    // 0x07 lo perdeva, dirottando un piano nella copper-list in memoria bassa → banda
-    // di "neve" sotto la barra del titolo del Workbench. Derivata da chipMask così il
-    // wrap resta quello dell'hardware per ogni taglio di RAM (0x07/0x0F/0x1F << 16).
+    /**
+     * The bits a DMA pointer keeps: the smallest all-ones mask that covers {@link #dmaMask}.
+     * Pointer arithmetic wraps there, the address decode applies {@link #dmaMask}.
+     */
+    private final int dmaPtrMask;
+
+    /** The high word of {@link #dmaPtrMask}: the bits BPLxPTH/SPRxPTH/DSKPTH/COPxLCH keep. */
     private final int dmaPtrHiMask;
 
     private final Copper      copper;
@@ -1214,7 +1223,6 @@ public abstract class AbstractAgnus {
      */
     private final Gary.Route cpuScratchRoute     = new Gary.Route();
     private final Gary.Route copperScratchRoute  = new Gary.Route();
-    private final Gary.Route blitterScratchRoute = new Gary.Route();
 
     private boolean copperBusProcessed  = false;
 
@@ -1958,12 +1966,23 @@ public abstract class AbstractAgnus {
         this.chipRAM   = chipRAM;
         // size() è sempre una potenza di 2 (256/512/1024/2048 KB), quindi size-1 è una
         // maschera di wrap valida; coerente con il mirror applicato da Gary al 68000.
-        this.chipMask  = chipRAM.size() - 1;
-        // Bit alti del puntatore (16-20) realmente presenti nella Chip RAM installata.
-        this.dmaPtrHiMask = chipMask & 0x1F0000;
+        final int chipMask = chipRAM.size() - 1;
         this.slowRAM   = slowRAM;
         this.rom       = rom;
         this.mode      = mode;
+        final int slowSize = slowRAM != null ? slowRAM.size() : 0;
+        if (isECS() && chipRAM.size() == 0x80000 && slowSize >= 0x80000) {
+            this.dmaMask = slowSize * 2 - 1;
+            this.dmaEnd = 0x100000;
+        } else if (isECS()) {
+            this.dmaMask = chipRAM.size() < 0x100000 ? 0xFFFFF : chipMask;
+            this.dmaEnd = chipRAM.size();
+        } else {
+            this.dmaMask = Math.max(0x7FFFF, chipMask);
+            this.dmaEnd = chipRAM.size();
+        }
+        this.dmaPtrMask = (Integer.highestOneBit(dmaMask) << 1) - 1;
+        this.dmaPtrHiMask = dmaPtrMask & 0xFFFF0000;
         // Building the machine is its power-on: dynamic RAM starts with a pattern set by
         // the Agnus address multiplexing, not with zeroes.
         chipRAM.fillPowerOnPattern(isECS());
@@ -3554,7 +3573,7 @@ public abstract class AbstractAgnus {
         if (cck == strobeCck()) {
             bplPtrInternal[plane] = addr + 2;
         } else {
-            int data = chipRAM.readWord(dmaChipAddr(addr));
+            int data = dmaReadWord(addr);
             openBusLatch = data & 0xFFFF;
             denise.writeRegisterAtPixel(0x110 + plane * 2, data, cck * 4 - 70);
             markDeniseDmaSlot(cck);
@@ -3599,7 +3618,7 @@ public abstract class AbstractAgnus {
             // the FIFO was emptied meanwhile.
             int word = paula.serviceDiskReadSlot((cck - SLOT_DISK_1) / 2);
             if (word >= 0) {
-                chipRAM.writeWord(dmaChipAddr(addr), word);
+                dmaWriteWord(addr, word);
                 openBusLatch = word & 0xFFFF;
             }
             paula.setDiskDmaPointer((addr + 2) & 0x1FFFFE);
@@ -3612,7 +3631,7 @@ public abstract class AbstractAgnus {
         // trasferimento procede al ritmo di rotazione del supporto e non a quello
         // degli slot DMA.
         if (!paula.isWriteWordNeeded()) return;
-        int data = chipRAM.readWord(dmaChipAddr(addr));
+        int data = dmaReadWord(addr);
         openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
         paula.loadWriteWord(data);
         paula.setDiskDmaPointer(addr);
@@ -3637,7 +3656,7 @@ public abstract class AbstractAgnus {
         if (paula != null) {
             int chan = (cck - SLOT_AUDIO_0) / 2;
             int addr = paula.getAudioDmaAddress(chan);
-            int data = chipRAM.readWord(dmaChipAddr(addr));
+            int data = dmaReadWord(addr);
             openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
             paula.receiveAudioDmaWord(chan, data);
         }
@@ -3689,7 +3708,7 @@ public abstract class AbstractAgnus {
         if (sprIdx < 0 || sprIdx > 7) return;
 
         int addr = sprPtrInternal[sprIdx];
-        int data = chipRAM.readWord(dmaChipAddr(addr));
+        int data = dmaReadWord(addr);
         openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
         sprPtrInternal[sprIdx] += 2;
         markDeniseDmaSlot(cck);
@@ -3766,13 +3785,30 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Indirizzo Chip RAM per un accesso DMA: word-allineato e avvolto entro la Chip RAM
-     * installata. I puntatori DMA di Agnus (bitplane/sprite/disco/audio) sono contatori
-     * che si incrementano senza limite e possono superare il range fisico: l'hardware li
-     * fa avvolgere (mirror), mentre {@link RAM} farebbe un bound check rigoroso.
+     * A DMA read of a word: the address is decoded in the DMA address space of Agnus (see
+     * {@link #dmaMask}), word-aligned. DMA pointers are counters that grow without bound; the
+     * mask makes them wrap as the address lines do. Above the installed memory nothing drives
+     * the bus and the word is 0.
      */
-    private int dmaChipAddr(int addr) {
-        return (addr & chipMask) & ~1;
+    public int dmaReadWord(int addr) {
+        final int a = addr & dmaMask & ~1;
+        if (a < chipRAM.size()) {
+            return chipRAM.readWord(a);
+        }
+        if (a < dmaEnd) {
+            return slowRAM.readWord(a - chipRAM.size());
+        }
+        return 0;
+    }
+
+    /** A DMA write of a word, decoded like {@link #dmaReadWord}; above the memory it is lost. */
+    public void dmaWriteWord(int addr, int word) {
+        final int a = addr & dmaMask & ~1;
+        if (a < chipRAM.size()) {
+            chipRAM.writeWord(a, word);
+        } else if (a < dmaEnd) {
+            slowRAM.writeWord(a - chipRAM.size(), word);
+        }
     }
 
     private void handleBitplaneDMA(int cck, int bplIdx, boolean hires, boolean domod) {
@@ -3780,7 +3816,7 @@ public abstract class AbstractAgnus {
         if (bplIdx < 0 || bplIdx >= 6) return;
 
         int addr = bplPtrInternal[bplIdx];
-        int data = chipRAM.readWord(dmaChipAddr(addr));
+        int data = dmaReadWord(addr);
         openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
         denise.writeRegisterAtPixel(0x110 + bplIdx * 2, data, cck * 4 - 70); // BPLxDAT
         markDeniseDmaSlot(cck);
@@ -3811,7 +3847,7 @@ public abstract class AbstractAgnus {
             // Copper caduta nel CCK precedente entrava un CCK troppo presto.
             int mod = (bplIdx % 2 == 0) ? bpl1modFetch : bpl2modFetch;
             // Il modulo si somma SENZA maschera: il wrap entro la Chip RAM installata è
-            // di dmaChipAddr, al momento della fetch (oracolo WinUAE: bitplane_rga_ptmod
+            // di dmaReadWord, al momento della fetch (oracolo WinUAE: bitplane_rga_ptmod
             // fa `bplpt[i] += mod` e solo chipmem_agnus_wget applica chipmem_full_mask).
             // Qui c'era un `& 0xFFFFF` cablato a 1 MB: con 2 MB di Chip RAM un piano
             // sopra $0FFFFF perdeva il bit 20 a ogni riga e il display collassava nel
@@ -3848,7 +3884,7 @@ public abstract class AbstractAgnus {
         final int reg = (0x110 + plane * 2) & sprReg;
         int pv = bplPtrInternal[plane] | sprPtrInternal[idx];
         if (reg >= 0x110 && reg < 0x120 && denise != null) {
-            int data = chipRAM.readWord(dmaChipAddr(pv));
+            int data = dmaReadWord(pv);
             openBusLatch = data & 0xFFFF;
             denise.writeRegisterAtPixel(reg, data, cck * 4 - 70);
             markDeniseDmaSlot(cck);
@@ -3876,7 +3912,7 @@ public abstract class AbstractAgnus {
         if (((0x110 + plane * 2) & dasReg) != 0x008) return;
         final int word = paula.serviceDiskReadSlot(disk ? (cck - SLOT_DISK_1) / 2 : 0);
         if (word >= 0) {
-            chipRAM.writeWord(dmaChipAddr(pv), word);
+            dmaWriteWord(pv, word);
             openBusLatch = word & 0xFFFF;
         }
         if (disk) {
@@ -3940,7 +3976,15 @@ public abstract class AbstractAgnus {
     // =========================================================================
 
     private void handleCopperBusCycle() {
-        if (copperBusReq.as) {
+        if (copperBusReq.as && copperBusReq.read) {
+            // A Copper fetch is DMA: it is decoded by Agnus, not by Gary.
+            if (!copperBusProcessed) {
+                copperBusResp.dataIn = dmaReadWord(copperBusReq.address);
+                openBusLatch = copperBusResp.dataIn & 0xFFFF;
+                copperBusProcessed = true;
+            }
+            copperBusResp.ack = true;
+        } else if (copperBusReq.as) {
             Gary.Route route = gary.route(copperBusReq.address,
                     copperBusReq.read ? Gary.AccessType.READ : Gary.AccessType.WRITE,
                     copperBusReq.uds, copperBusReq.lds, false, copperScratchRoute);
@@ -3969,14 +4013,15 @@ public abstract class AbstractAgnus {
      * immediate completa tutto alla scrittura di BLTSIZE). Vedi {@link Blitter#setImmediateMode}.
      */
     public int blitterImmediateRead(int address) {
-        Gary.Route route = gary.route(address, Gary.AccessType.READ, true, true, false, blitterScratchRoute);
-        return route.ok ? readBusData(route, address) : 0xFFFF;
+        final int data = dmaReadWord(address);
+        openBusLatch = data & 0xFFFF;
+        return data;
     }
 
     /** Scrittura di memoria sincrona per il blitter immediate (vedi {@link #blitterImmediateRead}). */
     public void blitterImmediateWrite(int address, int data) {
-        Gary.Route route = gary.route(address, Gary.AccessType.WRITE, true, true, false, blitterScratchRoute);
-        if (route.ok) writeBusData(route, address, data, true, true);
+        dmaWriteWord(address, data);
+        openBusLatch = data & 0xFFFF;
     }
 
     private void handleCpuBusCycle() {
@@ -6281,12 +6326,10 @@ public abstract class AbstractAgnus {
     public int  getDiwVStart()       { return diwVStart; }
     public int  getDiwVStop()        { return diwVStop; }
 
-    /** Maschera dei bit alti (16-20) del puntatore DMA presenti nella Chip RAM installata. */
+    /** The high word of the bits a DMA pointer keeps, see {@link #dmaPtrHiMask}. */
     public int  getDmaPtrHiMask()    { return dmaPtrHiMask; }
-    /** Maschera d'indirizzo della Chip RAM installata (size-1): 0x7FFFF (512 KB),
-     *  0xFFFFF (1 MB), 0x1FFFFF (2 MB). Usata p.es. dal Copper per non troncare il
-     *  PC quando la copper-list sta nella chip alta (>512 KB) su ECS. */
-    public int  getChipMask()        { return chipMask; }
+    /** The bits a DMA pointer keeps, see {@link #dmaPtrMask}. */
+    public int  getDmaPtrMask()      { return dmaPtrMask; }
     public int  getLastCompletedFrameField() { return lastCompletedFrameField; }
     public boolean lastCompletedFrameHadLateBitplaneDma() { return lastCompletedFrameHadLateBitplaneDma; }
     /**

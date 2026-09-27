@@ -2090,7 +2090,7 @@ public class Amija implements RemotePlayControl {
             // 3. Custom chips. Il chipset (OCS/ECS) seleziona la variante di Agnus/Denise.
             // Si rispetta SEMPRE la scelta dell'utente: l'address counter DMA di
             // AbstractAgnus deriva la maschera dei puntatori dalla dimensione della Chip
-            // RAM (dmaPtrHiMask = chipMask & 0x1F0000), quindi OcsAgnus indirizza già la
+            // RAM (su OCS lo spazio DMA segue una Chip oltre i 512 KB), quindi OcsAgnus indirizza la
             // Chip RAM fino a 2 MB. NON si forza più ECS quando la Chip RAM supera i
             // 512 KB: oltre a non essere necessario, manderebbe la selezione OCS sul path
             // ECS+Kickstart 3.1 (non ancora validato) provocando un guru all'avvio

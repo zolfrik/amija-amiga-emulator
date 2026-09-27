@@ -275,7 +275,7 @@ public final class Gary {
          * ATTENZIONE: poiché l'oggetto viene riutilizzato, ogni master di bus che
          * conserva la propria Route oltre la chiamata successiva di route() sullo
          * stesso scratch deve possedere uno scratch dedicato (vedi
-         * Agnus.cpuScratchRoute / copperScratchRoute / blitterScratchRoute). I tre
+         * Agnus.cpuScratchRoute / copperScratchRoute). I due
          * master usano scratch distinti, quindi non c'è aliasing nonostante
          * vengano serviti nello stesso fronte di clock.
          */

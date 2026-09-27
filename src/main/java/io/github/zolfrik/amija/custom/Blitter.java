@@ -1214,7 +1214,7 @@ public final class Blitter {
      * {@code chipmem_agnus_wget}); qui il mascheramento è sul puntatore, equivalente
      * perché la maschera è una potenza di due e gli incrementi sono additivi.
      */
-    private int ptrMask()   { return agnus.getChipMask() & ~1; }
+    private int ptrMask()   { return agnus.getDmaPtrMask() & ~1; }
     /** Parte alta (bit 16-20) di {@link #ptrMask()}, per le scritture BLT?PTH. */
     private int ptrHiMask() { return agnus.getDmaPtrHiMask(); }
 
