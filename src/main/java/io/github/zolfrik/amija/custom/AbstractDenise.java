@@ -754,6 +754,30 @@ public abstract class AbstractDenise {
         rgaSlotTaken = taken;
     }
 
+    /**
+     * Denise's horizontal counter at the start of the head of the line in progress. It is a
+     * free-running 9-bit counter, two steps per CCK, that only a strobe resets to 2: OCS Denise
+     * on STRHOR and STRVBL, ECS Denise on every strobe. A line whose strobe does not reset it
+     * starts where the counter got to, one line length further on. Not read by the renderer
+     * yet, which assumes the reset on every line.
+     */
+    private int hcounterHead = 2;
+
+    /**
+     * The strobe of the line's first refresh slot, 0 when the slot carried none; it sets the
+     * counter for the head of the next line. {@code lineSteps} is the length of the line in
+     * counter steps.
+     */
+    void receiveLineStrobe(int reg, int lineSteps) {
+        final boolean reset = reg == 0x03C || reg == 0x03A || (isECS && reg == 0x038);
+        hcounterHead = reset ? 2 : (hcounterHead + lineSteps) & 0x1FF;
+    }
+
+    /** See {@link #hcounterHead}. */
+    int hcounterHead() {
+        return hcounterHead;
+    }
+
     /** The BPLCON1 value Denise holds, the scroll delay of both playfields. */
     int bplcon1() {
         return bplcon1;

@@ -3566,6 +3566,11 @@ public abstract class AbstractAgnus {
     private void handleRefreshDMA(int cck, int bplReq) {
         final int addr = refptr;
         refptr = (refptr + refreshStep()) & refreshMask();
+        if (cck == strobeCck() && denise != null) {
+            // The slot carries the line strobe to Denise. Merged with a bitplane request its
+            // register is ANDed with BPLxDAT and no longer names a strobe: Denise gets none.
+            denise.receiveLineStrobe(bplReq >= 0 ? 0 : lineStrobeRegister(), maxHpos);
+        }
         if (bplReq < 0 || denise == null) {
             return;
         }
@@ -3580,6 +3585,27 @@ public abstract class AbstractAgnus {
             bplPtrInternal[plane] = addr;
         }
     }
+
+    /**
+     * The strobe the first refresh slot of a line drives, for the line about to start: STREQU
+     * on the equalization lines at the top of the frame, STRVBL on the rest of the vertical
+     * blank, STRHOR on every other line (the last line of the field included).
+     */
+    private int lineStrobeRegister() {
+        final int v = triggerVpos;
+        if (v <= (beamNtsc ? EQUALIZATION_LAST_LINE_NTSC : EQUALIZATION_LAST_LINE_PAL)) {
+            return 0x038;
+        }
+        if (v <= (beamNtsc ? VBLANK_LAST_LINE_NTSC : VBLANK_LAST_LINE_PAL)) {
+            return 0x03A;
+        }
+        return 0x03C;
+    }
+
+    private static final int EQUALIZATION_LAST_LINE_PAL = 7;
+    private static final int EQUALIZATION_LAST_LINE_NTSC = 8;
+    private static final int VBLANK_LAST_LINE_PAL = 25;
+    private static final int VBLANK_LAST_LINE_NTSC = 20;
 
     /** Refresh address step per refresh cycle: one RAS row. */
     protected int refreshStep() { return 0x002; }
