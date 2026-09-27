@@ -5577,60 +5577,45 @@ public abstract class AbstractAgnus {
     private boolean vdiwBeforeTrigger;
     private long vdiwTriggerCck = -1;
 
+    /**
+     * The vertical window flip-flop at the line trigger. Nothing resets it at line 0: the
+     * last line of the field forces it off, and a window open there is closed as by DIWSTOP.
+     * A window that starts at line 0 therefore opens normally, and one that is never closed
+     * stays open into the next frame when the forced stop is disabled.
+     */
     private void updateBitplaneVerticalWindow() {
-        // Flip-flop verticale del DMA bitplane (cfr. vAmiga Sequencer::eolHandler):
-        //   ON  quando vpos == diwVStart, OFF quando vpos == diwVStop.
-        // All'inizio del frame (vpos==0) il flip-flop parte chiuso, A MENO CHE la
-        // finestra non cominci proprio alla riga 0 (diwVStart==0): in tal caso deve
-        // restare aperto. La vecchia logica trattava vpos==0 come uno stop
-        // incondizionato, che vinceva sullo start e azzerava per sempre la finestra
-        // quando diwVStart==0 (caso reale: il 2° cracktro di Persian Gulf Inferno
-        // imposta DIWSTRT con Vstart=0 → bitplane mai prelevati → solo le barre del
-        // Copper, niente testo né vettori). vAmiga resetta il flip-flop all'ultima
-        // riga del frame, non alla riga 0, così uno Vstart==0 apre correttamente.
-        if (triggerVpos == 0) {
-            bitplaneVerticalActive = (diwVStart == 0) && (diwVStop != 0);
-            if (bitplaneVerticalActive) bitplaneDmaOnAtWindowStart = bitplaneDmaEnabled;
-        } else {
-            compareBitplaneVerticalWindow();
-        }
-        // Vertical blank di Agnus: il VB inizia all'ULTIMA riga del field
-        // (WinUAE custom.cpp vsync: `vpos == maxvpos + lof_store - 1` → agnus_vb,
-        // che inibisce il fetch bitplane). PAL long frame: v312; short: v311.
-        // Senza questo gate fetchavamo bitplane anche su v312 mentre WinUAE no
-        // → il .loop di bbusy0 girava a 18 cck/iter invece di 17 su quella riga
-        // → fase del beam-lock del frame successivo sfasata (bande in cima).
-        // NB: il VB hardware copre anche v0..~v25; qui modelliamo solo la riga
-        // d'inizio (subset sicuro: nessun test/gioco fetcha in quell'area).
-        boolean lastLineOfField = triggerVpos == ((field == 0) ? maxVpos : maxVpos - 1);
-        bitplaneDmaActive = bitplaneDmaEnabled && bitplaneVerticalActive && !lastLineOfField;
+        compareBitplaneVerticalWindow();
+        bitplaneDmaActive = bitplaneDmaEnabled && bitplaneVerticalActive;
     }
 
     /**
-     * Il confronto vero e proprio: {@code vpos} contro Vstart e Vstop, con lo <b>stop che
-     * domina</b> lo start. È il corpo di {@code check_bpl_vdiw()} dell'oracolo:
-     *
-     * <pre>{@code
-     * bool start = vpos == plffirstline && !forceoff;
-     * bool end   = vpos == plflastline  || forceoff;
-     * if (start && !end) vdiwstate = DIW_waiting_stop;   // apre
-     * else if (end)      vdiwstate = DIW_waiting_start;  // chiude
-     * }</pre>
-     *
-     * Estratto perché lo chiamano <b>due</b> percorsi: lo scorrimento di riga e la
-     * rivalutazione alla scrittura di DIWSTRT/DIWSTOP/DIWHIGH — vedi
-     * {@link #recheckBitplaneVerticalWindow()}.
+     * True when the vertical blank does not force the vertical window off on the last line of
+     * the field. Never on OCS; on ECS BEAMCON0 VARBEAMEN, VARVBEN or HARDDIS disable it.
+     */
+    protected boolean verticalWindowForceOffDisabled() { return false; }
+
+    /**
+     * The comparison itself: the line against Vstart and Vstop, the stop winning over the
+     * start. On the last line of the field the vertical blank forces the stop and suppresses
+     * the start, unless {@link #verticalWindowForceOffDisabled()}. Called both at the line
+     * trigger and when DIWSTRT/DIWSTOP/DIWHIGH is written, see
+     * {@link #recheckBitplaneVerticalWindow()}; the forced stop holds for the whole line, so a
+     * write on the last line cannot reopen the window either.
      */
     private void compareBitplaneVerticalWindow() {
-        if (triggerVpos == diwVStop) {
-            bitplaneVerticalActive = false;
-        } else if (triggerVpos == diwVStart) {
+        final boolean forceOff = !verticalWindowForceOffDisabled()
+                && triggerVpos == ((field == 0) ? maxVpos : maxVpos - 1);
+        final boolean start = triggerVpos == diwVStart && !forceOff;
+        final boolean end = triggerVpos == diwVStop || forceOff;
+        if (start && !end) {
             bitplaneVerticalActive = true;
             // Stato del DMA bitplane all'APERTURA della finestra di display: serve a
             // distinguere un frame parziale (bitplane spenti in cima, accesi più giù →
             // mano insert-disk del KS) da uno split-screen legittimo (bitplane accesi
             // in cima, commutati a metà → pannello verbi/inventario di Monkey Island 2).
             bitplaneDmaOnAtWindowStart = bitplaneDmaEnabled;
+        } else if (end) {
+            bitplaneVerticalActive = false;
         }
     }
 
@@ -5655,16 +5640,10 @@ public abstract class AbstractAgnus {
      * cioè dopo l'arbitraggio degli slot del CCK corrente: la garanzia c'è già per
      * costruzione. Un secondo stadio di pipe sarebbe un CCK di ritardo in più, non una
      * traduzione.
-     *
-     * <p>⚠️ Il ramo {@code vpos == 0} di {@link #updateBitplaneVerticalWindow()} <b>non</b> si
-     * applica qui: quello modella il reset del flip-flop a fine fotogramma (vAmiga
-     * {@code eolHandler}, oracolo {@code forceoff}), non un confronto, e riapplicarlo a una
-     * scrittura chiuderebbe la finestra dove l'oracolo la lascia com'è.
      */
     private void recheckBitplaneVerticalWindow() {
         compareBitplaneVerticalWindow();
-        boolean lastLineOfField = triggerVpos == ((field == 0) ? maxVpos : maxVpos - 1);
-        bitplaneDmaActive = bitplaneDmaEnabled && bitplaneVerticalActive && !lastLineOfField;
+        bitplaneDmaActive = bitplaneDmaEnabled && bitplaneVerticalActive;
     }
 
     private boolean bitplaneDmaOnAtWindowStart = false;
@@ -6139,25 +6118,15 @@ public abstract class AbstractAgnus {
      * limite hard a far scattare {@code ddf_stopping} invece della discesa di {@code hwi}.
      */
     private void decideBpl(int cck) {
-        // ⛔ L'ULTIMA RIGA DEL FOTOGRAMMA spegne la finestra verticale, DIWSTOP o no.
-        // Oracolo, `check_bpl_vdiw()`, col suo commento:
-        //     bool forceoff = agnus_bsvb && !harddis_v;
-        //     bool end = vpos == plflastline || forceoff;
-        //     // VB start line forces vertical display window off (if HARDDIS=0)
-        // e `agnus_bsvb` è vero esattamente lì: `vpos == maxvpos + lof_store - 1`
-        // (`check_vsyncs`), cioè 312 su un fotogramma lungo PAL.
-        // ⚠️ Misurato con la sonda: senza questa riga il sequencer preleva 80 word in più
-        // per fotogramma, tutte su vpos 312 — e sono quelle che facevano finire il blitter
-        // 32 CCK prima, cioè il crollo di `BbusyTest`. Il modello posizionale non ne aveva
-        // bisogno perché la sua finestra non arrivava fin lì per altra via.
-        final boolean lastFrameLine = vpos == (field == 0 ? maxVpos : maxVpos - 1);
+        // The last line of the field closes the vertical window itself (see
+        // updateBitplaneVerticalWindow), so the sequencer needs no gate of its own there.
         // ⛔ Il `| 1`: l'oracolo confronta contro `ddfstrt_val = (ddfstrt & ddf_mask) | 1`
         // (DDFSTRT(), commento «DDFSTRT (odd cycle)»), mentre DDFSTOP resta pari. Il modello
         // posizionale non aveva mai avuto bisogno di saperlo perché non confrontava una
         // posizione con un match, ricavava una fase da una sottrazione.
         final long cyc = masterClock >> 1;
         final boolean vdiw = cyc == vdiwTriggerCck ? vdiwBeforeTrigger : bitplaneVerticalActive;
-        final boolean diw = vdiw && !lastFrameLine;
+        final boolean diw = vdiw;
         final boolean harddis = ddfHardLimitsDisabled();
         final boolean ddfStrtMatch =
                    (cck == ddfMatchCck(ddfStrtVal)    && cyc >  ddfStrtChangeCck)

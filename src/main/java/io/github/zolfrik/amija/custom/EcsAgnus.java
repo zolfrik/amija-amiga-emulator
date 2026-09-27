@@ -93,7 +93,17 @@ public final class EcsAgnus extends AbstractAgnus {
         return (bplcon0 & (BPLCON0_UHRES | BPLCON0_SHRES)) != 0;
     }
 
+    /**
+     * On ECS BEAMCON0 VARBEAMEN, VARVBEN or HARDDIS keep the vertical blank from forcing the
+     * vertical window off on the last line of the field.
+     */
+    @Override
+    protected boolean verticalWindowForceOffDisabled() {
+        return (beamcon0 & (BEAMCON0_VARBEAMEN | BEAMCON0_VARVBEN | BEAMCON0_HARDDIS)) != 0;
+    }
+
     private static final int BEAMCON0_VARBEAMEN = 0x0080;
+    private static final int BEAMCON0_VARVBEN   = 0x1000;
     private static final int BEAMCON0_HARDDIS   = 0x4000;
     private static final int BPLCON0_UHRES      = 0x0040;
     private static final int BPLCON0_SHRES      = 0x0080;
