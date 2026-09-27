@@ -1664,7 +1664,7 @@ public final class Paula {
             if (ch.dmaEnabled) {
                 ch.receiveDmaWord(value);
             } else {
-                ch.dmaPointer = (ch.dmaPointer + 2) & 0x1FFFFE;
+                ch.stepDmaPointer();
                 audDAT[chan] = value & 0xFFFF;
                 ch.writeData(value);
             }
@@ -1797,6 +1797,12 @@ public final class Paula {
         private final int index;
         private boolean dmaEnabled;
         private boolean dmaRequest;
+        /**
+         * The pending request reloads the pointer: its slot fetches the word at the pointer
+         * and then loads the pointer from AUDxLC instead of stepping it. Set on the request
+         * that starts the channel and on the one for the last word of a block.
+         */
+        private boolean dmaReloadRequest;
         /** The request as reported at this line's DMAL: only then does the slot fetch. */
         private boolean dmalRequest;
         private int dmaPointer;
@@ -1857,6 +1863,7 @@ public final class Paula {
         private void reset() {
             dmaEnabled = false;
             dmaRequest = false;
+            dmaReloadRequest = false;
             dmalRequest = false;
             dmaPointer = 0;
             remainingWords = 0;
@@ -1943,13 +1950,16 @@ public final class Paula {
                 //
                 // Qui `cpuDriven` è già falso: il ramo si prende solo con `wasPlaying`
                 // falso, che a DMA spento è esattamente `!cpuDriven`.
-                reloadDmaBlock();
+                // The start request fetches at the pointer the channel was left with, and its
+                // slot then loads the pointer from AUDxLC.
+                reloadDmaLength();
                 dmaPriming = true;
                 if (nextWordEndsBlock) {
                     nextWordEndsBlock = false;
                     raiseAudioInterrupt(index);     // WinUAE: setirq(nr, 0)
                 }
                 requestNextWord();
+                dmaReloadRequest = true;
             } else if (dmaPriming || dmaFirstWord) {
                 // Stati 1 e 5: "if (!chan_ena) { zerostate(nr, false); return true; }".
                 // Il canale non ha ancora suonato niente e non suonerà: dmaonoff1.
@@ -1985,6 +1995,7 @@ public final class Paula {
          */
         private void clearDmaPipeline() {
             dmaRequest = false;
+            dmaReloadRequest = false;
             remainingWords = 0;
             nextWord = 0;
             nextWordValid = false;
@@ -2253,7 +2264,7 @@ public final class Paula {
             nextWordValid = true;
             dmaRequest = false;
 
-            dmaPointer = (dmaPointer + 2) & 0x1FFFFE;
+            stepDmaPointer();
             if (!dmaPriming && !dmaFirstWord) {
                 // `intreq2` si alza SUBITO, prima del ritardo: è l'unica cosa che, negli
                 // stati 2/3, WinUAE non accoda. Il decremento di `wlen` che lo giustifica
@@ -2274,14 +2285,14 @@ public final class Paula {
                 nextWord = 0;
                 nextWordValid = false;
                 nextWordEndsBlock = false;
-                if (remainingWords != 1) {
-                    remainingWords = (remainingWords - 1) & 0xFFFF;
-                }
-                reloadDmaPointer();
                 dmaPriming = false;
                 dmaFirstWord = true;
                 raiseAudioInterrupt(index);
+                // The request is decided on the length before this word is counted.
                 requestNextWord();
+                if (remainingWords != 1) {
+                    remainingWords = (remainingWords - 1) & 0xFFFF;
+                }
                 refreshActiveMask();
                 return;
             }
@@ -2411,10 +2422,9 @@ public final class Paula {
                 currentWordValid = false;
                 currentWordEndsBlock = false;
             }
-
-            if (dmaEnabled && !nextWordValid && !dmaRequest) {
-                requestNextWord();
-            }
+            // No request here: a channel asks for its next word only at a word boundary
+            // (loadCurrentWord), so a word lost to a merged slot is asked for again one
+            // word later, not one sample later.
             refreshActiveMask();
         }
 
@@ -2581,22 +2591,24 @@ public final class Paula {
         private void requestNextWord() {
             if (!dmaEnabled || dmaRequest || nextWordValid) return;
             if (remainingWords == 0) {
-                reloadDmaBlock();
+                reloadDmaLength();
             }
+            dmaReloadRequest = remainingWords == 1;
             dmaRequest = true;
             refreshActiveMask();
         }
 
-        private void reloadDmaBlock() {
-            reloadDmaPointer();
+        private void reloadDmaLength() {
             remainingWords = audLEN[index] & 0xFFFF;
             if (remainingWords == 0) {
                 remainingWords = 0x10000;
             }
         }
 
-        private void reloadDmaPointer() {
-            dmaPointer = shadowAddress(index);
+        /** The pointer after this channel's DMA slot: stepped, or reloaded from AUDxLC. */
+        private void stepDmaPointer() {
+            dmaPointer = dmaReloadRequest ? shadowAddress(index) : (dmaPointer + 2) & 0x1FFFFE;
+            dmaReloadRequest = false;
         }
 
         private int computePeriodClocks() {
