@@ -850,8 +850,13 @@ public abstract class AbstractAgnus {
     }
 
     private void setBPLCON1(int value) {
-        bplcon1 = value & 0xFF;
-        if (denise != null) denise.writeRegister(0x102, value);
+        if (denise == null) {
+            bplcon1 = value & 0xFF;
+            return;
+        }
+        // The scroll is Denise's register: a write lost on the RGA bus leaves it unchanged.
+        denise.writeRegister(0x102, value);
+        bplcon1 = denise.bplcon1();
     }
 
     /**
@@ -1534,6 +1539,23 @@ public abstract class AbstractAgnus {
      */
     private int strobeCck() {
         return (maxHpos >> 1) - 1;
+    }
+
+    /**
+     * The CCK, and the master cycle of its first half, in which a DMA transfer last drove
+     * Denise's slot of the RGA bus (bitplane or sprite data). A register write that lands in
+     * that same CCK is overwritten by the transfer and never reaches Denise.
+     */
+    private int deniseDmaSlotCck = -1;
+    private long deniseDmaSlotClock = -1;
+
+    private void markDeniseDmaSlot(int cck) {
+        deniseDmaSlotCck = cck;
+        deniseDmaSlotClock = masterClock;
+    }
+
+    private boolean deniseSlotTakenByDma() {
+        return (hpos >> 1) == deniseDmaSlotCck && masterClock - deniseDmaSlotClock < 2;
     }
 
     /**
@@ -3535,6 +3557,7 @@ public abstract class AbstractAgnus {
             int data = chipRAM.readWord(dmaChipAddr(addr));
             openBusLatch = data & 0xFFFF;
             denise.writeRegisterAtPixel(0x110 + plane * 2, data, cck * 4 - 70);
+            markDeniseDmaSlot(cck);
             bplPtrInternal[plane] = addr;
         }
     }
@@ -3669,6 +3692,7 @@ public abstract class AbstractAgnus {
         int data = chipRAM.readWord(dmaChipAddr(addr));
         openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
         sprPtrInternal[sprIdx] += 2;
+        markDeniseDmaSlot(cck);
 
         if (!sprSlotDataPhase[sprIdx][subSlot]) {
             // ── Fase POS/CTL: fetch del descrittore sprite ──────────────────
@@ -3759,6 +3783,7 @@ public abstract class AbstractAgnus {
         int data = chipRAM.readWord(dmaChipAddr(addr));
         openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
         denise.writeRegisterAtPixel(0x110 + bplIdx * 2, data, cck * 4 - 70); // BPLxDAT
+        markDeniseDmaSlot(cck);
         bplPtrInternal[bplIdx] += 2;
         // Modulo bitplane hardware-exact (WinUAE generate_bpl/bitplane_rga_ptmod):
         // BPLxMOD è aggiunto al puntatore AL MOMENTO dell'ULTIMO fetch del piano
@@ -3826,6 +3851,7 @@ public abstract class AbstractAgnus {
             int data = chipRAM.readWord(dmaChipAddr(pv));
             openBusLatch = data & 0xFFFF;
             denise.writeRegisterAtPixel(reg, data, cck * 4 - 70);
+            markDeniseDmaSlot(cck);
         }
         pv += 2 + rgaSlotBplMod[(int) (masterClock >> 1) & 3];
         bplPtrInternal[plane] = pv;
@@ -4366,12 +4392,14 @@ public abstract class AbstractAgnus {
                 // The first refresh cycle of the line drives the horizontal strobe into
                 // Denise's slot of the RGA bus, and it overwrites whatever register write
                 // lands in the same CCK: the Agnus side of the register still takes the
-                // value, Denise never sees it. A cycle synchronised to the chip bus cannot be
-                // granted there, so only an unsynchronised one (a FAST16 bank) meets it.
-                final boolean strobeSlot = denise != null && (hpos >> 1) == strobeCck();
-                if (strobeSlot) denise.setRgaSlotTakenByStrobe(true);
+                // value, Denise never sees it. A bitplane or sprite data transfer does the
+                // same. A cycle synchronised to the chip bus cannot be granted there, so only
+                // an unsynchronised one (a FAST16 bank) meets it.
+                final boolean rgaSlotTaken = denise != null
+                        && ((hpos >> 1) == strobeCck() || deniseSlotTakenByDma());
+                if (rgaSlotTaken) denise.setRgaSlotTaken(true);
                 writeBusData(cpuCurrentRoute, addr, word, busUds, busLds);
-                if (strobeSlot) denise.setRgaSlotTakenByStrobe(false);
+                if (rgaSlotTaken) denise.setRgaSlotTaken(false);
             }
 
             // lastBusData riflette i 16 bit effettivamente pilotati sul bus dati

@@ -744,17 +744,23 @@ public abstract class AbstractDenise {
 
     /**
      * True while Agnus transfers a register write in the CCK whose Denise slot on the RGA
-     * bus is already taken by the horizontal strobe: the strobe overwrites the slot, so the
-     * write never reaches Denise. See {@link AbstractAgnus} handleCpuDataTransfer.
+     * bus is already taken by the horizontal strobe or by a bitplane or sprite data transfer:
+     * that transfer overwrites the slot, so the write never reaches Denise. See
+     * {@link AbstractAgnus} handleCpuDataTransfer.
      */
-    private boolean rgaSlotTakenByStrobe;
+    private boolean rgaSlotTaken;
 
-    void setRgaSlotTakenByStrobe(boolean taken) {
-        rgaSlotTakenByStrobe = taken;
+    void setRgaSlotTaken(boolean taken) {
+        rgaSlotTaken = taken;
+    }
+
+    /** The BPLCON1 value Denise holds, the scroll delay of both playfields. */
+    int bplcon1() {
+        return bplcon1;
     }
 
     public void writeRegister(int address, int value) {
-        if (rgaSlotTakenByStrobe) {
+        if (rgaSlotTaken) {
             return;
         }
         // vAmiga mappa i register-change al pixel con Beam::pixel = 4*(h - HBLANK_MIN),
