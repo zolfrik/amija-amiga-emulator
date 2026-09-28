@@ -781,6 +781,11 @@ public abstract class AbstractDenise {
         return hcounterHead;
     }
 
+    /** See {@link #hcounterRenderHead}. */
+    int hcounterRenderHead() {
+        return hcounterRenderHead;
+    }
+
     /** The BPLCON1 value Denise holds, the scroll delay of both playfields. */
     int bplcon1() {
         return bplcon1;

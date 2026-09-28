@@ -3980,8 +3980,14 @@ public abstract class AbstractAgnus {
         // per la regola unica e per perché in hires non è la stessa di lores.
         int subOdd  = scrollSubPixels(bplcon1, hires);
         int subEven = scrollSubPixels(bplcon1 >> 4, hires);
-        boolean drawOdd = (cck & mask) == ((subOdd >> 2) & mask);
-        boolean drawEven = (cck & mask) == ((subEven >> 2) & mask);
+        // The scroll is matched against Denise's own horizontal counter. On a line whose
+        // strobe did not reset it the counter runs offset from the CCK, and the block the
+        // scroll selects moves with it. The line's strobe comes after the draw of its CCK, so
+        // only the draw past it belongs to the line the strobe ended.
+        final int head = cck > strobeCck() ? denise.hcounterRenderHead() : denise.hcounterHead();
+        final int phase = cck + ((head - 2) >> 1);
+        boolean drawOdd = (phase & mask) == ((subOdd >> 2) & mask);
+        boolean drawEven = (phase & mask) == ((subEven >> 2) & mask);
         if (drawOdd || drawEven) {
             // ⛔ Lo scroll dei piani PARI viene da PF2H SEMPRE, in entrambe le parti e in
             // entrambi i modi. Qui la parte fine veniva da PF1H in single playfield — «i
