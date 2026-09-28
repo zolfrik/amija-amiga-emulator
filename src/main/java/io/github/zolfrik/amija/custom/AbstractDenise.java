@@ -247,20 +247,10 @@ public abstract class AbstractDenise {
     private int     borderBufferIsDirty;
     private int     borderColor;
     /**
-     * True quando la scanline corrente è una riga di bordo verticale, cioè non ha
-     * prodotto output bitplane (vedi {@link #bpl1datWrittenThisLine}). In quest'area
-     * gli sprite NON sono visibili su OCS: la riga è interamente bordo (palette[0]),
-     * come WinUAE (pfield_draw_line: gli sprite si disegnano solo con BRDSPRT/ECS).
+     * True when the line being rendered is all border: the BPL1DAT gate never opens in it
+     * (see {@link #computeBpl1datGate}), so neither the playfield nor the sprites come out.
      */
     private boolean lineIsVBorder;
-    /**
-     * True se sulla scanline corrente è stato scritto BPL1DAT (cioè la riga ha
-     * prodotto output bitplane). Su OCS gli sprite sono visibili solo nelle righe
-     * con output bitplane; nelle righe di bordo verticale (nessun bitplane, anche
-     * se dentro la DIW) non vengono mostrati — come WinUAE (pfield_draw_line:
-     * border = plfleft<0 → sprite disegnati solo con BRDSPRT/ECS).
-     */
-    private boolean bpl1datWrittenThisLine;
 
     private int clxcon,  clxdat;
     // PERF: maschera degli sprite che hanno disegnato pixel sulla scanline corrente
@@ -421,25 +411,104 @@ public abstract class AbstractDenise {
     private final int[] ssra     = new int[8];  // shift register A per sprite
     private final int[] ssrb     = new int[8];  // shift register B per sprite
     private int armed;                 // bitmask degli sprite armati
-    private int spriteClipBegin, spriteClipEnd;
+    private int spriteClipEnd;
+
+    /*
+     * BPL1DAT does not only arm the bitplanes, it also unblocks the sprites. A sprite comes
+     * out only when two conditions hold: it is inside the horizontal window (the bBuffer mask
+     * in colorize) and the BPL1DAT gate below is open.
+     */
+
+    /** The pixels of the BPL1DAT writes of the line, in the order they came. */
+    private final int[] bpl1datPixels = new int[64];
+    private int bpl1datCount;
 
     /**
-     * ⛔ <b>BPL1DAT non arma solo i bitplane: SBLOCCA anche gli sprite.</b> Pixel in cui
-     * BPL1DAT e' stato scritto la prima volta in questa riga, o {@link Integer#MAX_VALUE}
-     * se non e' mai stato scritto (riga tutta bordo).
-     *
-     * <p>WinUAE lo modella come una maschera a <b>due bit</b>, {@code sprites_hidden}
-     * (drawing.cpp): il bit 0 e' la finestra orizzontale (HDIW) e il bit <b>1</b> e'
-     * proprio questo — {@code hstart_new()} lo alza a inizio riga e <b>solo</b>
-     * {@code bpl1dat_enable_sprites()} lo abbassa, con il commento che lo dice per esteso:
-     * <i>«BPL1DAT allows sprites 1 lores pixel before bitplanes»</i>. Lo sprite esce solo
-     * se {@code !sprites_hidden}, cioe' se <b>entrambi</b> i bit sono a zero.
-     *
-     * <p>⚠️ Il bit 0 lo applicavamo gia' (la maschera DIW di {@code bBuffer} in
-     * {@code colorize}); il bit 1 mancava, e sono i 14 rossi su 14 del gruppo
-     * {@code clip} del banco Denise/Sprites.
+     * The BPL1DAT gate, which both the sprites and the playfield wait for: a flip-flop that a
+     * BPL1DAT write opens and the start of the horizontal blank closes. The blank starts where
+     * Denise's horizontal counter reaches {@link #hblankStartCounter()}, so it is a position of
+     * the line only when the counter was reset: on a line whose strobe did not reset it the
+     * close falls elsewhere, or nowhere, and the gate state crosses the line boundary.
+     * {@code bpl1datGateCarried} is the state at the end of the last rendered line.
      */
-    private int bpl1datPixelThisLine = Integer.MAX_VALUE;
+    private boolean bpl1datGateCarried;
+
+    /**
+     * The gate of the line being rendered, in raw pixels before the enable offsets: open over
+     * [{@code gateOpenA}, {@code gateCloseA}) and from {@code gateOpenB} on. {@code gateOpenA}
+     * is {@link Integer#MIN_VALUE} when the gate comes open from the previous line, and an
+     * absent interval has its start at {@link Integer#MAX_VALUE}.
+     */
+    private int gateOpenA = Integer.MAX_VALUE, gateCloseA = Integer.MAX_VALUE,
+                gateOpenB = Integer.MAX_VALUE;
+
+    /** The counter value at which the horizontal blank starts. */
+    private int hblankStartCounter() {
+        return isECS ? 0x10 : 0x0F;
+    }
+
+    /**
+     * Where the line being rendered opens and closes the BPL1DAT gate, and the state it
+     * leaves to the next line. The close is the pixel at which the line's counter reaches the
+     * start of the horizontal blank; a line covers 454 of the 512 counter values, and when it
+     * misses that one the gate is not closed at all. A BPL1DAT in the colour clock of the close
+     * comes before it: Denise takes the register at the start of the clock and compares the
+     * counter after, so the close wins.
+     */
+    private void computeBpl1datGate() {
+        final int lineSteps = agnus != null ? agnus.getMaxHpos() : 454;
+        final int s = (hblankStartCounter() - hcounterRenderHead) & 0x1FF;
+        final int close = s < lineSteps ? 2 * (s - HDIW_HEAD_STEPS) : Integer.MAX_VALUE;
+        int firstBefore = Integer.MAX_VALUE, firstAfter = Integer.MAX_VALUE;
+        for (int k = 0; k < bpl1datCount; k++) {
+            final int p = bpl1datPixels[k];
+            if (p <= close) firstBefore = Math.min(firstBefore, p);
+            else           firstAfter  = Math.min(firstAfter, p);
+        }
+        gateOpenA  = bpl1datGateCarried ? Integer.MIN_VALUE : firstBefore;
+        gateCloseA = close;
+        gateOpenB  = firstAfter;
+        bpl1datGateCarried = firstAfter != Integer.MAX_VALUE
+                || (close == Integer.MAX_VALUE && gateOpenA != Integer.MAX_VALUE);
+        bpl1datCount = 0;
+    }
+
+    /** Whether the BPL1DAT gate is open at {@code pos}, opening {@code offset} pixels late. */
+    private boolean bpl1datGateOpenAt(int pos, int offset) {
+        if (gateOpenA != Integer.MAX_VALUE && pos < gateCloseA
+                && (gateOpenA == Integer.MIN_VALUE || pos >= gateOpenA + offset)) {
+            return true;
+        }
+        return gateOpenB != Integer.MAX_VALUE && pos >= gateOpenB + offset;
+    }
+
+    /** Zeroes {@code buf} wherever the gate, opening {@link #BPL_ENABLE_OFFSET} late, is closed. */
+    private void clearWhereBpl1datGateIsClosed(byte[] buf) {
+        final int len = buf.length;
+        int pos = 0;
+        if (gateOpenA != Integer.MAX_VALUE) {
+            final long start = gateOpenA == Integer.MIN_VALUE ? Long.MIN_VALUE
+                    : (long) gateOpenA + BPL_ENABLE_OFFSET;
+            final int s = (int) Math.max(0, Math.min(len, start));
+            final int e = (int) Math.max(0, Math.min(len, (long) gateCloseA));
+            if (s > pos) Arrays.fill(buf, pos, s, (byte) 0);
+            pos = Math.max(pos, Math.max(s, e));
+        }
+        if (gateOpenB != Integer.MAX_VALUE) {
+            final int s = (int) Math.max(0, Math.min(len, (long) gateOpenB + BPL_ENABLE_OFFSET));
+            if (s > pos) Arrays.fill(buf, pos, s, (byte) 0);
+            pos = len;
+        }
+        if (len > pos) Arrays.fill(buf, pos, len, (byte) 0);
+    }
+
+    /** Whether the gate opens anywhere in the rendered buffer. */
+    private boolean bpl1datGateOpensInLine(int offset) {
+        final boolean a = gateOpenA != Integer.MAX_VALUE && gateCloseA > 0
+                && (gateOpenA == Integer.MIN_VALUE || (long) gateOpenA + offset < Math.min(gateCloseA, HPIXELS));
+        final boolean b = gateOpenB != Integer.MAX_VALUE && (long) gateOpenB + offset < HPIXELS;
+        return a || b;
+    }
 
     /**
      * Lo scarto fra la scrittura di BPL1DAT e il pixel da cui lo sprite torna visibile,
@@ -724,7 +793,6 @@ public abstract class AbstractDenise {
         Arrays.fill(sprctlLineStart,  0);
         Arrays.fill(sprdataLineStart, 0);
         Arrays.fill(sprdatbLineStart, 0);
-        spriteClipBegin = 0;
         spriteClipEnd   = HPIXELS + 32;
         Arrays.fill(dBuffer, (byte) 0);
         Arrays.fill(bBuffer, (byte) 0xFF);
@@ -1048,8 +1116,7 @@ public abstract class AbstractDenise {
             System.arraycopy(bpldat, 0, bpldatPipe, 0, 6);
             armedOdd  = true;
             armedEven = true;
-            bpl1datWrittenThisLine = true;
-            if (pixel < bpl1datPixelThisLine) bpl1datPixelThisLine = pixel;
+            if (bpl1datCount < bpl1datPixels.length) bpl1datPixels[bpl1datCount++] = pixel;
         }
     }
 
@@ -1145,9 +1212,20 @@ public abstract class AbstractDenise {
     }
 
     private void updateSprHCoords(int x) {
-        // sprhpos = SPRPOS[7:0] << 2 | SPRCTL[0] << 1  (HSTART * 2, matching vAmiga)
-        int sprhpos = ((sprpos[x] & 0xFF) << 2) | ((sprctl[x] & 0x01) << 1);
-        sprhppos[x] = sprhpos + 2 - 4 * HBLANK_MIN;
+        sprhppos[x] = spriteStart(((sprpos[x] & 0xFF) << 1) | (sprctl[x] & 0x01));
+    }
+
+    /**
+     * Where a sprite with horizontal start {@code hstart} loads in the line being rendered:
+     * the buffer position at which Denise's horizontal counter reaches it, one lores pixel
+     * later. The counter of the line starts at {@link #hcounterRenderHead}, so on a line whose
+     * strobe did not reset it the sprite moves, or does not come out at all. A start in the
+     * head of the line is a negative position.
+     */
+    private int spriteStart(int hstart) {
+        int d = (hstart - ((hcounterRenderHead + HDIW_HEAD_STEPS) & 0x1FF)) & 0x1FF;
+        if (d >= 0x200 - HDIW_HEAD_STEPS) d -= 0x200;
+        return 2 * d + 2;
     }
 
     // =========================================================================
@@ -1181,6 +1259,7 @@ public abstract class AbstractDenise {
         flushShiftOut();
 
         updateBorderBuffer();
+        computeBpl1datGate();
 
         if (agnus != null && !agnus.inVBlankArea(vpos)) {
             // Scanline visibile: pipeline completa.
@@ -1190,12 +1269,9 @@ public abstract class AbstractDenise {
             // ma lascia la DIW aperta fino a riga 299) è interamente bordo: il
             // cursore/sprite NON vi compare. Cfr. WinUAE pfield_draw_line
             // (border = plfleft<0 → sprite solo con BRDSPRT/ECS).
-            lineIsVBorder = !bpl1datWrittenThisLine;
-            // Bit 1 di `sprites_hidden`: prima della prima BPL1DAT della riga lo sprite
-            // non esce. Vedi bpl1datPixelThisLine.
-            spriteClipBegin = bpl1datPixelThisLine == Integer.MAX_VALUE
-                    ? Integer.MAX_VALUE
-                    : bpl1datPixelThisLine + SPRITE_ENABLE_OFFSET;
+            // A line on which the BPL1DAT gate never opens is all border. See
+            // computeBpl1datGate: the gate can also come open from the previous line.
+            lineIsVBorder = !bpl1datGateOpensInLine(SPRITE_ENABLE_OFFSET);
             findDiwOpeningSample();
             // Gli shift register sprite scorrono PRIMA del playfield: la fine della loro
             // finestra di display e' uno degli istanti in cui Denise ri-seleziona la
@@ -1250,12 +1326,9 @@ public abstract class AbstractDenise {
         Arrays.fill(zBuffer, HPIXELS, zBuffer.length, 0);
         for (int i = 0; i < 8; i++) { ssra[i] = 0; ssrb[i] = 0; }
         spritesOnLineMask = 0;
-        bpl1datWrittenThisLine = false;   // reset per la prossima scanline
-        bpl1datPixelThisLine = Integer.MAX_VALUE;
 
         // Gli sprite possono essere visibili ovunque sulla riga attiva;
         // la posizione orizzontale è già filtrata da sprhppos (negativo se in blanking).
-        spriteClipBegin = 0;
         spriteClipEnd   = HPIXELS + 32;
 
         // Snapshot dei registri: saranno usati come stato "iniziale" per
@@ -1582,10 +1655,7 @@ public abstract class AbstractDenise {
         // registers contribute nothing even when they still hold a word from an earlier
         // line. Zeroing dBuffer here covers the three consumers that read it - the
         // playfield index, the playfield collisions and the HAM decoder - with one rule.
-        int bplGate = bpl1datPixelThisLine == Integer.MAX_VALUE
-                ? dBuffer.length
-                : Math.min(dBuffer.length, bpl1datPixelThisLine + BPL_ENABLE_OFFSET);
-        if (bplGate > 0) Arrays.fill(dBuffer, 0, bplGate, (byte) 0);
+        clearWhereBpl1datGateIsClosed(dBuffer);
 
         System.arraycopy(dBuffer, 0, mBuffer, 0, mBuffer.length);
 
@@ -1822,6 +1892,9 @@ public abstract class AbstractDenise {
         RegChangeRecorder    recorder = sprChanges[pair];
 
         int     strt    = 0;
+        // The start follows the counter of this line, which the POS/CTL writes did not know.
+        updateSprHCoords(s1);
+        updateSprHCoords(s2);
         int     strt1   = sprhppos[s1];
         int     strt2   = sprhppos[s2];
         // `armed` è già stato riportato allo stato d'inizio riga da scanSprites(); il
@@ -1927,7 +2000,7 @@ public abstract class AbstractDenise {
                     if ((((ssra[s1] >> 15) & 1) | ((ssrb[s1] >> 14) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s1];
                     if ((((ssra[s2] >> 15) & 1) | ((ssrb[s2] >> 14) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s2];
                 }
-                if (hpos >= spriteClipBegin && hpos < spriteClipEnd) {
+                if (bpl1datGateOpenAt(hpos, SPRITE_ENABLE_OFFSET) && hpos < spriteClipEnd) {
                     if (att) drawAttachedSpritePixel(hpos, s2);
                     else   { drawSpritePixel(hpos, s1); drawSpritePixel(hpos, s2); }
                 }
@@ -2031,14 +2104,14 @@ public abstract class AbstractDenise {
     /**
      * Un pixel partecipa alle collisioni solo se Denise lo <b>rende</b>: dentro la
      * finestra orizzontale e dopo la prima BPL1DAT della riga. Sono gli stessi due bit
-     * che nascondono lo sprite ({@code spriteClipBegin} è il secondo), e valgono anche
+     * che nascondono lo sprite (il gate di BPL1DAT è il secondo), e valgono anche
      * per il playfield: fuori di lì non c'è pixel bitplane da confrontare, e prenderlo
      * per un valore vero fa comparire collisioni che l'hardware non riporta — con
      * CLXCON che si aspetta zero su un piano, il bordo (dove {@code dBuffer} è 0)
      * accende il confronto su tutta la riga.
      */
     private boolean collisionActiveAt(int pos) {
-        return pos >= spriteClipBegin && pos < spriteClipEnd
+        return bpl1datGateOpenAt(pos, SPRITE_ENABLE_OFFSET) && pos < spriteClipEnd
                 && bBuffer[pos] == (byte) 0xFF;
     }
 
@@ -2736,8 +2809,8 @@ public abstract class AbstractDenise {
 
     /**
      * True se la scanline appena renderizzata da {@link #hsyncHandler(int)} è
-     * interamente bordo verticale (nessun output bitplane: {@code bpl1datWrittenThisLine}
-     * era false), false se i bitplane hanno prodotto pixel. È l'analogo di
+     * interamente bordo verticale (il gate di BPL1DAT non si apre mai nella riga:
+     * {@link #lineIsVBorder}), false se i bitplane hanno prodotto pixel. È l'analogo di
      * WinUAE {@code thisframe_*_drawn_line} (cfr. drawing.cpp finish_playfield_line):
      * VirtualCRT lo usa per inquadrare il display sull'estensione effettivamente
      * disegnata invece che sulla finestra DIW (che può essere aperta su tutto
