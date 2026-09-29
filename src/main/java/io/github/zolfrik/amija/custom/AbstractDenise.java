@@ -424,23 +424,84 @@ public abstract class AbstractDenise {
     private int bpl1datCount;
 
     /**
-     * The BPL1DAT gate, which both the sprites and the playfield wait for: a flip-flop that a
-     * BPL1DAT write opens and the start of the horizontal blank closes. The blank starts where
-     * Denise's horizontal counter reaches {@link #hblankStartCounter()}, so it is a position of
-     * the line only when the counter was reset: on a line whose strobe did not reset it the
-     * close falls elsewhere, or nowhere, and the gate state crosses the line boundary.
-     * {@code bpl1datGateCarried} is the state at the end of the last rendered line.
+     * A BPL1DAT gate: a flip-flop that a BPL1DAT write opens and the start of the horizontal
+     * blank closes. The blank starts where Denise's horizontal counter reaches
+     * {@link #hblankStartCounter()}, so it is a position of the line only when the counter was
+     * reset: on a line whose strobe did not reset it the close falls elsewhere, or nowhere, and
+     * the gate state crosses the line boundary. Denise has two, closed together: one lets the
+     * playfield out, the other the sprites, and on OCS Denise a BPL1DAT during the colour burst
+     * opens only the first.
+     *
+     * <p>For the line being rendered, in raw pixels before the enable offsets, the gate is open
+     * over [{@code openA}, {@code closeA}) and from {@code openB} on. {@code openA} is
+     * {@link Integer#MIN_VALUE} when the gate comes open from the previous line, and an absent
+     * interval has its start at {@link Integer#MAX_VALUE}. A BPL1DAT in the colour clock of the
+     * close comes before it: Denise takes the register at the start of the clock and compares
+     * the counter after, so the close wins.
      */
-    private boolean bpl1datGateCarried;
+    private static final class Bpl1datGate {
+        private int openA = Integer.MAX_VALUE, closeA = Integer.MAX_VALUE, openB = Integer.MAX_VALUE;
+        /** The state at the end of the last rendered line. */
+        private boolean carried;
+        private int firstBefore, firstAfter;
 
-    /**
-     * The gate of the line being rendered, in raw pixels before the enable offsets: open over
-     * [{@code gateOpenA}, {@code gateCloseA}) and from {@code gateOpenB} on. {@code gateOpenA}
-     * is {@link Integer#MIN_VALUE} when the gate comes open from the previous line, and an
-     * absent interval has its start at {@link Integer#MAX_VALUE}.
-     */
-    private int gateOpenA = Integer.MAX_VALUE, gateCloseA = Integer.MAX_VALUE,
-                gateOpenB = Integer.MAX_VALUE;
+        void begin() {
+            firstBefore = Integer.MAX_VALUE;
+            firstAfter = Integer.MAX_VALUE;
+        }
+
+        void add(int pixel, int close) {
+            if (pixel <= close) firstBefore = Math.min(firstBefore, pixel);
+            else                firstAfter  = Math.min(firstAfter, pixel);
+        }
+
+        void end(int close) {
+            openA  = carried ? Integer.MIN_VALUE : firstBefore;
+            closeA = close;
+            openB  = firstAfter;
+            carried = firstAfter != Integer.MAX_VALUE
+                    || (close == Integer.MAX_VALUE && openA != Integer.MAX_VALUE);
+        }
+
+        /** Whether the gate is open at {@code pos}, opening {@code offset} pixels late. */
+        boolean openAt(int pos, int offset) {
+            if (openA != Integer.MAX_VALUE && pos < closeA
+                    && (openA == Integer.MIN_VALUE || pos >= openA + offset)) {
+                return true;
+            }
+            return openB != Integer.MAX_VALUE && pos >= openB + offset;
+        }
+
+        /** Whether the gate opens anywhere in the first {@code len} pixels. */
+        boolean opensWithin(int offset, int len) {
+            final boolean a = openA != Integer.MAX_VALUE && closeA > 0
+                    && (openA == Integer.MIN_VALUE || (long) openA + offset < Math.min(closeA, len));
+            final boolean b = openB != Integer.MAX_VALUE && (long) openB + offset < len;
+            return a || b;
+        }
+
+        /** Zeroes {@code buf} wherever the gate, opening {@code offset} pixels late, is closed. */
+        void clearWhereClosed(byte[] buf, int offset) {
+            final int len = buf.length;
+            int pos = 0;
+            if (openA != Integer.MAX_VALUE) {
+                final long start = openA == Integer.MIN_VALUE ? Long.MIN_VALUE : (long) openA + offset;
+                final int s = (int) Math.max(0, Math.min(len, start));
+                final int e = (int) Math.max(0, Math.min(len, (long) closeA));
+                if (s > pos) Arrays.fill(buf, pos, s, (byte) 0);
+                pos = Math.max(pos, Math.max(s, e));
+            }
+            if (openB != Integer.MAX_VALUE) {
+                final int s = (int) Math.max(0, Math.min(len, (long) openB + offset));
+                if (s > pos) Arrays.fill(buf, pos, s, (byte) 0);
+                pos = len;
+            }
+            if (len > pos) Arrays.fill(buf, pos, len, (byte) 0);
+        }
+    }
+
+    private final Bpl1datGate playfieldGate = new Bpl1datGate();
+    private final Bpl1datGate spriteGate    = new Bpl1datGate();
 
     /** The counter value at which the horizontal blank starts. */
     private int hblankStartCounter() {
@@ -448,66 +509,37 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Where the line being rendered opens and closes the BPL1DAT gate, and the state it
-     * leaves to the next line. The close is the pixel at which the line's counter reaches the
-     * start of the horizontal blank; a line covers 454 of the 512 counter values, and when it
-     * misses that one the gate is not closed at all. A BPL1DAT in the colour clock of the close
-     * comes before it: Denise takes the register at the start of the clock and compares the
-     * counter after, so the close wins.
+     * Whether the colour burst is on at counter value {@code counter}, as the counter reads at a
+     * BPL1DAT pixel. OCS Denise only: a BPL1DAT then does not let the sprites out.
+     */
+    private boolean burstAt(int counter) {
+        return !isECS && counter >= BURST_FIRST_COUNTER && counter <= BURST_LAST_COUNTER;
+    }
+
+    private static final int BURST_FIRST_COUNTER = 0x41;
+    private static final int BURST_LAST_COUNTER  = 0x53;
+
+    /**
+     * The two gates of the line being rendered and the state they leave to the next line. The
+     * close is the pixel at which the line's counter reaches the start of the horizontal blank;
+     * a line covers 454 of the 512 counter values, and when it misses that one the gates are not
+     * closed at all.
      */
     private void computeBpl1datGate() {
         final int lineSteps = agnus != null ? agnus.getMaxHpos() : 454;
         final int s = (hblankStartCounter() - hcounterRenderHead) & 0x1FF;
         final int close = s < lineSteps ? 2 * (s - HDIW_HEAD_STEPS) : Integer.MAX_VALUE;
-        int firstBefore = Integer.MAX_VALUE, firstAfter = Integer.MAX_VALUE;
+        final int mainCounter = (hcounterRenderHead + HDIW_HEAD_STEPS) & 0x1FF;
+        playfieldGate.begin();
+        spriteGate.begin();
         for (int k = 0; k < bpl1datCount; k++) {
             final int p = bpl1datPixels[k];
-            if (p <= close) firstBefore = Math.min(firstBefore, p);
-            else           firstAfter  = Math.min(firstAfter, p);
+            playfieldGate.add(p, close);
+            if (!burstAt((mainCounter + (p >> 1)) & 0x1FF)) spriteGate.add(p, close);
         }
-        gateOpenA  = bpl1datGateCarried ? Integer.MIN_VALUE : firstBefore;
-        gateCloseA = close;
-        gateOpenB  = firstAfter;
-        bpl1datGateCarried = firstAfter != Integer.MAX_VALUE
-                || (close == Integer.MAX_VALUE && gateOpenA != Integer.MAX_VALUE);
+        playfieldGate.end(close);
+        spriteGate.end(close);
         bpl1datCount = 0;
-    }
-
-    /** Whether the BPL1DAT gate is open at {@code pos}, opening {@code offset} pixels late. */
-    private boolean bpl1datGateOpenAt(int pos, int offset) {
-        if (gateOpenA != Integer.MAX_VALUE && pos < gateCloseA
-                && (gateOpenA == Integer.MIN_VALUE || pos >= gateOpenA + offset)) {
-            return true;
-        }
-        return gateOpenB != Integer.MAX_VALUE && pos >= gateOpenB + offset;
-    }
-
-    /** Zeroes {@code buf} wherever the gate, opening {@link #BPL_ENABLE_OFFSET} late, is closed. */
-    private void clearWhereBpl1datGateIsClosed(byte[] buf) {
-        final int len = buf.length;
-        int pos = 0;
-        if (gateOpenA != Integer.MAX_VALUE) {
-            final long start = gateOpenA == Integer.MIN_VALUE ? Long.MIN_VALUE
-                    : (long) gateOpenA + BPL_ENABLE_OFFSET;
-            final int s = (int) Math.max(0, Math.min(len, start));
-            final int e = (int) Math.max(0, Math.min(len, (long) gateCloseA));
-            if (s > pos) Arrays.fill(buf, pos, s, (byte) 0);
-            pos = Math.max(pos, Math.max(s, e));
-        }
-        if (gateOpenB != Integer.MAX_VALUE) {
-            final int s = (int) Math.max(0, Math.min(len, (long) gateOpenB + BPL_ENABLE_OFFSET));
-            if (s > pos) Arrays.fill(buf, pos, s, (byte) 0);
-            pos = len;
-        }
-        if (len > pos) Arrays.fill(buf, pos, len, (byte) 0);
-    }
-
-    /** Whether the gate opens anywhere in the rendered buffer. */
-    private boolean bpl1datGateOpensInLine(int offset) {
-        final boolean a = gateOpenA != Integer.MAX_VALUE && gateCloseA > 0
-                && (gateOpenA == Integer.MIN_VALUE || (long) gateOpenA + offset < Math.min(gateCloseA, HPIXELS));
-        final boolean b = gateOpenB != Integer.MAX_VALUE && (long) gateOpenB + offset < HPIXELS;
-        return a || b;
     }
 
     /**
@@ -1271,7 +1303,7 @@ public abstract class AbstractDenise {
             // (border = plfleft<0 → sprite solo con BRDSPRT/ECS).
             // A line on which the BPL1DAT gate never opens is all border. See
             // computeBpl1datGate: the gate can also come open from the previous line.
-            lineIsVBorder = !bpl1datGateOpensInLine(SPRITE_ENABLE_OFFSET);
+            lineIsVBorder = !playfieldGate.opensWithin(SPRITE_ENABLE_OFFSET, HPIXELS);
             findDiwOpeningSample();
             // Gli shift register sprite scorrono PRIMA del playfield: la fine della loro
             // finestra di display e' uno degli istanti in cui Denise ri-seleziona la
@@ -1655,7 +1687,7 @@ public abstract class AbstractDenise {
         // registers contribute nothing even when they still hold a word from an earlier
         // line. Zeroing dBuffer here covers the three consumers that read it - the
         // playfield index, the playfield collisions and the HAM decoder - with one rule.
-        clearWhereBpl1datGateIsClosed(dBuffer);
+        playfieldGate.clearWhereClosed(dBuffer, BPL_ENABLE_OFFSET);
 
         System.arraycopy(dBuffer, 0, mBuffer, 0, mBuffer.length);
 
@@ -2000,7 +2032,7 @@ public abstract class AbstractDenise {
                     if ((((ssra[s1] >> 15) & 1) | ((ssrb[s1] >> 14) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s1];
                     if ((((ssra[s2] >> 15) & 1) | ((ssrb[s2] >> 14) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s2];
                 }
-                if (bpl1datGateOpenAt(hpos, SPRITE_ENABLE_OFFSET) && hpos < spriteClipEnd) {
+                if (spriteGate.openAt(hpos, SPRITE_ENABLE_OFFSET) && hpos < spriteClipEnd) {
                     if (att) drawAttachedSpritePixel(hpos, s2);
                     else   { drawSpritePixel(hpos, s1); drawSpritePixel(hpos, s2); }
                 }
@@ -2111,7 +2143,7 @@ public abstract class AbstractDenise {
      * accende il confronto su tutta la riga.
      */
     private boolean collisionActiveAt(int pos) {
-        return bpl1datGateOpenAt(pos, SPRITE_ENABLE_OFFSET) && pos < spriteClipEnd
+        return spriteGate.openAt(pos, SPRITE_ENABLE_OFFSET) && pos < spriteClipEnd
                 && bBuffer[pos] == (byte) 0xFF;
     }
 
