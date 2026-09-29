@@ -1668,18 +1668,6 @@ public abstract class AbstractAgnus {
     private int     frozenVpos = 0;
     private int     frozenHpos = 0;
 
-    // Latch coerente della posizione del pennello per una lettura long-word della CPU
-    // dei registri VPOSR/VHPOSR ($DFF004). Sull'hardware reale le due word vengono
-    // lette in due cicli bus distinti: se il pennello incrementa vpos tra i due cicli
-    // (al confine di riga, es. 255→256), V8 (da VPOSR) e V7-0 (da VHPOSR) risultano
-    // incoerenti e la posizione ricostruita "salta" (es. a 0). La graphics.library
-    // 1.3 sfrutta proprio questa lettura long per il rilevamento PAL/NTSC ($FCB00C):
-    // un salto verso il basso al confine 256 la fa concludere erroneamente NTSC.
-    // Latchando la posizione all'inizio della lettura long la rendiamo coerente,
-    // come avviene di fatto sull'hardware reale nella stragrande maggioranza dei casi.
-    private int     beamReadLatchVpos = -1;   // -1 = inattivo
-    private int     beamReadLatchHpos = -1;
-
     // ERSY-freeze (BPLCON0 bit 1 = external resync). Sull'hardware, quando ERSY è
     // attivo e NON c'è un genlock a fornire il sync esterno, i contatori del pennello
     // di Agnus si fermano (WinUAE: issyncstopped()/setsyncstoppos() forza hpos=0).
@@ -4417,22 +4405,6 @@ public abstract class AbstractAgnus {
         boolean isCia = (cpuCurrentRoute.target == Gary.Target.CIA_A
                 || cpuCurrentRoute.target == Gary.Target.CIA_B
                 || cpuCurrentRoute.target == Gary.Target.CIA_BOTH);
-        // Coerenza della lettura della posizione del pennello (VPOSR/VHPOSR).
-        // Il 68000 legge `MOVE.L $DFF004` come DUE accessi word distinti ($004 poi $006).
-        // Se vpos incrementa tra i due (al confine di riga, es. 255→256) la posizione
-        // ricostruita salta (V8 dal vecchio vpos, V7-0 dal nuovo). La graphics.library 1.3
-        // usa questa lettura per il rilevamento PAL/NTSC ($FCB00C): un salto verso il basso
-        // al confine 256 la fa concludere erroneamente NTSC. Per garantire coerenza (come
-        // l'hardware reale nella stragrande maggioranza dei casi) si latcha vpos/hpos alla
-        // lettura di VPOSR e lo si riusa per la lettura IMMEDIATAMENTE successiva di VHPOSR.
-        int beamReg = (cpuBusReq.read && cpuCurrentRoute.target == Gary.Target.CUSTOM_REGS)
-                ? (cpuCurrentRoute.effectiveAddress & 0x1FE) : -1;
-        // Pre-lettura: il latch resta valido solo se stiamo leggendo VHPOSR subito dopo
-        // VPOSR; in ogni altro caso lo si invalida (così VPOSR usa il vpos live).
-        if (beamReg != 0x006) {
-            beamReadLatchVpos = -1;
-            beamReadLatchHpos = -1;
-        }
 
         if (cpuBusReq.read) {
             // ── LETTURA ──────────────────────────────────────────────────────────
@@ -4449,16 +4421,6 @@ public abstract class AbstractAgnus {
                 word = readBusData(cpuCurrentRoute, addr);
             }
             word &= 0xFFFF;
-
-            // Post-lettura del pennello: VPOSR appena letto → arma il latch (vpos live)
-            // per la successiva lettura di VHPOSR; VHPOSR appena letto → consuma il latch.
-            if (beamReg == 0x004) {
-                beamReadLatchVpos = vposFrozen ? frozenVpos : vpos;
-                beamReadLatchHpos = vposFrozen ? frozenHpos : hpos;
-            } else if (beamReg == 0x006) {
-                beamReadLatchVpos = -1;
-                beamReadLatchHpos = -1;
-            }
 
             lastBusData = word;
             cpuBusResp.dataIn = word;
@@ -4896,14 +4858,18 @@ public abstract class AbstractAgnus {
         return vposFrozen ? frozenVpos : vpos;
     }
 
-    /** Vpos usato dalle letture VPOSR/VHPOSR fuori dal freeze. */
+    /**
+     * Vpos used by the VPOSR/VHPOSR reads outside the freeze. Each word of a long read
+     * samples the beam at its own bus cycle, so the two halves of {@code MOVE.L $DFF004}
+     * can straddle a line boundary.
+     */
     private int beamReadVpos() {
-        return beamReadLatchVpos >= 0 ? beamReadLatchVpos : (vposFrozen ? frozenVpos : vpos);
+        return vposFrozen ? frozenVpos : vpos;
     }
 
-    /** Hpos usato dalle letture VPOSR/VHPOSR fuori dal freeze. */
+    /** Hpos used by the VPOSR/VHPOSR reads outside the freeze, sampled at the read itself. */
     private int beamReadHpos() {
-        return beamReadLatchHpos >= 0 ? beamReadLatchHpos : (vposFrozen ? frozenHpos : hpos);
+        return vposFrozen ? frozenHpos : hpos;
     }
 
     /** Vpos restituito da VPOSR/VHPOSR per la posizione 5 CCK in anticipo. */
@@ -5452,7 +5418,6 @@ public abstract class AbstractAgnus {
         syncsStopped = false;
         updateLineLength(false);             // LOL: si riparte sempre da riga corta
         vposFrozen = false; frozenVpos = 0; frozenHpos = 0;
-        beamReadLatchVpos = -1; beamReadLatchHpos = -1;
         cpuAccessTransferred = false; copperBusProcessed = false; ciaReadSampled = false; ciaWriteDone = false;
         cpuRouteCacheValid = false;
         cpuCurrentRoute = null;
