@@ -3589,11 +3589,12 @@ public abstract class AbstractAgnus {
     /**
      * The strobe the first refresh slot of a line drives, for the line about to start: STREQU
      * on the equalization lines at the top of the frame, STRVBL on the rest of the vertical
-     * blank, STRHOR on every other line (the last line of the field included).
+     * blank, STRHOR on every other line (the last line of the field included). A short field
+     * has one equalization line more than a long one, in PAL and NTSC alike.
      */
     private int lineStrobeRegister() {
         final int v = triggerVpos;
-        if (v <= (beamNtsc ? EQUALIZATION_LAST_LINE_NTSC : EQUALIZATION_LAST_LINE_PAL)) {
+        if (v <= (field == 0 ? EQUALIZATION_LAST_LINE_LONG : EQUALIZATION_LAST_LINE_SHORT)) {
             return 0x038;
         }
         if (v <= (beamNtsc ? VBLANK_LAST_LINE_NTSC : VBLANK_LAST_LINE_PAL)) {
@@ -3602,8 +3603,8 @@ public abstract class AbstractAgnus {
         return 0x03C;
     }
 
-    private static final int EQUALIZATION_LAST_LINE_PAL = 7;
-    private static final int EQUALIZATION_LAST_LINE_NTSC = 7;
+    private static final int EQUALIZATION_LAST_LINE_LONG = 7;
+    private static final int EQUALIZATION_LAST_LINE_SHORT = 8;
     private static final int VBLANK_LAST_LINE_PAL = 25;
     private static final int VBLANK_LAST_LINE_NTSC = 20;
 
