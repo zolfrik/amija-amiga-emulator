@@ -1555,6 +1555,12 @@ public abstract class AbstractAgnus {
      * that same CCK is overwritten by the transfer and never reaches Denise.
      */
     private int deniseDmaSlotCck = -1;
+
+    /**
+     * Whether the strobe slot that closed the previous line drove a strobe. Merged with a
+     * bitplane request it did not, and a line without its strobe does not load the DMAL.
+     */
+    private boolean lineStrobeDelivered = true;
     private long deniseDmaSlotClock = -1;
 
     private void markDeniseDmaSlot(int cck) {
@@ -2478,8 +2484,9 @@ public abstract class AbstractAgnus {
             bplReqLater = -1;
             dmaconBplSeq = bitplaneDmaEnabled;
 
-            // DMAL: Paula reports the disk and audio requests for this line.
-            if (cck == DMAL_LATCH_CCK && paula != null) paula.latchDmaRequests();
+            // DMAL: Paula reports the disk and audio requests for this line, but only a line whose
+            // strobe arrived loads it; after a lost strobe the previous line's DMAL stays.
+            if (cck == DMAL_LATCH_CCK && paula != null && lineStrobeDelivered) paula.latchDmaRequests();
 
             // Disk and audio cycles are allocated one CCK ahead: this CCK runs the slot
             // allocated at the previous one, and allocates the next. Both happen before the
@@ -2508,7 +2515,6 @@ public abstract class AbstractAgnus {
                     if (dasAllocated) {
                         if (bplReq >= 0) {
                             mergeBitplaneWithDasSlot(bplReq, cck);
-                            paula.dropAudioDmaSlot((cck - SLOT_AUDIO_0) / 2);
                         } else {
                             handleAudioDMA(cck);
                         }
@@ -3570,6 +3576,9 @@ public abstract class AbstractAgnus {
             // The slot carries the line strobe to Denise. Merged with a bitplane request its
             // register is ANDed with BPLxDAT and no longer names a strobe: Denise gets none.
             denise.receiveLineStrobe(bplReq >= 0 ? 0 : lineStrobeRegister(), maxHpos);
+        }
+        if (cck == strobeCck()) {
+            lineStrobeDelivered = bplReq < 0;
         }
         if (bplReq < 0 || denise == null) {
             return;

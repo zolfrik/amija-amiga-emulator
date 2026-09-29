@@ -960,16 +960,23 @@ public final class Paula {
     private static final int DSKBLK_DELAY_CYCLES = 4;
 
     /**
-     * DMAL, once per line: Paula reports to Agnus the DMA slots it wants in this line. For
-     * the disk, the number of words waiting in the read FIFO; for audio, the channels with
-     * a word request pending. A word assembled or a request raised later waits for the
-     * next line.
+     * DMAL: Paula reports to Agnus the DMA slots it wants in the line. For the disk, the
+     * number of words waiting in the read FIFO; for audio, the channels with a word request
+     * pending, which the report hands over: the request is consumed here, and the slot the
+     * line allocates for it carries the reload of the pointer along. A word assembled or a
+     * request raised later waits for the next load. Agnus loads the DMAL only on a line whose
+     * strobe arrived; on any other line the previous line's DMAL stays, and its slots run
+     * again.
      */
     public void latchDmaRequests() {
         dskSlotRequests = diskState == DriveDmaState.READ ? dsk_fifoCount : 0;
         syncAudioChannels();
         for (AudioChannel ch : audioChannels) {
             ch.dmalRequest = ch.dmaRequest;
+            ch.dmalReload = ch.dmaRequest && ch.dmaReloadRequest;
+            ch.dmaRequest = false;
+            ch.dmaReloadRequest = false;
+            ch.refreshActiveMask();
         }
     }
 
@@ -1624,17 +1631,15 @@ public final class Paula {
         return new int[]{addr, len};
     }
 
-    /** Whether the audio slot of {@code chan} carries a request reported at this line's DMAL. */
+    /** Whether the DMAL in force gives channel {@code chan} its audio slot in this line. */
     public boolean isAudioDmaRequest(int chan) {
-        return chan >= 0 && chan < 4 && audioChannels[chan].dmalRequest
-                && audioChannels[chan].dmaRequest;
+        return chan >= 0 && chan < 4 && audioChannels[chan].dmalRequest;
     }
 
     /**
-     * Whether channel {@code chan} is <b>asking</b> for a word, regardless of the DMAL.
-     * The two levels are distinct: the channel raises the request as soon as its period
-     * expires, while {@link #isAudioDmaRequest} also requires the request to have been
-     * reported at the start of this line — a request raised later waits for the next one.
+     * Whether channel {@code chan} has a word request pending, not yet handed to a DMAL. The
+     * two levels are distinct: the channel raises the request as soon as its period expires,
+     * while {@link #isAudioDmaRequest} is the DMAL that was last loaded.
      */
     public boolean isAudioChannelDmaRequest(int chan) {
         return chan >= 0 && chan < 4 && audioChannels[chan].dmaRequest;
@@ -1668,20 +1673,6 @@ public final class Paula {
                 audDAT[chan] = value & 0xFFFF;
                 ch.writeData(value);
             }
-        }
-    }
-
-    /**
-     * An audio DMA slot whose cycle merged with a bitplane fetch: the request is consumed and
-     * no word arrives. A channel still waiting for its first words keeps waiting.
-     */
-    public void dropAudioDmaSlot(int chan) {
-        if (chan >= 0 && chan < 4) {
-            syncAudioChannels();
-            AudioChannel ch = audioChannels[chan];
-            ch.dmaRequest = false;
-            ch.dmalRequest = false;
-            ch.refreshActiveMask();
         }
     }
 
@@ -1803,8 +1794,13 @@ public final class Paula {
          * that starts the channel and on the one for the last word of a block.
          */
         private boolean dmaReloadRequest;
-        /** The request as reported at this line's DMAL: only then does the slot fetch. */
+        /**
+         * The channel's bits in the DMAL last loaded: the line has an audio slot for it, and
+         * that slot reloads the pointer instead of stepping it. They stay until the next load,
+         * whatever the slot does.
+         */
         private boolean dmalRequest;
+        private boolean dmalReload;
         private int dmaPointer;
         private int remainingWords;
         private int nextWord;
@@ -1865,6 +1861,7 @@ public final class Paula {
             dmaRequest = false;
             dmaReloadRequest = false;
             dmalRequest = false;
+            dmalReload = false;
             dmaPointer = 0;
             remainingWords = 0;
             nextWord = 0;
@@ -2257,12 +2254,9 @@ public final class Paula {
          * due insieme sono la trascrizione completa.
          */
         private void receiveDmaWord(int value) {
-            if (!dmaRequest) return;
-            dmalRequest = false;
             audDAT[index] = value & 0xFFFF;
             nextWord = value & 0xFFFF;
             nextWordValid = true;
-            dmaRequest = false;
 
             stepDmaPointer();
             if (!dmaPriming && !dmaFirstWord) {
@@ -2430,7 +2424,7 @@ public final class Paula {
 
         private boolean loadCurrentWord() {
             if (!nextWordValid) {
-                if (dmaEnabled && !dmaRequest) requestNextWord();
+                if (dmaEnabled) requestNextWord();
                 return false;
             }
             currentWord = nextWord;
@@ -2457,7 +2451,7 @@ public final class Paula {
             // un'onda quadra da 10 kHz: 40 buchi al secondo, che nello spettro sono
             // bande laterali distanti ~39,5 Hz dalla fondamentale, forti quanto la
             // fondamentale stessa.
-            if (dmaEnabled && !dmaRequest) {
+            if (dmaEnabled) {
                 requestNextWord();
             }
             refreshActiveMask();
@@ -2556,7 +2550,7 @@ public final class Paula {
          */
         private void askForNextWord(boolean checkPendingIrq) {
             if (dmaEnabled) {
-                if (!dmaRequest) requestNextWord();
+                requestNextWord();
                 return;
             }
             if (!cpuDriven) return;
@@ -2588,12 +2582,17 @@ public final class Paula {
             periodClocks = computePeriodClocks();
         }
 
+        /**
+         * The word request of a word boundary. It is raised again while one is still pending,
+         * since the next DMAL load hands over whatever is pending by then: with a single word
+         * left in the block it adds the pointer reload to a request that did not have it.
+         */
         private void requestNextWord() {
-            if (!dmaEnabled || dmaRequest || nextWordValid) return;
+            if (!dmaEnabled || nextWordValid) return;
             if (remainingWords == 0) {
                 reloadDmaLength();
             }
-            dmaReloadRequest = remainingWords == 1;
+            dmaReloadRequest = (dmaRequest && dmaReloadRequest) || remainingWords == 1;
             dmaRequest = true;
             refreshActiveMask();
         }
@@ -2607,8 +2606,7 @@ public final class Paula {
 
         /** The pointer after this channel's DMA slot: stepped, or reloaded from AUDxLC. */
         private void stepDmaPointer() {
-            dmaPointer = dmaReloadRequest ? shadowAddress(index) : (dmaPointer + 2) & 0x1FFFFE;
-            dmaReloadRequest = false;
+            dmaPointer = dmalReload ? shadowAddress(index) : (dmaPointer + 2) & 0x1FFFFE;
         }
 
         private int computePeriodClocks() {
