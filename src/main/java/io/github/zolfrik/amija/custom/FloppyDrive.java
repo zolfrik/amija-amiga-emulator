@@ -91,6 +91,9 @@ public final class FloppyDrive {
      */
     private static final long   CYCLES_DSKREADY_UP       = 18L * 312L * 454L; // ~0,36 s
 
+    /** A PAL scanline in master-cycles. */
+    private static final long   CYCLES_PER_LINE          = 454L;
+
     /** FIX #2: il motore reale impiega ~3 s per fermarsi completamente. */
     private static final long   CYCLES_MOTOR_STOP        = 21_000_000L;  // rampa arresto motore (~3 s)
     private static final long   CYCLES_SETTLE_STEP       =    21_281L;   // settle dopo step stesso verso (~3 ms)
@@ -528,6 +531,17 @@ public final class FloppyDrive {
                 || (totalCycles - switchCycle) < CYCLES_MOTOR_STOP;
     }
 
+    /**
+     * The /RDY spin-up delay loaded at a motor-on: the fixed base plus a tail of 0..511
+     * scanlines. The tail is 0 unless {@code -Damiga.dskreadyfix=<lines>} sets it, which
+     * puts the same value on every motor-on; like {@code amiga.diskangle}, it exists to
+     * line this machine up with a reference run before comparing the two.
+     */
+    private static long readyUpDelay() {
+        long tail = Long.getLong("amiga.dskreadyfix", 0L) & 511L;
+        return CYCLES_DSKREADY_UP + tail * CYCLES_PER_LINE;
+    }
+
     private void setMotor(boolean value) {
         if (motorTarget == value) return;
         statusDirty = true;
@@ -536,7 +550,7 @@ public final class FloppyDrive {
         // /RDY: the spin-up delay is reloaded WHOLE on every motor-on, and
         // DSKRDY drops the instant the motor is commanded off.
         motorAtSpeed  = false;
-        readyUpCycles = value ? CYCLES_DSKREADY_UP : 0L;
+        readyUpCycles = value ? readyUpDelay() : 0L;
         if (floppySound != null) floppySound.onMotor(value, diskInserted);
     }
 
@@ -1011,7 +1025,7 @@ public final class FloppyDrive {
         densityModel   = (image != null) && image.getFormat() == DiskImage.Format.IPF;
         if (diskInserted) { loadCurrentTrack(); randomiseAngularPosition(); }
         // A disk dropped into a spinning drive restarts the /RDY delay.
-        if (motorTarget) { readyUpCycles = CYCLES_DSKREADY_UP; motorAtSpeed = false; }
+        if (motorTarget) { readyUpCycles = readyUpDelay(); motorAtSpeed = false; }
         if (floppySound != null) floppySound.onDiskChange(diskInserted);
     }
 
