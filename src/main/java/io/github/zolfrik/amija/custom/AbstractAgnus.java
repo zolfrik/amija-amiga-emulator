@@ -3603,7 +3603,7 @@ public abstract class AbstractAgnus {
     }
 
     private static final int EQUALIZATION_LAST_LINE_PAL = 7;
-    private static final int EQUALIZATION_LAST_LINE_NTSC = 8;
+    private static final int EQUALIZATION_LAST_LINE_NTSC = 7;
     private static final int VBLANK_LAST_LINE_PAL = 25;
     private static final int VBLANK_LAST_LINE_NTSC = 20;
 
