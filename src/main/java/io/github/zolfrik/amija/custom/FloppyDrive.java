@@ -289,6 +289,7 @@ public final class FloppyDrive {
         this.id        = id;
         this.driveType = driveType;
         this.angleRng  = newAngleRng(id);
+        this.readyTailRng = newDriveRng(id, 1);
         reset();
     }
 
@@ -520,12 +521,16 @@ public final class FloppyDrive {
 
     /**
      * The /RDY spin-up delay loaded at a motor-on: the fixed base plus a tail of 0..511
-     * scanlines. The tail is 0 unless {@code -Damiga.dskreadyfix=<lines>} sets it, which
-     * puts the same value on every motor-on; like {@code amiga.diskangle}, it exists to
-     * line this machine up with a reference run before comparing the two.
+     * scanlines, drawn anew at every motor-on. The tail is not noise: a loader that cycles
+     * the motor between tracks pays it every time, about ten frames over a long load, and
+     * a program that builds its effects while loading can take a different branch without
+     * it. {@code -Damiga.dskreadyfix=<lines>} puts the same value on every motor-on instead;
+     * like {@code amiga.diskangle}, it lines this machine up with a reference run, and the
+     * test suite sets it to 0.
      */
-    private static int readyUpDelay() {
-        int tail = Integer.getInteger("amiga.dskreadyfix", 0) & 511;
+    private int readyUpDelay() {
+        Integer fixed = Integer.getInteger("amiga.dskreadyfix");
+        int tail = fixed != null ? fixed & 511 : readyTailRng.nextInt(512);
         return DSKREADY_UP_LINES + tail;
     }
 
@@ -1089,10 +1094,22 @@ public final class FloppyDrive {
      */
     private final java.util.Random angleRng;
 
+    /**
+     * The /RDY spin-up tail ({@link #readyUpDelay()}) has its own generator, seeded like
+     * {@link #angleRng}, so the platter angle of an insert never depends on how many
+     * motor-ons came before it.
+     */
+    private final java.util.Random readyTailRng;
+
     private static java.util.Random newAngleRng(String id) {
+        return newDriveRng(id, 0);
+    }
+
+    private static java.util.Random newDriveRng(String id, int salt) {
         Long seed = Long.getLong("amiga.diskseed");
         return seed == null ? new java.util.Random()
-                            : new java.util.Random(seed * 31 + (id == null ? 0 : id.hashCode()));
+                            : new java.util.Random(seed * 31 + (id == null ? 0 : id.hashCode())
+                                                   + salt * 0x9E3779B9L);
     }
 
     /**
