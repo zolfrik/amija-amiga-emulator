@@ -86,13 +86,10 @@ public final class FloppyDrive {
      * loader that drops and re-raises MTR between two tracks pays it whole
      * every time, which is several tenths of a second per track.
      *
-     * <p>18 frames of 312 scanlines, and a PAL scanline is 454 master-cycles
-     * (7 093 790 / 15 625).
+     * <p>18 frames of 312 scanlines, counted in horizontal syncs (see
+     * {@link #hsync()}): DSKRDY rises on a line boundary, never inside a line.
      */
-    private static final long   CYCLES_DSKREADY_UP       = 18L * 312L * 454L; // ~0,36 s
-
-    /** A PAL scanline in master-cycles. */
-    private static final long   CYCLES_PER_LINE          = 454L;
+    private static final int    DSKREADY_UP_LINES        = 18 * 312; // ~0,36 s
 
     /** FIX #2: il motore reale impiega ~3 s per fermarsi completamente. */
     private static final long   CYCLES_MOTOR_STOP        = 21_000_000L;  // rampa arresto motore (~3 s)
@@ -142,8 +139,8 @@ public final class FloppyDrive {
 
     private boolean motorTarget  = false;
     private boolean motorAtSpeed = false;
-    /** Master-cycle left before /RDY rises; reloaded whole at every motor-on. */
-    private long    readyUpCycles = 0L;
+    /** Horizontal syncs left before /RDY rises; reloaded whole at every motor-on. */
+    private int     readyUpLines = 0;
     private long    switchCycle  = 0L;
     private long    totalCycles  = 0L;
     /** {@code steplimitcycle}: istante dell'ultimo impulso di STEP ACCETTATO. */
@@ -334,8 +331,8 @@ public final class FloppyDrive {
         // il corpo sottostante si limiterebbe a ri-azzerare campi già a zero. Vale
         // per i drive vuoti df1-df3 E per df0 a motore spento col disco inserito
         // (la condizione tipica durante il gioco, dopo il caricamento). Elimina la
-        // maggior parte delle ~28M chiamate "piene"/s. totalCycles è già avanzato,
-        // quindi il conto alla rovescia del /RDY al riavvio è corretto.
+        // maggior parte delle ~28M chiamate "piene"/s. The /RDY spin-up does not
+        // depend on this path: hsync() counts it.
         if (!motorTarget && !motorAtSpeed && settleCounter <= 0
                 && (totalCycles - switchCycle) >= CYCLES_MOTOR_STOP) {
             return;
@@ -348,19 +345,9 @@ public final class FloppyDrive {
         // caricamento a regime.
         if (!(motorTarget && motorAtSpeed)) statusDirty = true;
 
-        // /RDY spin-up. A countdown, not a ramp: setMotor() reloads it whole at
-        // every motor-on, so a brief motor-off costs the full delay again even
-        // though the platter never slowed down. The motor going off drops
+        // /RDY spin-up is counted in lines by hsync(). The motor going off drops
         // DSKRDY at once; an empty drive never asserts it (isReadyRaw).
-        if (motorTarget) {
-            if (readyUpCycles > 0) {
-                readyUpCycles -= cycles;
-                if (readyUpCycles <= 0) {
-                    readyUpCycles = 0;
-                    motorAtSpeed = true;
-                }
-            }
-        } else if (motorAtSpeed) {
+        if (!motorTarget && motorAtSpeed) {
             motorAtSpeed = false;
         }
 
@@ -537,9 +524,22 @@ public final class FloppyDrive {
      * puts the same value on every motor-on; like {@code amiga.diskangle}, it exists to
      * line this machine up with a reference run before comparing the two.
      */
-    private static long readyUpDelay() {
-        long tail = Long.getLong("amiga.dskreadyfix", 0L) & 511L;
-        return CYCLES_DSKREADY_UP + tail * CYCLES_PER_LINE;
+    private static int readyUpDelay() {
+        int tail = Integer.getInteger("amiga.dskreadyfix", 0) & 511;
+        return DSKREADY_UP_LINES + tail;
+    }
+
+    /**
+     * Horizontal sync, once per line at the point where the line counter advances.
+     * The /RDY spin-up counts these, not master-cycles: after a motor-on DSKRDY rises
+     * on the N-th line boundary that follows, so where the motor-on fell inside its
+     * line does not move it. The count stands still while no disk is inserted.
+     */
+    public void hsync() {
+        if (readyUpLines > 0 && diskInserted && --readyUpLines == 0 && motorTarget) {
+            motorAtSpeed = true;
+            statusDirty = true;
+        }
     }
 
     private void setMotor(boolean value) {
@@ -550,7 +550,7 @@ public final class FloppyDrive {
         // /RDY: the spin-up delay is reloaded WHOLE on every motor-on, and
         // DSKRDY drops the instant the motor is commanded off.
         motorAtSpeed  = false;
-        readyUpCycles = value ? readyUpDelay() : 0L;
+        readyUpLines  = value ? readyUpDelay() : 0;
         if (floppySound != null) floppySound.onMotor(value, diskInserted);
     }
 
@@ -1025,7 +1025,7 @@ public final class FloppyDrive {
         densityModel   = (image != null) && image.getFormat() == DiskImage.Format.IPF;
         if (diskInserted) { loadCurrentTrack(); randomiseAngularPosition(); }
         // A disk dropped into a spinning drive restarts the /RDY delay.
-        if (motorTarget) { readyUpCycles = readyUpDelay(); motorAtSpeed = false; }
+        if (motorTarget) { readyUpLines = readyUpDelay(); motorAtSpeed = false; }
         if (floppySound != null) floppySound.onDiskChange(diskInserted);
     }
 
@@ -1169,7 +1169,7 @@ public final class FloppyDrive {
 
         motorTarget          = false;
         motorAtSpeed         = false;
-        readyUpCycles        = 0L;
+        readyUpLines         = 0;
         switchCycle          = 0;
         totalCycles          = 0;
         currentTrack         = 0;

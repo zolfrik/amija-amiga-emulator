@@ -3055,6 +3055,11 @@ public abstract class AbstractAgnus {
         // che è il punto in cui l'oracolo chiama cia_hsync_do().
         if (nextHpos == 1) {
             armTodPulses((masterClock - 1) >> 1);
+            // The drives count their /RDY spin-up on the same horizontal sync.
+            if (df0 != null) df0.hsync();
+            if (df1 != null) df1.hsync();
+            if (df2 != null) df2.hsync();
+            if (df3 != null) df3.hsync();
         }
         if (ciaB != null) {
             if (nextHpos == todRiseHposB) {
