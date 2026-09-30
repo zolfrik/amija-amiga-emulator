@@ -1268,8 +1268,8 @@ public final class Paula {
             dsk_fifoCount    = 0;
             dsk_writeShift   = 0;
             dsk_writeBits    = 0;
-            // The selected drive's cell clock restarts from this write.
-            if (agnus != null) agnus.restartSelectedDrivesBitCell();
+            // Every drive's cell clock restarts from this write, selected or not.
+            if (agnus != null) agnus.restartDrivesBitCell();
 
             diskState = DriveDmaState.READ; // Default; overridden below
             dsklenWriteCount = 0;

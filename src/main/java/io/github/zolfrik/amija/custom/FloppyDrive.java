@@ -725,8 +725,8 @@ public final class FloppyDrive {
     }
 
     /**
-     * Disk DMA start on this (selected) drive: the time accumulated towards the next
-     * cell is dropped, so the first cell of the transfer is counted from this instant.
+     * Disk DMA start, on every drive: the time accumulated towards the next cell is
+     * dropped, so the next cell is counted from this instant.
      */
     public void restartBitCell() {
         resetBitClock();

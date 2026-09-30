@@ -6416,12 +6416,16 @@ public abstract class AbstractAgnus {
         if (d != null) d.commitPendingSideForRead();
     }
 
-    /** Disk DMA start: re-phases the cell clock of every selected drive. */
-    public void restartSelectedDrivesBitCell() {
-        if (df0.isSelected()) df0.restartBitCell();
-        if (df1.isSelected()) df1.restartBitCell();
-        if (df2.isSelected()) df2.restartBitCell();
-        if (df3.isSelected()) df3.restartBitCell();
+    /**
+     * Disk DMA start: re-phases the cell clock of EVERY drive, not just the selected
+     * one. A drive that is not being read, spinning or not, loses the fraction of a
+     * cell it had accumulated, like the one being read.
+     */
+    public void restartDrivesBitCell() {
+        if (df0 != null) df0.restartBitCell();
+        if (df1 != null) df1.restartBitCell();
+        if (df2 != null) df2.restartBitCell();
+        if (df3 != null) df3.restartBitCell();
     }
 
     /** DIAG (Fase A-ter): stato side del drive selezionato all'avvio DMA. cmdSide =
