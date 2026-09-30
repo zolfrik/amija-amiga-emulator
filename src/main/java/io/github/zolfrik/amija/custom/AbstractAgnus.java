@@ -2352,6 +2352,9 @@ public abstract class AbstractAgnus {
                 processFloppy = true;
                 floppyN = floppyAccumCycles;
                 floppyAccumCycles = 0;
+                // A control line written in the previous cycle acts from the start of this
+                // CCK: its edges reach the drives before the cells of these cycles do.
+                if (prbChanged) applyFloppyLines(ciab_prb);
                 tickFloppyDrive(df0, floppyN);
                 tickFloppyDrive(df1, floppyN);
                 tickFloppyDrive(df2, floppyN);
@@ -3374,25 +3377,27 @@ public abstract class AbstractAgnus {
      *        (preserva il fix side-select di SpeedBall II). Lo stato (rdy/tk0/index)
      *        è invece campionato SEMPRE, perché evolve nel tempo a PRB fermo.
      */
-    private void updateFloppy(byte ciab_prb, boolean prbChanged) {
+    /** The CIA-B control lines reach the drives: selection, motor latch, step, side. */
+    private void applyFloppyLines(byte ciab_prb) {
         if (ciaA == null || ciaB == null) return;
-
-        // Control lines are active LOW in PRB
         boolean step = (ciab_prb & 0x01) == 0; // /STEP LOW = step
         boolean dir  = (ciab_prb & 0x02) != 0; // DIR: 0=INWARD (tk++), 1=OUTWARD (tk0)
         boolean side = (ciab_prb & 0x04) == 0; // /SIDE LOW = side 1
+        boolean mtr  = (ciab_prb & 0x80) == 0; // /MTR LOW = motor ON request
+        df0.update((ciab_prb & 0x08) == 0, mtr, step, dir, side);
+        df1.update((ciab_prb & 0x10) == 0, mtr, step, dir, side);
+        df2.update((ciab_prb & 0x20) == 0, mtr, step, dir, side);
+        df3.update((ciab_prb & 0x40) == 0, mtr, step, dir, side);
+    }
+
+    private void updateFloppy(byte ciab_prb, boolean prbChanged) {
+        if (ciaA == null || ciaB == null) return;
+
+        // Control lines are active LOW in PRB (their edges went out in applyFloppyLines)
         boolean sel0 = (ciab_prb & 0x08) == 0; // /SELx LOW = selected
         boolean sel1 = (ciab_prb & 0x10) == 0;
         boolean sel2 = (ciab_prb & 0x20) == 0;
         boolean sel3 = (ciab_prb & 0x40) == 0;
-        boolean mtr  = (ciab_prb & 0x80) == 0; // /MTR LOW = motor ON request
-
-        if (prbChanged) {
-            df0.update(sel0, mtr, step, dir, side);
-            df1.update(sel1, mtr, step, dir, side);
-            df2.update(sel2, mtr, step, dir, side);
-            df3.update(sel3, mtr, step, dir, side);
-        }
 
         // PERF: i 5 segnali di stato (/RDY //TK0 //WPRO //CHNG //INDEX) venivano
         // ricampionati dai drive e ri-pubblicati sui pin CIA ad OGNI CCK di drive
