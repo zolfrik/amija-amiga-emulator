@@ -2331,6 +2331,7 @@ public abstract class AbstractAgnus {
         // o un drive è attivo (motore/seek/selezione) oppure i segnali di controllo
         // CIA-B (PRB) sono variati. A regime (in gioco, drive fermi) il costo → ~0.
         // Lettura del PRB priva di effetti collaterali.
+        if (lastCiabPrb < 0) floppySelectSet();
         byte ciab_prb = ciaB != null ? ciaB.peekPortB() : 0;
         boolean prbChanged = (ciab_prb & 0xFF) != lastCiabPrb;
         boolean floppyRun = floppyBusy || prbChanged;
@@ -3518,6 +3519,22 @@ public abstract class AbstractAgnus {
         } else {
             drive.tick(cycles);
         }
+    }
+
+    /**
+     * The drives take the CIA-B control lines as they stand, with no edge processed:
+     * what a CIA-B reset does. Every /SEL that reads active leaves its drive selected but
+     * starts no motor; the first PRB write is compared against this state.
+     */
+    private void floppySelectSet() {
+        int prb = ciaB != null ? ciaB.peekPortB() & 0xFF : 0xFF;
+        boolean step = (prb & 0x01) == 0;
+        if (df0 != null) df0.selectSet((prb & 0x08) == 0, step);
+        if (df1 != null) df1.selectSet((prb & 0x10) == 0, step);
+        if (df2 != null) df2.selectSet((prb & 0x20) == 0, step);
+        if (df3 != null) df3.selectSet((prb & 0x40) == 0, step);
+        lastCiabPrb = prb;
+        floppyBusy = true;
     }
 
     private boolean isFloppyDriveBusy(FloppyDrive drive) {
@@ -5471,6 +5488,8 @@ public abstract class AbstractAgnus {
         if (df1  != null) df1.reset();
         if (df2  != null) df2.reset();
         if (df3  != null) df3.reset();
+        // The CIA-B reset leaves PRB = 0: the drives take it without acting on its edges.
+        floppySelectSet();
 
         // Fast RAM: l'istruzione RESET della CPU resetta anche il bus Zorro, quindi
         // la scheda torna in attesa di AutoConfig (sia su hard che su soft reset) e

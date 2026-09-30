@@ -409,6 +409,18 @@ public final class FloppyDrive {
     // Aggiornamento segnali (chiamato da Agnus/CIA ogni ciclo DMA o evento)
     // =========================================================================
 
+    /**
+     * CIA-B reset: the drive takes the control lines as they stand, without acting on
+     * their edges. A /SEL that reads active here latches no motor and shifts no ID bit;
+     * the next {@link #update} compares against this state.
+     */
+    public void selectSet(boolean selected, boolean step) {
+        statusDirty  = true;
+        this.selected = connected && selected;
+        prevSelected = this.selected;
+        prevStep     = step;
+    }
+
     public void update(boolean selected, boolean motorOn, boolean step,
                        boolean direction, boolean side) {
         statusDirty = true;   // chiamata solo quando il PRB di CIA-B è cambiato

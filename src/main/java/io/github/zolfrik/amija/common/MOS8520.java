@@ -545,18 +545,13 @@ public class MOS8520 {
      * registri CIA e non modifica latch, pipeline o interrupt.
      */
     public byte peekPortB() {
-        // Il PIN, non il registro: un bit programmato come INGRESSO non pilota la linea, e
-        // fuori il pull-up del dispositivo la tiene ALTA. Su CIA-B quella porta e' il bus di
-        // controllo dei drive, tutto attivo-basso (/STEP, DIR, /SIDE, /SELx, /MTR): col solo
-        // latch, dopo un reset — che lascia prb = 0 e ddrb = 0, cioe' tutti ingressi — le
-        // linee risultavano tutte ATTIVE e il reset accendeva il motore di df0 e mandava a
-        // zero le testine. L'oracolo non ha quel problema perche' reset_drive() ferma i
-        // motori, ma la causa vera e' qui. Misurato sul ColdReboot della demo Jesus On E's:
-        // un INDEX nostro latchava FLAG in CIA-B e il Kickstart, abilitandolo, prendeva un
-        // interrupt che l'oracolo non ha (docs/vamigats-import-order.md §26).
-        // ⚠️ Solo la vista del PIN: la lettura del registro da parte della CPU resta quella
-        // misurata dal banco Mainboard/Ports.
-        return (byte) ((computePB() & ddrb) | (ddrb ^ 0xFF));
+        // Port B as the disk controller sees it: the output LATCH with the PB6/PB7 timer
+        // outputs, not the pins. A DDRB write alone does not reach the drives, and right
+        // after a reset (prb = 0) every line reads active: the drives take that state
+        // without acting on its edges (AbstractAgnus.floppySelectSet), so no motor starts,
+        // but they count as selected and the idle read shifter stands still until the
+        // first PRB write. The register read by the CPU follows a different rule.
+        return (byte) computePB();
     }
 
     public byte peekDataDirectionA() {
