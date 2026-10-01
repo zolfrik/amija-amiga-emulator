@@ -273,29 +273,34 @@ public final class Motorola68000 {
     private int iplNowIpl = 0, iplNextIpl = 0, iplNextPending = 0;
     /** true se una delle leve che leggono la STORIA del pin è attiva (default: sì). */
 
-    // ── Wake da STOP: modello dei round di WinUAE ─────────────────────────────
-    // WinUAE (m68k_run_1_ce + op_4e72_13_ff): mentre è stopped la CPU RI-ESEGUE lo
-    // STOP in round da 4 clock (`do_cycles_stop(4)`) ancorati all'ingresso, con due
-    // registri ipl[0]/ipl[1]:
-    //   • a INIZIO round (T)   → `ipl_fetch_next()`: soglie 4/2 sull'anzianità del
-    //                            cambio di pin (le stesse di §iplcond);
-    //   • a FINE round (T+4)   → `do_specialties()` riconosce `ipl[0]`, poi
-    //                            `ipl[0] = ipl[1]; ipl[1] = 0`.
-    // Il wake cade quindi al PRIMO fine-round successivo al primo inizio-round che
-    // vede il pin "vecchio" di ≥4 clock: la correzione rispetto a un ritardo COSTANTE
-    // vale 4 o 8 clock secondo la fase del pin nella griglia. È questa dipendenza
-    // dalla fase — non un delay fisso — a chiudere `stop1` e `stop5` insieme, che era
-    // il residuo aperto di FIX #24 (nessuno sweep di un ritardo costante li prendeva
-    // entrambi: i due wake sbagliavano di segno OPPOSTO).
+    // -- Wake from STOP: rounds of 4 clocks --------------------------------------
+    // While stopped the CPU repeats the STOP in rounds of 4 clocks, anchored at the start
+    // of the STOP instruction (where its first IPL fetch happens, before the immediate is
+    // read), with two IPL registers:
+    //   - at the start of a round (T): an IPL fetch with the 4/2-clock age thresholds on
+    //     the last pin change (the same as the instruction-boundary fetch);
+    //   - at the end of a round (T+4): the first register is recognised, then the second
+    //     moves into the first and is cleared.
+    // The wake therefore falls at the first round end after the first round start that
+    // sees the pin at least 4 clocks old: 4 or 8 clocks after the change, depending on
+    // where the change falls in the grid, not a constant delay.
     private int stoppedRecogIpl = 0;
     private long stopRoundAnchor = 0;
     private int stopIpl0 = 0, stopIpl1 = 0;
-    /** Reset dello stato IPL all'ingresso in STOPPED (nessun wake spurio da valori stantii). */
-    public void resetStoppedIplPipe() {
+    /**
+     * Opens the STOP round grid at the start of the STOP instruction: the first round
+     * begins there with its IPL fetch, and every round lasts 4 clocks from that instant.
+     * Called from prepareInstruction(), which runs on the clock after the instruction
+     * boundary; the boundary itself is the previous clock, hence the anchor one back.
+     */
+    public void beginStopRounds() {
         stoppedRecogIpl = latchedIpl;
-        stopRoundAnchor = totalCycles;
+        stopRoundAnchor = totalCycles - 1;
         stopIpl0 = 0;
         stopIpl1 = 0;
+        int v = iplFetchNextValueAt(stopRoundAnchor);
+        if (v < 0) stopIpl1 = iplPin;
+        else stopIpl0 = v;
     }
 
     // ── Classificatore target chip-bus (per TAS write-drop, oracolo WinUAE) ────
@@ -1249,8 +1254,11 @@ public final class Motorola68000 {
      *         è troppo fresco e va DIFFERITO in {@code ipl[1]}.
      */
     private int iplFetchNextValue() {
-        long cd = totalCycles - iplPinChangeCycle;
-        long cdp = totalCycles - iplPinChangeCycleP;
+        return iplFetchNextValueAt(totalCycles);
+    }
+    private int iplFetchNextValueAt(long t) {
+        long cd = t - iplPinChangeCycle;
+        long cdp = t - iplPinChangeCycleP;
         if (cd >= IPL_DELAY4) return iplPin;
         if (cdp >= IPL_DELAY2) return iplPinPrev;
         return -1;
@@ -1742,25 +1750,21 @@ public final class Motorola68000 {
     }
     private void processTraceException() { processExceptionGroup1_2(); }
     /**
-     * Un giro del loop di STOP di WinUAE (`m68k_run_1_ce` che ri-dispatcha
-     * `op_4e72_13_ff`). La griglia è di 4 clock CPU, ancorata all'ingresso in
-     * STOPPED = l'istante in cui l'istruzione STOP chiama `ipl_fetch_next()`.
+     * One round of the stopped CPU. The grid is 4 CPU clocks, anchored at the start of the
+     * STOP instruction ({@link #beginStopRounds()}), whose first round is opened there.
      */
     private void serviceStopRound() {
         if (((totalCycles - stopRoundAnchor) & 3) != 0) return;
-        boolean firstRound = (totalCycles == stopRoundAnchor);
-        if (!firstRound) {
-            // FINE del round precedente: `if (regs.ipl[0] > 0) do_specialties(0);`
-            stoppedRecogIpl = stopIpl0;
-            // `regs.ipl[0] = regs.ipl[1]; regs.ipl[1] = 0;` (ritiro del "giro")
-            stopIpl0 = stopIpl1;
-            stopIpl1 = 0;
-        }
-        // INIZIO del round successivo: `ipl_fetch_next()`.
+        // End of the previous round: the IPL fetched at its start is recognised, then the
+        // deferred value moves up.
+        stoppedRecogIpl = stopIpl0;
+        stopIpl0 = stopIpl1;
+        stopIpl1 = 0;
+        // Start of the next round: a new IPL fetch.
         int v = iplFetchNextValue();
         if (v < 0) stopIpl1 = iplPin;
         else { stopIpl0 = v; stopIpl1 = 0; }
-        if (!firstRound) checkInterrupts();
+        checkInterrupts();
     }
     private void checkInterrupts() {
         // Selezione now/next di WinUAE: si può fare solo qui, al boundary, perché solo

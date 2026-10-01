@@ -29,6 +29,12 @@ public class StopInstruction extends AbstractM68kInstruction {
     // refill di `prepareInstruction` così la singola readExt resta in `fetchExtension`
     // (come Moira readI) — elimina un +CCK di fase su stop3/stop4 (frontiera 2).
     @Override public boolean shouldInhibitPrefetch() { return true; }
+    // The STOP round grid opens at the start of the instruction, with its first IPL fetch,
+    // not once the immediate is in: rounds of 4 clocks run from this instant.
+    @Override public void prepareInstruction(Motorola68000 cpu) {
+        super.prepareInstruction(cpu);
+        cpu.beginStopRounds();
+    }
     @Override public boolean executeStep(Motorola68000 cpu) {
         // SUPERVISOR_MODE_ONLY: STOP in user mode → privilege violation immediata (Moira
         // controlla PRIMA di readI). Copre il ri-esecuzione dello `stop` in USER del
@@ -69,7 +75,6 @@ public class StopInstruction extends AbstractM68kInstruction {
                 // entra in STOPPED e attende un interrupt / privilege. Il CYCLES_IP(4) di
                 // Moira è speso dalla macchina a step (readExt + questo step + finalize).
                 cpu.cpuState = Motorola68000.CpuState.STOPPED;
-                cpu.resetStoppedIplPipe();
                 return finalizeInstruction(cpu);
             }
             default -> { return finalizeInstruction(cpu); }
