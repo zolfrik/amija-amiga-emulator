@@ -858,6 +858,7 @@ public final class Motorola68000 {
         }
         if (busCycleState != BusCycleState.IDLE || !isBusQueueEmpty()) {
             if (busCycleState != BusCycleState.IDLE && currentBusOp != null) {
+                boolean inVma = busCycleState == BusCycleState.S_VMA;
                 advanceBusCycleRising();
                 if (busCycleState == BusCycleState.S4 && !busResp.ack && !busResp.berr && !busResp.vpa) {
                     waitCycles++;
@@ -867,36 +868,18 @@ public final class Motorola68000 {
                         iplWaitIpl0 = busResp.ipl & 0x7;
                         iplAnchorHadWait = true;
                     }
-                } else if (busCycleState == BusCycleState.S_VMA) {
-                    // ⛔ Anche l'attesa dell'E-clock di un accesso CIA ri-legge il pin.
-                    // È la stessa regola del ciclo bloccato da DMA, e l'oracolo la applica
-                    // in coda all'accesso CIA (`cia_wait_post`, cia.cpp):
-                    //     if (cia_now_evt == regs.ipl_evt && cpu_model <= 68010) {
-                    //         cia_cycles((e_clock_end - 2) * E_CYCLE_UNIT, ...);
-                    //         regs.ipl[0] = regs.ipl_pin;      // <-- qui
-                    //         cia_cycles(2 * E_CYCLE_UNIT, ...);
-                    //     }
-                    // Noi la applicavamo al solo S4 bloccato da DMA, e il ciclo sincrono
-                    // passa invece per S_VMA: l'IPL restava quello dell'S0, cioè di prima
-                    // che l'accesso cominciasse.
-                    //
-                    // ⚠️ MISURATO sull'oracolo costruito in casa (sonda `WINUAE_IPLCIADIFF`,
-                    // cia.cpp), non dedotto. Su `cnt/cnt3` la regola cambia l'esito alla
-                    // lettura di `CIAB_TBLO` del loop principale: `early=6 late=6 before=0`
-                    // — il pin è già a 6 per tutto l'accesso, ma l'IPL latchato valeva 0, e
-                    // senza il ricampionamento l'interrupt slitta all'istruzione dopo. Su
-                    // `cnt/cnt1`, che era già verde, la sonda non scatta mai.
-                    //
-                    // ⚠️ L'ISTANTE dentro l'accesso non è congelato da questa misura:
-                    // l'oracolo campiona a 2 unità dalla fine, noi all'ultimo ciclo di
-                    // S_VMA, e nei casi misurati il pin è stabile su tutta la finestra
-                    // (`early == late` sempre). Se un giorno servisse l'istante esatto, la
-                    // sonda è lì e va rifatta con un caso in cui il pin cambia.
+                } else if (busCycleState == BusCycleState.S_VMA || inVma) {
+                    // The E-clock wait of a CIA access re-reads the pin too, like a cycle
+                    // blocked by DMA, when the instruction sampled the IPL just before the
+                    // access. The value that counts is the pin two clocks before the access
+                    // ends: the clock that closes the wait (S_VMA to S5) is included, so a
+                    // pin change in the last E-clock cycle reaches this instruction.
                     if (iplAnchorIsCurrentOp) {
                         iplWaitIpl1 = iplWaitIpl0;
                         iplWaitIpl0 = busResp.ipl & 0x7;
                         iplAnchorHadWait = true;
                     }
+                    if (busCycleState == BusCycleState.S5) waitCycles = 0;
                 } else if (busCycleState != BusCycleState.S4) {
                     // Fine dell'attesa: commit dell'override (WinUAE lo applica in coda
                     // all'accesso, `if (now == regs.ipl_evt) regs.ipl[0] = ipl;`).
