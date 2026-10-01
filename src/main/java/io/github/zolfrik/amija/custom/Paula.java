@@ -1970,7 +1970,9 @@ public final class Paula {
                 // Stati 2/3: il canale sopravvive. Cade solo la pipeline DMA — la word
                 // in coda non si perde davvero, perché AUDxDAT la contiene ed è da lì
                 // che loaddat() ripesca (advanceSampleByte, ramo di fallback).
-                dmaRequest = false;
+                // A word request already raised stays pending: the next DMAL hands it over
+                // and, while any audio channel has DMA on, its slot still runs and delivers
+                // the word as a CPU write to AUDxDAT (receiveAudioDmaWord).
                 nextWord = 0;
                 nextWordValid = false;
                 // `nextWordEndsBlock` (l'`intreq2` di WinUAE) NON si azzera: vedi
@@ -1996,8 +1998,8 @@ public final class Paula {
          * infatti quel che fa {@link #reset()}.
          */
         private void clearDmaPipeline() {
-            dmaRequest = false;
-            dmaReloadRequest = false;
+            // The pending word and reload requests are not cleared: only the DMAL load
+            // consumes them (see setDmaEnabled).
             remainingWords = 0;
             nextWord = 0;
             nextWordValid = false;
