@@ -242,6 +242,8 @@ public final class FloppyDrive {
     private       int    bitPointer           = 0;
     private       double bitCyclesAccumulator = 0.0;
     private       long   bitCyclesAccumulatorFixed = 0;
+    // The reader of this tick runs at 4 us per bit (see tick(int, IntConsumer, boolean)).
+    private       boolean slowBits            = false;
 
     // -------------------------------------------------------------------------
     // Scrittura sul supporto
@@ -320,6 +322,16 @@ public final class FloppyDrive {
     }
 
     public void tick(int cycles, IntConsumer bitConsumer) {
+        tick(cycles, bitConsumer, false);
+    }
+
+    /**
+     * @param slowBits the disk controller runs at 4 us per bit (ADKCON FAST clear): each
+     *                 bit delivered to {@code bitConsumer} is decoded from two cells and
+     *                 the head moves on by two or three (see {@link #readSlowBit}).
+     */
+    public void tick(int cycles, IntConsumer bitConsumer, boolean slowBits) {
+        this.slowBits = slowBits;
         totalCycles += cycles;
         machineRunning = true;   // vedi insertDisk: distingue il freddo dal caldo
 
@@ -645,9 +657,30 @@ public final class FloppyDrive {
             // WRITE_BIT_STALL: la cella scorre senza essere alterata (la DMA non ha
             // ancora fornito la word successiva).
         } else if (bitConsumer != null) {
+            if (slowBits) {
+                readSlowBit(bitConsumer);
+                return;
+            }
             bitConsumer.accept(getNextMFMBit());
         }
         advanceBitPointer();
+    }
+
+    /**
+     * One bit time of a controller at 4 us per bit reading a 2 us track: the bit is
+     * decoded from the cell under the head and the next one, and the head moves on by
+     * three cells after a 1 that ends in a set cell, by two otherwise.
+     * <pre>
+     *   cells 0 0 -> bit 0, +2     cells 1 0 -> bit 1, +2
+     *   cells 0 1 -> bit 1, +3     cells 1 1 -> bit 1, +3
+     * </pre>
+     */
+    private void readSlowBit(IntConsumer bitConsumer) {
+        int b1 = getNextMFMBit();
+        int b2 = mfmBitAt(bitPointer + 1 < trackBitLen ? bitPointer + 1 : 0);
+        bitConsumer.accept(b1 | b2);
+        int cells = b2 != 0 ? 3 : 2;
+        for (int i = 0; i < cells; i++) advanceBitPointer();
     }
 
     /** Incide una cella MFM sul supporto alla posizione angolare corrente. */
@@ -910,10 +943,14 @@ public final class FloppyDrive {
         // Nessun gate su motorAtSpeed: come vAmiga (read8 non consulta la velocità),
         // la testina legge il supporto non appena il motore è acceso. La rampa di
         // velocità è modellata solo su /RDY.
+        return mfmBitAt(bitPointer);
+    }
+
+    private int mfmBitAt(int pos) {
         if (!motorTarget || !diskInserted) return 0;
-        int byteIdx   = bitPointer >> 3;
+        int byteIdx   = pos >> 3;
         if (byteIdx >= trackBuffer.length) return 0;
-        int bitInByte = 7 - (bitPointer & 7);
+        int bitInByte = 7 - (pos & 7);
         return (trackBuffer[byteIdx] >> bitInByte) & 1;
     }
 

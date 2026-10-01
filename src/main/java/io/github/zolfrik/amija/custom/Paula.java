@@ -1462,6 +1462,11 @@ public final class Paula {
         if (set) adkcon |= bits; else adkcon &= ~bits;
     }
 
+    /** ADKCON FAST: the disk controller reads at 2 us per bit (MFM) rather than 4 us. */
+    public boolean isDiskFastMode() {
+        return (adkcon & 0x0100) != 0;
+    }
+
     private void raiseInterrupt(int mask) {
         setINTREQ(true, mask);
     }

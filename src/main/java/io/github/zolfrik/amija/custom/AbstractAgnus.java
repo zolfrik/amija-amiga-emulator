@@ -3520,7 +3520,7 @@ public abstract class AbstractAgnus {
         // With the motor stopped it delivers nothing, and the idle shifter does not run
         // either, because a drive IS selected (see isAnyDriveSelected).
         if (drive.isSelected() && paula != null) {
-            drive.tick(cycles, diskBitConsumer);
+            drive.tick(cycles, diskBitConsumer, !paula.isDiskFastMode());
         } else {
             drive.tick(cycles);
         }
