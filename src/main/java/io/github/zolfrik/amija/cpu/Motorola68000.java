@@ -1180,8 +1180,10 @@ public final class Motorola68000 {
         // che quindi vale anche qui, purché `ipl_fetch_now()` sia stata emessa nello
         // STESSO ciclo in cui l'accesso comincia — com'è in `op_9108_14_ff`
         // (`ipl_fetch_now(); x_get_byte(srca);`).
+        // The access may be a prefetch as well as a data access: a declared sample followed
+        // at once by the fetch of an immediate takes the pin of the fetch's last wait cycle.
         if (iplAnchorDeclared) {
-            if (!fetch && iplNowDeclaredCycle == totalCycles) {
+            if (iplNowDeclaredCycle == totalCycles) {
                 iplAnchorIsCurrentOp = true;
                 iplWaitOnCandidate = false;
                 iplWaitIpl0 = iplWaitIpl1 = busResp.ipl & 0x7;
