@@ -825,6 +825,7 @@ public final class Paula {
      * di toglierne: e' la ragione per cui il primo tentativo di questo porto fu revocato
      * (§7.1.23).
      */
+
     public void shiftInDiskBitIdle(int bit) {
         // `dskdmaen < DSKDMA_WRITE`: in scrittura l'oracolo sceglie disk_doupdate_write e
         // questo ramo non gira affatto — non e' solo l'interrupt a essere inibito.
@@ -2097,8 +2098,13 @@ public final class Paula {
                 int step = periodCounter;
                 sampleAccum += currentSample * (double) mixVolumeScale * step;
                 remaining -= step;
-                loadPeriod();                   // periodClocks >= 2: il ciclo termina sempre
+                // The boundary decides first and latches the volume after: a channel in
+                // interrupt mode that stops here for want of a refill keeps the volume
+                // it had, so a VOL written meanwhile does not reach the held sample.
+                boolean latch = dmaEnabled || bytePhase == 0;
+                periodCounter = periodClocks;   // periodClocks >= 2: il ciclo termina sempre
                 advanceSampleByte();
+                if (latch && isPlaying()) latchMixVolume();
             }
             sampleAccum += currentSample * (double) mixVolumeScale * remaining;
             periodCounter -= remaining;
@@ -2318,6 +2324,11 @@ public final class Paula {
                 dmaFirstWord = false;
                 loadPeriod();
                 nextWordEndsBlock = remainingWords == 0;
+            } else if (remainingWords == 1) {
+                // The last word of the block reloads the length at once, from AUDxLEN as it
+                // stands: a LEN written afterwards belongs to the block after next, and the
+                // next request still sees one word left, so it reloads the pointer.
+                reloadDmaLength();
             } else if (remainingWords > 0) {
                 remainingWords--;
             }
