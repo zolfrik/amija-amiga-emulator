@@ -853,6 +853,16 @@ public final class Paula {
         }
     }
 
+    /**
+     * A bit pushed into the read shift register outside the bit clock, by a drive's motor
+     * or head moving (see {@code FloppyDrive.slipShifter}). It moves the word boundary and
+     * nothing else: it is not compared with DSKSYNC and completes no word.
+     */
+    public void slipDiskShifterBit(int bit) {
+        dsk_dataReg = ((dsk_dataReg << 1) | (bit & 1)) & 0xFFFF;
+        dsk_dataRegCount = (dsk_dataRegCount + 1) & 15;
+    }
+
     public void shiftInDiskBit(int bit) {
         dsk_dataReg = ((dsk_dataReg << 1) | (bit & 1)) & 0xFFFF;
 

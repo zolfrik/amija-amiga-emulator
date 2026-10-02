@@ -2041,6 +2041,10 @@ public abstract class AbstractAgnus {
         df1.setWriteBitSource(this::nextDiskWriteBit);
         df2.setWriteBitSource(this::nextDiskWriteBit);
         df3.setWriteBitSource(this::nextDiskWriteBit);
+        df0.setShifterSlipSink(this::slipDiskShifterBit);
+        df1.setShifterSlipSink(this::slipDiskShifterBit);
+        df2.setShifterSlipSink(this::slipDiskShifterBit);
+        df3.setShifterSlipSink(this::slipDiskShifterBit);
 
         this.vpos = 0;
         this.triggerVpos = 0;
@@ -3492,6 +3496,10 @@ public abstract class AbstractAgnus {
 
     private void shiftDiskBit(int bit) {
         if (paula != null) paula.shiftInDiskBit(bit);
+    }
+
+    private void slipDiskShifterBit(int bit) {
+        if (paula != null) paula.slipDiskShifterBit(bit);
     }
 
     /** Cella MFM successiva da scrivere sul supporto (vedi Paula.nextWriteBit). */

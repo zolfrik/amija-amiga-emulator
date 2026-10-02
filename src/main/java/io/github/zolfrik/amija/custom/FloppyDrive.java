@@ -291,6 +291,7 @@ public final class FloppyDrive {
         this.angleRng  = newAngleRng(id);
         this.readyTailRng = newDriveRng(id, 1);
         this.jitterRng = newDriveRng(id, 2);
+        this.shiftRng = newDriveRng(id, 3);
         reset();
     }
 
@@ -443,6 +444,7 @@ public final class FloppyDrive {
         if (selFallingEdge) {
             boolean oldMotorTarget = motorTarget;
             setMotor(motorOn);
+            if (!oldMotorTarget && motorOn) slipShifter();
 
             if (oldMotorTarget || motorOn) {
                 // Transizione motore o motore già ON: azzera shift register ID
@@ -561,6 +563,31 @@ public final class FloppyDrive {
         if (floppySound != null) floppySound.onMotor(value, diskInserted);
     }
 
+    /**
+     * A motor switched on, or a head step, jolts the data line of the selected drive: a
+     * few bits of noise enter Paula's read shift register outside the bit clock, which
+     * moves the word boundary of the next read. One to eight bits, each 0 or 1 at random.
+     * {@code -Damiga.randshift=<n>} pushes n bits of 1 instead, and 0 turns it off; the
+     * test suite sets 0.
+     */
+    private void slipShifter() {
+        if (shifterSlipSink == null || RANDSHIFT_FIXED == 0) return;
+        if (RANDSHIFT_FIXED > 0) {
+            for (int i = 0; i < RANDSHIFT_FIXED; i++) shifterSlipSink.accept(1);
+            return;
+        }
+        int bits = 1 + shiftRng.nextInt(8);
+        for (int i = 0; i < bits; i++) shifterSlipSink.accept(shiftRng.nextInt(2));
+    }
+
+    /** Receives the bits of {@link #slipShifter()}: Paula's read shift register. */
+    public void setShifterSlipSink(IntConsumer sink) { this.shifterSlipSink = sink; }
+
+    private IntConsumer shifterSlipSink;
+
+    // -1 = random, 0 = off, n = n bits of 1 (see slipShifter).
+    private static final int RANDSHIFT_FIXED = Integer.getInteger("amiga.randshift", -1);
+
     private void executeStep(boolean direction) {
         statusDirty = true;   // /TK0 e /CHNG cambiano allo step
         long waitTime = (direction == lastStepDir) ? CYCLES_SETTLE_STEP : CYCLES_SETTLE_DIR_CHG;
@@ -598,6 +625,7 @@ public final class FloppyDrive {
         settleCounter = Math.max(settleCounter, waitTime);
 
         if (floppySound != null) floppySound.onStep();
+        slipShifter();
     }
 
     private void tickMfmBitsAdf(int cycles, IntConsumer bitConsumer) {
@@ -1136,6 +1164,9 @@ public final class FloppyDrive {
      * motor-ons came before it.
      */
     private final java.util.Random readyTailRng;
+
+    /** The bits of {@link #slipShifter()}, seeded like {@link #angleRng}. */
+    private final java.util.Random shiftRng;
 
     /** The jitter draws ({@link #slipJitterCells()}), seeded like {@link #angleRng}. */
     private final java.util.Random jitterRng;
