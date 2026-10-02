@@ -417,6 +417,17 @@ public final class DiskImage implements AutoCloseable {
         return ipfTrackDensity[physicalTrack];
     }
 
+    /**
+     * The cell of an AmigaDOS track where a drive reading it slips its jitter cells (see
+     * {@code FloppyDrive}), or -1 for a track with none. It lies in the gap before sector 0,
+     * at {@code gapWords * 8 / 3 * 2}. An IPF track has none.
+     */
+    public int getJitterSkipCell(int physicalTrack) {
+        if (format != Format.ADF) return -1;
+        int gapWords = TRACK_BUFFER_BYTES / 2 - sectorsPerTrack * 544;
+        return gapWords > 0 ? (gapWords * 8) / 3 * 2 : -1;
+    }
+
     public int getTrackBits(int physicalTrack) {
         if (physicalTrack < 0 || physicalTrack >= PHYSICAL_TRACKS || !hasTrackData(physicalTrack))
             return TRACK_BUFFER_BYTES * 8;

@@ -240,6 +240,8 @@ public final class FloppyDrive {
     private       long   bitCyclesAccumulatorFixed = 0;
     // The reader of this tick runs at 4 us per bit (see tick(int, IntConsumer, boolean)).
     private       boolean slowBits            = false;
+    // The cell where the reader slips its jitter cells, -1 for none (see slipJitterCells).
+    private       int    jitterSkipCell       = -1;
 
     // -------------------------------------------------------------------------
     // Scrittura sul supporto
@@ -288,6 +290,7 @@ public final class FloppyDrive {
         this.driveType = driveType;
         this.angleRng  = newAngleRng(id);
         this.readyTailRng = newDriveRng(id, 1);
+        this.jitterRng = newDriveRng(id, 2);
         reset();
     }
 
@@ -634,11 +637,47 @@ public final class FloppyDrive {
         } else if (bitConsumer != null) {
             if (slowBits) {
                 readSlowBit(bitConsumer);
+                slipJitterCells();
                 return;
             }
             bitConsumer.accept(getNextMFMBit());
+            advanceBitPointer();
+            slipJitterCells();
+            return;
         }
         advanceBitPointer();
+    }
+
+    /**
+     * Speed jitter of a real drive: once per revolution, when the head of the drive being
+     * read reaches {@link #jitterSkipCell}, it slips a few cells that are never read. How
+     * many is drawn anew every time, between {@code min} and {@code max} of
+     * {@code -Damiga.diskjitter=<min>:<max>} (1:3 by default; the test suite sets 0:0).
+     */
+    private void slipJitterCells() {
+        if (bitPointer != jitterSkipCell || JITTER_MAX <= 0) return;
+        int cells = JITTER_MIN + (JITTER_MAX > JITTER_MIN
+                ? jitterRng.nextInt(JITTER_MAX - JITTER_MIN + 1) : 0);
+        for (int i = 0; i < cells; i++) advanceBitPointer();
+    }
+
+    private static final int JITTER_MIN;
+    private static final int JITTER_MAX;
+    static {
+        int min = 1, max = 3;
+        String p = System.getProperty("amiga.diskjitter");
+        if (p != null) {
+            String[] mm = p.split(":", 2);
+            try {
+                min = Integer.parseInt(mm[0].trim());
+                max = mm.length > 1 ? Integer.parseInt(mm[1].trim()) : min;
+            } catch (NumberFormatException e) {
+                System.err.println("[DISK] amiga.diskjitter non valido: " + p + ", uso 1:3");
+                min = 1; max = 3;
+            }
+        }
+        JITTER_MIN = Math.max(0, min);
+        JITTER_MAX = Math.max(JITTER_MIN, max);
     }
 
     /**
@@ -927,6 +966,7 @@ public final class FloppyDrive {
      * cella nominale; {@code null} = densità uniforme).
      */
     public void loadTrackData(byte[] data, int trackBits, int[] density) {
+        jitterSkipCell = -1;
         // Lunghezza della traccia corrente: standard per ADF e per le tracce IPF
         // normali, maggiore per le long track di protezione (fino a MAX_TRACK_BYTES).
         int len = (data == null) ? TRACK_BUFFER_SIZE
@@ -980,6 +1020,7 @@ public final class FloppyDrive {
         loadTrackData(diskImage.readTrackMFM(physicalTrack),
                       diskImage.getTrackBits(physicalTrack),
                       diskImage.getTrackDensity(physicalTrack));
+        jitterSkipCell = diskImage.getJitterSkipCell(physicalTrack);
     }
 
     // =========================================================================
@@ -1095,6 +1136,9 @@ public final class FloppyDrive {
      * motor-ons came before it.
      */
     private final java.util.Random readyTailRng;
+
+    /** The jitter draws ({@link #slipJitterCells()}), seeded like {@link #angleRng}. */
+    private final java.util.Random jitterRng;
 
     private static java.util.Random newAngleRng(String id) {
         return newDriveRng(id, 0);
