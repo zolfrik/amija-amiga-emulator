@@ -123,6 +123,12 @@ public final class FloppyDrive {
      * È il riferimento rispetto a cui si scala la durata di cella delle long track.
      */
     private static final int    NOMINAL_TRACK_BITS       = 12_668 * 8;   // 101 344
+    /** {@link #CYCLES_PER_BIT} in units of 1/256 CCK, the unit of the IPF cell clock. */
+    private static final int    NOMINAL_CELL_UNITS       = 7 * 256;
+    /** A track shorter than this many cells is a 4 us one: its cells last twice as long. */
+    private static final int    FOUR_US_TRACK_BITS       = NOMINAL_TRACK_BITS * 4 / 6;
+    /** One master cycle in units of 1/256 CCK. */
+    private static final int    UNITS_PER_MASTER_CYCLE   = 128;
     /** FIX #8: alcuni drive arrivano a traccia 83 (indice 0-based). */
     private static final int    MAX_TRACKS               = 84;
     private static final int    BIT_CLOCK_SCALE          = 10_000;
@@ -231,12 +237,14 @@ public final class FloppyDrive {
     // Per gli ADF il modello è BYPASSATO: si usa il rate DD nominale fisso
     // (CYCLES_PER_BIT, 7 CCK/cella), comportamento identico a prima e a costo zero.
     private       boolean densityModel        = false;
-    // Durata di cella pre-calcolata per byte di traccia (solo tracce IPF a densità
-    // variabile, es. Copylock); null = periodo costante cyclesPerBit.
-    private       double[] cellCycles         = null;
-    private       double  cyclesPerBit        = CYCLES_PER_BIT;
+    // Cell duration per track byte, in 1/256 CCK (IPF tracks with a density map, e.g.
+    // Copylock); -1 keeps the previous cell's duration; null = constant trackSpeed.
+    private       int[]   cellSpeed           = null;
+    // Duration of the current cell on the IPF path, in 1/256 CCK.
+    private       int     trackSpeed          = NOMINAL_CELL_UNITS;
     private       int    bitPointer           = 0;
-    private       double bitCyclesAccumulator = 0.0;
+    // Time accumulated towards the next cell on the IPF path, in 1/256 CCK.
+    private       long   cellClock            = 0;
     private       long   bitCyclesAccumulatorFixed = 0;
     // The reader of this tick runs at 4 us per bit (see tick(int, IntConsumer, boolean)).
     private       boolean slowBits            = false;
@@ -636,13 +644,19 @@ public final class FloppyDrive {
         }
     }
 
+    /**
+     * The IPF cell clock, in units of 1/256 CCK. A cell is taken once the time accumulated
+     * reaches the duration of the cell before it; the cell then costs its own duration,
+     * which the density map gives at the head's position. Passing the index hole loads
+     * the duration of the first cell.
+     */
     private void tickMfmBitsDensityModel(int cycles, IntConsumer bitConsumer) {
-        bitCyclesAccumulator += cycles;
-        double cell = currentCellCycles();
-        while (bitCyclesAccumulator >= cell) {
-            bitCyclesAccumulator -= cell;
+        cellClock += (long) cycles * UNITS_PER_MASTER_CYCLE;
+        while (cellClock >= trackSpeed) {
+            updateTrackSpeed();
             processCell(bitConsumer);
-            cell = currentCellCycles();
+            if (bitPointer == 0) updateTrackSpeed();
+            cellClock -= trackSpeed;
         }
     }
 
@@ -775,15 +789,15 @@ public final class FloppyDrive {
     public void setWriteBitSource(WriteBitSource source) { this.writeBitSource = source; }
 
     /**
-     * Durata della cella alla posizione angolare corrente. Con densità uniforme è
-     * costante; sulle tracce a densità variabile (Copylock) segue la mappa per-byte
-     * dell'IPF, come WinUAE {@code disk.cpp updatetrackspeed()}:
-     * {@code trackspeed = base * tracktiming[mfmpos / 8] / 1000}.
+     * On a track with a density map, the duration of the cell under the head (outside a
+     * write, which keeps the speed it found). An implausible map entry keeps the previous
+     * duration.
      */
-    private double currentCellCycles() {
-        if (cellCycles == null) return cyclesPerBit;
+    private void updateTrackSpeed() {
+        if (cellSpeed == null || writing) return;
         int idx = bitPointer >> 3;
-        return cellCycles[idx < cellCycles.length ? idx : cellCycles.length - 1];
+        int ts = cellSpeed[idx < cellSpeed.length ? idx : cellSpeed.length - 1];
+        if (ts > 0) trackSpeed = ts;
     }
 
     /**
@@ -807,7 +821,7 @@ public final class FloppyDrive {
     }
 
     private void resetBitClock() {
-        bitCyclesAccumulator = 0.0;
+        cellClock = 0;
         bitCyclesAccumulatorFixed = 0;
     }
 
@@ -1004,21 +1018,26 @@ public final class FloppyDrive {
         int oldBitLen = trackBitLen;
         trackBitLen   = (trackBits > 0 && trackBits <= len * 8) ? trackBits : len * 8;
 
-        // Modello FDC (WinUAE get_floppy_speed_from_image): la cella resta al rate DD
-        // nominale, scalata dal rapporto fra la lunghezza della traccia e quella
-        // nominale. Per gli ADF è bypassato (rate fisso).
+        // Cell durations are whole units of 1/256 CCK, truncated where they are derived:
+        // the base is the nominal cell scaled by the track length (not on a track with a
+        // density map), doubled on a track short enough to be a 4 us one; a density map
+        // gives each byte base * density / 1000.
         boolean variableDensity = densityModel && density != null && density.length > 0;
-        cyclesPerBit = (densityModel && trackBitLen > 0 && !variableDensity)
-                ? CYCLES_PER_BIT * trackBitLen / (double) NOMINAL_TRACK_BITS
-                : CYCLES_PER_BIT;
-        // Densità variabile (tracce Copylock): pre-calcola la durata di cella byte per
-        // byte, così il percorso caldo resta un semplice accesso ad array.
+        int base = NOMINAL_CELL_UNITS;
+        if (densityModel && trackBitLen > 0 && !variableDensity) {
+            base = (int) ((long) base * trackBitLen / NOMINAL_TRACK_BITS);
+        }
+        if (densityModel && trackBitLen < FOUR_US_TRACK_BITS) base *= 2;
+        trackSpeed = Math.max(1, base);
         if (variableDensity) {
-            cellCycles = new double[density.length];
-            for (int i = 0; i < density.length; i++)
-                cellCycles[i] = cyclesPerBit * density[i] / 1000.0;
+            cellSpeed = new int[density.length];
+            for (int i = 0; i < density.length; i++) {
+                int ts = (int) ((long) trackSpeed * density[i] / 1000);
+                // An implausible entry keeps the previous cell's speed.
+                cellSpeed[i] = (ts < 700 || ts > 3000) ? -1 : ts;
+            }
         } else {
-            cellCycles = null;
+            cellSpeed = null;
         }
         // The cell phase is not touched either: the platter keeps turning while the
         // head steps or the side changes (only a disk DMA start re-phases it, see
@@ -1199,7 +1218,8 @@ public final class FloppyDrive {
         flushWrittenTrack();
         closeDiskImage();
         densityModel = false;
-        cyclesPerBit = CYCLES_PER_BIT;
+        trackSpeed = NOMINAL_CELL_UNITS;
+        cellSpeed = null;
         resetBitClock();
         if (diskInserted) {
             dskchange    = true;
@@ -1219,7 +1239,8 @@ public final class FloppyDrive {
             flushWrittenTrack();
             closeDiskImage();
             densityModel = false;
-            cyclesPerBit = CYCLES_PER_BIT;
+            trackSpeed = NOMINAL_CELL_UNITS;
+            cellSpeed = null;
             resetBitClock();
         }
         if (inserted != this.diskInserted) {
