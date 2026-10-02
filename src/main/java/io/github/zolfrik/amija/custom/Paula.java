@@ -392,6 +392,7 @@ public final class Paula {
             // Δ2: anche l'elaborazione differita della word DMA è una scadenza, e se il
             // salto la scavalcasse il gestore cadrebbe tardi (vedi AudioChannel.tick).
             if (ch.dmaWordDelay > 0 && ch.dmaWordDelay < min) min = ch.dmaWordDelay;
+            if (ch.reloadRequestDelay > 0 && ch.reloadRequestDelay < min) min = ch.reloadRequestDelay;
             mask &= ~(1 << chan);
         }
         return min;
@@ -1857,6 +1858,9 @@ public final class Paula {
          */
         private int dmaWordDelay;
 
+        /** Master cycles until a block's reload request is raised; 0 = none pending. */
+        private int reloadRequestDelay;
+
         private AudioChannel(int index) {
             this.index = index;
         }
@@ -1885,6 +1889,7 @@ public final class Paula {
             currentSample = 0;
             sampleAccum = 0.0;
             dmaWordDelay = 0;
+            reloadRequestDelay = 0;
             refreshActiveMask();
         }
 
@@ -1960,7 +1965,7 @@ public final class Paula {
                     nextWordEndsBlock = false;
                     raiseAudioInterrupt(index);     // WinUAE: setirq(nr, 0)
                 }
-                requestNextWord();
+                requestNextWord(true);
                 dmaReloadRequest = true;
             } else if (dmaPriming || dmaFirstWord) {
                 // Stati 1 e 5: "if (!chan_ena) { zerostate(nr, false); return true; }".
@@ -2043,6 +2048,14 @@ public final class Paula {
          * qui si sottrae a pezzi per sapere <i>quanto a lungo</i> è valso ogni valore.
          */
         private void tick(int cycles) {
+            if (reloadRequestDelay > 0) {
+                reloadRequestDelay -= cycles;
+                if (reloadRequestDelay <= 0) {
+                    reloadRequestDelay = 0;
+                    dmaRequest = true;
+                    dmaReloadRequest = true;
+                }
+            }
             // Δ2: l'intervallo si spezza sulla scadenza della word DMA in sospeso, così il
             // gestore differito cade nel master-cycle esatto e non a fine intervallo.
             // computeAudioMinCounter() tiene conto della stessa scadenza, quindi qui il
@@ -2290,7 +2303,7 @@ public final class Paula {
                 dmaFirstWord = true;
                 raiseAudioInterrupt(index);
                 // The request is decided on the length before this word is counted.
-                requestNextWord();
+                requestNextWord(true);
                 if (remainingWords != 1) {
                     remainingWords = (remainingWords - 1) & 0xFFFF;
                 }
@@ -2431,7 +2444,7 @@ public final class Paula {
 
         private boolean loadCurrentWord() {
             if (!nextWordValid) {
-                if (dmaEnabled) requestNextWord();
+                if (dmaEnabled) requestNextWord(false);
                 return false;
             }
             currentWord = nextWord;
@@ -2459,7 +2472,7 @@ public final class Paula {
             // bande laterali distanti ~39,5 Hz dalla fondamentale, forti quanto la
             // fondamentale stessa.
             if (dmaEnabled) {
-                requestNextWord();
+                requestNextWord(false);
             }
             refreshActiveMask();
             return true;
@@ -2557,7 +2570,7 @@ public final class Paula {
          */
         private void askForNextWord(boolean checkPendingIrq) {
             if (dmaEnabled) {
-                requestNextWord();
+                requestNextWord(false);
                 return;
             }
             if (!cpuDriven) return;
@@ -2590,14 +2603,23 @@ public final class Paula {
         }
 
         /**
-         * The word request of a word boundary. It is raised again while one is still pending,
+         * Raises the request for the next word. It is raised again while one is still pending,
          * since the next DMAL load hands over whatever is pending by then: with a single word
          * left in the block it adds the pointer reload to a request that did not have it.
+         * At a period boundary, the request for the last word of a block is only the reload
+         * request, and it is raised one CCK later: a DMAL loaded on the cycle of the boundary
+         * does not see it, and switching DMA off meanwhile does not cancel it. A start-up
+         * request (DMA switched on, first word) is raised at once.
          */
-        private void requestNextWord() {
+        private void requestNextWord(boolean startup) {
             if (!dmaEnabled || nextWordValid) return;
             if (remainingWords == 0) {
                 reloadDmaLength();
+            }
+            if (!startup && remainingWords == 1) {
+                if (reloadRequestDelay == 0) reloadRequestDelay = DMA_WORD_DELAY_MC;
+                refreshActiveMask();
+                return;
             }
             dmaReloadRequest = (dmaRequest && dmaReloadRequest) || remainingWords == 1;
             dmaRequest = true;
@@ -2637,7 +2659,7 @@ public final class Paula {
             // period-counter: un canale che uscisse dalla maschera smetterebbe di
             // contare e non chiederebbe mai più la word successiva.
             boolean active = dmaEnabled || dmaRequest || nextWordValid || currentWordValid
-                    || cpuDriven || currentSample != 0 || dmaWordDelay > 0;
+                    || cpuDriven || currentSample != 0 || dmaWordDelay > 0 || reloadRequestDelay > 0;
             if (active) activeAudioMask |= (1 << index);
             else        activeAudioMask &= ~(1 << index);
         }
