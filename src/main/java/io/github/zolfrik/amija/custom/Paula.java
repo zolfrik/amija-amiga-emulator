@@ -1294,18 +1294,9 @@ public final class Paula {
                 dskbytr_incoming &= 0x7FFF;
                 // Il drive selezionato passa in scrittura: da qui in avanti la sua
                 // testina consuma le celle da nextWriteBit() invece di leggerle.
-                // Come per la lettura, il lato comandato ha effetto immediato.
-                if (agnus != null) {
-                    agnus.commitSelectedDriveSideForRead();
-                    agnus.startFloppyWriting();
-                }
+                if (agnus != null) agnus.startFloppyWriting();
             } else {
                 diskState = ((adkcon & 0x0400) != 0) ? DriveDmaState.WAIT : DriveDmaState.READ;
-                // Il /SIDE comandato ha effetto immediato per la lettura (no settle
-                // meccanico come il seek): applica subito un eventuale cambio lato
-                // pendente così la DMA legge il lato voluto, indipendente dalla
-                // velocità CPU. Vedi Agnus.commitSelectedDriveSideForRead().
-                if (agnus != null) agnus.commitSelectedDriveSideForRead();
             }
 
             dsk_syncMatches = 0;

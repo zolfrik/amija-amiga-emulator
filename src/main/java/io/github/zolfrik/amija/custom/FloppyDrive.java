@@ -101,8 +101,6 @@ public final class FloppyDrive {
      */
     private static final long   CYCLES_MIN_STEP_INTERVAL =         280L;   // 140 CCK
     private static final long   CYCLES_SETTLE_DIR_CHG    =   127_688L;   // settle dopo inversione direzione (~18 ms)
-    /** FIX #5: il cambio side ha un breve settle analogico (~2 ms). */
-    private static final long   CYCLES_SETTLE_SIDE       =    14_188L;
     /**
      * Durata di una cella MFM a doppia densità, in master-cycle. È il
      * {@code NORMAL_FLOPPY_SPEED} di WinUAE (disk.cpp), che vale {@code 7 * 256}
@@ -156,8 +154,6 @@ public final class FloppyDrive {
     private boolean currentSide       = false;
 
     /** FIX #5: side change pendente — effettivo solo al termine del settle. */
-    private boolean pendingSideChange = false;
-    private boolean pendingSideValue  = false;
 
     // -------------------------------------------------------------------------
     // Disco
@@ -398,22 +394,11 @@ public final class FloppyDrive {
             }
         }
 
-        // Settle: il seek è già applicato all'impulso di STEP (vedi executeStep);
-        // qui resta solo l'assestamento del cambio lato pendente (debounce dei
-        // transitori /SIDE durante lo stepping — fix SpeedBall II bug-2).
+        // Settle after a step: the seek is already applied at the STEP pulse (see
+        // executeStep); the drive only stays busy until it elapses.
         if (settleCounter > 0) {
             settleCounter -= cycles;
-            if (settleCounter <= 0) {
-                settleCounter = 0;
-
-                // FIX #5: applica side change a settle completato
-                if (pendingSideChange) {
-                    pendingSideChange = false;
-                    flushWrittenTrack();   // la traccia incisa appartiene al lato VECCHIO
-                    currentSide       = pendingSideValue;
-                    if (diskInserted && diskImage != null) loadCurrentTrack();
-                }
-            }
+            if (settleCounter <= 0) settleCounter = 0;
         }
     }
 
@@ -471,22 +456,12 @@ public final class FloppyDrive {
         this.selected = selected;
 
         if (selected) {
-            // Cambio lato: posticipato al termine del settle, ma il valore deve
-            // SEMPRE seguire l'ultimo livello comandato su /SIDE. Un loader può
-            // pilotare /SIDE basso per un istante (durante la sequenza di step) e
-            // riportarlo subito al lato voluto: latchare il primo transitorio (e
-            // ignorare i ritorni con `!pendingSideChange`) faceva leggere il lato
-            // sbagliato — es. Speedball II legge la traccia fisica dispari invece
-            // di quella pari e il suo verificatore di header va in loop infinito.
+            // /SIDE acts at once: the head that reads is chosen electronically, with no
+            // settle, so the bits that follow the write already come from the new side.
             if (this.currentSide != side) {
-                if (!pendingSideChange) {
-                    pendingSideChange = true;
-                    if (settleCounter < CYCLES_SETTLE_SIDE) settleCounter = CYCLES_SETTLE_SIDE;
-                }
-                pendingSideValue = side;
-            } else if (pendingSideChange) {
-                // /SIDE è tornato al lato corrente prima del settle: annulla il cambio.
-                pendingSideChange = false;
+                flushWrittenTrack();   // the track written so far belongs to the old side
+                currentSide = side;
+                if (diskInserted && diskImage != null) loadCurrentTrack();
             }
 
             // /STEP is active LOW on the bus; Agnus passes true while the
@@ -896,40 +871,11 @@ public final class FloppyDrive {
     public int     getCurrentTrack()  { return currentTrack; }
     public int     getTargetTrack()   { return targetTrack; }
 
-    /**
-     * All'avvio di una DMA READ il livello /SIDE comandato ha effetto IMMEDIATO:
-     * su HW reale la selezione di lato non ha il settle meccanico del seek di
-     * traccia (è solo la selezione elettronica dell'elemento testina). Se c'è un
-     * cambio lato pendente (ancora in settle), applicalo subito e ricarica la
-     * traccia del lato corretto, così la DMA legge il lato voluto invece di quello
-     * vecchio. Il debounce dei transitori /SIDE durante lo stepping resta nel path
-     * normale (update()/settle) e NON è toccato — preserva il fix SpeedBall II.
-     *
-     * Questo elimina l'accoppiamento del side-select alla velocità della CPU: il
-     * loader IK+ comanda /SIDE=1 e avvia subito la DMA; con CPU veloce il vecchio
-     * settle ~2ms non faceva in tempo a completare → leggeva il lato sbagliato
-     * (track 84 invece di 85) e il check di protezione falliva. Vedi
-     * docs/sae-dskr-sequence.md.
-     */
-    public void commitPendingSideForRead() {
-        if (pendingSideChange && currentSide != pendingSideValue) {
-            flushWrittenTrack();   // la traccia incisa appartiene al lato VECCHIO
-            currentSide       = pendingSideValue;
-            pendingSideChange = false;
-            if (diskInserted && diskImage != null) loadCurrentTrack();
-        }
-    }
-
     /** Posizione angolare corrente della testina, in celle dall'impulso di INDEX. */
     public int getBitPointer()  { return bitPointer; }
     /** Lunghezza in celle della traccia corrente (= un giro completo). */
     public int getTrackBitLen() { return trackBitLen; }
 
-    /** DIAG (Fase A-ter): lato effettivo della testina + eventuale cambio in settle. */
-    public String getSideDebug() {
-        return String.format("effSide=%d pendChg=%b pendVal=%d settle=%d",
-                currentSide ? 1 : 0, pendingSideChange, pendingSideValue ? 1 : 0, settleCounter);
-    }
     public boolean isDiskInserted()   { return diskInserted; }
     public boolean isMotorAtSpeed()   { return motorAtSpeed; }
     public boolean isMotorRunning()   { return motorTarget; }
@@ -1241,7 +1187,6 @@ public final class FloppyDrive {
         currentTrack         = 0;
         targetTrack          = 0;
         settleCounter        = 0;
-        pendingSideChange    = false;
         currentSide          = false;
         dskchange            = hadDiskImage ? wasDiskChanged : true;
         diskInserted         = hadDiskImage;

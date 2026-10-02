@@ -1271,6 +1271,8 @@ public abstract class AbstractAgnus {
      * la riga interrotta va contata. Vedi {@code updateBeam()} e {@code internalReset()}.
      */
     private boolean resetRowPending = false;
+    /** The line advance a custom-chip reset brought forward still owes the drives their sync. */
+    private boolean resetDriveHsyncPending = false;
 
     /**
      * L'accensione è passata. La prima volta che la CPU alza la linea di reset siamo alla
@@ -2354,7 +2356,7 @@ public abstract class AbstractAgnus {
                 floppyAccumCycles = 0;
                 // A control line written in the previous cycle acts from the start of this
                 // CCK: its edges reach the drives before the cells of these cycles do.
-                if (prbChanged) applyFloppyLines(ciab_prb);
+                if (prbChanged && (ciab_prb & 0xFF) != appliedCiabPrb) applyFloppyLines(ciab_prb);
                 tickFloppyDrive(df0, floppyN);
                 tickFloppyDrive(df1, floppyN);
                 tickFloppyDrive(df2, floppyN);
@@ -3047,6 +3049,7 @@ public abstract class AbstractAgnus {
         // di 71 051, cioè 72 CCK in meno. Vedi docs/vamigats-import-order.md §26.
         if (resetRowPending && nextHpos == 1) {
             resetRowPending = false;
+            resetDriveHsyncPending = true;
             advanceTriggerVpos();
             advanceRow();
         }
@@ -3059,11 +3062,6 @@ public abstract class AbstractAgnus {
         // che è il punto in cui l'oracolo chiama cia_hsync_do().
         if (nextHpos == 1) {
             armTodPulses((masterClock - 1) >> 1);
-            // The drives count their /RDY spin-up on the same horizontal sync.
-            if (df0 != null) df0.hsync();
-            if (df1 != null) df1.hsync();
-            if (df2 != null) df2.hsync();
-            if (df3 != null) df3.hsync();
         }
         if (ciaB != null) {
             if (nextHpos == todRiseHposB) {
@@ -3086,6 +3084,11 @@ public abstract class AbstractAgnus {
         // è dove chiama custom_trigger_start(). Vedi TRIGGER_VPOS_LEAD_HPOS.
         if (nextHpos == maxHpos - TRIGGER_VPOS_LEAD_HPOS) {
             advanceTriggerVpos();
+        }
+        if (nextHpos == maxHpos - TRIGGER_VPOS_LEAD_HPOS + 1
+                || (resetDriveHsyncPending && nextHpos == 2)) {
+            resetDriveHsyncPending = false;
+            hsyncDrives();
         }
 
         if (nextHpos < maxHpos) {
@@ -3380,6 +3383,7 @@ public abstract class AbstractAgnus {
     /** The CIA-B control lines reach the drives: selection, motor latch, step, side. */
     private void applyFloppyLines(byte ciab_prb) {
         if (ciaA == null || ciaB == null) return;
+        appliedCiabPrb = ciab_prb & 0xFF;
         boolean step = (ciab_prb & 0x01) == 0; // /STEP LOW = step
         boolean dir  = (ciab_prb & 0x02) != 0; // DIR: 0=INWARD (tk++), 1=OUTWARD (tk0)
         boolean side = (ciab_prb & 0x04) == 0; // /SIDE LOW = side 1
@@ -3539,6 +3543,7 @@ public abstract class AbstractAgnus {
         if (df2 != null) df2.selectSet((prb & 0x20) == 0, step);
         if (df3 != null) df3.selectSet((prb & 0x40) == 0, step);
         lastCiabPrb = prb;
+        appliedCiabPrb = prb;
         floppyBusy = true;
     }
 
@@ -3550,6 +3555,8 @@ public abstract class AbstractAgnus {
     // lastCiabPrb=-1 e floppyBusy=true forzano l'esecuzione al primo ciclo finché
     // lo stato non si assesta. floppyBusy=true finché un drive è attivo.
     private int lastCiabPrb = -1;
+    // The PRB value whose control lines the drives last received.
+    private int appliedCiabPrb = -1;
     private boolean floppyBusy = true;
     // PERF: accumulatore per processare il floppy a granularità CCK (2 master-cycle)
     // invece che ad ogni master-cycle. Vedi il blocco floppy in risingEdge().
@@ -5631,6 +5638,25 @@ public abstract class AbstractAgnus {
     private int triggerVpos = 0;
 
     /**
+     * The horizontal sync the drives count their /RDY spin-up on. It comes with the line
+     * advance, three CCKs before our wrap of {@code hpos}, and keeps coming while the syncs
+     * are stopped. It falls after the CPU access of that CCK: a control line written there
+     * reaches the drives first, so a motor switched on in that CCK already counts the line.
+     * No cell elapses before the next rising edge, so the drives see the same bits as when
+     * the edge waits for it.
+     */
+    private void hsyncDrives() {
+        if (ciaB != null && lastCiabPrb >= 0) {
+            byte prb = ciaB.peekPortB();
+            if ((prb & 0xFF) != appliedCiabPrb) applyFloppyLines(prb);
+        }
+        if (df0 != null) df0.hsync();
+        if (df1 != null) df1.hsync();
+        if (df2 != null) df2.hsync();
+        if (df3 != null) df3.hsync();
+    }
+
+    /**
      * Il {@code custom_trigger_start()} dell'oracolo: porta {@link #triggerVpos} alla riga
      * che sta per iniziare, tre CCK prima del nostro confine di riga, e rivaluta lì la
      * finestra verticale ({@code check_bpl_vdiw()}).
@@ -6432,14 +6458,6 @@ public abstract class AbstractAgnus {
         return d != null ? d.getPhysicalTrack() : -1;
     }
 
-    /** All'avvio di una DMA READ applica subito il /SIDE comandato sul drive
-     *  selezionato (vedi FloppyDrive.commitPendingSideForRead): rende il side-select
-     *  effettivo immediatamente, indipendente dalla velocità CPU. */
-    public void commitSelectedDriveSideForRead() {
-        FloppyDrive d = getSelectedDrive();
-        if (d != null) d.commitPendingSideForRead();
-    }
-
     /**
      * Disk DMA start: re-phases the cell clock of EVERY drive, not just the selected
      * one. A drive that is not being read, spinning or not, loses the fraction of a
@@ -6450,15 +6468,6 @@ public abstract class AbstractAgnus {
         if (df1 != null) df1.restartBitCell();
         if (df2 != null) df2.restartBitCell();
         if (df3 != null) df3.restartBitCell();
-    }
-
-    /** DIAG (Fase A-ter): stato side del drive selezionato all'avvio DMA. cmdSide =
-     *  livello /SIDE attualmente comandato su CIA-B PRB (cosa vuole il loader ORA);
-     *  effSide + pending = cosa leggerà davvero la testina (latch + settle). */
-    public String getSelectedDriveSideDebug() {
-        int cmdSide = (lastCiabPrb & 0x04) == 0 ? 1 : 0;
-        FloppyDrive d = getSelectedDrive();
-        return "cmdSide=" + cmdSide + (d != null ? " " + d.getSideDebug() : " (no drive)");
     }
 
     public boolean inVBlankArea(int vpos) {
