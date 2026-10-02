@@ -807,28 +807,16 @@ public final class Paula {
     public static final int WRITE_BIT_END   = -1;
 
     /**
-     * Shifter di lettura <b>a riposo</b>: nessun drive connesso e' selezionato.
+     * Read shifter with <b>no drive selected</b>: the floppy data line rests at its
+     * pull-up, zeros on the A500, and the shift register keeps shifting them in. Kickstart
+     * 1.3 sees DSKSYN from here at boot, since DSKSYNC resets to zero.
      *
-     * <p>E' {@code disk_doupdate_read_reallynothing} dell'oracolo (disk.cpp, ramo
-     * {@code (selected | disabled) == 15 && dskdmaen < DSKDMA_WRITE}). Sulla scheda la
-     * linea dati del bus floppy resta ferma al valore di pull-up — sull'A500
-     * {@code cs_floppydatapullup = 0}, cioe' <b>zeri</b> — ma il registro a scorrimento di
-     * Paula continua a scorrere e il comparatore continua a confrontare: e' cosi' che
-     * l'oracolo alza sette DSKSYN durante il boot di Kickstart 1.3, tutti con la firma
-     * {@code word=0000 dsksync=0000} (docs/vamigats-paula-audio-plan.md §7.1.22).
-     *
-     * <p>⛔ <b>Fa MENO di {@link #shiftInDiskBit(int)}, ed e' il punto</b>: {@code reallynothing}
-     * scorre la word, aggiorna DSKBYTR al confine di byte e valuta il latch del sync. Non
-     * tocca {@code dsk_syncCycle} (cioe' WORDEQUAL, l'osservabile su cui vivono le
-     * protezioni Copylock), non riallinea lo shifter da WORDSYNC e non travasa niente
-     * nella FIFO. Passare a riposo per la strada completa aggiungerebbe divergenze invece
-     * di toglierne: e' la ragione per cui il primo tentativo di questo porto fu revocato
-     * (§7.1.23).
+     * <p>It does <b>less</b> than {@link #shiftInDiskBit(int)}: it shifts, updates DSKBYTR at
+     * the byte boundary, compares with DSKSYNC (WORDEQUAL and the DSKSYN latch) and, during a
+     * read DMA, hands the word over to the FIFO. It does not realign on WORDSYNC, so it never
+     * starts a DMA waiting for a sync.
      */
-
     public void shiftInDiskBitIdle(int bit) {
-        // `dskdmaen < DSKDMA_WRITE`: in scrittura l'oracolo sceglie disk_doupdate_write e
-        // questo ramo non gira affatto — non e' solo l'interrupt a essere inibito.
         if (diskState == DriveDmaState.WRITE) {
             return;
         }
@@ -844,14 +832,52 @@ public final class Paula {
             dskbytr_incoming = 0x8000 | (dsk_dataReg & 0xFF);
         }
 
-        // Il latch `dsksync_on`, identico alla strada completa.
+        if (dsk_dataRegCount == 0 && diskState == DriveDmaState.READ
+                && (getDmacon() & 0x0210) == 0x0210) {
+            assembleReadWord(dsk_dataReg & 0xFFFF);
+        }
+
+        // The comparator is the same whatever feeds the shifter: WORDEQUAL and the
+        // `dsksyncOn` latch as on the full path.
         if (dsk_dataReg != dsksync) {
             dsksyncOn = false;
         }
-        if (!dsksyncOn && (adkcon & 0x0200) == 0 && dsk_dataReg == dsksync) {
-            raiseInterrupt(0x1000); // DSKSYN
-            dsksyncOn = true;
+        if ((adkcon & 0x0200) == 0 && dsk_dataReg == dsksync) {
+            dsk_syncCycle = agnus.getMasterClock();
+            if (!dsksyncOn) {
+                raiseInterrupt(0x1000); // DSKSYN
+                dsksyncOn = true;
+            }
         }
+    }
+
+    /**
+     * Read shifter with a drive selected but none turning, during an armed read DMA: the
+     * data line floats and each cell is noise. It takes the full path, so a DMA transfers
+     * the words and a chance sync match acts as any other.
+     */
+    public void shiftInFloatingDiskBit() {
+        shiftInDiskBit(floatingDataRng.nextInt(2));
+    }
+
+    /** A read DMA has been armed (DSKLEN written twice) and has not finished. */
+    public boolean isDiskReadArmed() {
+        return diskState == DriveDmaState.READ || diskState == DriveDmaState.WAIT;
+    }
+
+    public boolean isDiskWriting() {
+        return diskState == DriveDmaState.WRITE;
+    }
+
+    /**
+     * The noise of a floating data line. Random in the GUI; {@code -Damiga.diskseed=<n>}
+     * fixes it, like the drives' own generators.
+     */
+    private final java.util.Random floatingDataRng = newFloatingDataRng();
+
+    private static java.util.Random newFloatingDataRng() {
+        Long seed = Long.getLong("amiga.diskseed");
+        return seed == null ? new java.util.Random() : new java.util.Random(seed * 31 + 0x5EED);
     }
 
     /**

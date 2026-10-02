@@ -2364,25 +2364,26 @@ public abstract class AbstractAgnus {
             floppyAccumCycles = 0;
         }
 
-        // ── Shifter di lettura A RIPOSO ─────────────────────────────────────
-        // ⛔ Quando NESSUN drive connesso e' selezionato, la linea dati del bus floppy resta
-        // al pull-up (sull'A500 cs_floppydatapullup = 0, cioe' ZERI) ma il registro a
-        // scorrimento di Paula CONTINUA a scorrere e il comparatore continua a confrontare.
-        // E' disk_doupdate_read_reallynothing dell'oracolo, il ramo
-        // `(selected | disabled) == 15 && dskdmaen < DSKDMA_WRITE`: durante il boot di
-        // Kickstart 1.3 e' da li' che nascono SETTE DSKSYN, tutti con la firma
-        // `word=0000 dsksync=0000` — possibili solo perche' DSKSYNC al reset vale ZERO
-        // (vedi Paula.dsksync). Un drive DISCONNESSO non conta, come il `disabled`
-        // dell'oracolo. Vedi docs/vamigats-paula-audio-plan.md §7.1.24.
-        // The accumulator STANDS STILL while the bits come from somewhere else: it is this
-        // source's own cell fraction, not an absolute grid. While a drive is selected the
-        // shifter takes that drive's bits (or none, if the drive is empty) and the idle
-        // fraction keeps its value; on deselection it resumes from there. Counting it on
-        // absolute time threw the phase away at every selection window.
-        if (paula != null && !isAnyDriveSelected(ciab_prb)
-                && ++idleDiskBitAccum >= IDLE_DISK_CYCLES_PER_BIT) {
-            idleDiskBitAccum = 0;
-            paula.shiftInDiskBitIdle(0);
+        // ── Read shifter with no drive turning ─────────────────────────────
+        // With no connected drive selected the floppy data line rests at its pull-up
+        // (zeros on the A500), yet Paula's read shift register keeps shifting at the
+        // nominal cell rate: the comparator keeps comparing, and a read DMA keeps
+        // transferring the words. A drive not connected does not count as selected.
+        // With a drive selected but none turning the data line floats, and the shifter
+        // runs on noise only while a read DMA is armed; otherwise it stands.
+        // The accumulator STANDS STILL while the bits come from somewhere else or the
+        // shifter stands: it is this source's own cell fraction, not an absolute grid, and
+        // it resumes from the same value when the source runs again.
+        if (paula != null) {
+            boolean anySelected = isAnyDriveSelected(ciab_prb);
+            boolean idleRuns = anySelected
+                    ? !isAnySelectedDriveTurning(ciab_prb) && paula.isDiskReadArmed()
+                    : !paula.isDiskWriting();
+            if (idleRuns && ++idleDiskBitAccum >= IDLE_DISK_CYCLES_PER_BIT) {
+                idleDiskBitAccum = 0;
+                if (anySelected) paula.shiftInFloatingDiskBit();
+                else paula.shiftInDiskBitIdle(0);
+            }
         }
 
         // ── Paula tick (solo period-counter dei canali audio) ───────────────
@@ -3517,6 +3518,16 @@ public abstract class AbstractAgnus {
             || (df1 != null && df1.isConnected() && (ciabPrb & 0x10) == 0)
             || (df2 != null && df2.isConnected() && (ciabPrb & 0x20) == 0)
             || (df3 != null && df3.isConnected() && (ciabPrb & 0x40) == 0);
+    }
+
+    /** Whether a selected, connected drive has its motor on: its head clocks the shifter. */
+    private boolean isAnySelectedDriveTurning(byte ciabPrb) {
+        return isTurning(df0, ciabPrb, 0x08) || isTurning(df1, ciabPrb, 0x10)
+            || isTurning(df2, ciabPrb, 0x20) || isTurning(df3, ciabPrb, 0x40);
+    }
+
+    private static boolean isTurning(FloppyDrive drive, byte ciabPrb, int selBit) {
+        return drive != null && drive.isConnected() && (ciabPrb & selBit) == 0 && drive.isMotorRunning();
     }
 
     private void tickFloppyDrive(FloppyDrive drive, int cycles) {
