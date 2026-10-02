@@ -2338,30 +2338,26 @@ public abstract class AbstractAgnus {
         boolean prbChanged = (ciab_prb & 0xFF) != lastCiabPrb;
         boolean floppyRun = floppyBusy || prbChanged;
 
-        // PERF: il floppy veniva tick-ato e aggiornato ad OGNI master-cycle (~7M/s)
-        // mentre il motore gira — il profiler (AmigaProfiler/CORE_HEADLESS) mostra
-        // questo blocco come ~24% del tempo core. Il disco emette però un solo bit
-        // ogni ~14 cicli e il DMA disco gira sui CCK pari, quindi è sufficiente
-        // processarlo a granularità CCK (ogni 2 master-cycle) con tick(n). Per non
-        // perdere i fronti dei segnali di controllo (/STEP //SEL //SIDE) si forza
-        // l'elaborazione immediata quando il PRB di CIA-B cambia: ogni transizione
-        // è quindi colta nel ciclo esatto (preserva il fix side-select di SpeedBall II).
+        // The drives run on the colour-clock grid: their cells are counted one whole CCK at
+        // a time, in the second half of that CCK (odd hpos), before the CPU access of that
+        // half. A CIA cycle writes PRB in the first half, so a control line written in a
+        // CCK reaches the drives before any cell of that CCK: the write acts from the start
+        // of its CCK. The count is taken at every CCK, running or not, so a drive woken by a
+        // write also receives the first half of the write's CCK.
         boolean processFloppy = false;
         int floppyN = 0;
-        if (floppyRun) {
-            floppyAccumCycles++;
-            if (prbChanged || floppyAccumCycles >= 2) {
+        floppyAccumCycles++;
+        if ((hpos & 1) != 0) {
+            if (floppyRun) {
                 processFloppy = true;
                 floppyN = floppyAccumCycles;
-                floppyAccumCycles = 0;
-                // A control line written in the previous cycle acts from the start of this
-                // CCK: its edges reach the drives before the cells of these cycles do.
                 if (prbChanged && (ciab_prb & 0xFF) != appliedCiabPrb) applyFloppyLines(ciab_prb);
                 tickFloppyDrive(df0, floppyN);
                 tickFloppyDrive(df1, floppyN);
                 tickFloppyDrive(df2, floppyN);
                 tickFloppyDrive(df3, floppyN);
             }
+            floppyAccumCycles = 0;
         }
 
         // ── Shifter di lettura A RIPOSO ─────────────────────────────────────
