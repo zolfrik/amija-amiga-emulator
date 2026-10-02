@@ -2225,7 +2225,8 @@ public class Amija implements RemotePlayControl {
             // arriva prima del primo frame) senza dire una parola.
             clock.setFailureHandler(t -> SwingUtilities.invokeLater(
                     () -> error(Messages.t("error.boot", describeFailure(t)))));
-            cpu.reset(); // il reset asserta RESET: Agnus resetta a cascata CIA e floppy.
+            // Power-on: RESET cascades to CIAs and floppies; the CPU starts after a random delay.
+            cpu.powerOnReset(Motorola68000.powerOnStartDelay());
             clock.start();
 
             if (VERBOSE) {

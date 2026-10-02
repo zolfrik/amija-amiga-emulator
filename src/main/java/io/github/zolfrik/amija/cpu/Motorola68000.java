@@ -610,6 +610,38 @@ public final class Motorola68000 {
     }
 
     public void assertReset(int cycles) { resetSignalCyclesRemaining = cycles; }
+
+    /**
+     * CPU start delay at power-on, in CCKs: the first instruction runs this many CCKs, plus
+     * four, after the first beam cycle. A real machine starts its CPU at a random point against the
+     * free-running chipset, anywhere in the first 32768 CCKs.
+     * {@code -Damiga.cpudelay=<cck>} fixes it; the test suite sets it to {@link #NOMINAL_START_DELAY_CCK}.
+     */
+    public static final String START_DELAY_PROPERTY = "amiga.cpudelay";
+    /** The delay {@link #reset()} produces on its own: 256 CCKs of /RESET plus the vector fetch. */
+    public static final int NOMINAL_START_DELAY_CCK = 264;
+    /** The part of the start delay spent outside the /RESET hold: the vector fetch, less 4. */
+    private static final int RESET_SEQUENCE_CCK = 8;
+    private static final int MAX_START_DELAY_CCK = 0x7FFF;
+
+    /** The power-on start delay: {@value #START_DELAY_PROPERTY} when set, otherwise random. */
+    public static int powerOnStartDelay() {
+        Integer fixed = Integer.getInteger(START_DELAY_PROPERTY);
+        if (fixed != null) return Math.max(0, Math.min(MAX_START_DELAY_CCK, fixed));
+        return java.util.concurrent.ThreadLocalRandom.current().nextInt(MAX_START_DELAY_CCK + 1);
+    }
+
+    /**
+     * Power-on reset: {@link #reset()} with /RESET held so that the first instruction
+     * comes {@code startDelayCck} + 4 CCKs after the first beam cycle. The hold lasts at
+     * least two clocks, enough for the reset edge to reach the chipset, so a delay below
+     * {@value #RESET_SEQUENCE_CCK} CCKs starts as early as the reset sequence allows.
+     */
+    public void powerOnReset(int startDelayCck) {
+        reset();
+        assertReset(Math.max(2, 2 * (startDelayCck - RESET_SEQUENCE_CCK)));
+    }
+
     public void reset() {
         assertReset(512);
         // Reset dei registri D/A a 0, come Moira/vAmiga (`reg = { }`, Moira.cpp:204).
