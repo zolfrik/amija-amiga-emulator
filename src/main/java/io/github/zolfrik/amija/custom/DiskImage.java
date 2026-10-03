@@ -33,26 +33,24 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * Rappresenta l'immagine di un floppy fisico Amiga.
+ * The image of a physical Amiga floppy.
  *
- * <p>Formati supportati:
+ * <p>Supported formats:
  * <ul>
- *   <li><b>ADF</b> – lettura e scrittura. I settori modificati vengono persisti
- *       sul file sorgente in modo selettivo (solo tracce dirty) tramite tre
- *       politiche di flush: periodica (~5 s PAL), all'eject del disco e alla
- *       chiusura della JVM via shutdown hook.</li>
- *   <li><b>IPF</b> – sola lettura. Il bitstream MFM grezzo viene estratto alla
- *       prima apertura e mantenuto in memoria. Per immagini con copy-protection
- *       complessa potrebbe essere necessaria la libreria CAPS/IPFLib esterna.</li>
+ *   <li><b>ADF</b> - read and write. Modified sectors are persisted to the source file
+ *       selectively (dirty tracks only) by three flush policies: periodic (~5 s PAL), at
+ *       disk eject, and at JVM exit through a shutdown hook.</li>
+ *   <li><b>IPF</b> - read only. The raw MFM bitstream is extracted when the file is
+ *       opened and kept in memory.</li>
  * </ul>
  *
- * <p>Questa classe è {@link AutoCloseable}: usarla in un try-with-resources
- * garantisce il flush finale anche in caso di eccezione.
+ * <p>The class is {@link AutoCloseable}: a try-with-resources guarantees the final flush
+ * even when an exception is thrown.
  */
 public final class DiskImage implements AutoCloseable {
 
     // =========================================================================
-    // Costanti pubbliche
+    // Public constants
     // =========================================================================
 
     public enum Format { ADF, IPF }
@@ -67,20 +65,20 @@ public final class DiskImage implements AutoCloseable {
     static final int ADF_DD_SIZE = PHYSICAL_TRACKS * SECTORS_PER_TRACK_DD * SECTOR_SIZE; // 901 120
     static final int ADF_HD_SIZE = PHYSICAL_TRACKS * SECTORS_PER_TRACK_HD * SECTOR_SIZE; // 1 802 240
 
-    // Dimensione del buffer MFM per traccia standard — stessa costante di FloppyDrive.
+    // MFM buffer size of a standard track, the same constant as FloppyDrive's.
     static final int TRACK_BUFFER_BYTES = 12_668;
     private static final byte[] BLANK_MFM_TRACK = createBlankMfmTrack();
 
-    // Lunghezza massima di una traccia MFM. Le tracce di protezione IPF ("long
-    // track") superano la lunghezza standard (es. North &amp; South: ~13244 byte);
-    // il buffer della traccia è dimensionato su questo massimo.
+    // Maximum length of an MFM track. IPF protection tracks ("long tracks") exceed the
+    // standard length (e.g. North &amp; South: ~13244 bytes); the track buffer is sized
+    // for this maximum.
     public static final int MAX_TRACK_BYTES = 16_384;
 
-    // Flush periodico ogni ~5 secondi PAL (base clock 7.09379 MHz)
+    // Periodic flush every ~5 PAL seconds (base clock 7.09379 MHz)
     private static final long FLUSH_INTERVAL_CYCLES = 35_468_950L;
 
     // =========================================================================
-    // Stato
+    // State
     // =========================================================================
 
     private final Path    filePath;
@@ -88,45 +86,47 @@ public final class DiskImage implements AutoCloseable {
     private final boolean readOnly;
     private final int     sectorsPerTrack;
 
-    /** Dati settore flat per ADF: offset = physicalTrack * sectorsPerTrack * SECTOR_SIZE */
+    /** Flat ADF sector data: offset = physicalTrack * sectorsPerTrack * SECTOR_SIZE */
     private final byte[]   sectorData;
 
-    /** Buffer MFM pre-parsati per IPF, uno per traccia fisica */
+    /** Pre-parsed IPF MFM buffers, one per physical track */
     private final byte[][] ipfMfmTracks;
 
-    /** Densità di cella per-byte delle tracce IPF (1000 = nominale); null = uniforme. */
+    /** Per-byte cell density of the IPF tracks (1000 = nominal); null = uniform. */
     private final int[][] ipfTrackDensity;
 
-    /** Lunghezza ESATTA in bit di ogni traccia IPF (le long track non sono multiple
-     *  di 8 bit). Usata da FloppyDrive per avvolgere la rotazione al bit esatto. */
+    /** EXACT length in bits of every IPF track (long tracks are not multiples of 8
+     *  bits). FloppyDrive wraps the rotation at the exact bit with it. */
     private final int[] ipfTrackBits;
+
+    /**
+     * How many physical tracks the medium has: 160 for an ADF, the cylinder and head range
+     * of its INFO chunk for an IPF. A track past it was never formatted.
+     */
+    private final int formattedTracks;
 
     private final boolean[] dirtyTracks;
     private volatile boolean anyDirty = false;
 
-    // PERF: cache dell'encoding MFM per traccia (solo ADF). L'encoding è
-    // deterministico per traccia; si cacha e si invalida solo alla scrittura
-    // (markDirty). I buffer di lavoro sono scratch riusabili dell'istanza.
+    // PERF: per-track cache of the MFM encoding (ADF only). The encoding is deterministic
+    // per track; it is cached and invalidated only by a write (markDirty). The work
+    // buffers are reusable scratch arrays of the instance.
     private byte[][] mfmTrackCache;
     private final int[] adfTrackWordsScratch;
     private final int[] adfSectorMfmScratch;
     private long cyclesSinceLastFlush = 0L;
     private volatile boolean closed = false;
     /**
-     * Rete di sicurezza per il flush a processo che muore. È registrato <b>pigramente</b>,
-     * alla prima traccia sporca ({@link #markDirty}), non nel costruttore.
+     * Safety net that flushes when the process dies. It is registered <b>lazily</b>, at the
+     * first dirty track ({@link #markDirty}), not in the constructor.
      *
-     * <p>⛔ Un hook registrato è una radice GC viva per tutta la vita del JVM, e veniva
-     * tolto solo da {@link #close()}. Registrandolo per OGNI immagine — comprese quelle
-     * di sola lettura e gli IPF, che non possono mai sporcarsi — ogni macchina smontata
-     * senza espellere i dischi lasciava dietro fino a quattro hook e con loro l'intera
-     * {@code DiskImage}: {@code sectorData} è ~900 KB per ADF, gli {@code ipfMfmTracks}
-     * di più. Su una collezione intera (il game sweep boota un'istanza per file) sono
-     * centinaia di MB che non tornano indietro, più centinaia di Thread da avviare
-     * all'uscita. Pigro, l'hook esiste solo se c'è davvero qualcosa da salvare.
-     *
-     * <p>Il difetto complementare — nessuno espelleva i dischi — è chiuso in
-     * {@code Amija.shutdownMachine()}, che ora chiude i quattro drive.
+     * <p>A registered hook is a live GC root for the whole life of the JVM, removed only by
+     * {@link #close()}. Registered for EVERY image, read-only ones and IPFs included (which
+     * can never get dirty), every machine torn down without ejecting its disks would leave
+     * up to four hooks behind, and with them the whole {@code DiskImage}. Over a whole
+     * collection (the game sweep boots one instance per file) that is hundreds of MB that
+     * never come back. Lazily, the hook exists only when there is something to save.
+     * {@code Amija.shutdownMachine()} closes the four drives.
      */
     private Thread shutdownHook;
 
@@ -135,10 +135,10 @@ public final class DiskImage implements AutoCloseable {
     // =========================================================================
 
     /**
-     * Apre un'immagine disco dal path indicato.
+     * Opens a disk image from the given path.
      *
-     * @param path           percorso del file (.adf, .ipf o .zip)
-     * @param forceReadOnly  se {@code true} impone la sola lettura anche per ADF
+     * @param path           file path (.adf, .ipf or .zip)
+     * @param forceReadOnly  {@code true} forces read-only access for an ADF too
      */
     public static DiskImage open(Path path, boolean forceReadOnly) throws IOException {
         return open(path, forceReadOnly, 0);
@@ -149,12 +149,12 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Apre un'immagine disco da uno <i>spec</i>: un normale percorso file oppure la
-     * forma {@code <archivio>.zip!<n>} che indirizza l'n-esimo disco contenuto nello
-     * zip (vedi {@link #zipEntrySpec(String, int)}).
+     * Opens a disk image from a <i>spec</i>: a plain file path, or the form
+     * {@code <archive>.zip!<n>} naming the n-th disk inside the zip (see
+     * {@link #zipEntrySpec(String, int)}).
      *
-     * <p>Uno zip <b>senza</b> indice non è il suo primo disco ma il suo disco di
-     * <b>avvio</b> ({@link #zipDiskOrder}): è quello che si mette in DF0.
+     * <p>A zip <b>without</b> an index is not its first disk but its <b>boot</b> disk
+     * ({@link #zipDiskOrder}): the one that goes into DF0.
      */
     public static DiskImage open(String spec, boolean forceReadOnly) throws IOException {
         Path path = pathOf(spec);
@@ -165,8 +165,8 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * @param zipEntryIndex indice (0-based) del disco da estrarre quando {@code path}
-     *                      è uno zip; ignorato per .adf/.ipf
+     * @param zipEntryIndex index (0-based) of the disk to extract when {@code path} is a
+     *                      zip; ignored for .adf/.ipf
      */
     public static DiskImage open(Path path, boolean forceReadOnly, int zipEntryIndex)
             throws IOException {
@@ -181,48 +181,48 @@ public final class DiskImage implements AutoCloseable {
     }
 
     // -------------------------------------------------------------------------
-    // Spec "<archivio>.zip!<n>": indirizzamento del singolo disco in uno zip
+    // Spec "<archive>.zip!<n>": addressing a single disk inside a zip
     // -------------------------------------------------------------------------
 
-    /** Separatore fra il percorso dello zip e l'indice del disco al suo interno. */
+    /** Separator between the zip path and the index of the disk inside it. */
     public static final char ZIP_ENTRY_SEPARATOR = '!';
 
     private static final java.util.regex.Pattern ZIP_SPEC =
             java.util.regex.Pattern.compile("(?i)^(.*\\.zip)" + ZIP_ENTRY_SEPARATOR + "(\\d+)$");
 
-    /** Spec che indirizza l'{@code entryIndex}-esimo disco dentro {@code zipPath}. */
+    /** Spec naming the {@code entryIndex}-th disk inside {@code zipPath}. */
     public static String zipEntrySpec(String zipPath, int entryIndex) {
         return zipPath.trim() + ZIP_ENTRY_SEPARATOR + entryIndex;
     }
 
-    /** {@code true} se lo spec punta a uno zip (con o senza indice di disco). */
+    /** {@code true} if the spec points at a zip (with or without a disk index). */
     public static boolean isZipDisk(String spec) {
         if (spec == null) return false;
         String s = spec.trim().toLowerCase();
         return s.endsWith(".zip") || ZIP_SPEC.matcher(s).matches();
     }
 
-    /** Percorso del file su disco corrispondente allo spec (suffisso {@code !n} rimosso). */
+    /** Path of the file on disk for the spec ({@code !n} suffix removed). */
     public static Path pathOf(String spec) {
         String s = spec.trim();
         var m = ZIP_SPEC.matcher(s);
         return java.nio.file.Paths.get(m.matches() ? m.group(1) : s);
     }
 
-    /** {@code true} se lo spec porta il suffisso {@code !n} con l'indice del disco. */
+    /** {@code true} if the spec carries the {@code !n} suffix with the disk index. */
     public static boolean hasZipEntryIndex(String spec) {
         return spec != null && ZIP_SPEC.matcher(spec.trim()).matches();
     }
 
-    /** Indice del disco indirizzato dallo spec; 0 se non specificato. */
+    /** Index of the disk the spec names; 0 if none is given. */
     public static int zipEntryIndexOf(String spec) {
         var m = ZIP_SPEC.matcher(spec.trim());
         return m.matches() ? Integer.parseInt(m.group(2)) : 0;
     }
 
     /**
-     * Nomi dei dischi (.adf/.ipf) contenuti in uno zip, nell'ordine in cui vi
-     * compaiono: l'indice nella lista è quello usato da {@link #zipEntrySpec}.
+     * Names of the disks (.adf/.ipf) inside a zip, in the order they appear: the index in
+     * the list is the one {@link #zipEntrySpec} uses.
      */
     public static java.util.List<String> listZipDiskEntries(Path zipPath) throws IOException {
         var names = new java.util.ArrayList<String>();
@@ -237,19 +237,17 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Ordine in cui i dischi di uno zip vanno inseriti nei drive: per primo quello
-     * <b>avviabile</b> (blocco di boot AmigaDOS valido), poi tutti gli altri
-     * nell'ordine in cui compaiono nell'archivio.
+     * Order in which the disks of a zip go into the drives: the <b>bootable</b> one first
+     * (valid AmigaDOS boot block), then all the others in archive order.
      *
-     * <p>Serve perché dentro un archivio l'ordine è quello dei nomi, e il disco da
-     * cui si parte non è quasi mai il primo: «Data Disk 1..3» precede «Program
-     * Disk», «Data Disk» precede «Program Disk», e così via. Chi inserisce i
-     * floppy a mano mette in DF0 quello di avvio; questo metodo fa lo stesso.
+     * <p>Inside an archive the order is the names', and the disk to start from is hardly
+     * ever the first: "Data Disk 1..3" sorts before "Program Disk", and so on. Someone
+     * inserting floppies by hand puts the boot disk in DF0; this method does the same.
      *
-     * <p>Se nessun disco è avviabile — set di dischi dati, disco addon, gioco che
-     * si avvia da un'altra immagine — l'ordine resta quello dell'archivio.
+     * <p>If no disk is bootable (data disk sets, add-on disks, games booting from another
+     * image) the archive order stays.
      *
-     * @return gli indici dei dischi, lunghezza pari al numero di dischi nello zip
+     * @return the disk indices, as many as there are disks in the zip
      */
     public static int[] zipDiskOrder(Path zipPath) throws IOException {
         int count = listZipDiskEntries(zipPath).size();
@@ -258,7 +256,7 @@ public final class DiskImage implements AutoCloseable {
             try (DiskImage image = open(zipPath, true, i)) {
                 if (image.isBootable()) { boot = i; break; }
             } catch (IOException | RuntimeException ignored) {
-                // Disco illeggibile: non è candidato all'avvio, si prosegue.
+                // Unreadable disk: not a boot candidate, go on.
             }
         }
         int[] order = new int[count];
@@ -268,7 +266,7 @@ public final class DiskImage implements AutoCloseable {
         return order;
     }
 
-    /** Indice del disco avviabile dello zip, 0 se non ce n'è (o se lo zip è illeggibile). */
+    /** Index of the zip's bootable disk, 0 if there is none (or the zip is unreadable). */
     public static int zipBootDiskIndex(Path zipPath) {
         try {
             int[] order = zipDiskOrder(zipPath);
@@ -291,7 +289,7 @@ public final class DiskImage implements AutoCloseable {
         return name.endsWith(".adf") || name.endsWith(".ipf");
     }
 
-    /** Estrae l'{@code wanted}-esimo disco (.adf/.ipf) presente nello zip. */
+    /** Extracts the {@code wanted}-th disk (.adf/.ipf) in the zip. */
     private static ImageBytes readZippedDiskImage(Path path, int wanted) throws IOException {
         try (ZipFile zip = new ZipFile(path.toFile())) {
             Enumeration<? extends ZipEntry> entries = zip.entries();
@@ -328,7 +326,7 @@ public final class DiskImage implements AutoCloseable {
     }
 
     // =========================================================================
-    // Costruttore (privato)
+    // Constructor (private)
     // =========================================================================
 
     private DiskImage(Path filePath, Format format, byte[] raw, boolean readOnly)
@@ -349,6 +347,7 @@ public final class DiskImage implements AutoCloseable {
             mfmTrackCache = new byte[PHYSICAL_TRACKS][];
             adfTrackWordsScratch = new int[TRACK_BUFFER_BYTES / 2];
             adfSectorMfmScratch = new int[545];
+            formattedTracks = PHYSICAL_TRACKS;
         } else {
             sectorsPerTrack = SECTORS_PER_TRACK_DD;
             sectorData      = null;
@@ -356,27 +355,28 @@ public final class DiskImage implements AutoCloseable {
             ipfMfmTracks    = t.mfm;
             ipfTrackBits    = t.bits;
             ipfTrackDensity = t.density;
+            formattedTracks = t.trackCount;
             mfmTrackCache = null;
             adfTrackWordsScratch = null;
             adfSectorMfmScratch = null;
         }
 
         dirtyTracks = new boolean[PHYSICAL_TRACKS];
-        // Lo shutdown hook NON si registra qui: vedi il campo shutdownHook.
+        // The shutdown hook is NOT registered here: see the shutdownHook field.
     }
 
     // =========================================================================
-    // API per FloppyDrive — lettura
+    // API for FloppyDrive: reading
     // =========================================================================
 
     /**
-     * Restituisce {@value #TRACK_BUFFER_BYTES} byte di dati MFM per la traccia
-     * fisica indicata, pronti per essere caricati nel buffer di FloppyDrive.
+     * Returns {@value #TRACK_BUFFER_BYTES} bytes of MFM data for the given physical track,
+     * ready to be loaded into FloppyDrive's buffer.
      *
-     * <p>Per ADF l'encoding MFM viene eseguito on-demand ad ogni chiamata.
-     * Per IPF i dati sono già stati estratti all'apertura del file.
+     * <p>For an ADF the MFM encoding is made on demand and cached. For an IPF the data was
+     * extracted when the file was opened.
      *
-     * @param physicalTrack traccia fisica = cylinder × 2 + side  (0–159)
+     * @param physicalTrack physical track = cylinder x 2 + side
      */
     public byte[] readTrackMFM(int physicalTrack) {
         checkNotClosed();
@@ -390,8 +390,8 @@ public final class DiskImage implements AutoCloseable {
         }
         if (format != Format.ADF) return copyIpfMFM(physicalTrack);
 
-        // ADF: restituisci l'encoding MFM cachato (il chiamante loadTrackData ne fa
-        // una copia in trackBuffer, quindi è sicuro condividere l'istanza cachata).
+        // ADF: return the cached MFM encoding (the caller, loadTrackData, copies it into
+        // trackBuffer, so sharing the cached instance is safe).
         byte[] cached = mfmTrackCache[physicalTrack];
         if (cached == null) {
             cached = new byte[TRACK_BUFFER_BYTES];
@@ -402,14 +402,9 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Lunghezza in bit della traccia (per l'avvolgimento esatto della rotazione).
-     * Per ADF e tracce IPF vuote è la lunghezza standard ({@code byte × 8}); per le
-     * tracce IPF è il valore esatto {@code trkbits} (anche non multiplo di 8).
-     */
-    /**
-     * Mappa di densità della traccia: una voce per byte, 1000 = durata di cella
-     * nominale. {@code null} quando la densità è uniforme (caso normale, incluso
-     * ogni ADF): in quel caso il chiamante usa il periodo di cella costante.
+     * Density map of the track: one entry per byte, 1000 = nominal cell length.
+     * {@code null} when the density is uniform (the normal case, every ADF included): the
+     * caller then uses the constant cell period.
      */
     public int[] getTrackDensity(int physicalTrack) {
         if (format != Format.IPF || ipfTrackDensity == null
@@ -428,6 +423,19 @@ public final class DiskImage implements AutoCloseable {
         return gapWords > 0 ? (gapWords * 8) / 3 * 2 : -1;
     }
 
+    /**
+     * Whether the physical track lies past the medium's formatted tracks (cylinders 80-83 of
+     * an ADF, past the INFO range of an IPF). A drive reading it sees noise.
+     */
+    public boolean isUnformatted(int physicalTrack) {
+        return physicalTrack < 0 || physicalTrack >= formattedTracks;
+    }
+
+    /**
+     * Length of the track in bits, where the rotation wraps. For an ADF and empty IPF tracks
+     * it is the standard length ({@code bytes x 8}); for an IPF track the exact
+     * {@code trkbits} (not necessarily a multiple of 8).
+     */
     public int getTrackBits(int physicalTrack) {
         if (physicalTrack < 0 || physicalTrack >= PHYSICAL_TRACKS || !hasTrackData(physicalTrack))
             return TRACK_BUFFER_BYTES * 8;
@@ -437,8 +445,7 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Restituisce {@value #SECTOR_SIZE} byte di dati raw per il settore indicato.
-     * Disponibile solo per immagini ADF.
+     * Returns the {@value #SECTOR_SIZE} raw data bytes of the given sector. ADF images only.
      */
     public byte[] readSector(int physicalTrack, int sectorIndex) {
         byte[] out = new byte[SECTOR_SIZE];
@@ -459,12 +466,12 @@ public final class DiskImage implements AutoCloseable {
     }
 
     // =========================================================================
-    // API per FloppyDrive — scrittura (solo ADF non write-protected)
+    // API for FloppyDrive: writing (non write-protected ADF only)
     // =========================================================================
 
     /**
-     * Scrive {@value #SECTOR_SIZE} byte di dati raw nel settore indicato.
-     * La traccia viene marcata dirty per il successivo flush.
+     * Writes {@value #SECTOR_SIZE} raw data bytes to the given sector. The track is marked
+     * dirty for the next flush.
      */
     public void writeSector(int physicalTrack, int sectorIndex, byte[] data) {
         checkWritable();
@@ -477,8 +484,7 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Scrive tutti i settori di una traccia fisica (sectorsPerTrack × 512 byte).
-     * Chiamato da FloppyDrive al termine di un trasferimento DMA in scrittura.
+     * Writes all the sectors of a physical track (sectorsPerTrack x 512 bytes).
      */
     public void writeTrack(int physicalTrack, byte[] sectors) {
         checkWritable();
@@ -491,23 +497,20 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Riversa nell'immagine una traccia MFM incisa dal drive, decodificandone i
-     * settori in formato AmigaDOS (l'inverso esatto di {@link #encodeAdfToMFM}).
+     * Stores an MFM track written by the drive into the image, decoding its sectors in
+     * AmigaDOS format (the exact inverse of {@link #encodeAdfToMFM}).
      *
-     * <p>Il bitstream è trattato come CIRCOLARE: la scrittura parte dalla posizione
-     * angolare in cui si trovava la testina, quindi un settore può attraversare il
-     * punto di avvolgimento della traccia. La scansione cerca le word di sync
-     * {@code $4489} bit per bit — i dati incisi non sono allineati al byte del
-     * buffer — e accetta un settore solo se il checksum di header E quello dei dati
-     * tornano, così le celle rimaste della traccia precedente (gap non riscritti)
-     * non possono corrompere i settori.
+     * <p>The bitstream is CIRCULAR: the write starts at the angular position the head was
+     * at, so a sector can cross the wrap point of the track. The scan looks for the
+     * {@code $4489} sync words bit by bit (the written data is not aligned to the buffer's
+     * bytes) and accepts a sector only if both the header and the data checksums match, so
+     * cells left over from the previous track (gaps not rewritten) cannot corrupt sectors.
      *
-     * <p>Come WinUAE ({@code drive_write_adf_amigados}) sono supportati i soli
-     * settori AmigaDOS standard: un formato custom non è rappresentabile in un ADF
-     * e viene silenziosamente ignorato.
+     * <p>Only standard AmigaDOS sectors are supported: a custom format cannot be represented
+     * in an ADF and is ignored.
      *
-     * @param lenBytes lunghezza utile della traccia nel buffer
-     * @return numero di settori effettivamente decodificati e scritti
+     * @param lenBytes useful length of the track in the buffer
+     * @return number of sectors actually decoded and written
      */
     public synchronized int writeTrackMFM(int physicalTrack, byte[] mfm, int lenBytes) {
         if (closed || readOnly || format != Format.ADF || mfm == null) return 0;
@@ -521,15 +524,15 @@ public final class DiskImage implements AutoCloseable {
         boolean[] seen = new boolean[sectorsPerTrack];
         int written = 0;
 
-        // Scansione con shift register a 16 bit: un giro completo più la finestra
-        // iniziale, così anche una sync a cavallo dell'avvolgimento viene trovata.
+        // Scan with a 16-bit shift register: a full revolution plus the initial window,
+        // so a sync straddling the wrap is found too.
         int shift = 0;
         for (int i = 0; i < totalBits + 15; i++) {
             shift = ((shift << 1) | mfmBit(mfm, totalBits, i)) & 0xFFFF;
             if (i < 15 || shift != MFM_SYNC) continue;
 
-            // Inizio dell'header: subito dopo l'ultima sync consecutiva
-            // (il formato standard ne scrive due).
+            // Start of the header: right after the last consecutive sync (the standard
+            // format writes two).
             int pos = i + 1;
             for (int extra = 0; extra < 4 && mfmWord(mfm, totalBits, pos) == MFM_SYNC; extra++) {
                 pos += 16;
@@ -544,7 +547,7 @@ public final class DiskImage implements AutoCloseable {
                                  SECTOR_SIZE);
                 written++;
             }
-            // Salta oltre il settore appena decodificato (−1: il for incrementa).
+            // Skip past the sector just decoded (-1: the loop increments).
             i = pos + SECTOR_MFM_WORDS * 16 - 1;
             shift = 0;
         }
@@ -553,28 +556,28 @@ public final class DiskImage implements AutoCloseable {
         return written;
     }
 
-    /** Word di sincronizzazione MFM standard AmigaDOS. */
+    /** Standard AmigaDOS MFM sync word. */
     private static final int MFM_SYNC = 0x4489;
-    /** Word MFM di un settore dopo la sync: info(4) + label(16) + chk(8) + dati(512). */
+    /** MFM words of a sector after the sync: info(4) + label(16) + chk(8) + data(512). */
     private static final int SECTOR_MFM_WORDS = 540;
 
     /**
-     * Decodifica un settore la cui area dati inizia alla posizione {@code pos}
-     * (prima word dell'header, subito dopo le sync).
+     * Decodes a sector whose data starts at {@code pos} (first word of the header, right
+     * after the syncs).
      *
-     * @return numero del settore, oppure −1 se non è un settore valido per questa
-     *         traccia (formato, numero di traccia o checksum non conformi)
+     * @return the sector number, or -1 if it is not a valid sector of this track (format,
+     *         track number or checksums do not match)
      */
     private int decodeSectorMFM(int physicalTrack, byte[] mfm, int totalBits, int pos,
                                 byte[] out) {
-        // Word 0-3: info = format(FF) | track | sector | settori fino a fine traccia
+        // Words 0-3: info = format(FF) | track | sector | sectors to the end of the track
         int info = mfmOddEvenLong(mfm, totalBits, pos, pos + 2 * 16);
         if (((info >>> 24) & 0xFF) != 0xFF)             return -1;
         if (((info >>> 16) & 0xFF) != physicalTrack)    return -1;
         int num = (info >>> 8) & 0xFF;
         if (num >= sectorsPerTrack)                     return -1;
 
-        // Word 0-19 (info + label) → checksum di header nelle word 20-23.
+        // Words 0-19 (info + label) -> header checksum in words 20-23.
         int headerChecksum = 0;
         for (int w = 0; w < 20; w += 2) {
             headerChecksum ^= (mfmDataWord(mfm, totalBits, pos + w * 16) << 16)
@@ -583,7 +586,7 @@ public final class DiskImage implements AutoCloseable {
         if (headerChecksum != mfmOddEvenLong(mfm, totalBits, pos + 20 * 16, pos + 22 * 16))
             return -1;
 
-        // Word 28-539 (dati) → checksum dei dati nelle word 24-27.
+        // Words 28-539 (data) -> data checksum in words 24-27.
         int dataChecksum = 0;
         for (int w = 28; w < SECTOR_MFM_WORDS; w += 2) {
             dataChecksum ^= (mfmDataWord(mfm, totalBits, pos + w * 16) << 16)
@@ -592,7 +595,7 @@ public final class DiskImage implements AutoCloseable {
         if (dataChecksum != mfmOddEvenLong(mfm, totalBits, pos + 24 * 16, pos + 26 * 16))
             return -1;
 
-        // 128 long: metà odd nelle word 28-283, metà even nelle word 284-539.
+        // 128 longs: odd halves in words 28-283, even halves in words 284-539.
         for (int i = 0; i < SECTOR_SIZE / 4; i++) {
             int value = mfmOddEvenLong(mfm, totalBits,
                                        pos + (28 + 2 * i) * 16,
@@ -606,10 +609,10 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Blocco di boot: i settori 0 e 1 della traccia 0, decodificati dal MFM come
-     * fa il drive. Vale per ogni formato, perché parte dal bitstream.
+     * Boot block: sectors 0 and 1 of track 0, decoded from the MFM as the drive does. It
+     * works for every format, since it starts from the bitstream.
      *
-     * @return 1024 byte, oppure {@code null} se uno dei due settori non c'è
+     * @return 1024 bytes, or {@code null} if either sector is missing
      */
     public byte[] readBootBlock() {
         byte[] mfm = readTrackMFM(0);
@@ -635,11 +638,10 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * {@code true} se il disco si avvia: firma {@code DOS} e checksum del blocco
-     * di boot valido, gli stessi due controlli che fa lo strap del Kickstart. Un
-     * disco formattato ma senza {@code install}, o riempito dal duplicatore con
-     * un motivo di filler, non li supera — ed è per quello che il Kickstart
-     * continua a chiedere un disco.
+     * {@code true} if the disk boots: {@code DOS} signature and a valid boot block
+     * checksum, the same two checks the Kickstart's strap makes. A disk formatted but never
+     * {@code install}ed, or filled with a filler pattern by the duplicator, fails them, and
+     * that is why the Kickstart keeps asking for a disk.
      */
     public boolean isBootable() {
         byte[] boot = readBootBlock();
@@ -649,32 +651,32 @@ public final class DiskImage implements AutoCloseable {
         for (int i = 0; i < boot.length; i += 4) {
             sum += ((boot[i]     & 0xFFL) << 24) | ((boot[i + 1] & 0xFFL) << 16)
                  | ((boot[i + 2] & 0xFFL) << 8)  |  (boot[i + 3] & 0xFFL);
-            if (sum > 0xFFFFFFFFL) sum = (sum & 0xFFFFFFFFL) + 1; // riporto di fine giro
+            if (sum > 0xFFFFFFFFL) sum = (sum & 0xFFFFFFFFL) + 1; // end-around carry
         }
         return sum == 0xFFFFFFFFL;
     }
 
-    /** Cella MFM alla posizione indicata; la traccia è circolare. */
+    /** MFM cell at the given position; the track is circular. */
     private static int mfmBit(byte[] mfm, int totalBits, int bitPos) {
         int p = bitPos % totalBits;
         return (mfm[p >> 3] >> (7 - (p & 7))) & 1;
     }
 
-    /** 16 celle MFM a partire dalla posizione indicata (MSB first). */
+    /** 16 MFM cells from the given position (MSB first). */
     private static int mfmWord(byte[] mfm, int totalBits, int bitPos) {
         int word = 0;
         for (int i = 0; i < 16; i++) word = (word << 1) | mfmBit(mfm, totalBits, bitPos + i);
         return word;
     }
 
-    /** Come {@link #mfmWord} ma senza i bit di clock: restano i soli bit dati. */
+    /** Like {@link #mfmWord} without the clock bits: the data bits only. */
     private static int mfmDataWord(byte[] mfm, int totalBits, int bitPos) {
         return mfmWord(mfm, totalBits, bitPos) & 0x5555;
     }
 
     /**
-     * Ricompone un long dalle due metà odd/even di {@link #putOddEvenLong}
-     * (2 word ciascuna): {@code (odd << 1) | even} sui soli bit dati.
+     * Rebuilds a long from the odd/even halves of {@link #putOddEvenLong} (2 words each):
+     * {@code (odd << 1) | even} on the data bits only.
      */
     private static int mfmOddEvenLong(byte[] mfm, int totalBits, int oddBit, int evenBit) {
         int odd  = (mfmDataWord(mfm, totalBits, oddBit) << 16)
@@ -689,9 +691,8 @@ public final class DiskImage implements AutoCloseable {
     // =========================================================================
 
     /**
-     * Deve essere chiamato ad ogni tick di FloppyDrive passando il numero di
-     * cicli di clock trascorsi. Esegue automaticamente un flush periodico delle
-     * tracce dirty ogni {@value #FLUSH_INTERVAL_CYCLES} cicli (~5 s PAL).
+     * Called at every FloppyDrive tick with the clock cycles elapsed. Flushes the dirty
+     * tracks every {@value #FLUSH_INTERVAL_CYCLES} cycles (~5 s PAL).
      */
     public void tickCycles(long cycles) {
         if (!anyDirty || readOnly) return;
@@ -703,8 +704,8 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Scrive su disco solo le tracce dirty tramite accesso random al file,
-     * senza riscrivere l'intera immagine. Operazione idempotente.
+     * Writes only the dirty tracks to disk through random access to the file, without
+     * rewriting the whole image. Idempotent.
      */
     public synchronized void flush() throws IOException {
         if (!anyDirty || readOnly || format != Format.ADF || closed) return;
@@ -721,22 +722,20 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Flush finale e rilascio risorse. Da chiamare esplicitamente all'eject
-     * o alla chiusura dell'emulatore. Lo shutdown hook garantisce il flush
-     * anche se questo metodo non viene invocato.
+     * Final flush and release of resources, at eject or when the emulator closes. The
+     * shutdown hook guarantees the flush even if this is never called.
      */
     @Override
     public synchronized void close() throws IOException {
         if (!closed) {
-            // Il flush DEVE precedere closed=true: flush() esce subito su immagine
-            // chiusa, quindi invertendo l'ordine l'ultimo flush (eject, chiusura
-            // dell'emulatore, shutdown hook) veniva silenziosamente saltato e le
-            // tracce dirty non ancora scaricate dal flush periodico andavano perse.
+            // The flush MUST come before closed=true: flush() returns at once on a closed
+            // image, so the other order would silently skip the last flush and lose the
+            // dirty tracks the periodic flush had not written yet.
             flush();
             closed = true;
             if (shutdownHook != null) {
                 try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
-                catch (IllegalStateException ignored) {} // JVM già in shutdown
+                catch (IllegalStateException ignored) {} // JVM already shutting down
                 shutdownHook = null;
             }
         }
@@ -749,15 +748,15 @@ public final class DiskImage implements AutoCloseable {
     private synchronized void markDirty(int physicalTrack) {
         dirtyTracks[physicalTrack] = true;
         anyDirty = true;
-        // Invalida l'encoding MFM cachato: i dati del settore sono cambiati.
+        // Invalidate the cached MFM encoding: the sector data has changed.
         if (mfmTrackCache != null) mfmTrackCache[physicalTrack] = null;
         armShutdownHook();
     }
 
     /**
-     * Registra la rete di sicurezza del flush alla prima traccia sporca. Idempotente;
-     * non fa nulla su immagine di sola lettura, non-ADF o già chiusa — lì non c'è
-     * niente da salvare. Vedi il campo {@link #shutdownHook}.
+     * Registers the flush safety net at the first dirty track. Idempotent; does nothing on
+     * a read-only, non-ADF or closed image, where there is nothing to save. See the
+     * {@link #shutdownHook} field.
      */
     private void armShutdownHook() {
         if (shutdownHook != null || closed || readOnly || format != Format.ADF) return;
@@ -767,13 +766,13 @@ public final class DiskImage implements AutoCloseable {
             Runtime.getRuntime().addShutdownHook(hook);
             shutdownHook = hook;
         } catch (IllegalStateException ignored) {
-            // JVM già in shutdown: il flush finale lo fa comunque close(), e se non
-            // arriva non c'è più nessuno che possa registrare alcunché.
+            // JVM already shutting down: close() makes the final flush anyway, and if it
+            // does not come there is nobody left to register anything.
         }
     }
 
     // =========================================================================
-    // Proprietà
+    // Properties
     // =========================================================================
 
     public Format  getFormat()          { return format; }
@@ -783,7 +782,7 @@ public final class DiskImage implements AutoCloseable {
     public Path    getFilePath()        { return filePath; }
 
     // =========================================================================
-    // Validazione
+    // Validation
     // =========================================================================
 
     private void checkNotClosed() {
@@ -812,7 +811,7 @@ public final class DiskImage implements AutoCloseable {
     }
 
     // =========================================================================
-    // ADF → MFM encoding
+    // ADF -> MFM encoding
     // =========================================================================
 
     private synchronized void encodeAdfToMFM(int physicalTrack, byte[] encoded) {
@@ -915,41 +914,40 @@ public final class DiskImage implements AutoCloseable {
     // IPF parser
     // =========================================================================
 
-    // Dimensione di un Block Descriptor (8 × uint32) nell'area dati di un DATA chunk.
+    // Size of a Block Descriptor (8 x uint32) in the data area of a DATA chunk.
     private static final int IPF_BLOCK_DESC_SIZE = 32;
 
-    /**
-     * Parser del formato IPF (SPS/CAPS, encoder CAPS) — sola lettura.
-     *
-     * <p>Struttura del file: una sequenza di chunk, ognuno con header di 12 byte
-     * (tag[4] + length[4] + crc[4], big-endian), dove {@code length} include
-     * l'header. I chunk rilevanti:
-     * <ul>
-     *   <li><b>CAPS</b>/<b>INFO</b> — magic e metadati;</li>
-     *   <li><b>IMGE</b> — un descrittore per ogni traccia: cilindro, testina,
-     *       numero di blocchi (settori) e l'id {@code dat_chunk} che la collega
-     *       al proprio DATA;</li>
-     *   <li><b>DATA</b> — i dati codificati di una traccia. La {@code length}
-     *       del chunk copre SOLO il descrittore (16 byte: size, bsize, dcrc,
-     *       dat_chunk); i {@code size} byte dell'<i>area dati</i> seguono il
-     *       chunk e NON sono inclusi nella sua length.</li>
-     * </ul>
-     *
-     * <p>Tutti gli IMGE precedono i DATA. L'area dati di un DATA contiene
-     * {@code blockCount} Block Descriptor da {@value #IPF_BLOCK_DESC_SIZE} byte;
-     * il campo {@code dataOffset} (8° uint32) punta, relativamente all'inizio
-     * dell'area, allo "stream" del blocco. Lo stream è una sequenza di elementi
-     * (sync/data/gap/raw/fuzzy) che vengono assemblati in MFM da
-     * {@link #decodeBlockStream}.
-     */
-    /** Tracce IPF decodificate: bitstream MFM + lunghezza esatta in bit. */
+    /** Decoded IPF tracks: MFM bitstream + exact length in bits. */
     private static final class IpfTracks {
         final byte[][] mfm  = new byte[PHYSICAL_TRACKS][];
         final int[]    bits = new int[PHYSICAL_TRACKS];
-        /** Densità per-byte (1000 = nominale); null = densità uniforme. */
+        /** Per-byte density (1000 = nominal); null = uniform density. */
         final int[][]  density = new int[PHYSICAL_TRACKS][];
+        /** Tracks of the cylinder and head range declared by INFO. */
+        int trackCount = PHYSICAL_TRACKS;
     }
 
+    /**
+     * Parser of the IPF format (SPS/CAPS, CAPS encoder), read only.
+     *
+     * <p>The file is a sequence of chunks, each with a 12-byte header (tag[4] + length[4] +
+     * crc[4], big-endian) where {@code length} includes the header. The relevant chunks:
+     * <ul>
+     *   <li><b>CAPS</b>/<b>INFO</b> - magic and metadata, among them the cylinder and head
+     *       range;</li>
+     *   <li><b>IMGE</b> - one descriptor per track: cylinder, head, number of blocks
+     *       (sectors) and the {@code dat_chunk} id linking it to its DATA;</li>
+     *   <li><b>DATA</b> - the encoded data of a track. The chunk's {@code length} covers ONLY
+     *       the descriptor (16 bytes: size, bsize, dcrc, dat_chunk); the {@code size} bytes
+     *       of the <i>data area</i> follow the chunk and are NOT included in its length.</li>
+     * </ul>
+     *
+     * <p>All IMGE chunks come before the DATA ones. The data area of a DATA holds
+     * {@code blockCount} Block Descriptors of {@value #IPF_BLOCK_DESC_SIZE} bytes; their
+     * {@code dataOffset} field (8th uint32) points, relative to the start of the area, at
+     * the block's "stream": a sequence of elements (sync/data/gap/raw/fuzzy) that
+     * {@link #decodeBlockStream} assembles into MFM.
+     */
     private static IpfTracks parseIpf(byte[] raw) throws IOException {
         if (!isIpfMagic(raw))
             throw new IOException("IPF: magic 'CAPS' non trovato");
@@ -957,7 +955,7 @@ public final class DiskImage implements AutoCloseable {
         IpfTracks out = new IpfTracks();
         ByteBuffer buf = ByteBuffer.wrap(raw).order(ByteOrder.BIG_ENDIAN);
 
-        // 1ª passata: raccogli gli IMGE indicizzati per dat_chunk (precedono i DATA).
+        // First pass: collect the IMGE chunks indexed by dat_chunk (they precede the DATA).
         java.util.Map<Integer, IpfImge> imgeByDat = new java.util.HashMap<>();
         int pos = 0;
         while (pos + 12 <= raw.length) {
@@ -970,21 +968,26 @@ public final class DiskImage implements AutoCloseable {
                 IpfImge im   = new IpfImge();
                 im.cylinder  = buf.getInt(body);
                 im.head      = buf.getInt(body + 4);
-                im.denType   = buf.getInt(body + 8);  // tipo di densità (enum cpden*)
-                im.trkSize   = buf.getInt(body + 16); // dimensione traccia in byte
-                im.startBit  = buf.getInt(body + 24); // posizione di partenza (bit)
-                im.trackBits = buf.getInt(body + 36); // lunghezza traccia (bit)
+                im.denType   = buf.getInt(body + 8);  // density type (cpden* enum)
+                im.trkSize   = buf.getInt(body + 16); // track size in bytes
+                im.startBit  = buf.getInt(body + 24); // start position (bits)
+                im.trackBits = buf.getInt(body + 36); // track length (bits)
                 im.blockCnt  = buf.getInt(body + 40);
                 im.datChunk  = buf.getInt(body + 52);
                 imgeByDat.put(im.datChunk, im);
+            } else if ("INFO".equals(tag) && size - 12 >= 40) {
+                // mincylinder, maxcylinder, minhead, maxhead
+                int cylinders = buf.getInt(body + 28) - buf.getInt(body + 24) + 1;
+                int heads     = buf.getInt(body + 36) - buf.getInt(body + 32) + 1;
+                if (cylinders > 0 && heads > 0) out.trackCount = cylinders * heads;
             } else if ("DATA".equals(tag) && size - 12 >= 16) {
-                // L'area dati segue il chunk e NON è conteggiata in size.
-                next += buf.getInt(body); // body+0 = size (byte) dell'area dati
+                // The data area follows the chunk and is NOT counted in size.
+                next += buf.getInt(body); // body+0 = size (bytes) of the data area
             }
             pos = next;
         }
 
-        // 2ª passata: decodifica ogni DATA verso la traccia del proprio IMGE.
+        // Second pass: decode every DATA into the track of its IMGE.
         pos = 0;
         while (pos + 12 <= raw.length) {
             String tag = new String(raw, pos, 4, StandardCharsets.ISO_8859_1);
@@ -995,7 +998,7 @@ public final class DiskImage implements AutoCloseable {
             if ("DATA".equals(tag) && size - 12 >= 16) {
                 int areaSize  = buf.getInt(body);
                 int datChunk  = buf.getInt(body + 12);
-                int area      = body + 16; // inizio area dati (dopo il descrittore)
+                int area      = body + 16; // start of the data area (after the descriptor)
                 next += areaSize;
                 IpfImge im = imgeByDat.get(datChunk);
                 if (im != null && area + areaSize <= raw.length
@@ -1011,7 +1014,7 @@ public final class DiskImage implements AutoCloseable {
             pos = next;
         }
 
-        // Tracce senza dati → buffer MFM "vuoto" (clock pattern 0xAA).
+        // Tracks without data -> "empty" MFM buffer (clock pattern 0xAA).
         for (int t = 0; t < PHYSICAL_TRACKS; t++)
             if (out.mfm[t] == null) {
                 out.mfm[t]  = blankMfmTrack();
@@ -1022,17 +1025,16 @@ public final class DiskImage implements AutoCloseable {
     }
 
     /**
-     * Assembla una traccia a livello di BIT (come CAPSImg CCapsImageStd::ProcessImage):
-     * i blocchi sono scritti a partire da {@code startbit} avvolgendosi su esattamente
-     * {@code trkbits} bit (le long track di protezione non sono multiple di 8 bit).
-     * Ogni blocco produce {@code blockbits} celle (dallo stream sync/data) seguite da
-     * {@code gapbits} celle di gap; all'ultimo blocco si aggiunge la differenza fra la
-     * lunghezza della traccia e la somma dei blocchi (track gap).
+     * Assembles a track at BIT level: the blocks are written from {@code startbit},
+     * wrapping at exactly {@code trkbits} bits (protection long tracks are not multiples
+     * of 8 bits). Every block produces {@code blockbits} cells (from the sync/data stream)
+     * followed by {@code gapbits} gap cells; the last block also gets the difference
+     * between the track length and the sum of the blocks (track gap).
      */
     private static byte[] decodeIpfTrack(byte[] raw, ByteBuffer buf, int area, IpfImge im) {
         TrackBitBuf w = new TrackBitBuf(im.trackBits);
 
-        // Somma blockbits+gapbits di tutti i blocchi (dsctrackbc) per il track gap.
+        // Sum of blockbits+gapbits over all blocks, for the track gap.
         int sum = 0;
         for (int b = 0; b < im.blockCnt; b++) {
             int d = area + b * IPF_BLOCK_DESC_SIZE;
@@ -1046,26 +1048,25 @@ public final class DiskImage implements AutoCloseable {
             int d = area + b * IPF_BLOCK_DESC_SIZE;
             if (d + IPF_BLOCK_DESC_SIZE > raw.length) break;
             int gapBits    = buf.getInt(d + 4);
-            int dataOffset = buf.getInt(d + 28); // 8° uint32 = offset stream nel data area
+            int dataOffset = buf.getInt(d + 28); // 8th uint32 = stream offset in the data area
             if (b == im.blockCnt - 1 && trackDiff > 0) gapBits += trackDiff;
 
-            decodeBlockStream(raw, area + dataOffset, w); // celle blockbits (sync + dati)
-            w.fillGap(gapBits);                            // celle di gap (MFM di zeri)
+            decodeBlockStream(raw, area + dataOffset, w); // blockbits cells (sync + data)
+            w.fillGap(gapBits);                            // gap cells (MFM of zeros)
         }
         return w.buf();
     }
 
     /**
-     * Decodifica lo stream di un blocco scrivendone le celle MFM nel buffer di traccia.
-     * Header elemento: 5 bit bassi = tipo (0=fine, 1=sync, 2=data, 3=gap, 4=raw,
-     * 5=fuzzy), 3 bit alti = numero di byte del campo count che segue; poi {@code count}
-     * byte di payload. Sync/raw sono già celle MFM; data/gap/fuzzy sono dati decodificati
-     * e vengono codificati in MFM.
+     * Decodes a block's stream, writing its MFM cells into the track buffer. Element
+     * header: low 5 bits = type (0=end, 1=sync, 2=data, 3=gap, 4=raw, 5=fuzzy), high 3 bits
+     * = number of bytes of the count field that follows; then {@code count} payload bytes.
+     * Sync/raw are MFM cells already; data/gap/fuzzy are decoded data and get MFM encoded.
      */
     private static void decodeBlockStream(byte[] raw, int pos, TrackBitBuf w) {
         while (pos < raw.length) {
             int head = raw[pos++] & 0xFF;
-            if (head == 0) break; // fine stream
+            if (head == 0) break; // end of stream
             int type = head & 0x1F;
             int sw   = (head >> 5) & 0x07;
             int count = 0;
@@ -1073,17 +1074,17 @@ public final class DiskImage implements AutoCloseable {
                 count = (count << 8) | (raw[pos++] & 0xFF);
             if (count < 0 || pos + count > raw.length) count = Math.max(0, raw.length - pos);
             switch (type) {
-                case 1, 4 -> w.writeRaw(raw, pos, count);   // sync / raw → celle MFM verbatim
-                case 2, 3, 5 -> w.writeMfm(raw, pos, count); // data / gap / fuzzy → MFM
-                default -> { /* 0 gestito sopra; tipi ignoti: salta */ }
+                case 1, 4 -> w.writeRaw(raw, pos, count);   // sync / raw -> MFM cells verbatim
+                case 2, 3, 5 -> w.writeMfm(raw, pos, count); // data / gap / fuzzy -> MFM
+                default -> { /* 0 handled above; unknown types: skip */ }
             }
             pos += count;
         }
     }
 
     /**
-     * Scrittore a livello di bit nel buffer di traccia, con avvolgimento esatto a
-     * {@code trackBits} bit. Mantiene l'ultimo data bit per i clock bit MFM.
+     * Bit-level writer into the track buffer, wrapping at exactly {@code trackBits} bits.
+     * Keeps the last data bit for the MFM clock bits.
      */
     private static final class TrackBitBuf {
         private final byte[] buf;
@@ -1105,7 +1106,7 @@ public final class DiskImage implements AutoCloseable {
             if (++pos >= trackBits) pos = 0;
         }
 
-        /** sync/raw: i byte sono già celle MFM, copiate bit per bit (MSB first). */
+        /** sync/raw: the bytes are MFM cells already, copied bit by bit (MSB first). */
         void writeRaw(byte[] src, int off, int len) {
             for (int i = 0; i < len; i++) {
                 int b = src[off + i] & 0xFF;
@@ -1114,8 +1115,8 @@ public final class DiskImage implements AutoCloseable {
             if (len > 0) prevData = src[off + len - 1] & 1;
         }
 
-        /** data/gap/fuzzy: i byte sono dati decodificati → 16 celle MFM per byte
-         *  (clock,data); clock = 1 sse il data bit precedente e quello corrente sono 0. */
+        /** data/gap/fuzzy: the bytes are decoded data -> 16 MFM cells per byte
+         *  (clock, data); clock = 1 iff the previous and the current data bits are 0. */
         void writeMfm(byte[] src, int off, int len) {
             for (int i = 0; i < len; i++) {
                 int b = src[off + i] & 0xFF;
@@ -1128,7 +1129,7 @@ public final class DiskImage implements AutoCloseable {
             }
         }
 
-        /** Riempie {@code cells} celle di gap (MFM di data bit a 0 → pattern clock,0). */
+        /** Fills {@code cells} gap cells (MFM of 0 data bits -> clock,0 pattern). */
         void fillGap(int cells) {
             for (int i = 0; i < cells; i++) {
                 if ((i & 1) == 0) {
@@ -1150,25 +1151,22 @@ public final class DiskImage implements AutoCloseable {
         int denType, trkSize;
     }
 
-    // Tipi di densità IPF (CapsDefinitions.h, enum cpden*).
+    // IPF density types (cpden* enum).
     private static final int CPDEN_CLAMIGA  = 3; // Copylock Amiga
-    private static final int CPDEN_CLAMIGA2 = 4; // Copylock Amiga, nuovo
+    private static final int CPDEN_CLAMIGA2 = 4; // Copylock Amiga, new
 
     /**
-     * Costruisce la mappa di densità per-byte della traccia (1000 = durata di cella
-     * nominale), come {@code CCapsImageStd::DecodeDensity} di CAPSImg.
+     * Builds the track's per-byte density map (1000 = nominal cell length).
      *
-     * <p>Le tracce del Rob Northen Copylock sono scritte con tre regioni a velocità
-     * DIVERSA, ed è esattamente quello che la protezione misura: legge 1024 byte
-     * dopo un sync contando i cicli di polling di DSKBYTR, e confronta il risultato
-     * fra i vari sync. Con densità uniforme le tre misure risultano identiche e il
-     * controllo fallisce (Barbarian II: schermo nero, caricamento fermo).
+     * <p>Rob Northen Copylock tracks are written with three regions at DIFFERENT speeds,
+     * and that is exactly what the protection measures: it reads 1024 bytes after a sync
+     * counting DSKBYTR polling loops, and compares the result across the syncs. With a
+     * uniform density the three measurements come out identical and the check fails
+     * (Barbarian II: black screen, loading stopped). The drive takes each cell's length
+     * from this map: {@code base * density[pos / 8] / 1000}.
      *
-     * <p>WinUAE usa la stessa mappa: {@code disk.cpp updatetrackspeed()} calcola
-     * {@code trackspeed = base * tracktiming[mfmpos / 8] / 1000}.
-     *
-     * @return una voce per byte di traccia, oppure {@code null} se la densità è
-     *         uniforme (nessun costo aggiuntivo nel caso normale)
+     * @return one entry per track byte, or {@code null} if the density is uniform (no
+     *         extra cost in the normal case)
      */
     private static int[] buildIpfDensity(byte[] raw, ByteBuffer buf, int area, IpfImge im) {
         boolean cla  = im.denType == CPDEN_CLAMIGA;
@@ -1180,11 +1178,11 @@ public final class DiskImage implements AutoCloseable {
         int[] timing = new int[timeCnt];
         Arrays.fill(timing, 1000);
 
-        // CLA modifica i blocchi 4/5/6 e parte dal gap del blocco 3;
-        // CLA2 modifica i blocchi 0/1/2 e parte dal gap dell'ultimo blocco.
+        // CLA modifies blocks 4/5/6 and starts from the gap of block 3;
+        // CLA2 modifies blocks 0/1/2 and starts from the gap of the last block.
         int firstMod = cla ? 4 : 0;
         int seedBlk  = cla ? 3 : im.blockCnt - 1;
-        int lg = byteSize(blockField(raw, buf, area, seedBlk, 4)); // gapbits del blocco seme
+        int lg = byteSize(blockField(raw, buf, area, seedBlk, 4)); // gapbits of the seed block
         int pos = im.startBit >> 3;                                // sdpos = startbit / 8
 
         for (int b = 0; b < im.blockCnt; b++) {
@@ -1204,13 +1202,13 @@ public final class DiskImage implements AutoCloseable {
         return timing;
     }
 
-    /** Legge un campo (offset in byte) del descrittore di blocco {@code blk}. */
+    /** Reads a field (byte offset) of the descriptor of block {@code blk}. */
     private static int blockField(byte[] raw, ByteBuffer buf, int area, int blk, int off) {
         int d = area + blk * IPF_BLOCK_DESC_SIZE + off;
         return (blk < 0 || d < 0 || d + 4 > raw.length) ? 0 : buf.getInt(d);
     }
 
-    /** CBitBuffer::CalculateByteSize — arrotondamento per eccesso a byte. */
+    /** Bits rounded up to whole bytes. */
     private static int byteSize(int bits) {
         return (bits + 7) >> 3;
     }

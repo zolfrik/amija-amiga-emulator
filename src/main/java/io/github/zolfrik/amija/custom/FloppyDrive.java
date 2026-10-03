@@ -27,40 +27,32 @@ import java.util.Arrays;
 import java.util.function.IntConsumer;
 
 /**
- * Emulazione del meccanismo floppy disk Amiga.
+ * An Amiga floppy drive mechanism.
  *
- * Segue le specifiche hardware Commodore Amiga:
- * - /MTR  (Active LOW): Latchato sul fronte di discesa di /SEL.
- * - /SELx (Active LOW): Seleziona il drive.
- * - /STEP (Active LOW): Un impulso (fronte di discesa) muove la testina.
- * - DIR   (0=INWARD/tk++, 1=OUTWARD/tk0): Direzione del passo.
- * - /RDY  (Active LOW): LOW quando il motore è a regime o bit ID valido.
- * - /TK0  (Active LOW): LOW quando la testina è sulla traccia 0.
- * - /WPRO (Active LOW): LOW quando il disco è protetto da scrittura.
- * - /CHNG (Active LOW): Latchato a LOW al cambio disco, resettato da STEP con disco.
+ * Control and status lines:
+ * - /MTR  (active low): latched on the falling edge of /SEL.
+ * - /SELx (active low): selects the drive.
+ * - /STEP (active low): a pulse (falling edge) moves the head.
+ * - DIR   (0 = inward, track+1; 1 = outward, towards track 0): step direction.
+ * - /RDY  (active low): low when the motor is up to speed, or the current ID bit.
+ * - /TK0  (active low): low when the head is on track 0.
+ * - /WPRO (active low): low when the disk is write protected.
+ * - /CHNG (active low): latched low at a disk change, reset by a STEP with a disk inside.
  *
- * Correzioni rispetto alla revisione precedente:
- *  1. DriveType enum con ID corretti (DD_INT=0x00000000, DD_EXT=0xFFFFFFFF, HD_EXT=0xAAAAAAAA).
- *  2. CYCLES_MOTOR_STOP portato a ~3 s PAL reali (~21 M cicli).
- *  3. bitPointer preserva la posizione angolare reale al cambio traccia.
- *  4. isReadyRaw(): sequenza ID terminata correttamente dopo 32 bit (/RDY HIGH).
- *  5. Side change posticipato al termine del settle (non immediato).
- *  6. Header checksum include lo XOR dei longword del label.
- *  7. executeStep(): settle counter usa Math.max per gestire step burst.
- *  8. MAX_TRACKS=84 per compatibilità con drive che leggono oltre la traccia 79.
+ * The head can reach cylinder 83 ({@link #MAX_TRACKS}), past the 80 cylinders of a disk.
  */
 public final class FloppyDrive {
 
     // -------------------------------------------------------------------------
-    // Tipo di drive — determina l'ID hardware esposto sul pin /RDY
+    // Drive type: the hardware ID shifted out on /RDY
     // -------------------------------------------------------------------------
 
     public enum DriveType {
-        /** DF0: drive interno DD senza ID hardware esterno. */
+        /** DF0: internal DD drive, no external ID. */
         DD_INT(0x00000000),
-        /** DF1/DF2/DF3: drive esterno 3.5" DD standard. */
+        /** DF1/DF2/DF3: standard external 3.5" DD drive. */
         DD_EXT(0xFFFFFFFF),
-        /** Drive esterno HD (A3000/A4000) */
+        /** External HD drive (A3000/A4000). */
         HD_EXT(0xAAAAAAAA);
 
         final int id;
@@ -68,17 +60,17 @@ public final class FloppyDrive {
     }
 
     // -------------------------------------------------------------------------
-    // Identità
+    // Identity
     // -------------------------------------------------------------------------
 
     private final String    id;
     private final DriveType driveType;
 
     // -------------------------------------------------------------------------
-    // Costanti temporali PAL (clock base: 7.09379 MHz)
+    // PAL timing constants (base clock: 7.09379 MHz)
     // -------------------------------------------------------------------------
 
-    private static final long   CYCLES_INDEX_PULSE       =    14_187L;   // durata impulso INDEX (~2 ms)
+    private static final long   CYCLES_INDEX_PULSE       =    14_187L;   // INDEX pulse length (~2 ms)
     /**
      * /RDY spin-up: the drive asserts DSKRDY a FIXED time after the motor is
      * commanded on, and that time restarts <b>in full</b> at every off-&gt;on
@@ -91,36 +83,29 @@ public final class FloppyDrive {
      */
     private static final int    DSKREADY_UP_LINES        = 18 * 312; // ~0,36 s
 
-    /** FIX #2: il motore reale impiega ~3 s per fermarsi completamente. */
-    private static final long   CYCLES_MOTOR_STOP        = 21_000_000L;  // rampa arresto motore (~3 s)
-    private static final long   CYCLES_SETTLE_STEP       =    21_281L;   // settle dopo step stesso verso (~3 ms)
+    /** A real motor takes about 3 s to stop completely. */
+    private static final long   CYCLES_MOTOR_STOP        = 21_000_000L;  // motor stop ramp (~3 s)
+    private static final long   CYCLES_SETTLE_STEP       =    21_281L;   // settle after a step in the same direction (~3 ms)
     /**
-     * Distanza minima fra due impulsi di STEP perche' il secondo sia accettato:
-     * {@code MIN_STEPLIMIT_CYCLE = CYCLE_UNIT * 140} dell'oracolo, cioe' <b>140 CCK</b>.
-     * Qui il clock base e' 7,09 MHz — due unita' per CCK — quindi <b>280</b>.
+     * Minimum distance between two STEP pulses for the second to be accepted:
+     * <b>140 CCK</b>, i.e. <b>280</b> cycles of the 7.09 MHz base clock.
      */
     private static final long   CYCLES_MIN_STEP_INTERVAL =         280L;   // 140 CCK
-    private static final long   CYCLES_SETTLE_DIR_CHG    =   127_688L;   // settle dopo inversione direzione (~18 ms)
+    private static final long   CYCLES_SETTLE_DIR_CHG    =   127_688L;   // settle after a direction change (~18 ms)
     /**
-     * Durata di una cella MFM a doppia densità, in master-cycle. È il
-     * {@code NORMAL_FLOPPY_SPEED} di WinUAE (disk.cpp), che vale {@code 7 * 256}
-     * dove l'unità è 1/256 di CCK ({@code DISK_update} accumula
-     * {@code (hpos << 8) - disk_hpos}): <b>7 CCK esatti = 14 master-cycle</b>.
+     * Length of a double-density MFM cell in master cycles: <b>exactly 7 CCK = 14 master
+     * cycles</b>, i.e. {@code 7 * 256} in units of 1/256 CCK.
      *
-     * <p>Non è "2 µs": 1,9735 µs. I due modi di scriverlo differiscono dell'1,34%
-     * e il valore giusto è quello dell'oracolo anche fisicamente, perché è l'unico
-     * che fa durare un giro del piatto 200 ms tondi — la traccia nominale ha
-     * {@link #NOMINAL_TRACK_BITS} = 101344 celle e 101344 × 7 CCK = 709408 CCK =
-     * 200,0 ms, cioè i 300 giri/min di un drive Amiga. Con 2 µs il giro diventava
-     * 202,7 ms, cioè il piatto girava all'1,34% in meno: un errore invisibile su
-     * un singolo settore ma che sul caricamento del bootblock di Kickstart valeva
-     * 15112 CCK di ritardo (docs/vamigats-paula-audio-plan.md §13.9.4).
+     * <p>Not "2 us" but 1.9735 us. The two differ by 1.34%, and this is the value that makes
+     * a revolution last a round 200 ms: the nominal track has {@link #NOMINAL_TRACK_BITS} =
+     * 101344 cells, and 101344 x 7 CCK = 709408 CCK = 200.0 ms, the 300 rpm of an Amiga drive.
+     * With 2 us a revolution took 202.7 ms, which delayed the Kickstart's bootblock load by
+     * 15112 CCK (docs/vamigats-paula-audio-plan.md section 13.9.4).
      */
     private static final double CYCLES_PER_BIT           =    14.0;
     /**
-     * Bit per giro di una traccia DD di lunghezza nominale — WinUAE
-     * {@code 2 * 8 * FLOPPY_WRITE_LEN} con {@code FLOPPY_WRITE_LEN_PAL/2 = 6334}.
-     * È il riferimento rispetto a cui si scala la durata di cella delle long track.
+     * Cells per revolution of a DD track of nominal length ({@code 2 * 8 * 6334}). The cell
+     * length of a long track is scaled against it.
      */
     private static final int    NOMINAL_TRACK_BITS       = 12_668 * 8;   // 101 344
     /** {@link #CYCLES_PER_BIT} in units of 1/256 CCK, the unit of the IPF cell clock. */
@@ -129,16 +114,16 @@ public final class FloppyDrive {
     private static final int    FOUR_US_TRACK_BITS       = NOMINAL_TRACK_BITS * 4 / 6;
     /** One master cycle in units of 1/256 CCK. */
     private static final int    UNITS_PER_MASTER_CYCLE   = 128;
-    /** FIX #8: alcuni drive arrivano a traccia 83 (indice 0-based). */
+    /** The head reaches cylinder 83 (0-based). */
     private static final int    MAX_TRACKS               = 84;
     private static final int    BIT_CLOCK_SCALE          = 10_000;
-    /** {@link #CYCLES_PER_BIT} in virgola fissa ({@link #BIT_CLOCK_SCALE}), percorso ADF. */
+    /** {@link #CYCLES_PER_BIT} in fixed point ({@link #BIT_CLOCK_SCALE}), ADF path. */
     private static final int    ADF_CYCLES_PER_BIT_FIXED = 140_000;
     private static final int    TRACK_BUFFER_SIZE        = DiskImage.TRACK_BUFFER_BYTES;
     private static final int    ID_SEQUENCE_BITS         = 32;
 
     // -------------------------------------------------------------------------
-    // Stato motore
+    // Motor state
     // -------------------------------------------------------------------------
 
     private boolean motorTarget  = false;
@@ -147,11 +132,11 @@ public final class FloppyDrive {
     private int     readyUpLines = 0;
     private long    switchCycle  = 0L;
     private long    totalCycles  = 0L;
-    /** {@code steplimitcycle}: istante dell'ultimo impulso di STEP ACCETTATO. */
+    /** Instant of the last ACCEPTED STEP pulse. */
     private long    lastAcceptedStepCycle = Long.MIN_VALUE / 4;
 
     // -------------------------------------------------------------------------
-    // Posizionamento testina
+    // Head position
     // -------------------------------------------------------------------------
 
     private int     currentTrack      = 0;
@@ -159,83 +144,75 @@ public final class FloppyDrive {
     private long    settleCounter     = 0L;
     private boolean currentSide       = false;
 
-    /** FIX #5: side change pendente — effettivo solo al termine del settle. */
-
     // -------------------------------------------------------------------------
-    // Disco
+    // Disk
     // -------------------------------------------------------------------------
 
-    /** Immagine disco corrente; null = nessun disco con file backing. */
+    /** Current disk image; null = no file-backed disk. */
     private DiskImage diskImage      = null;
 
     private boolean diskInserted   = false;
     private boolean writeProtected = false;
 
-    /** Latch cambio disco: true = segnale /CHNG LOW (attivo). */
+    /** Disk change latch: true = /CHNG low (active). */
     private boolean dskchange = false;
     /**
-     * Vero da quando la macchina ha cominciato a girare (primo {@link #tick}). Serve a
-     * distinguere l'inserimento <b>a freddo</b> — quello del config, prima dell'accensione,
-     * che per WinUAE non è un cambio — da quello <b>a caldo</b>, che latcha {@code /CHNG}.
-     * ⚠️ Il reset NON lo azzera: un Ctrl-Amiga-Amiga non rimette la macchina nello stato
-     * «spenta col disco già dentro».
+     * True once the machine has started running (first {@link #tick}). It tells a
+     * <b>cold</b> insert, made by the configuration before power-on, which is not a change,
+     * from a <b>hot</b> one, which latches {@code /CHNG}. A reset does not clear it: a
+     * Ctrl-Amiga-Amiga does not put the machine back in the "off with the disk already
+     * inside" state.
      */
     private boolean machineRunning = false;
 
-    /** true = unità fisicamente connessa al bus; false = drive assente (DF1-DF3 non collegati). */
+    /** true = drive physically connected to the bus; false = absent (DF1-DF3 not connected). */
     private boolean connected = true;
 
     // -------------------------------------------------------------------------
-    // Impulso INDEX
+    // INDEX pulse
     // -------------------------------------------------------------------------
 
     private boolean indexPulse        = false;
     private long    indexPulseCounter = 0L;
 
     // -------------------------------------------------------------------------
-    // Shift register ID drive
+    // Drive ID shift register
     // -------------------------------------------------------------------------
 
     private boolean idBit      = true;
     private int     idBitIndex = 0;
 
     // -------------------------------------------------------------------------
-    // Flusso MFM
+    // MFM stream
     // -------------------------------------------------------------------------
 
-    // Buffer dimensionato sul massimo (long track di protezione); la lunghezza
-    // effettiva della traccia corrente è in trackLenBytes (wrap della rotazione).
+    // Buffer sized for the longest track (protection long tracks); the length of the
+    // current track is trackLenBytes (where the rotation wraps).
     private final byte[] trackBuffer          = new byte[DiskImage.MAX_TRACK_BYTES];
     private       int    trackLenBytes        = TRACK_BUFFER_SIZE;
-    // Lunghezza ESATTA della traccia in bit (le long track IPF non sono multiple di 8):
-    // la rotazione avvolge a questo valore, non a trackLenBytes*8.
+    // EXACT length of the track in bits (IPF long tracks are not multiples of 8): the
+    // rotation wraps at this value, not at trackLenBytes*8.
     private       int    trackBitLen          = TRACK_BUFFER_SIZE * 8;
 
-    // ── Modello FDC (densità di cella) ───────────────────────────────────────
-    // Per gli IPF la durata della cella segue WinUAE (disk.cpp
-    // get_floppy_speed_from_image):
+    // -- Cell density model ----------------------------------------------------
+    // On an IPF the cell length is
     //
-    //     trackspeed = NORMAL_FLOPPY_SPEED * tracklen / (2 * 8 * FLOPPY_WRITE_LEN)
+    //     trackspeed = nominal cell * tracklen / nominal track length
     //
-    // cioè la cella resta al rate DD nominale (CYCLES_PER_BIT) e una traccia più LUNGA fa
-    // durare di più il giro — l'impulso di INDEX nasce dall'avvolgimento del
-    // bitstream, quindi una long track ha un "giro" più lungo di 200 ms. È così
-    // che le protezioni "long track" (es. North &amp; South, sync custom $A144)
-    // misurano la lunghezza della traccia rispetto all'impulso index.
+    // so the cell stays at the nominal DD rate and a LONGER track makes the revolution
+    // longer: the INDEX pulse comes from the bitstream wrapping, so a long track has a
+    // "revolution" longer than 200 ms. That is how "long track" protections (e.g. North &amp;
+    // South, custom sync $A144) measure the track length against the index pulse.
     //
-    // ⚠️ Il modello precedente era l'OPPOSTO (giro costante di 200 ms, celle più
-    // corte su traccia lunga): su Dragon's Lair i dati letti dalle long track
-    // (107044 bit contro i 101344 nominali, +5.6%) arrivavano a un rate sbagliato
-    // dell'11% e il decompressore riceveva un flusso corrotto — il suo contatore
-    // saltava lo zero, il loop scriveva oltre la chip RAM e (via mirror a 512 KB)
-    // sovrascriveva il proprio codice a $001080 con un opcode illegale.
+    // The opposite model (constant 200 ms revolution, shorter cells on a long track) fed
+    // Dragon's Lair's long tracks (107044 cells against the nominal 101344, +5.6%) at a rate
+    // 11% off, and its decompressor received a corrupt stream.
     //
-    // Sulle tracce a densità VARIABILE (Copylock) WinUAE non applica la scala di
-    // cui sopra ({@code if (!drv->tracktiming[0])}): la base resta quella nominale
-    // e il timing viene tutto dalla mappa per-byte.
+    // On VARIABLE density tracks (Copylock) the scaling above does not apply: the base stays
+    // nominal and all the timing comes from the per-byte map.
     //
-    // Per gli ADF il modello è BYPASSATO: si usa il rate DD nominale fisso
-    // (CYCLES_PER_BIT, 7 CCK/cella), comportamento identico a prima e a costo zero.
+    // ADF tracks bypass the model: the fixed nominal DD rate (CYCLES_PER_BIT, 7 CCK per
+    // cell), at no cost.
     private       boolean densityModel        = false;
     // Cell duration per track byte, in 1/256 CCK (IPF tracks with a density map, e.g.
     // Copylock); -1 keeps the previous cell's duration; null = constant trackSpeed.
@@ -250,38 +227,40 @@ public final class FloppyDrive {
     private       boolean slowBits            = false;
     // The cell where the reader slips its jitter cells, -1 for none (see slipJitterCells).
     private       int    jitterSkipCell       = -1;
+    /** The track under the head lies past the medium's formatted tracks: it reads as noise. */
+    private       boolean unformattedTrack    = false;
 
     // -------------------------------------------------------------------------
-    // Scrittura sul supporto
+    // Writing to the medium
     // -------------------------------------------------------------------------
 
     /**
-     * Sorgente delle celle MFM da incidere sul supporto: è lo shift register di
-     * scrittura di Paula, interrogato una volta per cella (vedi Paula.nextWriteBit).
+     * Source of the MFM cells to write to the medium: Paula's write shift register,
+     * queried once per cell (see Paula.nextWriteBit).
      */
     @FunctionalInterface
     public interface WriteBitSource {
-        /** @return 0/1 = cella da scrivere, {@code -2} = nessun dato pronto, {@code -1} = fine. */
+        /** @return 0/1 = cell to write, {@code -2} = no data ready, {@code -1} = end. */
         int nextWriteBit();
     }
 
-    /** Sentinelle di {@link WriteBitSource#nextWriteBit()}. */
+    /** Sentinels of {@link WriteBitSource#nextWriteBit()}. */
     private static final int WRITE_BIT_STALL = Paula.WRITE_BIT_STALL;
     private static final int WRITE_BIT_END   = Paula.WRITE_BIT_END;
 
     private WriteBitSource writeBitSource = null;
 
-    /** true mentre la testina incide il supporto invece di leggerlo. */
+    /** true while the head writes the medium instead of reading it. */
     private boolean writing = false;
 
-    /** true se trackBuffer contiene celle scritte non ancora riversate nell'immagine. */
+    /** true if trackBuffer holds written cells not yet flushed to the image. */
     private boolean trackModified = false;
 
-    /** Evita di ripetere l'avviso di formato non AmigaDOS ad ogni traccia. */
+    /** Keeps the non-AmigaDOS format warning from repeating at every track. */
     private boolean customFormatWarned = false;
 
     // -------------------------------------------------------------------------
-    // Stato segnali di ingresso
+    // Input line state
     // -------------------------------------------------------------------------
 
     private boolean selected     = false;
@@ -290,7 +269,7 @@ public final class FloppyDrive {
     private boolean lastStepDir  = false;
 
     // =========================================================================
-    // Costruttori
+    // Constructors
     // =========================================================================
 
     public FloppyDrive(String id, DriveType driveType) {
@@ -300,29 +279,30 @@ public final class FloppyDrive {
         this.readyTailRng = newDriveRng(id, 1);
         this.jitterRng = newDriveRng(id, 2);
         this.shiftRng = newDriveRng(id, 3);
+        this.noiseRng = newDriveRng(id, 4);
         reset();
     }
 
-    /** Compatibilità con codice precedente: DF0=DD_INT, altri=DD_EXT. */
+    /** DF0 = DD_INT, the others DD_EXT. */
     public FloppyDrive(String id) {
         this(id, "DF0".equals(id) ? DriveType.DD_INT : DriveType.DD_EXT);
     }
 
     public void setConnected(boolean connected) { this.connected = connected; statusDirty = true; }
 
-    /** true se l'unità è fisicamente collegata al bus (DF0 sempre; DF1-DF3 opzionali). */
+    /** true if the drive is physically connected to the bus (DF0 always; DF1-DF3 optional). */
     public boolean isConnected() { return connected; }
 
-    /** Identificativo dell'unità ("DF0".."DF3"). */
+    /** Drive identifier ("DF0".."DF3"). */
     public String getId() { return id; }
 
-    // Suono ESTETICO del drive (click/spin/startup). Null = nessun suono, costo zero.
-    // Agganciato solo da chi vuole la feature (attualmente Amija); vedi FloppySound.
+    // Cosmetic drive sound (click/spin/startup). Null = no sound, at no cost.
+    // Attached only by whoever wants it (currently Amija); see FloppySound.
     private FloppySound floppySound;
     public void setFloppySound(FloppySound sound) { this.floppySound = sound; }
 
     // =========================================================================
-    // Tick principale
+    // Main tick
     // =========================================================================
 
     public void tick(int cycles) {
@@ -341,29 +321,25 @@ public final class FloppyDrive {
     public void tick(int cycles, IntConsumer bitConsumer, boolean slowBits) {
         this.slowBits = slowBits;
         totalCycles += cycles;
-        machineRunning = true;   // vedi insertDisk: distingue il freddo dal caldo
+        machineRunning = true;   // see insertDisk: tells cold from hot
 
-        // Flush periodico dell'immagine disco (cheap: esce subito se non ci sono
-        // tracce dirty da scrivere — caso normale in gioco con disco di sola lettura).
+        // Periodic flush of the disk image (cheap: returns at once when no track is
+        // dirty, the normal case for a read-only game disk).
         if (diskImage != null) diskImage.tickCycles(cycles);
 
-        // PERF: fast-path "dormiente". Un drive col motore fermo da tempo (velocità
-        // ormai 0) e senza seek in corso non ha nulla da fare ad ogni master-cycle:
-        // il corpo sottostante si limiterebbe a ri-azzerare campi già a zero. Vale
-        // per i drive vuoti df1-df3 E per df0 a motore spento col disco inserito
-        // (la condizione tipica durante il gioco, dopo il caricamento). Elimina la
-        // maggior parte delle ~28M chiamate "piene"/s. The /RDY spin-up does not
-        // depend on this path: hsync() counts it.
+        // PERF: dormant fast path. A drive whose motor stopped long ago and with no seek
+        // in progress has nothing to do: the body below would only clear fields already
+        // clear. It covers the empty df1-df3 and df0 with its motor off and a disk inside
+        // (the usual state in a game after loading). The /RDY spin-up does not depend on
+        // this path: hsync() counts it.
         if (!motorTarget && !motorAtSpeed && settleCounter <= 0
                 && (totalCycles - switchCycle) >= CYCLES_MOTOR_STOP) {
             return;
         }
 
-        // PERF (vedi statusDirty): fuori dallo stato stazionario "motore a regime"
-        // i segnali possono cambiare per il solo passare del tempo — /RDY quando la
-        // rampa completa (motorAtSpeed, deciso poco sotto) e /INDEX a ogni giro del
-        // piatto. Qui il flag resta sempre alto: è la rampa del motore, non il
-        // caricamento a regime.
+        // PERF (see statusDirty): outside the steady "motor up to speed" state the lines
+        // can change with time alone, /RDY when the ramp completes and /INDEX at every
+        // revolution, so the flag stays raised.
         if (!(motorTarget && motorAtSpeed)) statusDirty = true;
 
         // /RDY spin-up is counted in lines by hsync(). The motor going off drops
@@ -372,17 +348,11 @@ public final class FloppyDrive {
             motorAtSpeed = false;
         }
 
-        // Rotazione del supporto. Modello di vAmiga (FloppyDrive::read8AndRotate:
-        // "if (motor) rotate()"): il piatto gira — e la testina legge — non appena il
-        // motore è COMANDATO acceso, senza attendere il regime. La rampa di velocità
-        // governa solo /RDY (isReadyRaw), non il flusso di dati.
-        //
-        // In precedenza il bitstream era congelato finché motorAtSpeed non diventava
-        // vero, mentre l'INDEX era generato da un contatore di cicli indipendente:
-        // ad ogni accensione/spegnimento del motore i due si sfasavano di una quantità
-        // arbitraria. Ora l'INDEX nasce dall'avvolgimento di bitPointer
-        // (vedi advanceBitPointer), quindi foro indice e bit 0 della traccia sono la
-        // stessa posizione angolare, come su HW reale.
+        // Platter rotation: the platter turns, and the head reads, as soon as the motor is
+        // COMMANDED on, without waiting for full speed. The speed ramp governs /RDY only
+        // (isReadyRaw), not the data stream. INDEX comes from bitPointer wrapping (see
+        // advanceBitPointer), so the index hole and bit 0 of the track are the same
+        // angular position.
         if (motorTarget) {
             if (densityModel) {
                 tickMfmBitsDensityModel(cycles, bitConsumer);
@@ -394,7 +364,7 @@ public final class FloppyDrive {
                 indexPulseCounter += cycles;
                 if (indexPulseCounter >= CYCLES_INDEX_PULSE) {
                     indexPulse  = false;
-                    statusDirty = true;   // fine dell'impulso di INDEX
+                    statusDirty = true;   // end of the INDEX pulse
                 }
             }
         } else {
@@ -415,7 +385,7 @@ public final class FloppyDrive {
     }
 
     // =========================================================================
-    // Aggiornamento segnali (chiamato da Agnus/CIA ogni ciclo DMA o evento)
+    // Line updates (called by Agnus/CIA on every DMA cycle or event)
     // =========================================================================
 
     /**
@@ -432,7 +402,7 @@ public final class FloppyDrive {
 
     public void update(boolean selected, boolean motorOn, boolean step,
                        boolean direction, boolean side) {
-        statusDirty = true;   // chiamata solo quando il PRB di CIA-B è cambiato
+        statusDirty = true;   // called only when CIA-B PRB has changed
         if (!connected) {
             this.selected = false;
             prevSelected = false;
@@ -455,12 +425,12 @@ public final class FloppyDrive {
             if (!oldMotorTarget && motorOn) slipShifter();
 
             if (oldMotorTarget || motorOn) {
-                // Transizione motore o motore già ON: azzera shift register ID
+                // Motor transition or motor already on: clear the ID shift register
                 idBitIndex = 0;
-                idBit      = false; // /RDY inattivo (HIGH)
+                idBit      = false; // /RDY inactive (high)
                 statusDirty = true;
             } else {
-                // Motore OFF: shifta il prossimo bit dell'ID
+                // Motor off: shift out the next ID bit
                 updateIdBit();
                 if (idBitIndex < ID_SEQUENCE_BITS) idBitIndex++;
             }
@@ -480,18 +450,8 @@ public final class FloppyDrive {
             // /STEP is active LOW on the bus; Agnus passes true while the
             // line is asserted, so the physical falling edge is false -> true.
             //
-            // ⛔ Un impulso troppo ravvicinato al precedente ACCETTATO viene IGNORATO: la
-            // testina non ce la fa. E' `drive_step()` dell'oracolo (disk.cpp):
-            //
-            //     if (drv->steplimit && get_cycles() - drv->steplimitcycle < MIN_STEPLIMIT_CYCLE)
-            //         return;                       // passo ignorato
-            //     set_steplimit(drv);               // solo per i passi ACCETTATI
-            //
-            // con `MIN_STEPLIMIT_CYCLE = CYCLE_UNIT * 140`. ⚠️ La guardia ha due termini, ma
-            // il secondo non e' mai vincolante: `steplimit` parte da 4 e cala di uno per
-            // hsync, e in meno di 140 CCK passa al massimo UN hsync — quindi quando il
-            // tempo e' sotto soglia il contatore di righe e' sempre != 0. La regola si
-            // riduce alla sola distanza in cicli.
+            // A pulse too close to the previous ACCEPTED one is IGNORED: the head cannot
+            // follow. Only accepted pulses restart the 140 CCK guard.
             if (!prevStep && step) {
                 if (totalCycles - lastAcceptedStepCycle >= CYCLES_MIN_STEP_INTERVAL) {
                     lastAcceptedStepCycle = totalCycles;
@@ -505,12 +465,12 @@ public final class FloppyDrive {
     }
 
     // =========================================================================
-    // Helpers interni
+    // Internal helpers
     // =========================================================================
 
-    /** Aggiorna il bit ID esposto su /RDY quando il motore e' spento. */
+    /** Updates the ID bit shown on /RDY while the motor is off. */
     private void updateIdBit() {
-        statusDirty = true;   // /RDY trasporta il bitstream dell'ID
+        statusDirty = true;   // /RDY carries the ID bitstream
         if (!connected) {
             idBit = false;
             return;
@@ -520,11 +480,10 @@ public final class FloppyDrive {
     }
 
     /**
-     * PERF: indica se il drive richiede elaborazione per-ciclo (tick + update).
-     * È "busy" se selezionato, col motore acceso/in rampa o ancora in fase di
-     * spin-down, oppure durante un seek. Quando NESSUN drive è busy e i segnali
-     * di controllo CIA-B non cambiano, Agnus salta del tutto il lavoro floppy.
-     * Cheap: solo confronti, nessuna divisione.
+     * PERF: whether the drive needs per-cycle work (tick + update). It is busy while
+     * selected, with the motor on or still spinning down, or during a seek. When NO drive
+     * is busy and the CIA-B control lines do not change, Agnus skips the floppy work
+     * altogether. Comparisons only.
      */
     public boolean isBusy() {
         return selected || writing || motorTarget || motorAtSpeed || settleCounter > 0
@@ -597,7 +556,7 @@ public final class FloppyDrive {
     private static final int RANDSHIFT_FIXED = Integer.getInteger("amiga.randshift", -1);
 
     private void executeStep(boolean direction) {
-        statusDirty = true;   // /TK0 e /CHNG cambiano allo step
+        statusDirty = true;   // /TK0 and /CHNG change at a step
         long waitTime = (direction == lastStepDir) ? CYCLES_SETTLE_STEP : CYCLES_SETTLE_DIR_CHG;
         lastStepDir = direction;
 
@@ -608,28 +567,18 @@ public final class FloppyDrive {
         int move = direction ? -1 : 1;
         targetTrack = Math.max(0, Math.min(MAX_TRACKS - 1, targetTrack + move));
 
-        // La testina si sposta di una traccia ALL'IMPULSO di STEP: aggiorniamo
-        // currentTrack e ricarichiamo il buffer SUBITO. Il settle (sotto) è solo un
-        // assestamento meccanico che tiene il drive "busy"; NON deve ritardare quale
-        // traccia è leggibile. Cfr. vAmiga FloppyDrive::step() (aggiorna head.cylinder
-        // all'impulso; il delay serve solo a spaziare gli step e segnalare il
-        // completamento, non a posticipare i dati).
-        //
-        // Ritardare currentTrack a fine settle (modello precedente) faceva leggere la
-        // traccia VECCHIA per tutta la durata del settle — fino a ~18ms su inversione
-        // di direzione (CYCLES_SETTLE_DIR_CHG). Un loader che dopo lo step rilegge
-        // l'header per verificare la posizione (SpeedBall II: recalibrate → step a
-        // cyl1) leggeva cyl0 durante il settle → ri-step → ri-armava il settle con
-        // Math.max → stallo infinito (motore spento, schermo nero). L'esito dipendeva
-        // dalla fase di timing CPU↔disco (a volte il settle completava in tempo, a
-        // volte no): da qui la non-determinazione.
+        // The head moves by one track AT the STEP pulse: currentTrack and the buffer are
+        // updated at once. The settle below is only the mechanical settling that keeps the
+        // drive busy; it does not delay which track is readable. A loader that rereads the
+        // header right after a step to check the position (Speedball II: recalibrate, step
+        // to cyl 1) must see the new cylinder, or it steps again forever.
         if (currentTrack != targetTrack) {
-            flushWrittenTrack();   // la traccia incisa appartiene al cilindro VECCHIO
+            flushWrittenTrack();   // the written track belongs to the OLD cylinder
             currentTrack = targetTrack;
             if (diskInserted && diskImage != null) loadCurrentTrack();
         }
 
-        // FIX #7: Math.max garantisce che uno step burst non accorci il settle
+        // Math.max keeps a burst of steps from shortening the settle
         settleCounter = Math.max(settleCounter, waitTime);
 
         if (floppySound != null) floppySound.onStep();
@@ -661,21 +610,21 @@ public final class FloppyDrive {
     }
 
     /**
-     * Una cella MFM passa sotto la testina: viene letta (e consegnata a Paula) o,
-     * in modalità scrittura, sovrascritta con la cella fornita da Paula.
+     * An MFM cell passes under the head: it is read (and handed to Paula) or, when
+     * writing, overwritten with the cell Paula provides.
      */
     private void processCell(IntConsumer bitConsumer) {
         if (writing) {
             int bit = (writeBitSource != null) ? writeBitSource.nextWriteBit() : WRITE_BIT_END;
             if (bit == WRITE_BIT_END) {
-                // Trasferimento concluso: la traccia incisa va riversata nell'immagine.
+                // Transfer over: the written track is flushed to the image.
                 setWriting(false);
                 if (bitConsumer != null) bitConsumer.accept(getNextMFMBit());
             } else if (bit != WRITE_BIT_STALL) {
                 writeCellToTrack(bit);
             }
-            // WRITE_BIT_STALL: la cella scorre senza essere alterata (la DMA non ha
-            // ancora fornito la word successiva).
+            // WRITE_BIT_STALL: the cell passes unaltered (the DMA has not supplied the
+            // next word yet).
         } else if (bitConsumer != null) {
             if (slowBits) {
                 readSlowBit(bitConsumer);
@@ -732,6 +681,12 @@ public final class FloppyDrive {
      * </pre>
      */
     private void readSlowBit(IntConsumer bitConsumer) {
+        if (unformattedTrack) {
+            bitConsumer.accept(getNextMFMBit());
+            advanceBitPointer();
+            advanceBitPointer();
+            return;
+        }
         int b1 = getNextMFMBit();
         int b2 = mfmBitAt(bitPointer + 1 < trackBitLen ? bitPointer + 1 : 0);
         bitConsumer.accept(b1 | b2);
@@ -739,9 +694,9 @@ public final class FloppyDrive {
         for (int i = 0; i < cells; i++) advanceBitPointer();
     }
 
-    /** Incide una cella MFM sul supporto alla posizione angolare corrente. */
+    /** Writes an MFM cell to the medium at the current angular position. */
     private void writeCellToTrack(int bit) {
-        if (!diskInserted || writeProtected) return;   // nessun supporto / linguetta chiusa
+        if (!diskInserted || writeProtected) return;   // no medium / tab closed
         int byteIdx = bitPointer >> 3;
         if (byteIdx >= trackBuffer.length) return;
         int mask = 1 << (7 - (bitPointer & 7));
@@ -751,9 +706,9 @@ public final class FloppyDrive {
     }
 
     /**
-     * Riversa nell'immagine disco le celle incise sulla traccia corrente,
-     * decodificando i settori AmigaDOS (vedi DiskImage.writeTrackMFM).
-     * Va chiamato PRIMA di ogni cambio di traccia/lato e alla fine della scrittura.
+     * Flushes the cells written on the current track to the disk image, decoding the
+     * AmigaDOS sectors (see DiskImage.writeTrackMFM). Called BEFORE every track or side
+     * change and at the end of a write.
      */
     private void flushWrittenTrack() {
         if (!trackModified) return;
@@ -762,10 +717,9 @@ public final class FloppyDrive {
         int physicalTrack = currentTrack * 2 + (currentSide ? 1 : 0);
         int sectors = diskImage.writeTrackMFM(physicalTrack, trackBuffer, trackLenBytes);
         if (sectors == 0 && !customFormatWarned) {
-            // Un ADF può contenere solo settori AmigaDOS standard: se il software
-            // usa un proprio formato (come fanno alcuni giochi con disco utente) i
-            // dati non sono rappresentabili. Stessa limitazione di WinUAE; la si
-            // segnala una volta sola perché altrimenti la perdita sarebbe silenziosa.
+            // An ADF holds standard AmigaDOS sectors only: data written in a format of
+            // the program's own (some games' user disks) cannot be represented. Reported
+            // once, so the loss is not silent.
             customFormatWarned = true;
             System.err.printf("[%s] traccia %d scritta in un formato non AmigaDOS: "
                     + "non e' rappresentabile in un file .adf e non viene salvata%n",
@@ -774,9 +728,9 @@ public final class FloppyDrive {
     }
 
     /**
-     * Entra/esce dalla modalità di scrittura. All'uscita la traccia incisa viene
-     * decodificata e scritta nell'immagine (il file .adf è poi aggiornato dal flush
-     * periodico di DiskImage, dall'eject o dallo shutdown hook).
+     * Enters or leaves write mode. On leaving, the written track is decoded into the image
+     * (the .adf file is then updated by DiskImage's periodic flush, the eject or the
+     * shutdown hook).
      */
     public void setWriting(boolean value) {
         if (writing == value) return;
@@ -801,22 +755,17 @@ public final class FloppyDrive {
     }
 
     /**
-     * Avanza la testina di una cella. L'avvolgimento a fine traccia è il passaggio del
-     * foro di INDEX: è lì che va generato l'impulso, perché il foro e il bit 0 della
-     * traccia sono la stessa posizione angolare sul supporto.
-     *
-     * <p>Prima l'INDEX era generato da un contatore di cicli indipendente
-     * ({@code indexCounter}), che si sfasava dal bitstream ogni volta che il motore
-     * veniva spento e riacceso (il bitstream restava fermo fuori regime mentre il
-     * contatore correva). Le protezioni che leggono "il primo sync dopo l'INDEX" —
-     * es. il Rob Northen Copylock di Castle Master — finivano su un settore casuale.
+     * Moves the head on by one cell. Wrapping at the end of the track is the index hole
+     * passing: the pulse starts there, because the hole and bit 0 of the track are the same
+     * angular position on the medium. Protections that read "the first sync after INDEX"
+     * (e.g. the Rob Northen Copylock of Castle Master) depend on it.
      */
     private void advanceBitPointer() {
         if (++bitPointer >= trackBitLen) {
             bitPointer        = 0;
             indexPulse        = true;
             indexPulseCounter = 0;
-            statusDirty       = true;   // inizio dell'impulso di INDEX
+            statusDirty       = true;   // start of the INDEX pulse
         }
     }
 
@@ -834,114 +783,80 @@ public final class FloppyDrive {
     }
 
     // =========================================================================
-    // Segnali di uscita
+    // Output lines
     // =========================================================================
 
     /**
-     * /RDY raw, modellato su WinUAE ({@code disk.cpp}, {@code DISK_status_ciaa} +
-     * {@code drive_motor}). Il discriminante è il <b>flip-flop</b> del motore
-     * ({@code drive_running} = {@code !motoroff}), mai la velocità del piatto:
+     * Raw /RDY. What decides it is the motor <b>flip-flop</b>, never the platter speed:
      *
      * <pre>
-     *   motore ACCESO  → /RDY = DSKRDY, che sale a fine rampa e solo con un disco
-     *   motore SPENTO  → /RDY = bit ID del drive (DSKRDY è già caduto)
+     *   motor ON   -> /RDY = DSKRDY, which rises at the end of the spin-up, and only with a disk
+     *   motor OFF  -> /RDY = the drive's ID bit (DSKRDY has already dropped)
      * </pre>
      *
-     * <p>La caduta di DSKRDY è <b>istantanea</b>: {@code drive_motor()} esegue
-     * {@code if (drv->motoroff) drv->dskready = 0;} nello stesso istante in cui
-     * il flip-flop si spegne. Non esiste alcuna "grazia di spin-down": il piatto
-     * continua a girare — e la testina a leggere, vedi {@link #tick} — ma la
-     * linea /RDY no.
+     * <p>DSKRDY drops <b>at once</b> when the flip-flop turns off. There is no spin-down
+     * grace: the platter keeps turning, and the head reading (see {@link #tick}), but /RDY
+     * does not. The Kickstart reads the drive ID by switching the motor on, off again at
+     * once, and then pulsing /SEL 32 times while reading /RDY, all during the spin-down: a
+     * grace period would make DF0 with a disk inside announce a spurious ID ($E0000000), and
+     * trackdisk 2.0+ would never mount it.
      *
-     * <p><b>Perché la grazia è un bug e non un dettaglio</b> (KS 2.0/3.1 non
-     * bootava da floppy, 2026-08-08). La sequenza con cui il Kickstart legge
-     * l'ID del drive accende il motore, lo rispegne <i>subito</i> e poi batte 32
-     * impulsi di /SEL leggendo /RDY: per tutta la durata della lettura il drive
-     * è quindi in spin-down. Con la grazia attiva i primi bit letti non erano
-     * l'ID ma {@code diskInserted}, così DF0 <b>con un disco dentro</b>
-     * annunciava un ID spurio ($E0000000) invece di $00000000. Kickstart 1.3 non
-     * consulta l'ID dell'unità 0 e bootava lo stesso; trackdisk 2.0+ sì, non
-     * riconosceva il drive e non montava mai l'unità — schermo fermo e motore
-     * mai avviato. Col drive <i>vuoto</i> il bug non si vedeva ({@code
-     * diskInserted} falso ⇒ 32 zeri ⇒ ID corretto), il che spiega l'asimmetria
-     * "senza disco arriva la manina, con il disco non parte niente".
-     *
-     * <p>Lo stesso meccanismo, sui drive esterni, era già stato corretto nel
-     * senso opposto (cambio disco a caldo sotto Workbench): un DF1 vuoto
-     * restituiva $00000000 = "nessun drive" e non veniva più interrogato. Ora la
-     * regola è una sola per tutti i drive.
-     *
-     * <p>DF0 (interno A500) non ha hardware di ID — è il caso {@code
-     * cs_df0idhw=0} di WinUAE — e infatti {@link DriveType#DD_INT} vale
-     * $00000000: {@code idBit} resta sempre falso e la linea legge zeri, che è
-     * ciò che trackdisk si aspetta da un drive Amiga standard. Non è modellata
-     * la finestra {@code motordelay} di WinUAE (30 cicli CPU dopo lo
-     * spegnimento, aggiunta lì per Pro Tennis Tour).
+     * <p>DF0 (the A500's internal drive) has no ID hardware: {@link DriveType#DD_INT} is
+     * $00000000, so {@code idBit} stays false and the line reads zeros, which is what
+     * trackdisk expects from a standard Amiga drive.
      */
     public boolean isReadyRaw() {
         if (!connected) return false;
         if (motorTarget) {
-            // Motore comandato acceso: /RDY è DSKRDY, che sale allo scadere del
-            // conto alla rovescia dello spin-up e solo se un disco è presente.
+            // Motor commanded on: /RDY is DSKRDY, which rises when the spin-up countdown
+            // expires, and only with a disk present.
             return motorAtSpeed && diskInserted;
         }
-        // Motore comandato spento: DSKRDY è già caduto, la linea porta il bit ID.
+        // Motor commanded off: DSKRDY has dropped, the line carries the ID bit.
         return idBit;
     }
 
     // =========================================================================
-    // PERF: invalidazione dei segnali di stato osservabili dal bus
+    // PERF: invalidation of the status lines seen by the bus
     // =========================================================================
     //
-    // I 5 segnali che il drive impone sui pin CIA (/RDY, /TK0, /WPRO, /CHNG,
-    // /INDEX) venivano ricampionati e ri-pubblicati da AbstractAgnus.updateFloppy
-    // ad OGNI CCK di un drive attivo (~3,5M volte/s, 5 chiamate ciascuna). Ma a
-    // regime — motore a piena velocità durante un caricamento — quei 5 valori
-    // restano costanti per milioni di cicli: la ri-pubblicazione è identica a sé
-    // stessa. Questo flag segnala quando uno di essi PUÒ essere cambiato, così il
-    // chiamante salta il lavoro quando non è cambiato nulla.
+    // The five lines the drive drives onto the CIA pins (/RDY, /TK0, /WPRO, /CHNG,
+    // /INDEX) would otherwise be resampled and republished by AbstractAgnus.updateFloppy
+    // at EVERY CCK of an active drive. With the motor up to speed during a load they stay
+    // constant for millions of cycles. This flag says when one of them MAY have changed,
+    // so the caller skips the work when nothing did.
     //
-    // La regola è CONSERVATIVA: nel dubbio il flag resta alto. In particolare
-    // resta alto per tutta la rampa del motore (accensione e spin-down), dove
-    // /RDY e /INDEX dipendono dal tempo trascorso — motorAtSpeed e l'avvolgimento
-    // di bitPointer cambiano dentro tick(), senza che nessuno scriva un campo da
-    // fuori. Si sfrutta il solo stato stazionario: motore a regime, oppure fermo
-    // da tempo.
+    // The rule is CONSERVATIVE: when in doubt the flag stays raised. In particular it stays
+    // raised through the whole motor ramp (spin-up and spin-down), where /RDY and /INDEX
+    // depend on elapsed time (motorAtSpeed and the wrap of bitPointer change inside tick()).
+    // Only the steady states are exploited: motor up to speed, or stopped long ago.
     private boolean statusDirty = true;
 
-    /** True se uno dei 5 segnali di stato può essere cambiato dall'ultima pubblicazione. */
+    /** True if one of the five status lines may have changed since the last publication. */
     public boolean isStatusDirty() { return statusDirty; }
 
-    /** Chiamato da Agnus dopo aver pubblicato i segnali sui pin CIA. */
+    /** Called by Agnus after publishing the lines on the CIA pins. */
     public void clearStatusDirty() { statusDirty = false; }
 
-    /** Forza la ri-pubblicazione dei segnali al prossimo giro. */
+    /** Forces the lines to be republished next time. */
     public void markStatusDirty() { statusDirty = true; }
 
     public boolean isTrack0Raw()         { return connected && (targetTrack == 0); }
     /**
-     * /WPROT come lo vede il bus, senza il gate della selezione.
+     * /WPROT as the bus sees it, without the selection gate.
      *
-     * <p>⛔ <b>Un drive VUOTO riporta protetto in scrittura.</b> L'oracolo (disk.cpp,
-     * {@code drive_writeprotected}) lo scrive nell'ultimo termine:
-     *
-     * <pre>
-     *   return currprefs.floppy_read_only || drv->wrprot || drv->forcedwrprot
-     *          || drv->diskfile == NULL;
-     * </pre>
-     *
-     * <p>Non e' un dettaglio: /WPROT e' una linea <b>wired</b>, e basta UN drive selezionato
-     * a tirarla bassa. Con piu' drive selezionati insieme, un drive vuoto protegge la linea
-     * anche se quello col disco non lo farebbe. Misurato su {@code Paula/Drive/step5}, che
-     * seleziona tutti e quattro i drive (`and.b #$87,CIAB_PRB`) mentre df0 ha un disco
-     * scrivibile e df1 e' vuoto.
+     * <p><b>An EMPTY drive reports write protected.</b> /WPROT is a <b>wired</b> line and ONE
+     * selected drive is enough to pull it low: with several drives selected together, an
+     * empty one protects the line even when the one with the disk would not. Measured on
+     * {@code Paula/Drive/step5}, which selects all four drives while df0 holds a writable
+     * disk and df1 is empty.
      */
     public boolean isWriteProtectedRaw() { return !diskInserted || writeProtected; }
     public boolean isDiskChangedRaw()    { return connected && dskchange; }
     public boolean isIndexActiveRaw()    { return connected && indexPulse; }
 
     public boolean isSelected()       { return selected; }
-    /** Traccia fisica corrente (cilindro*2 + lato), 0..159. Diagnostica. */
+    /** Current physical track (cylinder*2 + side). Diagnostics. */
     public int getPhysicalTrack()     { return currentTrack * 2 + (currentSide ? 1 : 0); }
     public boolean isReady()          { return selected && isReadyRaw(); }
     public boolean isTrack0()         { return selected && isTrack0Raw(); }
@@ -952,9 +867,9 @@ public final class FloppyDrive {
     public int     getCurrentTrack()  { return currentTrack; }
     public int     getTargetTrack()   { return targetTrack; }
 
-    /** Posizione angolare corrente della testina, in celle dall'impulso di INDEX. */
+    /** Current angular position of the head, in cells from the INDEX pulse. */
     public int getBitPointer()  { return bitPointer; }
-    /** Lunghezza in celle della traccia corrente (= un giro completo). */
+    /** Length of the current track in cells (one full revolution). */
     public int getTrackBitLen() { return trackBitLen; }
 
     public boolean isDiskInserted()   { return diskInserted; }
@@ -963,13 +878,13 @@ public final class FloppyDrive {
     public DiskImage getDiskImage()   { return diskImage; }
 
     // =========================================================================
-    // Flusso MFM
+    // MFM stream
     // =========================================================================
 
     public int getNextMFMBit() {
-        // Nessun gate su motorAtSpeed: come vAmiga (read8 non consulta la velocità),
-        // la testina legge il supporto non appena il motore è acceso. La rampa di
-        // velocità è modellata solo su /RDY.
+        // No gate on motorAtSpeed: the head reads the medium as soon as the motor is on.
+        // The speed ramp is modelled on /RDY only.
+        if (unformattedTrack && motorTarget && diskInserted) return noiseRng.nextInt(2);
         return mfmBitAt(bitPointer);
     }
 
@@ -982,35 +897,36 @@ public final class FloppyDrive {
     }
 
     // =========================================================================
-    // Gestione traccia
+    // Track handling
     // =========================================================================
 
-    /** Carica i dati MFM della traccia, lunghezza standard (byte x 8). */
+    /** Loads the track's MFM data, standard length (bytes x 8). */
     public void loadTrackData(byte[] data) {
         loadTrackData(data, data == null ? 0 : data.length * 8);
     }
 
     /**
-     * Carica i dati MFM della traccia con la sua lunghezza ESATTA in bit.
-     * La posizione angolare della testina viene preservata (riscalata sulla nuova
-     * lunghezza di traccia): il cambio traccia/lato non muove il supporto.
+     * Loads the track's MFM data with its EXACT length in bits. The angular position of
+     * the head is kept (rescaled to the new track length): changing track or side does
+     * not move the medium.
      *
-     * @param data      bitstream MFM (byte) della traccia
-     * @param trackBits lunghezza esatta della traccia in bit (anche non multipla di 8,
-     *                  per le long track di protezione IPF)
+     * @param data      MFM bitstream (bytes) of the track
+     * @param trackBits exact track length in bits (not necessarily a multiple of 8, for
+     *                  IPF protection long tracks)
      */
     public void loadTrackData(byte[] data, int trackBits) {
         loadTrackData(data, trackBits, null);
     }
 
     /**
-     * Come sopra, con la mappa di densità per-byte della traccia (1000 = durata di
-     * cella nominale; {@code null} = densità uniforme).
+     * As above, with the track's per-byte density map (1000 = nominal cell length;
+     * {@code null} = uniform density).
      */
     public void loadTrackData(byte[] data, int trackBits, int[] density) {
         jitterSkipCell = -1;
-        // Lunghezza della traccia corrente: standard per ADF e per le tracce IPF
-        // normali, maggiore per le long track di protezione (fino a MAX_TRACK_BYTES).
+        unformattedTrack = false;
+        // Length of the current track: standard for ADF and normal IPF tracks, longer for
+        // protection long tracks (up to MAX_TRACK_BYTES).
         int len = (data == null) ? TRACK_BUFFER_SIZE
                                  : Math.min(data.length, trackBuffer.length);
         if (len <= 0) len = TRACK_BUFFER_SIZE;
@@ -1043,9 +959,9 @@ public final class FloppyDrive {
         // head steps or the side changes (only a disk DMA start re-phases it, see
         // restartBitCell).
 
-        // Il cambio traccia/lato NON sposta il supporto: la testina resta allo stesso
-        // angolo di rotazione. Se la nuova traccia ha una lunghezza diversa (long track
-        // di protezione) la posizione va riscalata in proporzione, non azzerata.
+        // A track or side change does NOT move the medium: the head stays at the same
+        // angle. When the new track has a different length (protection long track) the
+        // position is rescaled in proportion, not cleared.
         bitPointer = (oldBitLen > 0)
                 ? (int) ((long) bitPointer * trackBitLen / oldBitLen) % trackBitLen
                 : 0;
@@ -1055,12 +971,12 @@ public final class FloppyDrive {
             return;
         }
         System.arraycopy(data, 0, trackBuffer, 0, len);
-        // azzera l'eventuale coda non usata del buffer (tracce precedenti più lunghe)
+        // clear the unused tail of the buffer (left by a longer previous track)
         if (len < trackBuffer.length)
             Arrays.fill(trackBuffer, len, trackBuffer.length, (byte) 0);
     }
 
-    /** Ricarica nel buffer MFM i dati della traccia/side correnti dall'immagine disco. */
+    /** Reloads the MFM buffer with the current track and side from the disk image. */
     private void loadCurrentTrack() {
         if (diskImage == null) return;
         int physicalTrack = currentTrack * 2 + (currentSide ? 1 : 0);
@@ -1068,48 +984,43 @@ public final class FloppyDrive {
                       diskImage.getTrackBits(physicalTrack),
                       diskImage.getTrackDensity(physicalTrack));
         jitterSkipCell = diskImage.getJitterSkipCell(physicalTrack);
+        unformattedTrack = diskImage.isUnformatted(physicalTrack);
     }
 
     // =========================================================================
-    // Inserimento / Eject disco
+    // Disk insert / eject
     // =========================================================================
 
     /**
-     * Inserisce un'immagine disco file-backed. Chiude e sostituisce l'eventuale
-     * immagine precedente. Passare {@code null} equivale a chiamare
-     * {@link #ejectDisk()}.
+     * Inserts a file-backed disk image, closing and replacing the previous one. Passing
+     * {@code null} is the same as {@link #ejectDisk()}.
      *
-     * <p>⛔ <b>Un disco che c'è già all'accensione NON è un cambio.</b> {@code /CHNG} è un
-     * latch che va basso a ogni inserimento o estrazione <i>mentre la macchina gira</i>; se
-     * il disco è nel drive da prima che si accendesse, non è successo niente da latchare.
-     * È il modello di WinUAE alla lettera: {@code disk.cpp}, {@code drive_insert()} — che è
-     * la strada del config, cioè del freddo — chiude con {@code drv->dskchange = false},
-     * mentre l'inserimento a caldo passa da {@code disk_insert()} → {@code dskeject_time} →
-     * espulsione (che asserisce) e solo dopo {@code drive_insert()}.
+     * <p><b>A disk already inside at power-on is NOT a change.</b> {@code /CHNG} is a latch
+     * that goes low at every insertion or removal <i>while the machine runs</i>; a disk in
+     * the drive since before power-on has nothing to latch.
      *
-     * <p>⚠️ <b>A caldo si asserisce, e va tenuto così</b>: l'HRM dice «/CHNG goes low on
-     * every insertion or removal, and is reset by a STEP pulse when there is a disk in the
-     * drive», ed è su questo che si regge il rilevamento del disco infilato a emulatore
-     * acceso (la nostra ROM, {@code rom/floppy.asm} {@code probeDisk}, e i giochi che
-     * chiedono di cambiare disco). Il discrimine è {@link #machineRunning}, che diventa vero
-     * al primo {@link #tick}: prima di quello siamo nel config, dopo siamo a caldo.
+     * <p><b>A hot insert does assert it</b>: the HRM says "/CHNG goes low on every insertion
+     * or removal, and is reset by a STEP pulse when there is a disk in the drive", and the
+     * detection of a disk inserted while running relies on it (our ROM,
+     * {@code rom/floppy.asm} {@code probeDisk}, and games asking for a disk change). The
+     * line between the two is {@link #machineRunning}, which turns true at the first
+     * {@link #tick}.
      *
-     * <p>⚠️ Asserirla <b>anche a freddo</b> costava <b>11 102 CCK</b> di boot: `trackdisk`
-     * vedeva un cambio pendente e ricalibrava la testina <b>prima</b> di accendere il
-     * motore, con i suoi 3 ms di settle. Vedi {@code docs/vamigats-paula-audio-plan.md}
-     * §7.1.5, dove la controprova è misurata contro l'oracolo.
+     * <p>Asserting it <b>at a cold insert too</b> cost <b>11 102 CCK</b> of boot: trackdisk
+     * saw a pending change and recalibrated the head <b>before</b> switching the motor on,
+     * with its 3 ms settles (docs/vamigats-paula-audio-plan.md section 7.1.5).
      */
     public void insertDisk(DiskImage image) {
         statusDirty = true;
         writing = false;
-        flushWrittenTrack();   // salva quanto inciso sul disco uscente
+        flushWrittenTrack();   // save what was written on the outgoing disk
         closeDiskImage();
         diskImage      = image;
         diskInserted   = (image != null);
         writeProtected = (image != null) && image.isReadOnly();
-        // A caldo ogni inserimento/estrazione latcha; a freddo (config) no.
+        // Hot, every insertion or removal latches; cold (configuration), none does.
         dskchange      = machineRunning || (image == null);
-        // Modello FDC attivo solo per gli IPF; per gli ADF è bypassato (rate fisso).
+        // The cell density model applies to IPF only; ADF is bypassed (fixed rate).
         densityModel   = (image != null) && image.getFormat() == DiskImage.Format.IPF;
         if (diskInserted) { loadCurrentTrack(); randomiseAngularPosition(); }
         // A disk dropped into a spinning drive restarts the /RDY delay.
@@ -1118,36 +1029,23 @@ public final class FloppyDrive {
     }
 
     /**
-     * Posizione angolare del piatto all'inserimento: CASUALE, come WinUAE
-     * ({@code disk.cpp drive_insert}: {@code drv->mfmpos = uaerand() ... % tracklen}).
+     * Angular position of the platter at an insert: RANDOM.
      *
-     * <p>Il motore di un drive vero si ferma dove capita e il disco viene infilato con
-     * un orientamento qualunque: l'angolo da cui parte la prima lettura non ha alcuna
-     * relazione col pennello video. Partendo invece SEMPRE da bit 0 ogni avvio legge il
-     * disco dallo stesso angolo, quindi ogni lettura finisce allo stesso identico
-     * istante rispetto al frame — la fase non è "una delle tante", è sempre quella.
+     * <p>A real drive's motor stops wherever it happens to, and a disk goes in at any
+     * orientation: the angle the first read starts from bears no relation to the beam.
+     * Starting ALWAYS from bit 0 made every boot read the disk from the same angle, so every
+     * read ended at the very same instant of the frame. That is what broke Pinball Dreams
+     * from floppy: the bootblock load always ended at vpos 22 and the hand-over to the game
+     * at vpos 312, the one point where the VBL crosses the ~15-instruction blind window of
+     * its takeover, so it took VERTB in the Kickstart's handler with SysBase already
+     * destroyed, and crashed at every boot.
      *
-     * <p>È esattamente ciò che rompeva Pinball Dreams da floppy: il caricamento del
-     * bootblock terminava sempre a vpos 22 e la consegna al gioco cadeva sempre a
-     * vpos 312, l'unico punto in cui la finestra cieca di ~15 istruzioni del suo
-     * takeover (INTREQ azzerato → vettore $6C installato) viene attraversata dal VBL.
-     * Il gioco prendeva quindi la VERTB nel gestore del Kickstart, con SysBase già
-     * distrutto, e finiva in Guru $00000025 a ogni singolo avvio.
-     *
-     * <p>Determinismo: i test che confrontano frame o CRC devono poter riprodurre la
-     * stessa corsa, quindi il seme è fissabile con {@code -Damiga.diskseed=<n>}.
-     *
-     * <p>⚠️ Il seme <b>non basta</b> quando si confronta una corsa con quella di un altro
-     * emulatore: fissa la <i>sequenza</i>, non il valore, quindi l'angolo di una macchina
-     * dipende da quante ne sono state create prima nella stessa JVM. E l'angolo non è un
-     * dettaglio — da solo sposta l'istante in cui il bootblock è pronto di <b>±8000 CCK</b>
-     * (docs/vamigats-paula-audio-plan.md §6.3), cioè assai più di tutte le divergenze di
-     * timing che il banco vAmigaTS misura. Per questo esiste anche
-     * {@code -Damiga.diskangle=<bit>}, che <b>fissa la posizione</b> invece di estrarla:
-     * è il modo di mettere le due macchine allo stesso punto del piatto prima di
-     * confrontarle. L'unità è la stessa dell'oracolo — bit sulla traccia MFM, con
-     * {@code tracklen} 101344 su entrambi — quindi il valore si legge direttamente dal suo
-     * {@code drv->mfmpos} (hook {@code WINUAE_DISKLOG}).
+     * <p>Determinism: tests comparing frames or CRCs must reproduce the same run, so the
+     * seed can be fixed with {@code -Damiga.diskseed=<n>}. {@code -Damiga.diskangle=<bit>}
+     * <b>fixes the position</b> instead of drawing it, to put a run at the same point of the
+     * platter as a reference run: the angle alone moves the instant the bootblock is ready
+     * by <b>+-8000 CCK</b> (docs/vamigats-paula-audio-plan.md section 6.3). The unit is
+     * cells on the MFM track, 101344 per revolution.
      */
     private void randomiseAngularPosition() {
         if (trackBitLen > 0) {
@@ -1160,20 +1058,13 @@ public final class FloppyDrive {
     }
 
     /**
-     * ⛔ <b>Il generatore è PER DRIVE, non statico.</b> Con un {@code Random} condiviso da
-     * tutta la JVM l'<i>n</i>-esimo inserimento prendeva l'<i>n</i>-esimo valore della
-     * sequenza, quindi <b>l'angolo di partenza di un test dipendeva da quanti test erano
-     * girati prima</b>: la stessa classe poteva essere verde da sola e rossa dentro una
-     * suite, ed è il motivo per cui
-     * {@code docs/vamigats-paula-audio-plan.md} §2.5 prescriveva di riprodurre ogni rosso
-     * "da solo" prima di attribuirlo a una modifica.
-     *
-     * <p>Con un generatore per drive la sequenza <b>riparte con la macchina</b>: ogni test
-     * riceve esattamente l'angolo che riceve quando gira <b>da solo</b>, che è la condizione
-     * in cui tutti i riferimenti sono stati validati. Il seme resta fissabile con
-     * {@code -Damiga.diskseed=<n>} (il {@code pom.xml} lo mette a 0 per i test); l'offset per
-     * {@code id} serve a non dare lo stesso piatto a due drive diversi, e
-     * {@code String.hashCode()} è specificato dal linguaggio, quindi è riproducibile.
+     * <b>The generator is PER DRIVE, not static.</b> With one {@code Random} shared by the
+     * whole JVM, the starting angle of a test would depend on how many tests ran before
+     * it. With one per drive the sequence <b>restarts with the machine</b>: every test gets
+     * exactly the angle it gets when run alone. The seed is fixed with
+     * {@code -Damiga.diskseed=<n>} (the {@code pom.xml} sets 0 for the tests); the offset by
+     * {@code id} keeps two drives from getting the same platter, and
+     * {@code String.hashCode()} is specified by the language, so it is reproducible.
      */
     private final java.util.Random angleRng;
 
@@ -1190,6 +1081,9 @@ public final class FloppyDrive {
     /** The jitter draws ({@link #slipJitterCells()}), seeded like {@link #angleRng}. */
     private final java.util.Random jitterRng;
 
+    /** The cells of an unformatted track, seeded like {@link #angleRng}. */
+    private final java.util.Random noiseRng;
+
     private static java.util.Random newAngleRng(String id) {
         return newDriveRng(id, 0);
     }
@@ -1202,16 +1096,15 @@ public final class FloppyDrive {
     }
 
     /**
-     * Compatibilità con codice esistente: carica un file ADF creando
-     * internamente un {@link DiskImage}. Accetta anche la forma
-     * {@code <archivio>.zip!<n>} per i singoli dischi di uno zip multi-disco.
+     * Loads a disk file, building a {@link DiskImage} internally. Also accepts the form
+     * {@code <archive>.zip!<n>} for the single disks of a multi-disk zip.
      */
     public void loadAdf(String adfPath, boolean writeProtected) throws IOException {
         if (adfPath == null) { ejectDisk(); return; }
         insertDisk(DiskImage.open(adfPath, writeProtected));
     }
 
-    /** Eject fisico: flush dei dati, chiusura dell'immagine, segnalazione /CHNG. */
+    /** Physical eject: data flush, image closed, /CHNG latched. */
     public void ejectDisk() {
         statusDirty = true;
         writing = false;
@@ -1229,8 +1122,8 @@ public final class FloppyDrive {
     }
 
     /**
-     * Simula la presenza/assenza fisica di un disco senza file backing.
-     * Utile per test o per segnalare un disco non formattato.
+     * Simulates the physical presence or absence of a disk without a backing file, for
+     * tests.
      */
     public void insertDisk(boolean inserted, boolean writeProtected) {
         statusDirty = true;
@@ -1266,8 +1159,8 @@ public final class FloppyDrive {
 
     public void reset() {
         statusDirty = true;
-        // Un reset a metà scrittura (es. Ctrl-Amiga-Amiga) non deve perdere la
-        // traccia già incisa: la si riversa nell'immagine prima di azzerare tutto.
+        // A reset in the middle of a write (e.g. Ctrl-Amiga-Amiga) must not lose the
+        // track written so far: it is flushed to the image before clearing everything.
         writing = false;
         flushWrittenTrack();
 
@@ -1294,15 +1187,10 @@ public final class FloppyDrive {
         prevSelected         = false;
         prevStep             = false;
         lastStepDir          = false;
-        // bitPointer NON si azzera: è la posizione angolare del piatto, che nessun
-        // segnale di reset può riavvolgere. WinUAE fa lo stesso (disk.cpp
-        // reset_drive() non tocca mfmpos).
-        //
-        // Azzerarlo qui era il vero motivo per cui la fase del floppy era INCHIODATA:
-        // il Kickstart esegue una RESET in fase di boot, quindi ogni avvio ripartiva
-        // dall'angolo 0 e ogni caricamento finiva allo stesso identico punto del
-        // frame (DSKBLK sempre a vpos 22, consegna al gioco sempre a vpos 312).
-        // Vedi randomiseAngularPosition() per il perché conta.
+        // bitPointer is kept: it is the angular position of the platter, which no
+        // reset signal can rewind. The Kickstart executes RESET during boot, so
+        // clearing it here would restart every boot from angle 0 and pin every load
+        // to the same point of the frame. See randomiseAngularPosition().
         resetBitClock();
         if (hadDiskImage) {
             loadCurrentTrack();
@@ -1310,8 +1198,8 @@ public final class FloppyDrive {
             for (int i = 0; i < trackBuffer.length; i++) trackBuffer[i] = 0;
         }
 
-        // reset() azzera motorTarget direttamente (senza setMotor): ferma esplicitamente
-        // l'eventuale loop di spin del suono per non lasciarlo a girare a vuoto.
+        // reset() clears motorTarget directly (not through setMotor), so the sound's spin
+        // loop is stopped explicitly.
         if (floppySound != null) floppySound.onMotor(false, diskInserted);
     }
 }
