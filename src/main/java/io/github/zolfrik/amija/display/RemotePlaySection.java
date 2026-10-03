@@ -37,51 +37,51 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * La sezione «Gioco a distanza» del popup F12 ({@code docs/remote-play-plan.md} §9).
+ * The "Remote play" section of the F12 popup ({@code docs/remote-play-plan.md} section 9).
  *
- * <p>Sta in una classe sua e non dentro {@code ConfigDialog} perche' quella e' gia' lunga
- * duemila righe, e perche' questa sezione ha una cosa che le altre non hanno: uno
- * <b>stato che cambia mentre il popup e' aperto</b>. Un ospite puo' collegarsi o cadere
- * mentre l'utente guarda la finestra, quindi c'e' un timer che riallinea i controlli, e
- * tutto il resto della classe esiste per tenere quel riallineamento in un posto solo.
+ * <p>It is a class of its own and not inside {@code ConfigDialog} because that one is already
+ * two thousand lines long, and because this section has something the others do not: a
+ * <b>state that changes while the popup is open</b>. A guest can connect or drop while the
+ * user looks at the window, so a timer realigns the controls, and the rest of the class
+ * exists to keep that realignment in one place.
  *
- * <h2>Tre modi, e le righe che compaiono</h2>
- * Il selettore {@code Off / Ospita / Unisciti} mostra e nasconde le righe del ruolo scelto
- * con {@code setRowVisible}, come fa gia' la modalita' Auto. Lo stesso pulsante cambia
- * etichetta e azione — «Ospita» diventa «Smetti di ospitare» — invece di affiancarne due,
- * di cui uno sempre spento.
+ * <h2>Three modes, and the rows that appear</h2>
+ * The {@code Off / Host / Join} selector shows and hides the rows of the chosen role with
+ * {@code setRowVisible}, as Auto mode already does. The same button changes label and action
+ * ("Host" becomes "Stop hosting") instead of showing two side by side, one of them always
+ * off.
  *
- * <h2>Nessun pulsante chiude il popup</h2>
- * Né ospitare né collegarsi chiudono la finestra: agiscono subito e il risultato si legge
- * nella <b>riga di stato</b>, che si aggiorna da sola. Collegarsi apre davvero la sessione —
- * il video comincia ad arrivare dietro al popup — ma <b>non smonta la macchina</b>: a quello
- * si arriva confermando con OK, ed è la sola cosa che questa sezione lascia fare a chi la
- * macchina la possiede (§3, {@link RemotePlayControl}).
+ * <h2>No button closes the popup</h2>
+ * Neither hosting nor connecting closes the window: they act at once and the result shows in
+ * the <b>status line</b>, which updates by itself. Connecting really opens the session (the
+ * video starts arriving behind the popup) but <b>does not unmount the machine</b>: that is
+ * reached by confirming with OK, the only thing this section leaves to whoever owns the
+ * machine (section 3, {@link RemotePlayControl}).
  *
- * <p>La versione precedente chiudeva il popup alla pressione di «Collega» e si collegava
- * dopo: un fallimento non aveva più nessuna finestra in cui essere raccontato, e l'utente
- * restava davanti alla sua macchina senza sapere che il collegamento non c'era. L'unica
- * eccezione resta lasciare la sessione quando si è ospiti <b>davvero</b>: lì la macchina va
- * ricostruita, e ricostruirla da dentro un dialog modale è ciò che si evita.
+ * <p>Closing the popup when "Connect" is pressed and connecting afterwards would leave a
+ * failure with no window in which to be told, and the user in front of their machine without
+ * knowing the connection was not there. The one exception is leaving the session when one is
+ * <b>really</b> a guest: there the machine must be rebuilt, and rebuilding it from inside a
+ * modal dialog is what is avoided.
  */
 final class RemotePlaySection {
 
-    /** Ogni quanto la riga di stato si riallinea alla realta'. */
+    /** How often the status line realigns with reality. */
     private static final int REFRESH_MS = 500;
 
     private RemotePlaySection() {
     }
 
-    /** Cosa il popup deve fare alla chiusura, deciso qui dentro. */
+    /** What the popup must do when it closes, decided in here. */
     enum Outcome { NONE, JOIN, LEAVE }
 
-    /** Quel che la sezione consegna al dialog: il pannello e l'esito da applicare. */
+    /** What the section hands to the dialog: the panel and the outcome to apply. */
     record Built(JComponent panel, java.util.function.Supplier<Outcome> outcome,
                  Runnable applyToConfig, Runnable dispose) {
     }
 
-    /** Come {@link #build(AmigaConfig, RemotePlayControl, java.util.function.Function,
-     * Widgets, Runnable)}, senza niente da riallineare fuori da questa sezione. */
+    /** Like {@link #build(AmigaConfig, RemotePlayControl, java.util.function.Function,
+     * Widgets, Runnable)}, with nothing to realign outside this section. */
     static Built build(AmigaConfig config, RemotePlayControl control,
                        java.util.function.Function<String, JComponent> section,
                        Widgets widgets) {
@@ -89,25 +89,25 @@ final class RemotePlaySection {
     }
 
     /**
-     * Costruisce la sezione.
+     * Builds the section.
      *
-     * @param control  il gioco a distanza vero, che vive fuori dal popup
-     * @param section  fabbrica di pannelli dello stesso stile delle altre sezioni
-     * @param alsoSync altre righe del popup che dipendono dallo stato della sessione e
-     *                 vanno riallineate insieme a queste — oggi le game port, di cui una
-     *                 cambia padrone nel momento in cui si comincia a ospitare. Sta qui e
-     *                 non su un timer suo perche' e' lo <b>stesso</b> evento a muoverle:
-     *                 due timer vorrebbero dire due momenti diversi in cui il popup dice
-     *                 due cose diverse. {@code null} se non c'e' niente da riallineare
+     * @param control  the real remote play, which lives outside the popup
+     * @param section  factory of panels in the same style as the other sections
+     * @param alsoSync other rows of the popup that depend on the session state and must be
+     *                 realigned with these: today the game ports, one of which changes owner
+     *                 the moment hosting starts. It is here and not on a timer of its own
+     *                 because the <b>same</b> event moves them: two timers would mean two
+     *                 different moments at which the popup says two different things.
+     *                 {@code null} if there is nothing to realign
      */
     static Built build(AmigaConfig config, RemotePlayControl control,
                        java.util.function.Function<String, JComponent> section,
                        Widgets widgets, Runnable alsoSync) {
         JComponent panel = section.apply(Messages.t("section.remoteplay"));
         Outcome[] outcome = { Outcome.NONE };
-        // Se si era già ospiti all'apertura, la macchina è già smontata e non c'è nessuna
-        // transizione da chiedere alla chiusura: l'esito JOIN spetta solo alle sessioni
-        // aperte da questo popup.
+        // If already a guest when the popup opened, the machine is already unmounted and
+        // there is no transition to ask for at closing: the JOIN outcome belongs only to the
+        // sessions opened by this popup.
         final boolean guestAtOpen = control.isGuest();
 
         // --- Modo -----------------------------------------------------------------
@@ -116,7 +116,7 @@ final class RemotePlaySection {
                 : control.isHosting() ? Mode.HOST : Mode.OFF);
         widgets.addRow(panel, 0, "label.remoteplay.mode", modeCombo, null);
 
-        // --- Righe di chi ospita ---------------------------------------------------
+        // --- Host rows ---------------------------------------------------------------
         JTextField portField = widgets.text(Integer.toString(config.remotePlayPort()));
         JCheckBox upnpCheck = widgets.check(Messages.t("label.remoteplay.upnp"),
                 config.remotePlayUpnp());
@@ -137,10 +137,9 @@ final class RemotePlaySection {
         JLabel addressLabel = widgets.addRow(panel, 4, "label.remoteplay.address",
                 addressField, copyAddress);
 
-        // La riga che il §9 disegnava e la Fase 5 non poteva riempire: prima di UPnP non
-        // c'era nessun modo onesto di sapere l'indirizzo pubblico. Quando la mappatura non
-        // riesce, questo campo porta la DIAGNOSI al posto dell'indirizzo — è la stessa
-        // domanda («da fuori mi si raggiunge?») e questa è la risposta che serve.
+        // Before UPnP there was no honest way to know the public address. When the mapping
+        // fails, this field carries the DIAGNOSIS instead of the address: it is the same
+        // question ("can I be reached from outside?") and this is the answer needed.
         JTextField internetField = widgets.readOnlyText("");
         JButton copyInternet = widgets.button(Messages.t("button.remoteplay.copy"));
         JLabel internetLabel = widgets.addRow(panel, 5, "label.remoteplay.internet",
@@ -166,7 +165,7 @@ final class RemotePlaySection {
         JLabel audioLabel = widgets.addRow(panel, 8, "label.remoteplay.audio",
                 audioCombo, allowReset);
 
-        // --- Righe di chi si unisce ------------------------------------------------
+        // --- Joiner rows -------------------------------------------------------------
         JTextField hostAddressField = widgets.text(config.remotePlayLastHost());
         JLabel hostAddressLabel = widgets.addRow(panel, 9, "label.remoteplay.hostaddress",
                 hostAddressField, null);
@@ -179,7 +178,7 @@ final class RemotePlaySection {
         JLabel joinButtonLabel = widgets.addRow(panel, 11, "label.remoteplay.session2",
                 joinButton, null);
 
-        // --- Stato, sempre visibile -------------------------------------------------
+        // --- Status, always visible -------------------------------------------------
         JTextField statusField = widgets.readOnlyText("");
         JLabel statusLabel = widgets.addRow(panel, 12, "label.remoteplay.status",
                 statusField, null);
@@ -194,19 +193,18 @@ final class RemotePlaySection {
         List<JComponent> joinRows = List.of(hostAddressLabel, hostAddressField,
                 joinCodeLabel, joinCodeField, joinButtonLabel, joinButton);
 
-        // Un solo posto in cui i controlli si riallineano alla realta': lo chiamano il
-        // cambio di modo, i pulsanti e il timer. Averne tre copie sarebbe il modo sicuro
-        // di lasciarne una indietro.
+        // A single place where the controls realign with reality: called by the mode change,
+        // the buttons and the timer. Three copies would be the sure way to leave one behind.
         Runnable sync = () -> {
             boolean hosting = control.isHosting();
             boolean guest = control.isGuest();
             boolean connecting = control.isJoining();
-            // Con una sessione aperta (o in apertura) il selettore non può dire altro: da
-            // «Off» le righe sparirebbero, ma la sessione resterebbe viva e l'OK la
-            // confermerebbe lo stesso. Il selettore mostra le righe di un ruolo; qui il
-            // ruolo è già stato preso, e quel che si vede deve dirlo.
+            // With a session open (or opening) the selector cannot say anything else: from
+            // "Off" the rows would disappear, but the session would stay alive and OK would
+            // confirm it anyway. The selector shows the rows of a role; here the role has
+            // already been taken, and what is seen must say so.
             if (guest || connecting) {
-                modeCombo.setSelectedItem(Mode.JOIN);   // rientra qui, e la seconda volta è un no-op
+                modeCombo.setSelectedItem(Mode.JOIN);   // re-enters here, and the second time it is a no-op
             }
             Mode mode = (Mode) modeCombo.getSelectedItem();
 
@@ -219,19 +217,19 @@ final class RemotePlaySection {
                     ? "button.remoteplay.stop" : "button.remoteplay.start"));
             joinButton.setText(Messages.t(guest
                     ? "button.remoteplay.disconnect" : "button.remoteplay.connect"));
-            // Mentre il collegamento è in volo non c'è niente da premere e niente da
-            // cambiare: l'indirizzo e il codice di quel tentativo sono già partiti.
+            // While the connection is in flight there is nothing to press and nothing to
+            // change: the address and code of that attempt have already left.
             joinButton.setEnabled(!connecting);
             hostAddressField.setEnabled(!connecting && !guest);
             joinCodeField.setEnabled(!connecting && !guest);
-            // L'esito da applicare alla chiusura non è una scelta a parte: è semplicemente
-            // «questo popup ha aperto una sessione», e va riletto a ogni giro perché la
-            // sessione può anche essersi chiusa nel frattempo.
+            // The outcome to apply at closing is not a separate choice: it is simply "this
+            // popup opened a session", and must be re-read at every round because the session
+            // may have closed meanwhile.
             if (outcome[0] != Outcome.LEAVE) {
                 outcome[0] = !guestAtOpen && guest ? Outcome.JOIN : Outcome.NONE;
             }
-            // Mentre si ospita, i parametri della sessione in corso non si toccano:
-            // cambiarli sotto i piedi di un ospite collegato non vuol dire niente.
+            // While hosting, the parameters of the running session are not touched: changing
+            // them under a connected guest means nothing.
             portField.setEnabled(!hosting);
             upnpCheck.setEnabled(!hosting);
             lanOnlyCheck.setEnabled(!hosting);
@@ -243,9 +241,9 @@ final class RemotePlaySection {
             if (hosting) {
                 addressField.setText(nullToEmpty(control.lanAddress()));
                 codeField.setText(nullToEmpty(control.joinCode()));
-                // O l'indirizzo pubblico, o il motivo per cui non c'è. Il pulsante «Copia»
-                // vale solo per il primo: copiare negli appunti un messaggio d'errore
-                // sarebbe un invito a incollarlo all'altro giocatore.
+                // Either the public address, or the reason there is none. The "Copy" button
+                // applies only to the first: copying an error message to the clipboard would
+                // be an invitation to paste it to the other player.
                 String internet = control.internetAddress();
                 internetField.setText(internet != null ? internet
                         : nullToEmpty(control.routerStatus()));
@@ -263,8 +261,8 @@ final class RemotePlaySection {
             if (control.isHosting()) {
                 control.stopHosting();
             } else {
-                // I valori del popup vanno nella configurazione PRIMA di accendere: e'
-                // da li' che startHosting() legge porta, game port e audio.
+                // The popup's values go into the configuration BEFORE switching on: that is
+                // where startHosting() reads port, game port and audio from.
                 applyHostFields(config, portField, upnpCheck, lanOnlyCheck,
                         guestPortCombo, shareKeyboard, allowReset, audioCombo);
                 String error = control.startHosting();
@@ -277,12 +275,12 @@ final class RemotePlaySection {
 
         joinButton.addActionListener(e -> {
             if (control.isJoining()) {
-                return;   // già in volo: il pulsante è spento, ma la scorciatoia di tastiera no
+                return;   // already in flight: the button is off, but the keyboard shortcut is not
             }
             if (control.isGuest()) {
                 if (control.requestLeave()) {
-                    // Ospiti davvero: non c'è nessuna macchina, e ricostruirla vuole il
-                    // popup chiuso. È l'unico caso in cui questa sezione lo chiude.
+                    // Really a guest: there is no machine, and rebuilding it needs the popup
+                    // closed. The only case in which this section closes it.
                     outcome[0] = Outcome.LEAVE;
                     widgets.closeDialog();
                     return;
@@ -290,8 +288,8 @@ final class RemotePlaySection {
                 sync.run();
                 return;
             }
-            // Il collegamento parte subito e ritorna subito: come sta andando lo dice la
-            // riga di stato, e se fallisce l'utente riceve comunque un messaggio.
+            // The connection starts and returns at once: the status line says how it is
+            // going, and if it fails the user gets a message anyway.
             String error = control.requestJoin(hostAddressField.getText(),
                     joinCodeField.getText());
             if (error != null) {
@@ -304,8 +302,8 @@ final class RemotePlaySection {
         copyCode.addActionListener(e -> copy(codeField.getText()));
         copyInternet.addActionListener(e -> copy(internetField.getText()));
 
-        // I controlli in coda alla riga: addRow non li tocca, e senza queste chiamate i
-        // loro .tip sarebbero testo scritto e mai mostrato.
+        // The trailing controls of the row: addRow does not touch them, and without these
+        // calls their .tip would be text written and never shown.
         widgets.tip("label.remoteplay.upnp", upnpCheck);
         widgets.tip("label.remoteplay.guestkeyboard", shareKeyboard);
         widgets.tip("label.remoteplay.guestreset", allowReset);
@@ -313,8 +311,8 @@ final class RemotePlaySection {
         widgets.tip("label.remoteplay.session", hostButton);
         widgets.tip("label.remoteplay.session2", joinButton);
 
-        // L'ospite puo' collegarsi o cadere mentre la finestra e' aperta: senza questo,
-        // lo stato mostrato sarebbe quello di quando si e' premuto F12.
+        // The guest can connect or drop while the window is open: without this, the state
+        // shown would be that of when F12 was pressed.
         Timer timer = new Timer(REFRESH_MS, e -> sync.run());
         timer.start();
         sync.run();
@@ -336,8 +334,8 @@ final class RemotePlaySection {
                 config.setRemotePlayPort(port);
             }
         } catch (NumberFormatException ignored) {
-            // Porta scritta male: si tiene quella di prima invece di rifiutare l'intero
-            // popup per un campo. La riga di stato dira' su quale porta si sta ascoltando.
+            // Port mistyped: keep the previous one instead of refusing the whole popup over
+            // one field. The status line will say which port is being listened on.
         }
         config.setRemotePlayUpnp(upnp.isSelected());
         config.setRemotePlayLanOnly(lanOnly.isSelected());
@@ -360,7 +358,7 @@ final class RemotePlaySection {
         return s == null ? "" : s;
     }
 
-    /** I pezzi di {@code ConfigDialog} che servono qui, passati invece che duplicati. */
+    /** The pieces of {@code ConfigDialog} needed here, passed rather than duplicated. */
     interface Widgets {
         <T> JComboBox<T> combo(T[] values);
 
@@ -378,11 +376,12 @@ final class RemotePlaySection {
         void setRowVisible(boolean visible, List<JComponent> components);
 
         /**
-         * Applica il tooltip di {@code <baseKey>.tip} ai componenti indicati.
+         * Applies the tooltip of {@code <baseKey>.tip} to the given components.
          *
-         * <p>Serve perche' {@code addRow} lo mette solo su etichetta e campo: i controlli
-         * <b>in coda alla riga</b> — le spunte accanto, i pulsanti «Copia» — resterebbero
-         * senza. E sono opzioni a tutti gli effetti, quindi devono spiegarsi anche loro.
+         * <p>Needed because {@code addRow} puts it only on label and field: the controls
+         * <b>trailing the row</b> (the checkboxes next to it, the "Copy" buttons) would be
+         * left without. They are options in their own right, so they must explain
+         * themselves too.
          */
         void tip(String baseKey, JComponent... components);
 
@@ -392,7 +391,7 @@ final class RemotePlaySection {
     }
 
     // =====================================================================
-    // Voci delle tendine
+    // Drop-down entries
     // =====================================================================
 
     enum Mode {
@@ -441,7 +440,7 @@ final class RemotePlaySection {
         }
     }
 
-    /** Comodita' per costruire liste di componenti senza null. */
+    /** Convenience for building component lists without nulls. */
     static List<JComponent> row(JComponent... components) {
         List<JComponent> list = new ArrayList<>(components.length);
         for (JComponent c : components) {

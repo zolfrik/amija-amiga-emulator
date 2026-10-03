@@ -31,27 +31,25 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Costruisce un'immagine hard disk {@code .hdf} "headerless" con un filesystem
- * AmigaDOS Fast File System (FFS, {@code DOS\1}) a partire da un albero di
- * directory dell'host.
+ * Builds a "headerless" {@code .hdf} hard disk image with an AmigaDOS Fast File System (FFS,
+ * {@code DOS\1}) from a host directory tree.
  *
- * <p>L'immagine prodotta è compatibile con {@link io.github.zolfrik.amija.memory.HardFile}
- * in modalità headerless: blocco 0 che inizia con {@code DOS\1}, root block in
- * {@code numBlocks/2}, numero di blocchi multiplo di 32 (così che la geometria
- * sintetizzata sia C×1×32). Viene montata come unità master/boot dal normale
- * controller Zorro II con boot ROM.
+ * <p>The image is compatible with {@link io.github.zolfrik.amija.memory.HardFile} in
+ * headerless mode: block 0 starting with {@code DOS\1}, root block at {@code numBlocks/2},
+ * number of blocks a multiple of 32 (so the synthesised geometry is Cx1x32). It is mounted as
+ * the master/boot unit by the normal Zorro II controller with boot ROM.
  *
- * <p>Riferimenti di formato: documentazione FFS di Laurent Clévy / adflib
- * ({@code adf_blk.h}). Solo {@code DOS\1} (FFS, niente dir-cache/intl): blocchi
- * dati grezzi da 512 byte, header file/dir con hash table e catene di hash.
+ * <p>Format references: Laurent Clévy's FFS documentation / adflib ({@code adf_blk.h}). Only
+ * {@code DOS\1} (FFS, no dir cache/intl): raw 512-byte data blocks, file/dir headers with hash
+ * table and hash chains.
  */
 public final class FfsBuilder {
 
     private static final int BSIZE = 512;
     private static final int HT_SIZE = 72;        // (BSIZE/4) - 56
     private static final int MAX_NAME = 30;       // limite nomi file/cartella AmigaDOS
-    private static final int DBLOCKS = 72;        // puntatori dati per header/ext
-    private static final int BM_COVER = 127 * 32; // blocchi mappati da un bitmap block (4064)
+    private static final int DBLOCKS = 72;        // data pointers per header/ext
+    private static final int BM_COVER = 127 * 32; // blocks mapped by one bitmap block (4064)
 
     private static final int T_HEADER = 2;
     private static final int T_LIST = 16;
@@ -65,19 +63,18 @@ public final class FfsBuilder {
     private boolean[] used;
     private int allocCursor = 2;
     private final List<Integer> bitmapBlocks = new ArrayList<>();
-    // Override nome-su-disco -> nome Amiga originale (sidecar .amiganames di LhaExtractor).
+    // Override on-disk name -> original Amiga name (LhaExtractor's .amiganames sidecar).
     private Path srcRoot;
     private final Map<String, String> nameOverrides = new HashMap<>();
 
     private FfsBuilder() {}
 
     /**
-     * Costruisce l'immagine FFS di {@code srcDir} (ricorsivo) e la scrive in
-     * {@code outHdf}.
+     * Builds the FFS image of {@code srcDir} (recursively) and writes it to {@code outHdf}.
      *
-     * @param volumeName nome del volume (DH0)
-     * @param slackBlocks blocchi liberi extra oltre il contenuto (per le scritture
-     *                    runtime di WHDLoad: salvataggi, .info, ecc.)
+     * @param volumeName name of the volume (DH0)
+     * @param slackBlocks extra free blocks beyond the content (for WHDLoad's run-time
+     *                    writes: saves, .info, etc.)
      */
     public static void build(Path srcDir, String volumeName, Path outHdf, int slackBlocks)
             throws IOException {
@@ -91,9 +88,9 @@ public final class FfsBuilder {
     private static final class Node {
         String name;
         boolean dir;
-        byte[] data;              // solo file
+        byte[] data;              // files only
         List<Node> children = new ArrayList<>();
-        int block;                // assegnato in fase di allocazione
+        int block;                // assigned during allocation
     }
 
     private Node scan(Path dir, String name) throws IOException {
@@ -104,11 +101,11 @@ public final class FfsBuilder {
         try (var s = Files.list(dir)) {
             kids = new ArrayList<>(s.toList());
         }
-        // Ordine deterministico (directory e file insieme, per nome).
+        // Deterministic order (directories and files together, by name).
         kids.sort(Comparator.comparing(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT)));
         for (Path p : kids) {
             String cn = amigaName(p);
-            if (cn == null) continue;          // sidecar .amiganames: non finisce nel FFS
+            if (cn == null) continue;          // .amiganames sidecar: does not go into the FFS
             if (Files.isDirectory(p)) {
                 n.children.add(scan(p, cn));
             } else {
@@ -123,10 +120,10 @@ public final class FfsBuilder {
     }
 
     /**
-     * Nome AmigaDOS da usare nel FFS per il percorso host {@code p}: il nome Amiga
-     * originale se {@link LhaExtractor} lo aveva codificato per Windows (sidecar
-     * {@code .amiganames}), altrimenti il nome del file su disco. Restituisce
-     * {@code null} per il file sidecar stesso, che non va incluso nel FFS.
+     * AmigaDOS name to use in the FFS for host path {@code p}: the original Amiga name if
+     * {@link LhaExtractor} had encoded it for Windows (the {@code .amiganames} sidecar),
+     * otherwise the name of the file on disk. Returns {@code null} for the sidecar file itself,
+     * which must not go into the FFS.
      */
     private String amigaName(Path p) {
         String disk = p.getFileName().toString();
@@ -152,7 +149,7 @@ public final class FfsBuilder {
     }
 
     // =========================================================================
-    // Costruzione
+    // Construction
     // =========================================================================
 
     private void run(Path srcDir, String volumeName, Path outHdf, int slackBlocks)
@@ -163,7 +160,7 @@ public final class FfsBuilder {
 
         int content = countBlocks(root);
         int needed = 2 /*boot*/ + 1 /*root*/ + content;
-        // Stima dei bitmap block e dimensionamento finale (multiplo di 32).
+        // Estimate of the bitmap blocks and final sizing (a multiple of 32).
         int total = needed + Math.max(0, slackBlocks);
         int nbm = (total + BM_COVER - 1) / BM_COVER;
         total += nbm + 1;                              // bitmap block + margine
@@ -176,22 +173,22 @@ public final class FfsBuilder {
         used[0] = used[1] = true;
         used[rootKey] = true;
 
-        // Bitmap block: assegnati subito (servono al root prima di scriverlo).
+        // Bitmap blocks: assigned at once (the root needs them before it is written).
         nbm = (numBlocks - 2 + BM_COVER - 1) / BM_COVER;
         for (int i = 0; i < nbm; i++) {
             int b = allocBlock();
             bitmapBlocks.add(b);
         }
 
-        // Boot block: basta che inizi con "DOS\1" perché HardFile legga il dosType;
-        // il filesystem in ROM monta la partizione dalla geometria, non da qui.
+        // Boot block: starting with "DOS\1" is enough for HardFile to read the dosType; the
+        // file system in ROM mounts the partition from the geometry, not from here.
         writeLong(0, 0x444F5301);     // "DOS\1" (FFS)
-        writeLong(8, rootKey);        // puntatore al root (cortesia)
+        writeLong(8, rootKey);        // pointer to the root (courtesy)
 
-        // Allocazione ricorsiva di tutte le directory e file (root incluso in rootKey).
+        // Recursive allocation of every directory and file (root included in rootKey).
         allocTree(root);
 
-        // Scrittura dei blocchi.
+        // Writing the blocks.
         writeRoot(root, volumeName);
         for (Node child : root.children) writeNode(child, rootKey);
 
@@ -200,7 +197,7 @@ public final class FfsBuilder {
         Files.write(outHdf, img);
     }
 
-    /** Conta i blocchi necessari al contenuto (dir + header file + ext + dati). */
+    /** Counts the blocks the content needs (dirs + file headers + ext + data). */
     private int countBlocks(Node n) {
         int blocks = 0;
         for (Node c : n.children) {
@@ -232,7 +229,7 @@ public final class FfsBuilder {
     }
 
     // =========================================================================
-    // Scrittura dei blocchi
+    // Writing the blocks
     // =========================================================================
 
     private void writeRoot(Node root, String volumeName) {
@@ -246,7 +243,7 @@ public final class FfsBuilder {
         for (int i = 0; i < bitmapBlocks.size() && i < 25; i++) {
             writeLong(base + 316 + i * 4, bitmapBlocks.get(i));
         }
-        // nome volume (BCPL) a offset 432
+        // volume name (BCPL) at offset 432
         writeName(base + 432, volumeName);
         writeLong(base + 508, ST_ROOT);
         checksum(base, 20);
@@ -273,23 +270,23 @@ public final class FfsBuilder {
         byte[] data = n.data;
         int nblk = (data.length + BSIZE - 1) / BSIZE;
 
-        // Allocazione dei blocchi dati (in ordine di file).
+        // Allocation of the data blocks (in file order).
         int[] db = new int[nblk];
         for (int i = 0; i < nblk; i++) db[i] = allocBlock();
 
-        // Blocchi di estensione (se > 72 blocchi dati).
+        // Extension blocks (if > 72 data blocks).
         int nExt = Math.max(0, (nblk - DBLOCKS + DBLOCKS - 1) / DBLOCKS);
         int[] extBlk = new int[nExt];
         for (int i = 0; i < nExt; i++) extBlk[i] = allocBlock();
 
-        // Header del file.
+        // File header.
         int base = n.block * BSIZE;
         int inHeader = Math.min(nblk, DBLOCKS);
         writeLong(base + 0, T_HEADER);
         writeLong(base + 4, n.block);
         writeLong(base + 8, inHeader);                   // high_seq
         writeLong(base + 16, nblk > 0 ? db[0] : 0);      // first_data
-        // puntatori dati in ordine inverso: slot 71 = primo blocco
+        // data pointers in reverse order: slot 71 = first block
         for (int i = 0; i < inHeader; i++) {
             writeLong(base + 24 + (DBLOCKS - 1 - i) * 4, db[i]);
         }
@@ -300,7 +297,7 @@ public final class FfsBuilder {
         writeLong(base + 508, ST_FILE);
         checksum(base, 20);
 
-        // Blocchi di estensione.
+        // Extension blocks.
         int idx = DBLOCKS;
         for (int e = 0; e < nExt; e++) {
             int eb = extBlk[e] * BSIZE;
@@ -318,7 +315,7 @@ public final class FfsBuilder {
             idx += cnt;
         }
 
-        // Blocchi dati grezzi (FFS).
+        // Raw data blocks (FFS).
         for (int i = 0; i < nblk; i++) {
             int off = i * BSIZE;
             int len = Math.min(BSIZE, data.length - off);
@@ -326,13 +323,13 @@ public final class FfsBuilder {
         }
     }
 
-    /** Popola la hash table di un blocco directory/root con i figli e ne incatena i collisori. */
+    /** Fills the hash table of a directory/root block with its children and chains the colliders. */
     private void fillHashTable(int base, List<Node> children) {
         for (Node c : children) {
             int h = hash(c.name);
             int slot = base + 24 + h * 4;
             int existing = readLong(slot);
-            // Inserimento in testa: il nuovo punta al precedente con lo stesso hash.
+            // Insertion at the head: the new one points to the previous with the same hash.
             int cb = c.block * BSIZE;
             writeLong(cb + 496, existing);               // next_same_hash
             writeLong(slot, c.block);
@@ -340,7 +337,7 @@ public final class FfsBuilder {
     }
 
     private void writeBitmap() {
-        // bit = 1 → libero, bit = 0 → usato. Il primo blocco mappato è il blocco 2.
+        // bit = 1 -> free, bit = 0 -> used. The first block mapped is block 2.
         for (int bi = 0; bi < bitmapBlocks.size(); bi++) {
             int base = bitmapBlocks.get(bi) * BSIZE;
             int firstBlock = 2 + bi * BM_COVER;
@@ -362,11 +359,11 @@ public final class FfsBuilder {
     // =========================================================================
 
     /**
-     * Tronca un nome al limite AmigaDOS (30 caratteri). DEVE essere applicato PRIMA
-     * del calcolo dell'hash di directory: hash ({@link #hash}) e nome memorizzato
-     * ({@link #writeName}) devono basarsi sullo STESSO nome, altrimenti il file finisce
-     * in un bucket hash diverso da quello in cui lo cerca AmigaDOS/WHDLoad e risulta
-     * irraggiungibile (DOS-Error #205).
+     * Truncates a name to the AmigaDOS limit (30 characters). It MUST be applied BEFORE the
+     * directory hash is computed: the hash ({@link #hash}) and the stored name
+     * ({@link #writeName}) must be based on the SAME name, otherwise the file ends up in a
+     * hash bucket different from the one AmigaDOS/WHDLoad looks in and is unreachable
+     * (DOS-Error #205).
      */
     private static String truncName(String name) {
         return name.length() > MAX_NAME ? name.substring(0, MAX_NAME) : name;

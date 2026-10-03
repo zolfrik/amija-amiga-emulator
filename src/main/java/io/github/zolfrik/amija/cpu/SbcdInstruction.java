@@ -77,8 +77,8 @@ public abstract class SbcdInstruction extends AbstractM68kInstruction {
                         if (!cpu.isBusCycleIdle()) return false;
                         calculateSbcd(cpu, cpu.getD(cpu.getIr() & 0x7, 1), cpu.getD((cpu.getIr() >> 9) & 0x7, 1));
                         cpu.setD((cpu.getIr() >> 9) & 0x7, getTemp(cpu, 2), 1);
-                        // NOTE (Phase 4): terminal internal-idle cycles — finalizing here breaks
-                        // the JSON 'n' count; +1 seam left as a documented residual (plan doc).
+                        // NOTE (Phase 4): terminal internal-idle cycles; finalizing here breaks
+                        // the JSON 'n' count, so the +1 seam is left as a documented residual.
                         cpu.idleCycles(2);
                         nextStep(cpu);
                         return false;
@@ -121,9 +121,9 @@ public abstract class SbcdInstruction extends AbstractM68kInstruction {
                         setTemp(cpu, 1, cpu.getLatchedByte());
                         int decX = (regX == 7) ? 2 : 1;
                         cpu.setA(regX, cpu.getA(regX, 4) - decX);
-                        // WinUAE op_8108/op_c108 _14_ff: `ipl_fetch_next_pre()` sta qui, prima
-                        // della lettura destinazione. La posizione e' quella del default, il
-                        // ramo no: `next` invece di `now`.
+                        // ($8108/$C108): the `next` sample sits here, before the destination
+                        // read. The position is the default's, the branch is not: `next` instead
+                        // of `now`.
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         cpu.scheduleRead(cpu.getA(regX, 4), 1);
                         nextStep(cpu);

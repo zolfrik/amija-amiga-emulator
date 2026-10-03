@@ -125,8 +125,8 @@ public class DivsInstruction extends AbstractM68kInstruction {
                         // Timing: 8-cycle sync gap (nn nn) then 38-cycle stacking
                         cpu.idleCycles(4); // First nn
                         // triggerException(5) adds the second nn (4 cycles) and stacks the PC.
-                        // Group 2: il PC impilato e' quello dell'istruzione SEGUENTE, non
-                        // quella che ha fallito — un RTE deve proseguire, non ridividere.
+                        // Group 2: the PC stacked is that of the NEXT instruction, not the one
+                        // that failed: an RTE must continue, not divide again.
                         int extensions = (hasExt1(eaMode, eaReg) ? 1 : 0)
                                 + (hasExt2(eaMode, eaReg, 2) ? 1 : 0);
                         cpu.triggerException(5, cpu.getOpcodeAddress() + 2 + extensions * 2);
@@ -183,11 +183,10 @@ public class DivsInstruction extends AbstractM68kInstruction {
                         cpu.writeSR(sr, false);
 
                         // Overflow Timing: 12 or 14 cycles gap (matches Yacht n nn nn (n)n).
-                        // Ordine np-LAST (idle interni, poi la prefetch terminale): è
-                        // l'ordine dell'hardware, confermato da WinUAE (wait_cpu_cycle
-                        // trace) e dai vettori Tom Harte (['n',N] prima della 'r' finale).
-                        // Il vecchio ramo seamOverlap usava l'ordine np-first: contro
-                        // WinUAE sfasava il marker delle bande contese (G1 DIVS1/DIVU1).
+                        // np-LAST order (internal idles, then the terminating prefetch): the
+                        // hardware's order, confirmed by the Tom Harte vectors (['n',N] before
+                        // the final 'r'). The np-first order would shift the marker of the
+                        // contended bands (DIVS1/DIVU1).
                         cpu.idleCycles(dividend < 0 ? 14 : 12);
                         setStep(cpu, 11);
                         return false;
@@ -221,8 +220,8 @@ public class DivsInstruction extends AbstractM68kInstruction {
                     // Since the prefetch cycle is managed separately in our FSM, we subtract 4.
                     setTemp(cpu, QUOT_RES, (int) q);
                     setTemp(cpu, REM_RES, r);
-                    // Ordine np-LAST (vedi commento nel ramo overflow): idle interni della
-                    // divisione, poi la prefetch terminale in step 7.
+                    // np-LAST order (see the comment in the overflow branch): the division's
+                    // internal idles, then the terminating prefetch in step 7.
                     cpu.idleCycles(totalCycles - 4);
                     nextStep(cpu);
                     return false;
@@ -241,15 +240,15 @@ public class DivsInstruction extends AbstractM68kInstruction {
                     }
                     cpu.writeSR(sr, false);
 
-                    // Overlapped prefetch (Phase 4): the terminal np is the last bus cycle —
+                    // Overlapped prefetch (Phase 4): the terminal np is the last bus cycle;
                     // finalize in this same step (seam 0) instead of a separate step 8. See
-                    // docs/cpu-overlapped-prefetch-rework-plan.md §Phase 4.
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT); // WinUAE op_81d0_14_ff
+                    // docs/cpu-overlapped-prefetch-rework-plan.md, Phase 4.
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT); // IPL anchor before the terminating prefetch
                     cpu.startPrefetchCycle();
                     return finalizeInstructionSafe(cpu);
                 }
                 case 11 -> { // Overflow Path Finish (overlapped: finalize with the np)
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT); // WinUAE op_81d0_14_ff
+                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT); // IPL anchor before the terminating prefetch
                     cpu.startPrefetchCycle();
                     return finalizeInstructionSafe(cpu);
                 }

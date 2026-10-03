@@ -403,6 +403,18 @@ public final class FloppyDrive {
     public void update(boolean selected, boolean motorOn, boolean step,
                        boolean direction, boolean side) {
         statusDirty = true;   // called only when CIA-B PRB has changed
+
+        // /STEP is active LOW and the head moves on its trailing edge (asserted -> released),
+        // in a drive that was selected before this write, toward the direction now on DIR.
+        // A pulse too close to the previous ACCEPTED one is IGNORED: the head cannot follow.
+        // Only accepted pulses restart the 140 CCK guard.
+        if (prevStep && !step && prevSelected) {
+            if (totalCycles - lastAcceptedStepCycle >= CYCLES_MIN_STEP_INTERVAL) {
+                lastAcceptedStepCycle = totalCycles;
+                executeStep(direction);
+            }
+        }
+
         if (!connected) {
             this.selected = false;
             prevSelected = false;
@@ -445,18 +457,6 @@ public final class FloppyDrive {
                 flushWrittenTrack();   // the track written so far belongs to the old side
                 currentSide = side;
                 if (diskInserted && diskImage != null) loadCurrentTrack();
-            }
-
-            // /STEP is active LOW on the bus; Agnus passes true while the
-            // line is asserted, so the physical falling edge is false -> true.
-            //
-            // A pulse too close to the previous ACCEPTED one is IGNORED: the head cannot
-            // follow. Only accepted pulses restart the 140 CCK guard.
-            if (!prevStep && step) {
-                if (totalCycles - lastAcceptedStepCycle >= CYCLES_MIN_STEP_INTERVAL) {
-                    lastAcceptedStepCycle = totalCycles;
-                    executeStep(direction);
-                }
             }
         }
 
@@ -1171,10 +1171,12 @@ public final class FloppyDrive {
         motorTarget          = false;
         motorAtSpeed         = false;
         readyUpLines         = 0;
-        switchCycle          = 0;
-        totalCycles          = 0;
-        currentTrack         = 0;
-        targetTrack          = 0;
+        // totalCycles is the drive's time base and keeps running: the STEP guard compares it
+        // with the instant of the last accepted step, which a restart from 0 would put in the
+        // future and reject every step for as long as the machine had run before the reset.
+        switchCycle          = totalCycles;
+        // currentTrack/targetTrack are kept: the head is mechanical and no reset moves it.
+        // After a RESET the Kickstart finds it where it was and steps it back to track 0.
         settleCounter        = 0;
         currentSide          = false;
         dskchange            = hadDiskImage ? wasDiskChanged : true;
@@ -1188,9 +1190,8 @@ public final class FloppyDrive {
         prevStep             = false;
         lastStepDir          = false;
         // bitPointer is kept: it is the angular position of the platter, which no
-        // reset signal can rewind. The Kickstart executes RESET during boot, so
-        // clearing it here would restart every boot from angle 0 and pin every load
-        // to the same point of the frame. See randomiseAngularPosition().
+        // reset signal can rewind: a program that reboots the machine with RESET finds
+        // the platter where it was. See randomiseAngularPosition().
         resetBitClock();
         if (hadDiskImage) {
             loadCurrentTrack();

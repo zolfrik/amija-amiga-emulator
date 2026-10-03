@@ -33,42 +33,41 @@ public final class JavaSoundAudioOutput implements Runnable {
     public static final int OUTPUT_RATE = 44_100;
     private static final int CHUNK_FRAMES = 1024;
     private static final int LINE_BUFFER_FRAMES = CHUNK_FRAMES * 4;
-    // Cuscinetto da accumulare prima di iniziare a drenare (priming): evita di
-    // partire a secco, dove il minimo jitter del produttore causerebbe underrun.
-    // Tenuto poco sotto il livello target dell'ASR del produttore.
+    // Cushion to accumulate before starting to drain (priming): avoids starting dry, where the
+    // producer's slightest jitter would cause an underrun. Kept a little below the target level
+    // of the producer's ASR.
     private static final int PRIME_FRAMES = CHUNK_FRAMES * 3;
 
-    // Catena analogica dell'A500, una per lato. Prima qui c'era un singolo polo a
-    // 4,4 kHz più uno a 3,3 kHz per il LED: più cupo dell'oracolo (a 10 kHz, -7,9 dB
-    // contro i -6,5 dB di WinUAE) e con una pendenza sbagliata sopra il taglio.
+    // The A500's analogue chain, one per side (see A500AudioFilter): a single pole would be
+    // darker than the real filter and have the wrong slope above the cut-off.
     private final AudioRingBuffer ringBuffer;
     private final A500AudioFilter filterLeft = new A500AudioFilter(OUTPUT_RATE);
     private final A500AudioFilter filterRight = new A500AudioFilter(OUTPUT_RATE);
 
     private volatile boolean running;
     private volatile boolean ledFilterEnabled;
-    private volatile boolean loggingEnabled = Boolean.getBoolean("amiga.audiolog"); // diagnostica audio (una riga/sec su stdout); -Damiga.audiolog=true
+    private volatile boolean loggingEnabled = Boolean.getBoolean("amiga.audiolog"); // audio diagnostics (one line/sec on stdout); -Damiga.audiolog=true
     private Thread thread;
     private SourceDataLine line;
 
     private DoubleSupplier correctionSupplier;
 
     /**
-     * Chi riceve una copia del chunk PCM appena prima che finisca sulla scheda audio.
+     * Whoever receives a copy of the PCM chunk just before it reaches the sound card.
      *
-     * <p>Il buffer è <b>riusato</b>: chi lo riceve lo consuma o lo copia, non lo tiene.
+     * <p>The buffer is <b>reused</b>: the receiver consumes or copies it, it does not keep it.
      */
     public interface PcmTap {
-        /** @param pcm S16LE stereo interlacciato, {@code frames*4} byte */
+        /** @param pcm interleaved stereo S16LE, {@code frames*4} bytes */
         void onChunk(byte[] pcm, int frames);
     }
 
     private volatile PcmTap pcmTap;
 
     /**
-     * Installa (o rimuove, con {@code null}) la derivazione del PCM verso la rete.
+     * Installs (or removes, with {@code null}) the tap of the PCM toward the network.
      *
-     * <p>Con la funzione spenta il campo è null e il costo sul percorso audio è un confronto.
+     * <p>With the feature off the field is null and the cost on the audio path is a comparison.
      */
     public void setPcmTap(PcmTap tap) {
         this.pcmTap = tap;
@@ -78,7 +77,7 @@ public final class JavaSoundAudioOutput implements Runnable {
         loggingEnabled = enabled;
     }
 
-    /** Sorgente opzionale della correzione ASR corrente (solo per diagnostica). */
+    /** Optional source of the current ASR correction (diagnostics only). */
     public void setCorrectionSupplier(DoubleSupplier supplier) {
         this.correctionSupplier = supplier;
     }
@@ -126,12 +125,12 @@ public final class JavaSoundAudioOutput implements Runnable {
             line.open(format, LINE_BUFFER_FRAMES * 4);
             line.start();
 
-            // Priming: accumula un cuscinetto iniziale prima di drenare il buffer.
+            // Priming: accumulate an initial cushion before draining the buffer.
             while (running && ringBuffer.available() < PRIME_FRAMES) {
                 Thread.sleep(2);
             }
 
-            // Statistiche diagnostiche (resettate ogni secondo)
+            // Diagnostic statistics (reset every second)
             long statLastNs = System.nanoTime();
             long statMinFill = Long.MAX_VALUE;
             long statMaxFill = 0;
@@ -150,9 +149,8 @@ public final class JavaSoundAudioOutput implements Runnable {
                 int got = ringBuffer.read(tmpL, tmpR, CHUNK_FRAMES);
                 if (got < CHUNK_FRAMES) {
                     statUnderflows++;
-                    // Underrun: invece di un taglio netto o di un hold in DC (clic),
-                    // sfuma a zero i sample disponibili con una rampa discendente e
-                    // riempi di silenzio il resto (come AudioStream::copyStereo di vAmiga).
+                    // Underrun: instead of a hard cut or a DC hold (click), fade the available
+                    // samples to zero with a falling ramp and fill the rest with silence.
                     float n = got > 0 ? got : 1.0f;
                     for (int i = 0; i < got; i++) {
                         float ramp = (n - i) / n;
@@ -178,11 +176,10 @@ public final class JavaSoundAudioOutput implements Runnable {
                     pcm[off + 3] = (byte) (ri >>> 8);
                 }
 
-                // Gioco a distanza (docs/remote-play-plan.md §4.2): il chunk è già
-                // convertito e filtrato, quindi l'ospite sente ESATTAMENTE quello che
-                // sente l'host. Il tee è qui e non altrove per questo. Costa un confronto
-                // con null quando la funzione è spenta, e sta comunque fuori dal thread
-                // di emulazione.
+                // Remote play (docs/remote-play-plan.md section 4.2): the chunk is already
+                // converted and filtered, so the guest hears EXACTLY what the host hears. That
+                // is why the tee is here and not elsewhere. It costs a comparison with null when
+                // the feature is off, and is outside the emulation thread anyway.
                 PcmTap tap = pcmTap;
                 if (tap != null) {
                     tap.onChunk(pcm, CHUNK_FRAMES);

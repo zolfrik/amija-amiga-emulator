@@ -42,24 +42,24 @@ import java.util.regex.Pattern;
 import static org.lwjgl.opengl.GL30.*;
 
 /**
- * Catena shader RetroArch (GLSL "classico") eseguita in OpenGL.
+ * RetroArch shader chain ("classic" GLSL) run in OpenGL.
  *
- * <p>Data una texture <b>ORIG</b> (il frame Amiga già croppato ad altezza nativa,
- * prodotto dal prepass di {@link GlDisplaySurface}), compila i pass del preset e li
- * esegue in cascata su FBO intermedi, con l'ultimo pass che disegna sul framebuffer di
- * default (viewport aspect-fit). Supporta: {@code #include} ricorsivi, {@code #version},
- * iniezione di {@code #define VERTEX/FRAGMENT/PARAMETER_UNIFORM}, estrazione dei
- * {@code #pragma parameter} (con override dal preset), uniform standard
+ * <p>Given an <b>ORIG</b> texture (the Amiga frame already cropped at native height, produced
+ * by the prepass of {@link GlDisplaySurface}), it compiles the preset's passes and runs them
+ * in cascade on intermediate FBOs, with the last pass drawing on the default framebuffer
+ * (aspect-fit viewport). Supports: recursive {@code #include}, {@code #version}, injection of
+ * {@code #define VERTEX/FRAGMENT/PARAMETER_UNIFORM}, extraction of {@code #pragma parameter}
+ * (with overrides from the preset), standard uniforms
  * (MVPMatrix/Texture/TextureSize/InputSize/OutputSize/FrameCount/FrameDirection),
- * semantica ORIG/PassN/PassPrev/alias, texture LUT, {@code scale_type}
- * source/viewport/absolute, {@code float_framebuffer} e {@code srgb_framebuffer}.
+ * ORIG/PassN/PassPrev/alias semantics, LUT textures, {@code scale_type}
+ * source/viewport/absolute, {@code float_framebuffer} and {@code srgb_framebuffer}.
  *
- * <p>Robustezza: {@link #build} lancia in caso di errore di parsing/compilazione; il
- * chiamante ripiega sul passthrough. Nessuna chiamata qui deve mai crashare a runtime.
+ * <p>Robustness: {@link #build} throws on a parsing/compilation error; the caller falls back
+ * on the passthrough. No call here must ever crash at run time.
  */
 public final class ShaderChain implements RenderChain {
 
-    // Locazioni fisse degli attributi (bindate prima del link su tutti i program).
+    // Fixed attribute locations (bound before linking on every program).
     private static final int ATTR_VERTEX = 0;
     private static final int ATTR_COLOR = 1;
     private static final int ATTR_TEXCOORD = 2;
@@ -83,17 +83,17 @@ public final class ShaderChain implements RenderChain {
     private final int[] program;           // program per pass
     private final GlslPreset.PassSpec[] specs;
     private final Map<String, Float> params = new LinkedHashMap<>();
-    // I parametri sono letti dal thread GL (bindParams) e scritti dall'EDT (setParam,
-    // dal popup dei parametri): protetti da paramLock.
+    // The parameters are read by the GL thread (bindParams) and written by the EDT (setParam,
+    // from the parameters popup): protected by paramLock.
     private final Object paramLock = new Object();
 
-    // Risorse GL allocate al build().
+    // GL resources allocated by build().
     private int quadVbo;
     private final List<int[]> lutTextures = new ArrayList<>(); // [texId]
     private final List<GlslPreset.TextureSpec> lutSpecs;
 
-    // FBO intermedi (ricreati al variare delle dimensioni). Indice = pass; l'ultimo pass
-    // va sul backbuffer e non ha FBO.
+    // Intermediate FBOs (recreated when the size changes). Index = pass; the last pass goes to
+    // the back buffer and has no FBO.
     private int[] fbo;
     private int[] fboTex;
     private int[] outW, outH, inW, inH;
@@ -108,8 +108,8 @@ public final class ShaderChain implements RenderChain {
     }
 
     /**
-     * Compila un preset in una catena pronta all'uso. Deve essere invocato sul thread GL
-     * (contesto attivo). Lancia se il preset non è caricabile/compilabile.
+     * Compiles a preset into a ready-to-use chain. Must be called on the GL thread (context
+     * current). Throws if the preset cannot be loaded/compiled.
      */
     public static ShaderChain build(Path glslp) throws IOException {
         GlslPreset preset = GlslPreset.load(glslp);
@@ -119,24 +119,24 @@ public final class ShaderChain implements RenderChain {
 
         ShaderChain chain = new ShaderChain(preset, program, specs, preset.textures());
 
-        // Compila i pass e raccoglie i parametri (default dei #pragma parameter).
+        // Compiles the passes and gathers the parameters (#pragma parameter defaults).
         for (int i = 0; i < specs.length; i++) {
             String body = loadWithIncludes(specs[i].shader, new HashSet<>());
             chain.collectParams(body);
             program[i] = buildProgram(specs[i].shader, body);
         }
-        // Override dei parametri dal preset (chiavi con lo stesso nome del #pragma parameter).
+        // Parameter overrides from the preset (keys with the same name as the #pragma parameter).
         for (String name : new ArrayList<>(chain.params.keySet())) {
             String v = preset.rawValue(name);
             if (v != null && !v.isEmpty()) {
                 try {
                     chain.params.put(name, Float.parseFloat(v.trim()));
                 } catch (NumberFormatException ignore) {
-                    // valore non numerico: si tiene il default
+                    // non-numeric value: the default is kept
                 }
             }
         }
-        // Override dell'utente (file <preset>.params affiancato al preset), se presenti.
+        // User overrides (a <preset>.params file next to the preset), if any.
         for (Map.Entry<String, Float> e : ShaderParams.loadOverrides(glslp).entrySet()) {
             if (chain.params.containsKey(e.getKey())) {
                 chain.params.put(e.getKey(), e.getValue());
@@ -149,19 +149,19 @@ public final class ShaderChain implements RenderChain {
     }
 
     // =====================================================================================
-    // Esecuzione
+    // Execution
     // =====================================================================================
 
     /**
-     * Esegue la catena: ORIG -> pass0 -> ... -> ultimo pass sul backbuffer (viewport
-     * aspect-fit). {@code origTex} è la texture sorgente ad altezza nativa.
+     * Runs the chain: ORIG -> pass0 -> ... -> last pass on the back buffer (aspect-fit
+     * viewport). {@code origTex} is the source texture at native height.
      */
     @Override
     public void render(int origTex, int origW, int origH,
                        int vpX, int vpY, int vpW, int vpH, long frameCount) {
         ensureFramebuffers(origW, origH, vpW, vpH);
 
-        // Attributi del quad (stato globale in profilo compatibility: nessun VAO).
+        // Quad attributes (global state in the compatibility profile: no VAO).
         glBindBuffer(GL_ARRAY_BUFFER, quadVbo);
         glVertexAttribPointer(ATTR_VERTEX, 2, GL_FLOAT, false, 16, 0L);
         glEnableVertexAttribArray(ATTR_VERTEX);
@@ -174,7 +174,7 @@ public final class ShaderChain implements RenderChain {
             boolean last = (i == n - 1);
             int inputTex = (i == 0) ? origTex : fboTex[i - 1];
 
-            // Filtro/wrap dell'input di questo pass.
+            // Filter/wrap of this pass's input.
             applyFilterWrap(inputTex, specs[i].filterLinear, specs[i].wrapMode);
 
             if (last) {
@@ -238,12 +238,12 @@ public final class ShaderChain implements RenderChain {
                     "Origtexture_size", "Origvideo_size");
             unit++;
         }
-        // Pass precedenti (assoluti PassN + alias) e PassPrevD.
-        // NB: le shader cg2glsl (crt-royale) dichiarano il sampler alias col suffisso
-        // "texture" MINUSCOLO (es. VERTICAL_SCANLINEStexture) e le dimensioni come
-        // "<alias>texture_size"/"<alias>video_size"; altre convenzioni usano
-        // "Texture"/"TextureSize"/"InputSize". GLSL è case-sensitive, quindi bindiamo
-        // tutte le grafie sullo stesso texture-unit/valore.
+        // Previous passes (absolute PassN + aliases) and PassPrevD.
+        // Shaders converted from Cg (crt-royale) declare the alias sampler with a LOWER-case
+        // "texture" suffix (e.g. VERTICAL_SCANLINEStexture) and the sizes as
+        // "<alias>texture_size"/"<alias>video_size"; other conventions use
+        // "Texture"/"TextureSize"/"InputSize". GLSL is case-sensitive, so every spelling is
+        // bound to the same texture unit/value.
         for (int p = 0; p < passIndex; p++) {
             int tex = fboTex[p];
             if (bindSampler(prog, unit, tex, "Pass" + p + "Texture", "Pass" + p + "texture")) {
@@ -265,7 +265,7 @@ public final class ShaderChain implements RenderChain {
                 unit++;
             }
         }
-        // LUT (sampler col nome della texture).
+        // LUTs (sampler named after the texture).
         for (int l = 0; l < lutSpecs.size(); l++) {
             GlslPreset.TextureSpec ts = lutSpecs.get(l);
             int[] lut = lutTextures.get(l);
@@ -286,8 +286,8 @@ public final class ShaderChain implements RenderChain {
     }
 
     /**
-     * Aggiorna a caldo un parametro (dal popup dei parametri). Ha effetto solo se il
-     * parametro esiste nel preset; applicato al frame successivo da {@link #bindParams}.
+     * Updates a parameter live (from the parameters popup). Takes effect only if the parameter
+     * exists in the preset; applied at the next frame by {@link #bindParams}.
      */
     @Override
     public void setParam(String name, float value) {
@@ -299,10 +299,10 @@ public final class ShaderChain implements RenderChain {
     }
 
     /**
-     * Bind di {@code tex} sul texture-unit {@code unit}, impostando <b>tutti</b> i sampler
-     * fra {@code names} che esistono nel program (grafie alternative dello stesso nome).
-     * La texture è legata una sola volta; restituisce {@code true} se almeno un nome è
-     * stato trovato (nel qual caso il chiamante consuma il texture-unit).
+     * Binds {@code tex} to texture unit {@code unit}, setting <b>every</b> sampler among
+     * {@code names} that exists in the program (alternative spellings of the same name). The
+     * texture is bound once; returns {@code true} if at least one name was found (in which case
+     * the caller consumes the texture unit).
      */
     private boolean bindSampler(int prog, int unit, int tex, String... names) {
         boolean bound = false;
@@ -324,7 +324,7 @@ public final class ShaderChain implements RenderChain {
         if (loc >= 0) glUniform2f(loc, x, y);
     }
 
-    /** Come {@link #setVec2} ma prova più grafie dello stesso nome (tutte impostate se presenti). */
+    /** Like {@link #setVec2} but tries several spellings of the same name (all set if present). */
     private static void setVec2Multi(int prog, float x, float y, String... names) {
         for (String name : names) setVec2(prog, name, x, y);
     }
@@ -381,7 +381,7 @@ public final class ShaderChain implements RenderChain {
             if (last) {
                 outW[i] = vpW;
                 outH[i] = vpH;
-                // niente FBO: va sul backbuffer
+                // no FBO: goes to the backbuffer
             } else {
                 outW[i] = scaled(specs[i].scaleTypeX, specs[i].scaleX, curW, vpW);
                 outH[i] = scaled(specs[i].scaleTypeY, specs[i].scaleY, curH, vpH);
@@ -488,7 +488,7 @@ public final class ShaderChain implements RenderChain {
         return sh;
     }
 
-    /** Estrae la riga {@code #version} (portata in cima) e restituisce {@code [versionLine, resto]}. */
+    /** Extracts the {@code #version} line (moved to the top) and returns {@code [versionLine, rest]}. */
     private static String[] splitVersion(String body) {
         String[] lines = body.split("\n", -1);
         for (int i = 0; i < lines.length; i++) {
@@ -504,11 +504,11 @@ public final class ShaderChain implements RenderChain {
         return new String[]{"", body};
     }
 
-    /** Legge un {@code .glsl} risolvendo ricorsivamente gli {@code #include "..."}. */
+    /** Reads a {@code .glsl}, resolving the {@code #include "..."} recursively. */
     static String loadWithIncludes(Path file, Set<Path> visited) throws IOException {
         Path abs = file.toAbsolutePath().normalize();
         if (!visited.add(abs)) {
-            return ""; // già incluso: evita cicli
+            return ""; // already included: avoids cycles
         }
         StringBuilder sb = new StringBuilder();
         for (String line : Files.readAllLines(abs, StandardCharsets.UTF_8)) {
@@ -565,7 +565,7 @@ public final class ShaderChain implements RenderChain {
     private int uploadLut(BufferedImage img, GlslPreset.TextureSpec ts) {
         int w = img.getWidth(), h = img.getHeight();
         int[] argb = img.getRGB(0, 0, w, h, null, 0, w);
-        // Flip verticale: BufferedImage ha origine in alto, GL in basso.
+        // Vertical flip: BufferedImage has its origin at the top, GL at the bottom.
         IntBuffer buf = BufferUtils.createIntBuffer(w * h);
         for (int y = h - 1; y >= 0; y--) {
             buf.put(argb, y * w, w);

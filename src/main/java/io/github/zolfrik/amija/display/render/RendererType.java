@@ -21,18 +21,17 @@
 package io.github.zolfrik.amija.display.render;
 
 /**
- * Backend di rendering del display.
+ * Rendering backend of the display.
  *
  * <ul>
- *   <li>{@link #SOFTWARE}: composizione Java2D/Swing (comportamento storico, default).</li>
- *   <li>{@link #OPENGL}: rendering OpenGL via LWJGL, ospitato nella finestra Swing
- *       tramite {@code AWTGLCanvas}. È il backend predisposto per gli shader RetroArch
- *       (implementazione dello shader in una sessione dedicata).</li>
+ *   <li>{@link #SOFTWARE}: Java2D/Swing composition (default).</li>
+ *   <li>{@link #OPENGL}: OpenGL rendering through LWJGL, hosted in the Swing window through
+ *       {@code AWTGLCanvas}. The backend that runs the RetroArch shaders.</li>
  * </ul>
  *
- * <p>Il valore serializzato in {@code amiga.properties} è {@link #configValue()}; il
- * parsing tollera valori sconosciuti ripiegando su {@link #SOFTWARE}, sul modello di
- * {@code AmigaWindowMode}.
+ * <p>The value serialised in {@code amiga.properties} is {@link #configValue()}; parsing
+ * tolerates unknown values by falling back on {@link #SOFTWARE}, as {@code AmigaWindowMode}
+ * does.
  */
 public enum RendererType {
     SOFTWARE("software"),
@@ -44,12 +43,12 @@ public enum RendererType {
         this.configValue = configValue;
     }
 
-    /** Valore usato in {@code amiga.properties}. */
+    /** Value used in {@code amiga.properties}. */
     public String configValue() {
         return configValue;
     }
 
-    /** Converte il valore di configurazione nel tipo, con fallback su {@link #SOFTWARE}. */
+    /** Converts the configuration value into the type, falling back on {@link #SOFTWARE}. */
     public static RendererType fromConfigValue(String value) {
         if (value != null) {
             String v = value.trim();

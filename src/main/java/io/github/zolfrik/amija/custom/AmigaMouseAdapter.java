@@ -36,46 +36,44 @@ import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
 
 /**
- * Traduce gli eventi AWT del mouse host nei comandi della game port Amiga.
+ * Translates the host mouse's AWT events into Amiga game port commands.
  *
- * <h3>Due modalità operative</h3>
+ * <h3>Two operating modes</h3>
  *
- * <p><b>Libera</b> (prima della cattura): il cursore host è visibile e si muove
- * liberamente. Il mouse Amiga riceve movimento e click solo mentre il puntatore
- * host è dentro al JFrame. Lo spostamento è il delta tra eventi consecutivi.
+ * <p><b>Free</b> (before capture): the host cursor is visible and moves freely. The Amiga
+ * mouse receives movement and clicks only while the host pointer is inside the JFrame. The
+ * movement is the delta between consecutive events.
  *
- * <p><b>Catturata</b> (dopo il primo click sinistro): il cursore host viene reso
- * invisibile e {@link Robot} lo riporta al centro della finestra a ogni evento.
- * Il movimento Amiga è il delta rispetto al centro. Questo è il classico
- * "mouse-look": il puntatore non raggiunge mai i bordi dello schermo, quindi non
- * si perdono spostamenti quando l'utente muove molto il mouse fisico (causa
- * tipica dello "stallo" del cursore agli estremi del monitor). Il delta misurato
- * resta corretto anche sotto carico elevato: AWT fonde (coalesce) gli eventi di
- * movimento, ma il delta è sempre calcolato come (posizione corrente − centro),
- * quindi cattura lo spostamento netto a prescindere da quanti eventi intermedi
- * vengono persi.
+ * <p><b>Captured</b> (after the first left click): the host cursor is made invisible and
+ * {@link Robot} brings it back to the centre of the window at every event. The Amiga
+ * movement is the delta from the centre: the classic "mouse look". The pointer never
+ * reaches the screen edges, so no movement is lost when the user moves the physical mouse a
+ * lot (the typical cause of the cursor "stalling" at the edges of the monitor). The delta
+ * stays right even under heavy load: AWT coalesces movement events, but the delta is always
+ * (current position - centre), so it captures the net movement however many intermediate
+ * events are lost.
  *
- * <p>La cattura si rilascia con il <b>tasto centrale</b> (o quando la finestra
- * perde il focus, per non intrappolare il puntatore durante un alt-tab).
+ * <p>The capture is released with the <b>middle button</b> (or when the window loses focus,
+ * so the pointer is not trapped during an alt-tab).
  *
- * <h3>Integer scaling: i delta host vanno divisi</h3>
+ * <h3>Integer scaling: host deltas are divided</h3>
  *
- * <p>Gli eventi AWT arrivano in pixel dello schermo, e con l'integer scaling la finestra
- * emulata è ingrandita ×N: un pixel Amiga ne occupa N. Consegnare il delta host così
- * com'è renderebbe il puntatore emulato N volte più veloce del mouse fisico, e la
- * sensibilità cambierebbe cambiando lo zoom — che non è quel che l'utente chiede
- * scegliendo uno zoom. I delta si dividono quindi per {@code videoScale}.
+ * <p>AWT events arrive in screen pixels, and with integer scaling the emulated window is
+ * enlarged xN: one Amiga pixel takes N. Delivering the host delta as it is would make the
+ * emulated pointer N times faster than the physical mouse, and the sensitivity would change
+ * with the zoom, which is not what the user asks for by choosing a zoom. So deltas are
+ * divided by {@code videoScale}.
  *
- * <p>La divisione <b>tiene il resto</b> ({@link #moveScaled}). Troncando e basta, a N=3
- * un movimento lento da 1-2 pixel per evento darebbe sempre 0 e il puntatore emulato non
- * si muoverebbe affatto: il mouse risulterebbe rotto proprio nei movimenti di precisione.
- * Accumulando, N eventi da 1 pixel producono il pixel Amiga che gli spetta.
+ * <p>The division <b>keeps the remainder</b> ({@link #moveScaled}). Truncating, at N=3 a slow
+ * movement of 1-2 pixels per event would always give 0 and the emulated pointer would not
+ * move at all: the mouse would be broken exactly in precision movements. Accumulating, N
+ * one-pixel events produce the Amiga pixel they are worth.
  *
- * <h3>Mappatura pulsanti (in modalità catturata)</h3>
+ * <h3>Button mapping (in captured mode)</h3>
  * <pre>
- *   Sinistro → pulsante sinistro Amiga (CIA-A bit 6, active-LOW)
- *   Destro   → pulsante destro   Amiga (POTINP bit 10/14)
- *   Centrale → RILASCIA la cattura (non inoltrato all'Amiga)
+ *   Left   -> Amiga left button  (CIA-A bit 6, active LOW)
+ *   Right  -> Amiga right button (POTINP bit 10/14)
+ *   Middle -> RELEASES the capture (not forwarded to the Amiga)
  * </pre>
  */
 public class AmigaMouseAdapter extends MouseAdapter {
@@ -84,45 +82,45 @@ public class AmigaMouseAdapter extends MouseAdapter {
     private volatile boolean enabled = true;
     private final JFrame frame;
 
-    /** Robot per il ricentraggio del puntatore; null se non disponibile (headless). */
+    /** Robot for recentring the pointer; null if not available (headless). */
     private final Robot robot;
-    /** Cursore trasparente usato per nascondere il puntatore mentre è catturato. */
+    /** Transparent cursor used to hide the pointer while captured. */
     private final Cursor blankCursor;
-    /** Cursore di default ripristinato al rilascio. */
+    /** Default cursor restored on release. */
     private final Cursor defaultCursor;
 
-    /** Listener di perdita-focus registrato sul frame; rimosso da {@link #dispose()}. */
+    /** Focus-loss listener registered on the frame; removed by {@link #dispose()}. */
     private final WindowAdapter focusListener;
 
-    /** true quando il mouse host è catturato (invisibile + ricentrato). */
+    /** True while the host mouse is captured (invisible + recentred). */
     private volatile boolean captured = false;
 
-    // --- Stato modalità libera (delta tra eventi, coordinate componente) ---
+    // --- Free mode state (delta between events, component coordinates) ---
     private boolean insideFrame = false;
     private int lastX = Integer.MIN_VALUE;
     private int lastY = Integer.MIN_VALUE;
 
-    // --- Stato modalità catturata (delta rispetto al centro, coordinate schermo) ---
+    // --- Captured mode state (delta from the centre, screen coordinates) ---
     private int centerX, centerY;
 
-    /** Fattore di integer scaling della finestra emulata ({@code video.integerScaling}), ≥ 1. */
+    /** Integer scaling factor of the emulated window ({@code video.integerScaling}), at least 1. */
     private final int videoScale;
-    // Resto della divisione per videoScale, in pixel host non ancora consegnati alla
-    // porta. Senza, i movimenti più corti di videoScale andrebbero persi (vedi classdoc).
+    // Remainder of the division by videoScale, in host pixels not yet delivered to the
+    // port. Without it, movements shorter than videoScale would be lost (see the class doc).
     private int remainderX, remainderY;
 
-    // Il click sinistro che attiva la cattura viene consumato (non inoltrato): questo
-    // flag fa scartare il relativo rilascio per non generare un release spurio.
+    // The left click that activates the capture is consumed (not forwarded): this flag
+    // discards its release so no spurious release is generated.
     private boolean swallowNextLeftRelease = false;
 
-    /** Adapter senza integer scaling (finestra a dimensione nativa). */
+    /** Adapter without integer scaling (window at native size). */
     public AmigaMouseAdapter(GamePortControls port, JFrame frame) {
         this(port, frame, 1);
     }
 
     /**
-     * @param videoScale fattore di ingrandimento della finestra emulata; i delta host
-     *                   vengono divisi per questo prima di raggiungere la porta
+     * @param videoScale enlargement factor of the emulated window; host deltas are divided
+     *                   by it before reaching the port
      */
     public AmigaMouseAdapter(GamePortControls port, JFrame frame, int videoScale) {
         this.port = port;
@@ -134,18 +132,18 @@ public class AmigaMouseAdapter extends MouseAdapter {
             r = new Robot();
             r.setAutoWaitForIdle(false);
         } catch (AWTException | SecurityException | java.awt.HeadlessException ex) {
-            // Cattura non disponibile (es. headless): resta solo la modalità libera.
+            // Capture not available (e.g. headless): only the free mode remains.
         }
         this.robot = r;
 
-        // Cursore trasparente 1x1: nasconde il puntatore senza alterarne la posizione.
+        // Transparent 1x1 cursor: hides the pointer without changing its position.
         BufferedImage img = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
         this.blankCursor = Toolkit.getDefaultToolkit()
                 .createCustomCursor(img, new Point(0, 0), "blank");
         this.defaultCursor = Cursor.getDefaultCursor();
 
-        // Rilascia la cattura se la finestra perde il focus (evita di intrappolare
-        // il puntatore durante alt-tab o quando un'altra app prende il fuoco).
+        // Release the capture if the window loses focus (avoids trapping the pointer during
+        // alt-tab or when another app takes the focus).
         this.focusListener = new WindowAdapter() {
             @Override
             public void windowLostFocus(WindowEvent e) {
@@ -162,8 +160,8 @@ public class AmigaMouseAdapter extends MouseAdapter {
     }
 
     /**
-     * Collega il mouse host a un'altra game port (a caldo, dal popup F12): serve quando
-     * la periferica "Mouse" viene spostata da una porta all'altra. {@code null} scollega.
+     * Connects the host mouse to another game port (live, from the F12 popup): needed when
+     * the "Mouse" device is moved from one port to the other. {@code null} disconnects.
      */
     public void setPort(GamePortControls port) {
         GamePortControls old = this.port;
@@ -176,8 +174,8 @@ public class AmigaMouseAdapter extends MouseAdapter {
     }
 
     /**
-     * Abilita/disabilita il mouse host. Da disabilitato non muove né clicca la porta e
-     * rilascia l'eventuale cattura del puntatore.
+     * Enables/disables the host mouse. Disabled, it neither moves nor clicks the port, and
+     * releases any pointer capture.
      */
     public void setEnabled(boolean enabled) {
         if (this.enabled == enabled) return;
@@ -198,9 +196,9 @@ public class AmigaMouseAdapter extends MouseAdapter {
     }
 
     /**
-     * Rimuove i listener registrati sul frame. Da chiamare quando l'adapter viene
-     * dismesso (es. riavvio a freddo della macchina) per non accumulare listener
-     * di focus a ogni ricostruzione.
+     * Removes the listeners registered on the frame. To be called when the adapter is
+     * dismissed (e.g. cold restart of the machine) so focus listeners do not pile up at
+     * every rebuild.
      */
     public void dispose() {
         if (frame != null) {
@@ -213,15 +211,15 @@ public class AmigaMouseAdapter extends MouseAdapter {
     // -------------------------------------------------------------------------
 
     /**
-     * Cattura il mouse host (nasconde il cursore e lo ricentra). Esposto per
-     * ripristinare la cattura dopo la chiusura del popup di configurazione (F12),
-     * dove il puntatore viene rilasciato all'apertura del dialog.
+     * Captures the host mouse (hides the cursor and recentres it). Exposed to restore the
+     * capture after the configuration popup (F12) closes, since the pointer is released
+     * when the dialog opens.
      */
     public void captureMouse() {
         capture();
     }
 
-    /** Attiva la cattura: nasconde il cursore e lo riporta al centro. */
+    /** Activates the capture: hides the cursor and brings it back to the centre. */
     private void capture() {
         if (!enabled || robot == null || frame == null || captured) return;
         captured = true;
@@ -230,20 +228,20 @@ public class AmigaMouseAdapter extends MouseAdapter {
         recenter();
     }
 
-    /** Disattiva la cattura: ripristina il cursore visibile e il movimento libero. */
+    /** Deactivates the capture: restores the visible cursor and free movement. */
     public void release() {
         if (!captured) return;
         captured = false;
         setCursor(defaultCursor);
-        // Reset dello stato della modalità libera così il primo movimento successivo
-        // non produce un delta gigante.
+        // Reset the free mode state so the first movement after it does not produce a
+        // huge delta.
         lastX = lastY = Integer.MIN_VALUE;
         resetRemainder();
     }
 
     private void setCursor(Cursor c) {
-        // Impostato sul frame e sul content pane: il puntatore sta sopra il content
-        // pane (la JLabel), che eredita il cursore solo se non ne ha uno proprio.
+        // Set on the frame and on the content pane: the pointer is over the content pane
+        // (the JLabel), which inherits the cursor only if it has none of its own.
         SwingUtilities.invokeLater(() -> {
             frame.setCursor(c);
             if (frame.getContentPane() != null) {
@@ -252,7 +250,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
         });
     }
 
-    /** Calcola il centro della finestra (coordinate schermo) e vi sposta il puntatore. */
+    /** Computes the centre of the window (screen coordinates) and moves the pointer there. */
     private void recenter() {
         if (robot == null || !frame.isShowing()) return;
         Point loc = frame.getLocationOnScreen();
@@ -262,7 +260,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
     }
 
     // -------------------------------------------------------------------------
-    // Entrata / uscita dalla finestra (solo modalità libera)
+    // Entering / leaving the window (free mode only)
     // -------------------------------------------------------------------------
 
     @Override
@@ -276,10 +274,10 @@ public class AmigaMouseAdapter extends MouseAdapter {
     @Override
     public void mouseExited(MouseEvent e) {
         if (captured) {
-            // Rete di sicurezza: con un movimento ampio/veloce il puntatore può uscire
-            // dai bordi del frame prima che il ricentraggio per-evento lo agganci. Fuori
-            // dal frame NON arrivano più eventi di movimento, quindi la cattura si
-            // "perderebbe" (cursore di nuovo visibile). Riportiamolo subito al centro.
+            // Safety net: with a wide/fast movement the pointer can leave the frame's edges
+            // before the per-event recentring catches it. Outside the frame no more movement
+            // events arrive, so the capture would be "lost" (cursor visible again). Bring it
+            // back to the centre at once.
             recenter();
             return;
         }
@@ -312,21 +310,21 @@ public class AmigaMouseAdapter extends MouseAdapter {
         }
     }
 
-    /** Modalità catturata: delta rispetto al centro, poi ricentra il puntatore. */
+    /** Captured mode: delta from the centre, then recentre the pointer. */
     private void handleMoveCaptured(MouseEvent e) {
         int dx = e.getXOnScreen() - centerX;
         int dy = e.getYOnScreen() - centerY;
         if (dx == 0 && dy == 0) return;
         moveScaled(dx, dy);
-        // Riporta il puntatore al centro: l'evento di ricentraggio cade esattamente
-        // sul centro (dx=dy=0) e viene quindi naturalmente ignorato.
-        // Va fatto a ogni movimento HOST, anche quando la divisione per videoScale non
-        // ha ancora prodotto un pixel Amiga: altrimenti il puntatore si allontanerebbe
-        // dal centro fino a uscire dalla finestra, perdendo la cattura.
+        // Bring the pointer back to the centre: the recentring event falls exactly on the
+        // centre (dx=dy=0) and is therefore naturally ignored. It must be done at every HOST
+        // movement, even when the division by videoScale has not yet produced an Amiga
+        // pixel: otherwise the pointer would drift away from the centre until it left the
+        // window, losing the capture.
         recenter();
     }
 
-    /** Modalità libera: delta tra eventi consecutivi, solo se dentro al frame. */
+    /** Free mode: delta between consecutive events, only if inside the frame. */
     private void handleMoveFree(MouseEvent e) {
         if (!insideFrame) return;
         int x = e.getX();
@@ -343,17 +341,18 @@ public class AmigaMouseAdapter extends MouseAdapter {
     }
 
     /**
-     * Converte un delta in pixel host nel delta in pixel Amiga e lo consegna alla porta.
+     * Converts a delta in host pixels into a delta in Amiga pixels and delivers it to the
+     * port.
      *
-     * <p>La divisione per {@code videoScale} tiene il resto in {@link #remainderX}/
-     * {@link #remainderY}, così nessuno spostamento va perduto: N eventi da un pixel
-     * host valgono un pixel Amiga, invece di essere troncati a zero uno per uno.
-     * La divisione intera di Java tronca verso lo zero, quindi il segno del resto segue
-     * quello del movimento e non si accumula deriva cambiando direzione.
+     * <p>The division by {@code videoScale} keeps the remainder in {@link #remainderX}/
+     * {@link #remainderY}, so no movement is lost: N one-pixel host events are worth one
+     * Amiga pixel, instead of being truncated to zero one by one. Java's integer division
+     * truncates toward zero, so the remainder's sign follows the movement and no drift
+     * accumulates when the direction changes.
      */
     private void moveScaled(int dxHost, int dyHost) {
         if (videoScale == 1) {
-            port.moveMouse(dxHost, dyHost);   // path storico, nessun resto da tenere
+            port.moveMouse(dxHost, dyHost);   // historical path, no remainder to keep
             return;
         }
         remainderX += dxHost;
@@ -367,31 +366,31 @@ public class AmigaMouseAdapter extends MouseAdapter {
         }
     }
 
-    /** Azzera il resto accumulato: un nuovo gesto non eredita quello del precedente. */
+    /** Clears the accumulated remainder: a new gesture does not inherit the previous one's. */
     private void resetRemainder() {
         remainderX = 0;
         remainderY = 0;
     }
 
     // -------------------------------------------------------------------------
-    // Pulsanti
+    // Buttons
     // -------------------------------------------------------------------------
 
     @Override
     public void mousePressed(MouseEvent e) {
         if (!enabled || port == null) return;
-        // Tasto centrale: rilascia la cattura (se attiva) e non inoltrare all'Amiga.
+        // Middle button: release the capture (if active) and do not forward to the Amiga.
         if (e.getButton() == MouseEvent.BUTTON2) {
             if (captured) {
                 release();
                 return;
             }
-            // Cattura non attiva: comportamento normale del tasto centrale.
+            // Capture not active: normal behaviour of the middle button.
             port.pressMouseMiddle(true);
             return;
         }
 
-        // Primo click sinistro fuori dalla cattura: cattura il mouse e consuma il click.
+        // First left click outside the capture: capture the mouse and consume the click.
         if (!captured && e.getButton() == MouseEvent.BUTTON1 && robot != null) {
             capture();
             swallowNextLeftRelease = true;
@@ -412,7 +411,7 @@ public class AmigaMouseAdapter extends MouseAdapter {
         switch (e.getButton()) {
             case MouseEvent.BUTTON1 -> {
                 if (swallowNextLeftRelease) {
-                    swallowNextLeftRelease = false; // rilascio del click di cattura: scartato
+                    swallowNextLeftRelease = false; // release of the capture click: discarded
                 } else {
                     port.pressMouseLeft(false);
                 }

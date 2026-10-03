@@ -33,32 +33,31 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Elenco dei preset shader installati sotto {@code shaders/} nella home applicativa, e
- * conversione fra il <b>nome</b> che finisce in {@code amiga.properties}
- * ({@code video.shader}) e il file su disco.
+ * List of the shader presets installed under {@code shaders/} in the application home, and
+ * conversion between the <b>name</b> that goes into {@code amiga.properties}
+ * ({@code video.shader}) and the file on disk.
  *
- * <p>Il nome è il percorso <b>relativo</b> a {@code shaders/}, con separatori {@code /} e
- * senza estensione — es. {@code Mega_Bezel/Presets/MBZ__5__POTATO}. Prima dell'arrivo dei
- * {@code .slangp} i preset stavano tutti nella radice e il nome era il solo nome file:
- * quei valori continuano a risolversi identici, la ricerca ricorsiva è una estensione.
- * Sono riconosciute entrambe le estensioni, {@code .glslp} e {@code .slangp}; se esistono
- * due file con lo stesso nome e diversa estensione vince il {@code .slangp}.
+ * <p>The name is the path <b>relative</b> to {@code shaders/}, with {@code /} separators and no
+ * extension (e.g. {@code Mega_Bezel/Presets/MBZ__5__POTATO}). A preset in the root of
+ * {@code shaders/} has its file name as its name; the recursive search is an extension of that.
+ * Both extensions are recognised, {@code .glslp} and {@code .slangp}; if two files exist with
+ * the same name and different extensions, {@code .slangp} wins.
  */
 public final class ShaderCatalog {
 
-    /** Valore di {@code video.shader} che significa "nessuno shader". */
+    /** Value of {@code video.shader} that means "no shader". */
     public static final String NONE = "none";
 
     private static final String[] EXTENSIONS = {".slangp", ".glslp"};
-    /** Profondità e numero massimi esplorati: una cartella patologica non deve bloccare la UI. */
+    /** Maximum depth and count explored: a pathological folder must not block the UI. */
     private static final int MAX_DEPTH = 8;
     private static final int MAX_ENTRIES = 4000;
 
     private ShaderCatalog() { }
 
     /**
-     * Nomi dei preset trovati sotto {@code shaders/}, ordinati per percorso (case
-     * insensitive). Non include {@link #NONE}: lo aggiunge il chiamante.
+     * Names of the presets found under {@code shaders/}, sorted by path (case-insensitive). It
+     * does not include {@link #NONE}: the caller adds it.
      */
     public static List<String> names() {
         List<String> out = new ArrayList<>();
@@ -80,7 +79,7 @@ public final class ShaderCatalog {
 
                 @Override
                 public FileVisitResult visitFileFailed(Path file, IOException e) {
-                    return FileVisitResult.CONTINUE;   // file illeggibile: si prosegue
+                    return FileVisitResult.CONTINUE;   // unreadable file: carry on
                 }
             });
         } catch (IOException e) {
@@ -91,22 +90,22 @@ public final class ShaderCatalog {
     }
 
     /**
-     * Percorso del preset con quel nome, o {@code null} se il nome è vuoto,
-     * {@link #NONE}, o non corrisponde ad alcun file.
+     * Path of the preset with that name, or {@code null} if the name is empty, {@link #NONE},
+     * or matches no file.
      */
     public static Path resolve(String name) {
         if (name == null) return null;
         String n = name.trim();
         if (n.isEmpty() || n.equalsIgnoreCase(NONE)) return null;
         for (String ext : EXTENSIONS) {
-            // Paths.get accetta '/' come separatore anche su Windows.
+            // Paths.get accepts '/' as separator on Windows too.
             Path p = AppHome.resolve("shaders", n + ext);
             if (Files.isRegularFile(p)) return p;
         }
         return null;
     }
 
-    /** L'estensione riconosciuta del file, o {@code null} se non è un preset. */
+    /** The file's recognised extension, or {@code null} if it is not a preset. */
     private static String extensionOf(Path file) {
         String n = file.getFileName().toString().toLowerCase(Locale.ROOT);
         for (String ext : EXTENSIONS) {

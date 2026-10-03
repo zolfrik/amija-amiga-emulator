@@ -46,40 +46,38 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Parla con un router UPnP: legge la sua descrizione e gli chiede di aprire una porta
- * ({@code docs/remote-play-plan.md} §7.1).
+ * Talks to a UPnP router: reads its description and asks it to open a port
+ * ({@code docs/remote-play-plan.md} section 7.1).
  *
- * <h2>XML che arriva da un dispositivo di rete</h2>
- * Il documento di descrizione e la risposta a ogni azione sono XML scritto da qualcun
- * altro, quindi si applicano le stesse regole del §8.2 usate per i pacchetti: <b>tetto
- * costante prima di allocare</b> — il corpo si legge a pezzi e ci si ferma a
- * {@value #MAX_BODY_BYTES} byte invece di fidarsi del {@code Content-Length} — e
- * <b>parser blindato</b>: niente DTD, niente entita' esterne, {@code SECURE_PROCESSING}
- * acceso. Un {@code <!ENTITY>} che punta a un file locale in un documento di descrizione
- * e' l'attacco classico a chi analizza XML altrui, e qui l'XML altrui arriva da un
- * apparecchio che spesso nessuno aggiorna da anni.
+ * <h2>XML that comes from a network device</h2>
+ * The description document and the answer to every action are XML written by someone else,
+ * so the same rules as for the packets apply (section 8.2): <b>a constant cap before
+ * allocating</b> (the body is read in chunks and reading stops at {@value #MAX_BODY_BYTES}
+ * bytes instead of trusting {@code Content-Length}) and a <b>hardened parser</b>: no DTD, no
+ * external entities, {@code SECURE_PROCESSING} on. An {@code <!ENTITY>} pointing to a local
+ * file in a description document is the classic attack on whoever parses someone else's
+ * XML, and here that XML comes from a device often nobody has updated in years.
  *
- * <h2>Tre tipi di servizio, uno solo dei quali risponde</h2>
- * Il servizio che apre le porte si chiama {@code WANIPConnection} (versione 1 o 2) sui
- * router con IP diretto e {@code WANPPPConnection} su quelli con PPPoE. Si prende il primo
- * che c'e': cercarne uno solo vorrebbe dire non funzionare su meta' delle linee italiane,
- * che sono PPPoE.
+ * <h2>Three service types, only one of which answers</h2>
+ * The service that opens ports is called {@code WANIPConnection} (version 1 or 2) on routers
+ * with a direct IP and {@code WANPPPConnection} on those with PPPoE. The first one present is
+ * taken: looking for one only would not work on half of the Italian lines, which are PPPoE.
  */
 public final class IgdClient {
 
-    /** Tetto sul corpo di ogni risposta: e' XML di descrizione, non un trasferimento. */
+    /** Cap on the body of every answer: it is a description XML, not a transfer. */
     private static final int MAX_BODY_BYTES = 512 * 1024;
 
-    /** Un router che non risponde entro questo tempo e' un router che non collabora. */
+    /** A router that does not answer within this time is a router that does not cooperate. */
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(4);
 
-    /** I servizi che sanno mappare una porta, in ordine di preferenza. */
+    /** The services that can map a port, in order of preference. */
     private static final List<String> CONNECTION_SERVICES = List.of(
             "urn:schemas-upnp-org:service:WANIPConnection:2",
             "urn:schemas-upnp-org:service:WANIPConnection:1",
             "urn:schemas-upnp-org:service:WANPPPConnection:1");
 
-    /** Codice d'errore UPnP: questo router accetta solo mappature senza scadenza. */
+    /** UPnP error code: this router accepts only mappings with no expiry. */
     static final int ERROR_ONLY_PERMANENT_LEASES = 725;
 
     private final HttpClient http;
@@ -96,25 +94,23 @@ public final class IgdClient {
     }
 
     /**
-     * Interroga un gateway trovato da {@link SsdpDiscovery} e ne ricava il punto di
-     * controllo.
+     * Queries a gateway found by {@link SsdpDiscovery} and derives its control point.
      *
-     * @throws IOException se non risponde, se l'XML non si legge, o se non espone nessuno
-     *                     dei servizi che sanno mappare una porta
+     * @throws IOException if it does not answer, if the XML cannot be read, or if it exposes
+     *                     none of the services that can map a port
      */
     public static IgdClient connect(SsdpDiscovery.Gateway gateway) throws IOException {
         HttpClient http = HttpClient.newBuilder()
                 .connectTimeout(HTTP_TIMEOUT)
-                // Niente redirect: un router che rimanda altrove non e' un caso da servire,
-                // e seguire un redirect vorrebbe dire parlare SOAP con un host arbitrario.
+                // No redirects: a router that sends elsewhere is not a case to serve, and
+                // following a redirect would mean talking SOAP to an arbitrary host.
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
         byte[] description = get(http, gateway.descriptionUrl());
         Document document = parse(description);
 
-        // <URLBase>, se c'e', ha la precedenza sull'URL da cui e' arrivata la descrizione:
-        // ci sono router che servono il documento su una porta e vogliono le azioni su
-        // un'altra.
+        // <URLBase>, if present, takes precedence over the URL the description came from:
+        // some routers serve the document on one port and want the actions on another.
         URI deviceUrl = gateway.descriptionUrl();
         URI base = deviceUrl;
         String urlBase = firstValue(document, "URLBase");
@@ -124,8 +120,8 @@ public final class IgdClient {
                 if (sameDevice(deviceUrl, candidate)) {
                     base = candidate;
                 } else {
-                    // Un URLBase che porta altrove non e' una porta diversa: e' un altro
-                    // apparecchio. Si resta su quello che ha risposto.
+                    // A URLBase that leads elsewhere is not a different port: it is another
+                    // device. Stay on the one that answered.
                     RemotePlaySettings.log(
                             "URLBase %s non e' lo stesso apparecchio di %s: ignorato",
                             candidate, deviceUrl);
@@ -153,9 +149,9 @@ public final class IgdClient {
                     continue;
                 }
                 if (!sameDevice(deviceUrl, url)) {
-                    // Il controlURL e' relativo nella stragrande maggioranza dei firmware;
-                    // quando e' assoluto deve comunque restare sull'apparecchio che ha
-                    // risposto, o sarebbe l'XML a scegliere con chi AmiJa parla SOAP.
+                    // The controlURL is relative in the vast majority of firmware; when it is
+                    // absolute it must still stay on the device that answered, or the XML
+                    // would choose whom AmiJa talks SOAP to.
                     RemotePlaySettings.log(
                             "controlURL %s fuori dall'apparecchio %s: ignorato", url, deviceUrl);
                     continue;
@@ -167,17 +163,17 @@ public final class IgdClient {
         throw new IOException("il dispositivo non espone WANIPConnection ne' WANPPPConnection");
     }
 
-    /** L'indirizzo di questa macchina sulla rete del router: quello che si fa mappare. */
+    /** The address of this machine on the router's network: the one to have mapped. */
     public InetAddress localAddress() {
         return localAddress;
     }
 
     /**
-     * L'indirizzo che il router mostra al mondo.
+     * The address the router shows the world.
      *
-     * <p>E' anche la diagnosi del §7.3: se questo indirizzo e' privato o in
-     * {@code 100.64.0.0/10}, il router e' a sua volta dietro un NAT dell'operatore e la
-     * mappatura, per quanto riuscita, non serve a niente.
+     * <p>It is also the diagnosis of section 7.3: if this address is private or in
+     * {@code 100.64.0.0/10}, the router is itself behind the operator's NAT and the mapping,
+     * however successful, is useless.
      */
     public String externalAddress() throws IOException {
         Document response = invoke("GetExternalIPAddress", "");
@@ -189,11 +185,11 @@ public final class IgdClient {
     }
 
     /**
-     * Chiede di inoltrare una porta verso questa macchina.
+     * Asks to forward a port to this machine.
      *
-     * @param protocol {@code "TCP"} o {@code "UDP"} — servono entrambi, stesso numero (§4)
-     * @param seconds  durata della prenotazione; 0 = senza scadenza
-     * @throws UpnpException col codice del router, se rifiuta
+     * @param protocol {@code "TCP"} or {@code "UDP"}: both are needed, same number (section 4)
+     * @param seconds  duration of the reservation; 0 = no expiry
+     * @throws UpnpException with the router's code, if it refuses
      */
     public void addPortMapping(String protocol, int port, int seconds, String description)
             throws IOException {
@@ -208,7 +204,7 @@ public final class IgdClient {
         invoke("AddPortMapping", arguments);
     }
 
-    /** Ritira la mappatura. Va fatto sempre: le porte di casa d'altri non si lasciano aperte. */
+    /** Withdraws the mapping. Always to be done: ports in someone else's home are not left open. */
     public void deletePortMapping(String protocol, int port) throws IOException {
         String arguments = arg("NewRemoteHost", "")
                 + arg("NewExternalPort", Integer.toString(port))
@@ -247,30 +243,30 @@ public final class IgdClient {
         if (response.statusCode() == 200) {
             return document;
         }
-        // Un rifiuto UPnP e' un HTTP 500 con dentro il motivo vero. Buttarlo via lascerebbe
-        // «errore 500» a un utente che invece puo' fare qualcosa, per esempio spegnere e
-        // riaccendere UPnP sul router (606) o liberare una porta gia' presa (718).
+        // A UPnP refusal is an HTTP 500 with the real reason inside. Throwing it away would
+        // leave "error 500" to a user who can do something instead, e.g. switch UPnP off and
+        // on on the router (606) or free a port already taken (718).
         String code = firstValue(document, "errorCode");
         String detail = firstValue(document, "errorDescription");
         throw new UpnpException(action, parseInt(code), detail);
     }
 
     /**
-     * Se due URL stanno sullo <b>stesso apparecchio</b>: schema ammesso e host identico.
+     * Whether two URLs are on the <b>same device</b>: allowed scheme and identical host.
      *
-     * <p>La descrizione del dispositivo e' XML scritto da chi ha risposto all'M-SEARCH, e
-     * dentro ci sono due campi — {@code URLBase} e {@code controlURL} — che decidono a quale
-     * indirizzo AmiJa spedira' poi le proprie POST SOAP. Lasciarli liberi vorrebbe dire che
-     * chi controlla quell'XML sceglie con chi AmiJa parla: un servizio su {@code localhost},
-     * un altro apparecchio della rete, un host qualunque su Internet. Vincolandoli all'host
-     * da cui la descrizione e' arrivata — che {@link SsdpDiscovery} ha gia' legato al
-     * mittente del datagramma — il documento puo' ancora scegliere <i>percorso e porta</i>,
-     * che e' tutto cio' di cui un router vero ha bisogno, ma non piu' la <i>macchina</i>.
+     * <p>The device description is XML written by whoever answered the M-SEARCH, and it holds
+     * two fields ({@code URLBase} and {@code controlURL}) that decide to which address AmiJa
+     * will then send its SOAP POSTs. Leaving them free would mean whoever controls that XML
+     * chooses whom AmiJa talks to: a service on {@code localhost}, another device on the
+     * network, any host on the Internet. Bound to the host the description came from (which
+     * {@link SsdpDiscovery} has already bound to the datagram's sender), the document can
+     * still choose <i>path and port</i>, all a real router needs, but no longer the
+     * <i>machine</i>.
      *
-     * <p>La porta resta libera di proposito: ci sono firmware che servono la descrizione su
-     * una porta e vogliono le azioni su un'altra, ed e' il motivo per cui {@code URLBase}
-     * esiste. Una porta diversa sullo stesso apparecchio non allarga la superficie —
-     * l'apparecchio e' gia' raggiungibile — mentre un host diverso la cambia del tutto.
+     * <p>The port stays free on purpose: some firmware serves the description on one port and
+     * wants the actions on another, which is why {@code URLBase} exists. A different port on
+     * the same device does not widen the surface (the device is already reachable), while a
+     * different host changes it entirely.
      */
     private static boolean sameDevice(URI deviceUrl, URI candidate) {
         String scheme = candidate.getScheme();
@@ -287,11 +283,11 @@ public final class IgdClient {
     }
 
     /**
-     * Sfugge i caratteri che in XML hanno un significato.
+     * Escapes the characters that have a meaning in XML.
      *
-     * <p>L'unico argomento che puo' contenerli e' la descrizione della mappatura, che oggi
-     * e' una costante — ma un giorno potrebbe portarci dentro il nome del gioco, e allora
-     * un'apostrofo produrrebbe una richiesta malformata invece di un errore comprensibile.
+     * <p>The only argument that can contain them is the mapping's description, a constant
+     * today; one day it might carry the game's name, and then an apostrophe would produce a
+     * malformed request instead of an understandable error.
      */
     private static String escape(String value) {
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -307,7 +303,7 @@ public final class IgdClient {
     }
 
     // =====================================================================
-    // HTTP e XML
+    // HTTP and XML
     // =====================================================================
 
     private static byte[] get(HttpClient http, URI url) throws IOException {
@@ -326,7 +322,7 @@ public final class IgdClient {
         }
     }
 
-    /** Legge fino al tetto e non un byte di piu': la lunghezza la dichiara il router. */
+    /** Reads up to the cap and not one byte more: the length is declared by the router. */
     private static byte[] read(InputStream in) throws IOException {
         try (InputStream stream = in) {
             byte[] body = stream.readNBytes(MAX_BODY_BYTES + 1);
@@ -337,7 +333,7 @@ public final class IgdClient {
         }
     }
 
-    /** Il parser blindato: nessun DTD, nessuna entita' esterna, nessun XInclude. */
+    /** The hardened parser: no DTD, no external entities, no XInclude. */
     static Document parse(byte[] xml) throws IOException {
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
         try {
@@ -354,14 +350,14 @@ public final class IgdClient {
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
             DocumentBuilder builder = factory.newDocumentBuilder();
-            // Nessun EntityResolver di rete: se un documento chiedesse comunque qualcosa
-            // di esterno, si risponde con il vuoto invece di andarlo a prendere.
+            // No network EntityResolver: if a document asked for something external anyway,
+            // the answer is empty instead of fetching it.
             builder.setEntityResolver((publicId, systemId) ->
                     new org.xml.sax.InputSource(new ByteArrayInputStream(new byte[0])));
-            // Senza un ErrorHandler, il parser stampa da se' su stderr prima di sollevare:
-            // un XML malformato produrrebbe due segnalazioni, una delle quali non passa da
-            // nessun percorso di errore di AmiJa e comparirebbe anche a fronte di un caso
-            // gestito. Qui l'unico esito e' l'eccezione.
+            // Without an ErrorHandler, the parser prints to stderr by itself before throwing:
+            // a malformed XML would produce two reports, one of which goes through no AmiJa
+            // error path and would appear even for a handled case. Here the only outcome is
+            // the exception.
             builder.setErrorHandler(new org.xml.sax.helpers.DefaultHandler() {
                 @Override
                 public void error(org.xml.sax.SAXParseException e) throws SAXException {
@@ -375,7 +371,7 @@ public final class IgdClient {
 
                 @Override
                 public void warning(org.xml.sax.SAXParseException e) {
-                    // Un avviso non e' un guasto: si prosegue, in silenzio.
+                    // A warning is not a failure: carry on, silently.
                 }
             });
             return builder.parse(new ByteArrayInputStream(xml));
@@ -385,12 +381,13 @@ public final class IgdClient {
     }
 
     /**
-     * Il testo del primo elemento con questo nome, prefisso di namespace escluso.
+     * The text of the first element with this name, namespace prefix excluded.
      *
-     * <p>Il confronto e' sul <b>nome locale</b> ricavato a mano, e non su
-     * {@code getElementsByTagNameNS}, perche' i router non sono coerenti: la stessa risposta
-     * arriva come {@code <NewExternalIPAddress>} da un firmware e {@code <u:NewExternalIPAddress>}
-     * da un altro, e a volte senza dichiarare il namespace che usa.
+     * <p>The comparison is on the <b>local name</b> derived by hand, not through
+     * {@code getElementsByTagNameNS}, because routers are not consistent: the same answer
+     * arrives as {@code <NewExternalIPAddress>} from one firmware and
+     * {@code <u:NewExternalIPAddress>} from another, sometimes without declaring the
+     * namespace it uses.
      */
     static String firstValue(Document document, String localName) {
         for (Element element : elements(document, localName)) {
@@ -435,7 +432,7 @@ public final class IgdClient {
         return colon < 0 ? name : name.substring(colon + 1);
     }
 
-    /** Un rifiuto del router, con il codice che dice cosa si puo' fare. */
+    /** A refusal from the router, with the code that says what can be done. */
     public static final class UpnpException extends IOException {
         private static final long serialVersionUID = 1L;
 
@@ -448,7 +445,7 @@ public final class IgdClient {
             this.code = code;
         }
 
-        /** Il codice UPnP, o 0 se il router non l'ha dichiarato. */
+        /** The UPnP code, or 0 if the router did not declare it. */
         public int code() {
             return code;
         }

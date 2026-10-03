@@ -119,12 +119,10 @@ public class CmpInstruction extends AbstractM68kInstruction {
                 }
                 case 10 -> {
                     if (!cpu.isBusCycleIdle()) return false;
-                    // WinUAE `case i_CMP`: `set_ipl_pre()` e' chiamata SOLO per la .L con
-                    // destinazione Dn (`if (dmode == Dreg && size == sz_long)`), e sta subito
-                    // prima di `fill_prefetch_next_after` — quindi li' l'ancora e' questa
-                    // prefetch e non la lettura (op_b090..op_b0bb _14_ff). Per .b/.w gencpu
-                    // usa `fill_prefetch_next_t()` senza `set_ipl_pre()`, cioe' il percorso di
-                    // default: l'ancora resta la lettura, ed e' quello che facciamo gia'.
+                    // For CMP the anchor is this prefetch (a `next` sample right before the
+                    // final prefetch) ONLY for .L with a Dn destination ($B090..$B0BB). For
+                    // .b/.w the default path applies: the anchor stays on the read, which is
+                    // what already happens.
                     if (size == 4) {
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     }
@@ -132,7 +130,7 @@ public class CmpInstruction extends AbstractM68kInstruction {
                     // Overlapped prefetch (Phase 2): finalize in the SAME step that issues the
                     // terminal np so the next instruction decodes the instant the np drains
                     // (seam 0). Deferring finalize to a later step wasted 1 mc. See
-                    // docs/cpu-overlapped-prefetch-rework-plan.md §Phase 2.
+                    // docs/cpu-overlapped-prefetch-rework-plan.md, Phase 2.
                     if (size == 4) {
                         nextStep(cpu); // .L still needs the final 'n'
                         return false;

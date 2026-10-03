@@ -24,114 +24,64 @@ import io.github.zolfrik.amija.input.GamePort;
 import java.util.Arrays;
 
 /**
- * Denise (8362 OCS / 8373 ECS) — Display Encoder dell'Amiga 500.
+ * Denise (8362 OCS / 8373 ECS): the display encoder of the Amiga 500.
  *
- * Architettura line-buffered allineata a vAmiga:
- *   fillShiftRegisters → scanSprites → translate → blitSprites → checkCollisions → colorize
+ * Line-buffered architecture:
+ *   fillShiftRegisters -> scanSprites -> translate -> blitSprites -> checkCollisions -> colorize
  *
- * Correzioni rispetto alla versione precedente:
- *  - zPF: mappatura priorità corretta per HW Amiga
- *  - translateSPF: usa i bit PF2P (bplcon2 bit 3-5) come l'HW Amiga
- *  - VBlank: le scanline in area VBlank vengono riempite con palette[0]
- *  - checkS2SCollisions: rimosso parametro inutilizzato
- *  - Sprite DATA/DATB: range esteso fino a 0x17E
- *  - Supporto ECS: isECS, deniseId, setDeniseId(), isECS()
- *  - readRegister 0x07C: DENISEID corretto per OCS/ECS
- *  - Aggiunto triggerLightPen()
- *  - Ripristinati bplcon3 e bplcon4 (necessari per ECS)
- *  - clxdat read: mascherato con 0x7FFF prima dell'OR con 0x8000
- *  - Corretta identificazione sotto-registro sprite in drawSpritePair
+ * Hardware rules this class relies on:
  *
- * Correzioni hardware-accuracy di questa versione:
+ *  - Extra Half-Brite is on when BPU = 6 and HAM = 0, with no other condition on OCS/ECS.
+ *    Bit 7 of BPLCON0 is GAUD (genlock audio enable), not an EHB flag (HRM, BPLCON0).
  *
- *  FIX 1 — isEHB: il bit 7 di BPLCON0 è GAUD (genlock audio enable), NON
- *    un flag EHB. Extra Half-Brite si attiva automaticamente quando BPU=6
- *    e HAM=0, senza ulteriori condizioni su OCS/ECS.
- *    (Rif: HW Ref Manual §7, tabella BPLCON0)
+ *  - BPLCON1: PF1H (bits 3:0) scrolls the odd planes (BPL1/3/5) and PF2H (bits 7:4) the even
+ *    planes (BPL2/4/6). The offset is in HPIXELS (2 in lores, 1 in hires); the shift
+ *    registers are filled with |= so adjacent DMA fetches overlap correctly.
  *
- *  FIX 2 — fillShiftRegisters: BPLCON1 non veniva applicato. I campi
- *    PF1H (bit 3:0) e PF2H (bit 7:4) definiscono lo scroll orizzontale
- *    rispettivamente per i piani dispari (BPL1/3/5) e i piani pari
- *    (BPL2/4/6). In SPF i piani pari usano PF1H. L'offset va in pixel
- *    HPIXELS (pixScale=2 in lores, 1 in hires). Usato |= su dBuffer
- *    per permettere la sovrapposizione corretta tra fetch DMA adiacenti.
- *    (Rif: HW Ref Manual §7, BPLCON1)
+ *  - Sprite colours: a plain sprite pair uses palette base 16 + (x & 6) * 2 (x = the odd
+ *    sprite), i.e. palette[16..19], [20..23], [24..27], [28..31]; an attached pair indexes
+ *    colours 16-31 directly with its 4-bit code. An attached pair takes the depth of its
+ *    even sprite, the leader of the pair: Z_SP[x & ~1].
  *
- *  FIX 3 — drawAttachedSpritePixel: la base della palette era sempre 16,
- *    indipendentemente dalla coppia sprite. Le coppie 1/2/3 usavano
- *    palette[16..19] anziché [20..23], [24..27], [28..31].
- *    Formula corretta: base = 16 + (x & 6) * 2, dove x è lo sprite dispari.
- *    (Rif: HW Ref Manual §7, tabella colori sprite attached)
+ *  - HAM and sprites: a sprite interrupts HAM only if its Z is above that of the current
+ *    playfield (zpf from initialBplcon2); Z_ALL_SPRITES covers every sprite depth. The HAM
+ *    hold register is NOT reset in the border: it keeps the last value accumulated in the
+ *    active area.
  *
- *  FIX 4 — drawAttachedSpritePixel: la profondità Z usata era Z_SP[x]
- *    (sprite dispari, priorità inferiore). Per gli sprite attached la
- *    priorità è quella dello sprite pari (il "leader" della coppia).
- *    Formula corretta: Z_SP[x & ~1].
- *    (Rif: HW Ref Manual §7, "Sprite Priority")
+ *  - CLXCON for PF2: enables are {@code (clxcon >> 6) & 0x2A} and match values
+ *    {@code clxcon & 0x2A} (bits 1, 3, 5 of the six, i.e. the even planes BPL2/4/6), for
+ *    sprite-to-playfield and playfield-to-playfield collisions alike.
  *
- *  FIX 5 — colorizeHAM: la maschera 0x5555 era errata. Intercettava Z_1
- *    (un livello Z del playfield!) e mancava Z_SP1, Z_SP2, Z_SP5, Z_SP6.
- *    Sostituita con Z_ALL_SPRITES. Aggiunto check priorità corretto: uno
- *    sprite interrompe HAM solo se la sua Z è maggiore di quella del
- *    playfield corrente (zpf calcolato da initialBplcon2).
- *    (Rif: HW Ref Manual §7, "HAM and Sprites")
+ *  - In VBlank the sprite change recorders are only cleared, not consumed, so no state
+ *    leaks into the next scanline.
  *
- *  FIX 6 — colorizeHAM, area bordo: il registro hold veniva aggiornato
- *    con il colore del bordo durante l'area fuori-DIW. Sul vero hardware
- *    il registro HAM NON viene resettato nel bordo; persiste l'ultimo
- *    valore accumulato nell'area attiva.
- *    (Rif: HW Ref Manual §7, "Hold-And-Modify Mode")
+ *  - BPLCON0 ($DFF100) is write-only on OCS. The Kickstart 1.3 code at $FCAF42 does
+ *    D0 = BPLCON0; D0 |= $1200; BPLCON0 = D0: returning the shadow value ($0102 after the
+ *    graphics init at $FCAFBA) would give $1302 (corrupt screen, black bar); returning 0
+ *    gives the right $1200. The same holds for BPLCON1/2 (write-only on OCS) and for the
+ *    ECS-only BPLCON3/4 (absent on OCS, read 0).
  *
- *  FIX 7 — checkS2PCollisions: le maschere CLXCON per PF2 erano errate.
- *    "enabled2 = (clxcon >> 7) & 0x15" non estrae correttamente i bit
- *    enable dei piani pari. Corretto in "(clxcon >> 6) & 0x2A" (bit 1,3,5
- *    dei 6 enable bit = piani pari BPL2/4/6).
- *    "match2 = (clxcon >> 1) & 0x15" idem per i match value.
- *    Corretto in "clxcon & 0x2A".
- *    (Rif: HW Ref Manual §7, CLXCON)
- *
- *  FIX 8 — checkP2PCollisions: stesse maschere errate di FIX 7.
- *
- *  FIX 9 — hsyncHandler VBlank: il disegno sprite veniva chiamato durante il
- *    VBlank, lasciando i sprChanges[i] sporchi per la scanline successiva.
- *    In VBlank i recorder vengono solo puliti, non consumati.
- *
- *  FIX 10 — readRegister, BPLCON0 ($DFF100): su OCS è write-only.
- *    Restituire il valore ombra ($0102 dopo l'init grafico a $FCAFBA)
- *    causava il Kickstart 1.3 a calcolare BPLCON0=$1302 invece di $1200,
- *    perché il codice a $FCAF42 esegue: D0=BPLCON0; D0|=$1200; BPLCON0=D0.
- *    Con shadow=$0102 → $0102|$1200=$1302 (schermata corrotta, barra nera).
- *    Con 0 (write-only, corretto per OCS) → $0000|$1200=$1200 (corretto).
- *    Stesso fix applicato a BPLCON1/2 (write-only su OCS) e ai registri
- *    ECS-only BPLCON3/4 (inesistenti su OCS, restituiscono 0).
- *    (Rif: HW Ref Manual §7, BPLCON0; chip OCS Denise 8362)
- *
- *  FIX 11 — readRegister, DENASEN ($DFF07C): per OCS si restituiva
- *    agnus.getLastBusData(), che poteva valere $0102 (dall'ultima scrittura
- *    su BPLCON0), inquinando il rilevamento chipset del Kickstart.
- *    Su OCS Denise 8362 il registro non è implementato; il bus è tenuto
- *    alto dai resistori di pull-up → $FFFF. Restituito $FFFF per OCS,
- *    $FFFC per ECS Denise 8373 (valore identificativo standard).
- *    (Rif: Amiga Hardware Reference Manual, DENASEN; chip OCS Denise 8362)
+ *  - DENISEID ($DFF07C) is not implemented on the OCS 8362: see {@link #readRegister}.
+ *    The ECS 8373 returns $FFFC.
  *
  * @author alessio.carotenuto
  */
 public abstract class AbstractDenise {
 
     // =========================================================================
-    // Costanti architetturali (allineamento vAmiga, PAL)
+    // Architectural constants (PAL)
     // =========================================================================
 
     /**
-     * Larghezza del line-buffer in pixel "massima risoluzione" (4 sub-pixel per CCK).
-     * Copre tutta la linea incluso il blanking.
+     * Width of the line buffer in "maximum resolution" pixels (4 sub-pixels per CCK).
+     * Covers the whole line, blanking included.
      */
     public static final int RAW_LINE_PIXELS = 912;   // 4 * 228
     private static final int HPIXELS    = RAW_LINE_PIXELS;
     private static final int HBLANK_MIN = 0x12;
 
     // =========================================================================
-    // Inner class: RegChange e RegChangeRecorder
+    // Inner classes: RegChange and RegChangeRecorder
     // =========================================================================
 
     private static final class RegChange {
@@ -140,9 +90,9 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Registra i cambi di registro avvenuti durante la scanline corrente,
-     * con il timestamp in pixel. Permette di applicarli nell'ordine corretto
-     * durante la fase di colorize (fondamentale per gli effetti Copper mid-line).
+     * Records the register changes made during the current scanline, with their pixel
+     * timestamp, so they are applied in the right order during colorize (essential for
+     * mid-line Copper effects).
      */
     private static final class RegChangeRecorder {
         final int[]       keys;
@@ -162,7 +112,7 @@ public abstract class AbstractDenise {
                 elements[size].value = value;
                 size++;
             }
-            // Drop silenzioso a overflow: aumentare la capacity se necessario.
+            // Silent drop on overflow: raise the capacity if needed.
         }
 
         void    clear()   { size = 0; }
@@ -175,7 +125,7 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     private AbstractAgnus        agnus;
-    private int          field;   // 0 o 1 per interlace
+    private int          field;   // 0 or 1 for interlace
 
     // =========================================================================
     // Chip ID / ECS
@@ -183,10 +133,9 @@ public abstract class AbstractDenise {
 
     /** 0xFFFF = OCS (default), 0xFFFC = ECS */
     //private int     deniseId = 0xFFFF;
-    // STEP 14/P-13 (PERFORMANCE_REPORT_FINAL): isECS è "effectively final" — viene
-    // impostato solo da setDeniseId() in fase di setup, prima che l'emulazione parta.
-    // NON può essere dichiarato 'final' (setDeniseId è un setter pubblico runtime),
-    // quindi il constant-folding JIT non è applicabile: nessuna modifica funzionale.
+    // isECS is effectively final: set only by setDeniseId() during setup, before the
+    // emulation starts. It cannot be declared final (setDeniseId is a public setter), so
+    // the JIT cannot constant-fold it.
     private boolean isECS    = false;
 
     public void setDeniseId(int id) {
@@ -197,50 +146,45 @@ public abstract class AbstractDenise {
     public boolean isECS() { return isECS; }
 
     // =========================================================================
-    // Registri di controllo
+    // Control registers
     // =========================================================================
 
     private int bplcon0, bplcon1, bplcon2, bplcon3, bplcon4;
 
-    // Campi derivati da bplcon0, ricalcolati ad ogni scrittura di bplcon0 (vedi
-    // updateBplcon0Derived). Evitano di rifare Math.min(...) / shift ad ogni
-    // pixel nei percorsi di decodifica bitplane (hot path). Valore identico a
-    // ricalcolarli al volo: dipendono SOLO da bplcon0.
-    private int     bpu   = 0;            // piani DISEGNATI da Denise: vedi deniseBpu()
+    // Fields derived from bplcon0, recomputed at every bplcon0 write (see
+    // updateBplcon0Derived). They avoid redoing Math.min(...) / shifts at every pixel on
+    // the bitplane decoding hot path. They depend ONLY on bplcon0.
+    private int     bpu   = 0;            // planes DRAWN by Denise: see deniseBpu()
     private boolean hires = false;        // (bplcon0 & 0x8000) != 0
 
     /**
-     * Snapshot dei registri all'inizio della scanline corrente.
-     * Usati da translate/colorize per garantire la coerenza nel caso in cui
-     * il Copper modifichi i registri a metà riga.
+     * Snapshot of the registers at the start of the current scanline. Used by
+     * translate/colorize to stay consistent when the Copper changes the registers mid-line.
      */
-    // ⚠️ initialBplcon1 NON esiste piu': lo scroll fine si legge vivo, vedi
-    // drawBitplanesAtPixel. BPLCON0 e BPLCON2 restano invece snapshot di inizio riga.
+    // There is no initialBplcon1: the fine scroll is read live, see drawBitplanesAtPixel.
+    // BPLCON0 and BPLCON2 are start-of-line snapshots.
     private int initialBplcon0, initialBplcon2;
     private int lastRenderedBplcon0;
 
     private int     hstrt,   hstop;
     /**
-     * ⛔ <b>Lo stato di HSTRT/HSTOP all'INIZIO della riga, e senza di esso una scrittura a
-     * metà riga si applica all'indietro.</b> {@link #updateBorderBuffer()} gira a fine riga,
-     * quando {@link #hstrt}/{@link #hstop} portano già il valore <b>nuovo</b>: partendo da
-     * quelli, i pixel <i>prima</i> della scrittura venivano mascherati con la coordinata che
-     * ancora non era stata scritta, e {@link #diwChanges} — che la reinserisce al suo pixel —
-     * non poteva accorgersene, perché reimpostava un valore già in uso.
+     * <b>The state of HSTRT/HSTOP at the START of the line; without it a mid-line write
+     * would apply backwards.</b> {@link #updateBorderBuffer()} runs at the end of the line,
+     * when {@link #hstrt}/{@link #hstop} already hold the <b>new</b> value: starting from
+     * those, the pixels <i>before</i> the write would be masked with a coordinate not yet
+     * written, and {@link #diwChanges}, which reinserts it at its pixel, could not notice,
+     * since it would set a value already in use.
      *
-     * <p>Il difetto è invisibile finché la finestra non si muove dentro la riga, ed è il
-     * banco §17 {@code Denise/DIW} a renderlo osservabile: {@code diwtim.i} riscrive DIWSTOP
-     * due volte per riga alternando due coordinate a 32 pixel lores di distanza, e su ogni
-     * riga in cui la scrittura cadeva <b>dopo</b> che il contatore aveva già superato
-     * entrambe usavamo la nuova dove l'oracolo tiene la vecchia. Su {@code diwtim1} la
-     * finestra chiudeva a 571 invece che a 507: 64 pixel di crop, cioè esattamente
-     * {@code $80 − $60}.
+     * <p>The difference shows only when the window moves within a line. The
+     * {@code Denise/DIW} bank (section 17) makes it observable: {@code diwtim.i} rewrites
+     * DIWSTOP twice per line alternating two coordinates 32 lores pixels apart, and on every
+     * line where the write falls <b>after</b> the counter has passed both, the old one must
+     * still apply. On {@code diwtim1} the window would close at 571 instead of 507: 64
+     * pixels of crop, i.e. exactly {@code $80 - $60}.
      *
-     * <p>⚠️ È il gemello rovesciato di {@code initialBplcon1} (§16 classe F): là leggevamo
-     * uno snapshot dove l'oracolo legge vivo, qui leggevamo vivo dove serve lo snapshot. La
-     * discriminante è <b>chi consuma il valore</b>: lo scroll fine entra nel cursore
-     * d'uscita mentre la riga scorre, la maschera DIW viene ricostruita tutta insieme a fine
-     * riga e ha quindi bisogno del proprio stato iniziale.
+     * <p>The opposite of the fine scroll, which is read live: what decides is <b>who consumes
+     * the value</b>. The fine scroll enters the output cursor while the line runs; the DIW
+     * mask is rebuilt all at once at the end of the line and so needs its own initial state.
      */
     private int     hstrtLineStart, hstopLineStart;
     private boolean hflop;
@@ -253,43 +197,42 @@ public abstract class AbstractDenise {
     private boolean lineIsVBorder;
 
     private int clxcon,  clxdat;
-    // PERF: maschera degli sprite che hanno disegnato pixel sulla scanline corrente
-    // (azzerata in hsyncHandler). Usata per saltare i loop di collisione inutili.
+    // PERF: mask of the sprites that drew pixels on the current scanline (cleared in
+    // hsyncHandler). Used to skip useless collision loops.
     private int spritesOnLineMask;
 
     /**
-     * I pixel che gli sprite emettono sulla riga, registrati nell'ordine in cui nascono.
+     * The pixels the sprites emit on the line, recorded in the order they are produced.
      *
-     * <p>Lo scorrimento degli shift register sprite ({@link #scanSprites}) gira <b>prima</b>
-     * di {@link #translate()}, perché la fine della finestra di display di uno sprite è uno
-     * degli istanti in cui Denise ri-seleziona la propria configurazione di resa (vedi
-     * {@link #renderPlanes}). La composizione su {@code mBuffer}/{@code zBuffer} invece deve
-     * restare <b>dopo</b>, perché il confronto di profondità legge lo z del playfield: i
-     * pixel emessi si accumulano qui e {@link #blitSprites()} li riversa a valle.
+     * <p>The sprite shift registers ({@link #scanSprites}) run <b>before</b>
+     * {@link #translate()}, because the end of a sprite's display window is one of the
+     * instants at which Denise re-selects its rendering configuration (see
+     * {@link #renderPlanes}). The composition onto {@code mBuffer}/{@code zBuffer} must stay
+     * <b>after</b>, because the depth comparison reads the playfield's z: the emitted pixels
+     * accumulate here and {@link #blitSprites()} pours them downstream.
      *
-     * <p>Un'entrata per chiamata: {@code sprEmitPos} è il pixel grezzo, {@code sprEmitValZ}
-     * impacchetta l'indice di colore (8 bit bassi) e la profondità (dal bit 8). La coppia di
-     * sub-pixel che ogni emissione copre è ricostruita dal blit, come faceva il disegno.
+     * <p>One entry per call: {@code sprEmitPos} is the raw pixel, {@code sprEmitValZ} packs
+     * the colour index (low 8 bits) and the depth (from bit 8). The pair of sub-pixels each
+     * emission covers is rebuilt by the blit.
      */
     private int[] sprEmitPos  = new int[1024];
     private int[] sprEmitValZ = new int[1024];
     private int   sprEmitCount;
 
     /**
-     * Le transizioni di stato degli sprite sulla riga, che {@link #translate()} consuma per
-     * sapere <b>quando</b> Denise ri-sceglie la configurazione di resa (vedi
-     * {@link #renderPlanes}). Una entrata per transizione: il pixel grezzo e, impacchettati,
-     * l'indice dello sprite (bit 0-2), il verso (bit 3) e quale dei due stati cambia
-     * (bit 4: 0 = <i>armato</i>, cioè SPRxDATA/SPRxCTL, 1 = <i>in disegno</i>, cioè lo shift
-     * register che si carica o si svuota).
+     * The sprite state transitions on the line, which {@link #translate()} consumes to know
+     * <b>when</b> Denise re-selects its rendering configuration (see {@link #renderPlanes}).
+     * One entry per transition: the raw pixel and, packed, the sprite index (bits 0-2), the
+     * direction (bit 3) and which of the two states changes (bit 4: 0 = <i>armed</i>, i.e.
+     * SPRxDATA/SPRxCTL, 1 = <i>drawing</i>, i.e. the shift register loading or emptying).
      *
-     * <p>Le transizioni nascono coppia per coppia, quindi fuori ordine; {@link #scanSprites()}
-     * le riordina per pixel prima di lasciarle a {@link #translate()}.
+     * <p>Transitions are produced pair by pair, so out of order; {@link #scanSprites()} sorts
+     * them by pixel before handing them to {@link #translate()}.
      */
     private int[] sprStateEvtPos = new int[64];
     private int[] sprStateEvtKey = new int[64];
     private int   sprStateEvtCount;
-    /** Sprite che stanno disegnando all'inizio della riga (shift register non vuoto). */
+    /** Sprites drawing at the start of the line (shift register not empty). */
     private int   armedsLineStart;
 
     private static final int SPR_EVT_UP     = 0x08;
@@ -306,7 +249,7 @@ public abstract class AbstractDenise {
         sprStateEvtCount++;
     }
 
-    // Game port 1 (mouse) e port 2 (joystick) — opzionali
+    // Game port 1 (mouse) and port 2 (joystick), optional
     private GamePort gamePort1 = null;
     private GamePort gamePort2 = null;
 
@@ -315,33 +258,30 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     private final int[] palette = new int[32];
-    // Stato dei registri colore all'INIZIO della scanline corrente (= fine della
-    // precedente). I write COLOR00..31 aggiornano palette[] immediatamente (per le
-    // letture live su ECS), ma colorize() deve ricostruire ogni segmento a partire
-    // dal colore EREDITATO dalla riga precedente e applicare le change ai loro
-    // trigger. Senza questo snapshot il segmento PRIMA della prima change usava già
-    // il valore POST-write (palette[] live), quindi una MOVE COLOR00 a metà riga
-    // visibile (es. synccpu di vAmigaTS) colorava erroneamente tutta la parte
-    // sinistra col colore nuovo. È l'analogo di initialBplcon0 per i colori, e
-    // corrisponde al colreg[] persistente di vAmiga (PixelEngine).
+    // State of the colour registers at the START of the current scanline (= end of the
+    // previous one). COLOR00..31 writes update palette[] at once (for live reads on ECS),
+    // but colorize() must rebuild each segment from the colour INHERITED from the previous
+    // line and apply the changes at their triggers. Without this snapshot the segment
+    // BEFORE the first change would use the post-write value, and a MOVE COLOR00 in the
+    // middle of a visible line (e.g. vAmigaTS synccpu) would colour the whole left part
+    // with the new colour. The colour counterpart of initialBplcon0.
     private final int[] paletteLineStart = new int[32];
 
     /**
-     * Snapshot d'inizio riga dei registri sprite — l'esatto gemello di
-     * {@link #paletteLineStart}, e per la stessa ragione.
+     * Start-of-line snapshot of the sprite registers: the exact twin of
+     * {@link #paletteLineStart}, for the same reason.
      *
-     * <p>⛔ {@link #drawSpritePair} rigioca i cambi di registro ai loro trigger in pixel,
-     * ma partiva dai valori <b>vivi</b>, che a fine riga contengono già TUTTE le
-     * scritture della riga: il segmento precedente alla prima change usava quindi lo
-     * stato posteriore a tutte le change. Una MOVE a SPRxDATA a metà riga armava lo
-     * sprite anche a sinistra del punto in cui è stato armato; una MOVE a SPRxCTL lo
-     * disarmava anche a sinistra, dove doveva ancora disegnare; e la posizione
-     * orizzontale di partenza (sprhppos, derivata da POS/CTL) e il bit di attach
-     * (SPRxCTL bit 7 dello sprite dispari) erano quelli di fine riga per l'intero
-     * chunk iniziale. È lo stesso difetto che paletteLineStart ha chiuso per i colori.
+     * <p>{@link #drawSpritePair} replays the register changes at their pixel triggers,
+     * starting from this snapshot. Starting from the <b>live</b> values, which at the end of
+     * the line already hold ALL of the line's writes, the segment before the first change
+     * would use the state after every change: a mid-line MOVE to SPRxDATA would arm the
+     * sprite to the left of where it was armed, a MOVE to SPRxCTL would disarm it to the
+     * left where it still has to draw, and the starting horizontal position (sprhppos, from
+     * POS/CTL) and the attach bit (SPRxCTL bit 7 of the odd sprite) would be those of the
+     * end of the line for the whole first chunk.
      *
-     * <p>sprhppos non è nello snapshot perché è derivato: {@link #updateSprHCoords} lo
-     * ricalcola da POS/CTL al ripristino.
+     * <p>sprhppos is not in the snapshot because it is derived: {@link #updateSprHCoords}
+     * recomputes it from POS/CTL on restore.
      */
     private int       armedLineStart;
     private final int[] sprposLineStart  = new int[8];
@@ -360,44 +300,35 @@ public abstract class AbstractDenise {
     private boolean     armedOdd, armedEven;
 
     /**
-     * Stato dell'<b>emissione incrementale</b> degli shift register, un gruppo per
-     * playfield (indice 0 = piani dispari, 1 = piani pari).
+     * State of the <b>incremental emission</b> of the shift registers, one group per
+     * playfield (index 0 = odd planes, 1 = even planes).
      *
-     * <p>⛔ <b>Denise non disegna una word in blocco: la fa uscire un pixel alla volta, al
-     * passo della risoluzione VIVA.</b> L'oracolo lo scrive come un contatore di shift
-     * ({@code drawing.cpp}, {@code lts_unaligned_ecs}):
+     * <p><b>Denise does not draw a word as a block: it shifts it out one pixel at a time, at
+     * the step of the LIVE resolution.</b> As a shift counter:
      * <pre>
-     * bplshiftcnt[0] += denise_res_size;                    // 1 in lores, 2 in hires
+     * bplshiftcnt[0] += res_size;                           // 1 in lores, 2 in hires
      * if (bplshiftcnt[0] &gt;= 4) { bplshiftcnt[0] = 0; shiftbpl6(); }
      * </pre>
-     * — e ha perfino un ramo dedicato alla transizione lores→hires
-     * ({@code expand_bplcon0_early()}: {@code reswitch_unalign = 3}), che manda tre
-     * mezze-CCK sul percorso lento pixel-esatto.
      *
-     * <p>⚠️ <b>Che cosa cambia davvero</b>, e perché è un rifacimento e non una costante:
-     * il vecchio modello scriveva i 16 pixel della word tutti insieme, al CCK di draw, con
-     * un solo {@code pixScale = hires ? 1 : 2}. Un modello a blocchi <b>non può</b>
-     * esprimere un cambio di passo a metà word: se BPLCON0 commuta mentre la word sta
-     * uscendo, i bit rimasti devono uscire al passo nuovo — l'oracolo finisce la word in
-     * metà tempo e poi resta nero, noi la facevamo durare tutta. È il banco
-     * {@code Denise/Registers/BPLCON0/hilo}, e sono i 21 px che il §12 aveva rimandato a
-     * questo banco per nome.
+     * <p><b>What it changes</b>: a block model writes the 16 pixels of the word all at once,
+     * at the draw CCK, with a single {@code pixScale = hires ? 1 : 2}, and <b>cannot</b>
+     * express a change of step in the middle of a word. If BPLCON0 switches while the word
+     * is shifting out, the remaining bits must leave at the new step: the word ends in half
+     * the time and the rest is black. That is the bank
+     * {@code Denise/Registers/BPLCON0/hilo}.
      *
-     * <p>✅ <b>A risoluzione costante l'emissione incrementale è bit-identica al blocco</b>:
-     * 16 bit × 2 sub-pixel = 32 entry = 8 CCK in lores, 16 entry = 4 CCK in hires, gli
-     * stessi indici e gli stessi valori. È la proprietà che rende il rifacimento
-     * verificabile — la rete deve restare ferma, e a muoversi dev'essere solo {@code hilo}.
+     * <p><b>At constant resolution the incremental emission is bit-identical to the
+     * block</b>: 16 bits x 2 sub-pixels = 32 entries = 8 CCK in lores, 16 entries = 4 CCK in
+     * hires, the same indices and the same values.
      *
-     * <p>⚠️ <b>Vivo è SOLO {@code hires}.</b> {@code bpu}, il dual-playfield e lo scroll
-     * fine sono <b>latchati al caricamento</b>, esattamente come li congelava il blocco:
-     * cambiarli insieme sarebbe cambiare due modelli in una volta, e a quel punto un rosso
-     * non si sa più attribuire. Sono materia di altre classi dello stesso banco.
+     * <p><b>Only {@code hires} is live.</b> {@code bpu}, dual playfield and the fine scroll
+     * are <b>latched at load</b>.
      */
-    private final int[]  srCount  = new int[2];   // bit ancora da far uscire (0..16)
-    private final int[]  srCursor = new int[2];   // prossimo indice di dBuffer da scrivere
-    private final int[]  srPhase  = new int[2];   // sub-pixel già emessi del bit corrente
-    private final int[]  srBpu    = new int[2];   // BPU latchato al caricamento
-    private final byte[][] srSlice = new byte[2][16]; // slice precalcolati, uno per bit
+    private final int[]  srCount  = new int[2];   // bits still to shift out (0..16)
+    private final int[]  srCursor = new int[2];   // next dBuffer index to write
+    private final int[]  srPhase  = new int[2];   // sub-pixels of the current bit already emitted
+    private final int[]  srBpu    = new int[2];   // BPU latched at load
+    private final byte[][] srSlice = new byte[2][16]; // precomputed slices, one per bit
 
     // =========================================================================
     // Sprite state
@@ -410,7 +341,7 @@ public abstract class AbstractDenise {
     private final int[] sprhppos = new int[8];  // posizione H precalcolata in pixel
     private final int[] ssra     = new int[8];  // shift register A per sprite
     private final int[] ssrb     = new int[8];  // shift register B per sprite
-    private int armed;                 // bitmask degli sprite armati
+    private int armed;                 // bitmask of the armed sprites
     private int spriteClipEnd;
 
     /*
@@ -543,9 +474,9 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Lo scarto fra la scrittura di BPL1DAT e il pixel da cui lo sprite torna visibile,
-     * in pixel raw (2 per CCK-mezza). ⚠️ <b>MISURATO</b>, non deduttо dal commento
-     * dell'oracolo: vedi il piano, §20 classe A.
+     * Distance between the BPL1DAT write and the pixel from which the sprite becomes
+     * visible again, in raw pixels (2 per half CCK). <b>Measured</b>: see the plan, section
+     * 20, class A.
      */
     private static final int SPRITE_ENABLE_OFFSET = 0;
 
@@ -557,9 +488,9 @@ public abstract class AbstractDenise {
      */
     private static final int BPL_ENABLE_OFFSET = 4;
 
-    /** Pixel totali resi per sprite per frame corrente (reset a ogni vsync). */
+    /** Total pixels rendered per sprite in the current frame (reset at every vsync). */
     private final long[] spritePixelsThisFrame = new long[8];
-    /** Pixel totali resi per sprite nel frame completato più recente. */
+    /** Total pixels rendered per sprite in the most recently completed frame. */
     private final long[] spritePixelsLastFrame = new long[8];
 
     // =========================================================================
@@ -567,11 +498,11 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     /**
-     * dBuffer: indice di colore bitplane grezzo (prima della priorità).
-     * bBuffer: maschera bordo/DIW. 0xFF = dentro DIW, altro = colore bordo.
-     * iBuffer: uso futuro (pixel interleaved / ECS).
-     * mBuffer: indice di colore finale dopo risoluzione priorità.
-     * zBuffer: depth buffer (valore maggiore = più vicino all'osservatore).
+     * dBuffer: raw bitplane colour index (before priority).
+     * bBuffer: border/DIW mask. 0xFF = inside DIW, otherwise the border colour.
+     * iBuffer: future use (interleaved pixels / ECS).
+     * mBuffer: final colour index after priority resolution.
+     * zBuffer: depth buffer (higher value = closer to the viewer).
      */
     private final byte[] dBuffer = new byte[HPIXELS + 64 + 8];
     private final byte[] bBuffer = new byte[HPIXELS + 64 + 8];
@@ -581,24 +512,23 @@ public abstract class AbstractDenise {
     private final int[]  rgbLine = new int[HPIXELS];
 
     // =========================================================================
-    // Costanti Z-buffer (priorità/profondità)
-    // Valore più alto = layer più in primo piano.
+    // Z-buffer constants (priority/depth)
+    // Higher value = layer closer to the front.
     //
-    // Ordine (dal più vicino al più lontano):
+    // Order (nearest to farthest):
     //   Z_0 > Z_SP0 > Z_SP1 > Z_1 > Z_SP2 > Z_SP3 > Z_2 >
     //   Z_SP4 > Z_SP5 > Z_3 > Z_SP6 > Z_SP7 > Z_4
     //
-    // zPF mappa il registro BPLCON2 PFxP:
-    //   PFP = 0 → Z_4 (dietro a tutti gli sprite)
-    //   PFP = 4 → Z_0 (davanti a tutti gli sprite)
+    // zPF maps the PFxP field of BPLCON2:
+    //   PFP = 0 -> Z_4 (behind every sprite)
+    //   PFP = 4 -> Z_0 (in front of every sprite)
     //
-    // NOTA: i valori sono potenze di 2 distinte, per cui l'OR di un insieme
-    // di costanti Z mantiene come MSB il livello con priorità massima.
-    // Questo garantisce che il confronto "z > zBuffer[p]" sia un test di
-    // priorità corretto anche quando zBuffer accumula più layer tramite OR.
+    // The values are distinct powers of 2, so the OR of a set of Z constants keeps the
+    // highest-priority level as its MSB. That makes "z > zBuffer[p]" a correct priority
+    // test even when zBuffer accumulates several layers through OR.
     //
-    // Le maschere ausiliarie usate da translateDPF (0x01–0x07) cadono tutte
-    // sotto Z_4 (0x0008), quindi non interferiscono mai con i confronti Z_SP.
+    // The auxiliary masks used by translateDPF (0x01-0x07) all fall below Z_4 (0x0008), so
+    // they never interfere with the Z_SP comparisons.
     // =========================================================================
 
     private static final int Z_0   = 0x8000;
@@ -631,41 +561,38 @@ public abstract class AbstractDenise {
     };
 
     /**
-     * Maschera che copre tutti i bit Z degli 8 sprite.
-     * FIX 5: sostituisce la maschera errata 0x5555 usata in colorizeHAM,
-     * che intercettava Z_1 (un livello Z del playfield) e mancava
-     * Z_SP1, Z_SP2, Z_SP5, Z_SP6.
+     * Mask covering the Z bits of all 8 sprites (used by colorizeHAM).
      */
     private static final int Z_ALL_SPRITES =
         Z_SP0 | Z_SP1 | Z_SP2 | Z_SP3 | Z_SP4 | Z_SP5 | Z_SP6 | Z_SP7;
     // = 0x4000|0x2000|0x0800|0x0400|0x0100|0x0080|0x0020|0x0010 = 0x6BB0
 
     // =========================================================================
-    // Change recorder (per supporto Copper mid-scanline)
+    // Change recorder (for mid-scanline Copper writes)
     // =========================================================================
 
     /**
-     * Ritardo, in pixel, con cui un registro <b>BPLCON</b> agisce dentro Denise: <b>un CCK</b>.
+     * Delay, in pixels, with which a <b>BPLCON</b> register acts inside Denise: <b>one
+     * CCK</b>.
      *
-     * <p>⛔ <b>Non è un ritardo del bus: è lo STADIO della pipe RGA di Denise.</b> Nell'oracolo
-     * (`drawing.cpp`, `do_denise_cck()`) gli slot si leggono a due indici diversi nello stesso
-     * CCK:
+     * <p><b>It is not a bus delay: it is the STAGE of Denise's RGA pipe.</b> Within one CCK
+     * the slots are read at two different indices:
      * <pre>
-     *   idx0 = i + startpos - 0   → expand_drga_early(rd)   // COLORxx (update_color)
-     *   idx1 = i + startpos - 1   → expand_drga(rd)         // BPLCON0/1/2/3, BPLxDAT, DIWSTRT…
+     *   idx0 = i + startpos - 0   -> colours (COLORxx)
+     *   idx1 = i + startpos - 1   -> BPLCON0/1/2/3, BPLxDAT, DIWSTRT...
      * </pre>
-     * I colori agiscono nel CCK in cui sono scritti, i BPLCON <b>un CCK dopo</b>. È una
-     * differenza <b>relativa</b>: per questo si vede solo dove la stessa riga ha entrambi.
+     * Colours act in the CCK in which they are written, BPLCONs <b>one CCK later</b>. It is a
+     * <b>relative</b> difference, so it shows only where the same line has both.
      *
-     * <p>Misurato su `Denise/Sprites` (`general/sprites1÷4`, `reenable1`,
-     * `spritedma/sprdma1÷3`): il Copper commuta il dual-playfield con BPLCON0 a hpos `$51`,
-     * `$61`, `$71`… e la transizione di colore cadeva <b>4 px = 1 CCK</b> troppo a sinistra,
-     * sempre, otto test e 48÷56 px ciascuno.
+     * <p>Measured on `Denise/Sprites` (`general/sprites1-4`, `reenable1`,
+     * `spritedma/sprdma1-3`): the Copper switches dual playfield with BPLCON0 at hpos `$51`,
+     * `$61`, `$71`... and without the stage the colour transition fell <b>4 px = 1 CCK</b> too
+     * far left, always, eight tests and 48-56 px each.
      *
-     * <p>⚠️ Nell'oracolo lo stesso stadio porta anche BPLCON1, BPLxDAT e DIWSTRT/DIWSTOP. Da
-     * noi quei tre hanno modelli tarati per conto loro (lo split dello scroll fra Agnus e
-     * Denise, BPL1DAT come trigger del display, `DIW_AXIS_SHIFT`) e <b>non</b> sono stati
-     * spostati: servirebbe una misura propria per ciascuno.
+     * <p>The same stage also carries BPLCON1, BPLxDAT and DIWSTRT/DIWSTOP, but those three
+     * have their own calibrated models (the scroll split between Agnus and Denise, BPL1DAT as
+     * the display trigger, `DIW_AXIS_SHIFT`) and were <b>not</b> moved: each would need its
+     * own measurement.
      */
     private static final int CON_DELAY_PX = 4;
 
@@ -675,7 +602,7 @@ public abstract class AbstractDenise {
     private final RegChangeRecorder[] sprChanges = new RegChangeRecorder[4];
 
     // =========================================================================
-    // Costruttore e reset
+    // Constructor and reset
     // =========================================================================
 
     protected AbstractDenise() {
@@ -692,51 +619,50 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Il MASSIMO numero di piani, dall'ultimo decadimento a oggi.
+     * The MAXIMUM number of planes since the last decay.
      *
-     * <p>⛔ <b>Non sale quando BPLCON0 cambia: sale quando Denise ri-sceglie la propria
-     * configurazione di resa</b> ({@link #selectLts}). Le due cose coincidono quasi sempre —
-     * un cambio del numero di piani ri-seleziona sempre — ma non è la stessa regola, e la
-     * differenza si vede al confine di riga. La regola del <i>massimo</i> è dichiarata nel
-     * sorgente dell'oracolo: <i>«if plane count decreases mid-scanline, old data in higher
-     * plane count shifters must be still shifted out»</i>.
+     * <p><b>It does not rise when BPLCON0 changes: it rises when Denise re-selects its
+     * rendering configuration</b> ({@link #selectLts}). The two almost always coincide (a
+     * change in the number of planes always re-selects), but they are different rules, and
+     * the difference shows at the line boundary. If the plane count decreases mid-scanline,
+     * old data in the higher planes' shifters must still be shifted out.
      *
-     * <p>Decade all'<b>inizio</b> di ogni riga disegnata, riportandosi al conteggio vivo, e
-     * quel decadimento <b>non</b> ri-seleziona nulla in lores: è esattamente per questo che
-     * {@link #renderPlanes} può restare più alto per un pezzo della riga successiva.
+     * <p>It decays at the <b>start</b> of every drawn line, back to the live count, and that
+     * decay does <b>not</b> re-select anything in lores: that is exactly why
+     * {@link #renderPlanes} can stay higher for part of the next line.
      */
     private int deniseMaxPlanes = 0;
 
     /**
-     * I piani con cui è stata scelta la <b>configurazione di resa</b> in carica, e il valore
-     * che decide se le due funzioni non documentate della priorità ≥ 5 si applicano — vedi
-     * {@link #deniseSpecials}.
+     * The planes with which the current <b>rendering configuration</b> was chosen, and the
+     * value that decides whether the two undocumented functions of priority >= 5 apply;
+     * see {@link #deniseSpecials}.
      *
-     * <p>⛔ <b>Sopravvive al confine di riga.</b> È la fotografia di {@link #deniseMaxPlanes}
-     * presa all'ultima {@link #selectLts}, e nulla la rinfresca finché non arriva la
-     * successiva: il decadimento d'inizio riga abbassa il massimo ma non ri-sceglie, così una
-     * riga può cominciare con una configurazione a cinque piani mentre ne compone quattro.
+     * <p><b>It survives the line boundary.</b> It is the snapshot of
+     * {@link #deniseMaxPlanes} taken at the last {@link #selectLts}, and nothing refreshes it
+     * until the next one: the start-of-line decay lowers the maximum but does not
+     * re-select, so a line can begin with a five-plane configuration while composing four.
      *
-     * <p>⚠️ È la ragione per cui questo valore non si può leggere vivo dentro
-     * {@link #translate()}: il punto in cui torna al conteggio reale non è una posizione
-     * dell'hardware ma il primo istante di ri-selezione, e in una riga con sprite quell'istante
-     * è la <b>fine della finestra di display</b> dell'ultimo sprite che stava disegnando.
+     * <p>That is why this value cannot be read live inside {@link #translate()}: the point
+     * where it returns to the real count is not a hardware position but the first
+     * re-selection instant, and on a line with sprites that instant is the <b>end of the
+     * display window</b> of the last sprite that was drawing.
      */
     private int renderPlanes = 0;
 
     /**
-     * {@code true} se la configurazione di resa in carica è la variante <b>con sprite</b>:
-     * la sceglie {@link #selectLts} guardando se in quell'istante c'era almeno uno sprite
-     * armato o in disegno, ed è lei a decidere se un disarmo vale una ri-selezione.
+     * {@code true} if the current rendering configuration is the variant <b>with
+     * sprites</b>: {@link #selectLts} chooses it by whether at that instant at least one
+     * sprite was armed or drawing, and it decides whether a disarm counts as a re-selection.
      */
     private boolean spriteLtsSelected = false;
 
     /**
-     * Ri-selezione della configurazione di resa di Denise.
+     * Re-selection of Denise's rendering configuration.
      *
-     * @param planesNow  i piani <b>vivi</b> nell'istante della ri-selezione
-     * @param armedCnt   sprite armati (SPRxDATA scritta, SPRxCTL non ancora)
-     * @param armedsCnt  sprite che stanno <b>disegnando</b> in questo istante
+     * @param planesNow  the <b>live</b> planes at the instant of the re-selection
+     * @param armedCnt   sprites armed (SPRxDATA written, SPRxCTL not yet)
+     * @param armedsCnt  sprites <b>drawing</b> at this instant
      */
     private void selectLts(int planesNow, int armedCnt, int armedsCnt) {
         if (planesNow > deniseMaxPlanes) deniseMaxPlanes = planesNow;
@@ -745,25 +671,16 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Numero di piani che <b>Denise</b> compone, ricavato da BPLCON0.
+     * Number of planes <b>Denise</b> composes, from BPLCON0.
      *
-     * <p>⛔ <b>Più di quattro piani in HIRES non è una configurazione legale su OCS/ECS:
-     * Denise non ne disegna NESSUNO.</b> Non è un troncamento a quattro — l'immagine
-     * sparisce del tutto e resta lo sfondo. L'oracolo lo dichiara in
-     * {@code drawing.cpp update_fmode()}:
-     * <pre>
-     *   denise_planes = GET_PLANES(bplcon0_denise);
-     *   if (denise_bplfmode == 0 &amp;&amp; denise_res &gt; 0 &amp;&amp; denise_planes &gt; 4) denise_planes = 0;
-     *   if (denise_bplfmode == 0 &amp;&amp; denise_res &gt; 1 &amp;&amp; denise_planes &gt; 2) denise_planes = 0;
-     * </pre>
-     * (il secondo ramo è SuperHires, che non modelliamo). Il gemello lato Agnus è
-     * {@code real_bitplane_number} — vedi {@code AbstractAgnus.bitplaneDmaPlaneLimit}:
-     * i due chip applicano la stessa soglia, ciascuno per conto proprio.
+     * <p><b>More than four planes in HIRES is not a legal configuration on OCS/ECS: Denise
+     * draws NONE of them.</b> It is not a clamp to four: the image disappears entirely and
+     * the background remains. (SuperHires with more than two planes behaves the same, but is
+     * not modelled.) The Agnus counterpart is {@code AbstractAgnus.bitplaneDmaPlaneLimit}:
+     * the two chips apply the same threshold, each on its own.
      *
-     * <p>La clamp a 6 è invece nostra e riguarda solo BPU=7 in lores: il registro a
-     * scorrimento ha sei piani, e sull'oracolo sette piani in lores sono comunque
-     * Extra-Half-Brite ({@code bplehb = denise_planes == 6 || (!aga_mode &amp;&amp;
-     * denise_planes == 7)}), cioè lo stesso disegno che si ottiene con sei.
+     * <p>The clamp to 6 concerns only BPU=7 in lores: the shift register has six planes, and
+     * seven planes in lores are Extra Half-Brite anyway, i.e. the same picture as six.
      */
     private static int deniseBpu(int bplcon0) {
         int planes = (bplcon0 >> 12) & 7;
@@ -774,12 +691,12 @@ public abstract class AbstractDenise {
     public void reset() { reset(true); }
 
     /**
-     * Reset di Denise. {@code hardware} distingue l'accensione dal reset che l'istruzione CPU
-     * RESET porta ai peripheral: i <b>registri di colore</b> non stanno su quella linea e
-     * sopravvivono al reset software, come sull'hardware. Misurato sulla demo `Jesus On E's`,
-     * che si riavvia per caricare la seconda parte: dopo il RESET lo schermo resta del COLOR00
-     * del programma (`$800`) finché il Kickstart non scrive il proprio `$444`, mentre azzerando
-     * la palette diventava nero. Vedi docs/vamigats-import-order.md §26.
+     * Denise reset. {@code hardware} separates power-on from the reset the CPU's RESET
+     * instruction brings to the peripherals: the <b>colour registers</b> are not on that line
+     * and survive a software reset, as on the hardware. Measured on the demo `Jesus On E's`,
+     * which reboots to load its second part: after the RESET the screen keeps the program's
+     * COLOR00 (`$800`) until the Kickstart writes its own `$444`, while clearing the palette
+     * would make it black. See docs/vamigats-import-order.md section 26.
      */
     public void reset(boolean hardware) {
         bplcon0 = bplcon1 = bplcon2 = 0;
@@ -839,7 +756,7 @@ public abstract class AbstractDenise {
     }
 
     // =========================================================================
-    // Accesso registri
+    // Register access
     // =========================================================================
 
     /**
@@ -895,13 +812,12 @@ public abstract class AbstractDenise {
         if (rgaSlotTaken) {
             return;
         }
-        // vAmiga mappa i register-change al pixel con Beam::pixel = 4*(h - HBLANK_MIN),
-        // dove h è il DMA-cycle INTERO (CCK, 0..227): NON ha risoluzione sub-CCK. Il
-        // nostro hpos ha invece granularità di mezzo-CCK (0..454, 2 per CCK) e i write
-        // della CPU a un registro custom completano sul sotto-ciclo DISPARI del CCK,
-        // quindi hpos*2 dava +2px rispetto a vAmiga (che quantizza al confine CCK). I
-        // write del Copper sono già su hpos pari, perciò la quantizzazione è un no-op
-        // per loro: cambia solo i write CPU, allineandoli a vAmiga. (cck = hpos/2)
+        // Register changes map to pixels as 4*(h - HBLANK_MIN), where h is the WHOLE DMA
+        // cycle (CCK, 0..227), with no sub-CCK resolution. hpos has half-CCK granularity
+        // (0..454, 2 per CCK) and CPU writes to a custom register complete on the ODD
+        // sub-cycle of the CCK, so hpos*2 would be +2 px: the write is quantised to the CCK
+        // boundary (cck = hpos/2). Copper writes are already on even hpos, so for them the
+        // quantisation is a no-op.
         int cck   = (agnus != null) ? agnus.getHpos() >> 1 : 0;
         int rawPixel = cck * 4 - 4 * HBLANK_MIN;
         // The horizontal window comparator also runs before HBLANK_MIN, at the head of
@@ -921,14 +837,14 @@ public abstract class AbstractDenise {
                 setHSTRT(value & 0xFF, pixel);
                 break;
             case 0x090: // DIWSTOP
-                // I valori hstop 0x00–0x7F sono interpretati come 0x100–0x17F
-                // (il bit 8 è implicito, estende il range oltre i 256 pixel).
+                // hstop values 0x00-0x7F are taken as 0x100-0x17F (bit 8 is implicit, it
+                // extends the range past 256 pixels).
                 setHSTOP((value & 0xFF) | 0x100, pixel);
                 break;
-            case 0x1E4: // DIWHIGH (D5, ECS): H8 di HSTART (bit 5) e HSTOP (bit 13).
-                // Su ECS estende l'intervallo orizzontale della finestra display oltre
-                // i limiti OCS; la parte V è gestita lato Agnus. No-op su OCS. Il valore
-                // arriva già mascherato (0x2727) da AbstractAgnus.writeDIWHIGH.
+            case 0x1E4: // DIWHIGH (D5, ECS): H8 of HSTART (bit 5) and HSTOP (bit 13).
+                // On ECS it extends the horizontal range of the display window past the OCS
+                // limits; the V part is handled by Agnus. No-op on OCS. The value arrives
+                // already masked (0x2727) by AbstractAgnus.writeDIWHIGH.
                 if (isECS) {
                     setHSTRT((hstrt & 0xFF) | ((value & 0x0020) != 0 ? 0x100 : 0), pixel);
                     setHSTOP((hstop & 0xFF) | ((value & 0x2000) != 0 ? 0x100 : 0), pixel);
@@ -939,9 +855,8 @@ public abstract class AbstractDenise {
             case 0x098: clxcon = value; break;
 
             // --- JOYTEST ($DFF036) ---
-            // Preset dei contatori quadratura di entrambe le porte.
-            // I 6 bit alti di ciascun byte sovrascrivono il contatore;
-            // i 2 bit bassi (quadratura istantanea) vengono preservati.
+            // Presets the quadrature counters of both ports. The 6 high bits of each byte
+            // overwrite the counter; the 2 low bits (instantaneous quadrature) are kept.
             case 0x036:
                 if (gamePort1 != null) gamePort1.pokeJoytest(value);
                 if (gamePort2 != null) gamePort2.pokeJoytest(value);
@@ -950,30 +865,29 @@ public abstract class AbstractDenise {
             // --- BPLCON ---
             case 0x100: // BPLCON0
                 conChanges.insert(pixel + CON_DELAY_PX, address, value);
-                // Cambio di modalità di COLORE: tracciato in colChanges per colorize.
-                // ⛔ Sono DUE, non solo HAM: anche Extra-Half-Brite si accende e si spegne
-                // dentro la riga (BPU che passa a 6, o che lascia una configurazione hires
-                // illegale), e senza questa insert la riga in cui il Copper alza BPU a 6
-                // resta colorata a piena luminosità per intero — il residuo di riga 22 di
-                // `BPLPTR/drop6x` e `dropcpu6x`.
+                // Change of COLOUR mode: tracked in colChanges for colorize. There are TWO,
+                // not only HAM: Extra Half-Brite also turns on and off within the line (BPU
+                // going to 6, or leaving an illegal hires configuration), and without this
+                // insert the line on which the Copper raises BPU to 6 would be coloured at
+                // full brightness throughout (line 22 of `BPLPTR/drop6x` and `dropcpu6x`).
                 if (isHamActive(bplcon0) != isHamActive(value) || isEHB(bplcon0) != isEHB(value)) {
-                    // Stesso stadio del conChanges qui sopra: HAM ed EHB escono da
-                    // bplcon0_denise, cioe' da expand_bplcon0(), non dal ramo _early.
+                    // Same stage as the conChanges above: HAM and EHB come from Denise's
+                    // copy of BPLCON0, not from the early (colour) stage.
                     colChanges.insert(pixel + CON_DELAY_PX, address, value);
                 }
                 bplcon0 = value;
                 updateBplcon0Derived();
                 break;
-            case 0x102: // BPLCON1 (scroll — effettivo subito)
+            case 0x102: // BPLCON1 (scroll, effective at once)
                 bplcon1 = value & 0xFF;
                 break;
-            case 0x104: // BPLCON2 (priorità)
+            case 0x104: // BPLCON2 (priority)
                 conChanges.insert(pixel, address, value);
-                // ⛔ Sotto HAM+DPF la priorità NON passa da conChanges: il decoder HAM
-                // sceglie il playfield da sé, e leggeva PF2PRI dallo snapshot di inizio
-                // riga. Una scrittura dentro la riga arrivava quindi una riga tardi.
-                // Stessa forma di HAM/EHB qui sopra: si registra solo quando il bit
-                // cambia davvero, così dove la priorità è ferma non si spezza niente.
+                // Under HAM+DPF the priority does NOT go through conChanges: the HAM decoder
+                // picks the playfield itself, and would read PF2PRI from the start-of-line
+                // snapshot, so a write within the line would arrive one line late. Same shape
+                // as HAM/EHB above: recorded only when the bit really changes, so nothing is
+                // split where the priority is steady.
                 if (((bplcon2 ^ value) & 0x0040) != 0) {
                     colChanges.insert(pixel, address, value);
                 }
@@ -1035,60 +949,53 @@ public abstract class AbstractDenise {
     public int readRegister(int address) {
         address &= 0x1FE;
         switch (address) {
-            // JOY0DATR / JOY1DATR: i contatori di quadratura della porta. Non dipendono da
-            // che cosa vi sia collegato — una porta vuota legge i propri contatori, non 0
-            // (vedi GamePort). Lo 0 qui sotto vale solo per una macchina montata SENZA
-            // quella porta, che l'A500 non è.
+            // JOY0DATR / JOY1DATR: the port's quadrature counters. They do not depend on what
+            // is plugged in: an empty port reads its own counters, not 0 (see GamePort). The
+            // 0 below applies only to a machine built WITHOUT that port, which the A500 is
+            // not.
             case 0x00A: return (gamePort1 != null ? gamePort1.joydat() : 0) & 0xFFFF;
             case 0x00C: return (gamePort2 != null ? gamePort2.joydat() : 0) & 0xFFFF;
-            // CLXDAT: bit 15 sempre 1; lettura azzera il registro
+            // CLXDAT: bit 15 always 1; a read clears the register
             case 0x00E: { int v = (clxdat & 0x7FFF) | 0x8000; clxdat = 0; return v; }
 
             // DENISEID ($DFF07C):
-            //   ECS Denise 8373 → restituisce $FFFC (identificativo chip ECS).
-            //   OCS Denise 8362 → registro non implementato; sul bus reale i
-            //   dati galleggiano a $FFFF (pull-up). NON si usa getLastBusData():
-            //   l'ultimo dato scritto sul bus (es. BPLCON0=$0102) inquinerebbe
-            //   il rilevamento OCS/ECS da parte del Kickstart.
+            //   ECS Denise 8373: returns $FFFC (ECS chip identifier).
+            //   OCS Denise 8362: register not implemented. getLastBusData() is NOT used: the
+            //   last data written on the bus (e.g. BPLCON0=$0102) would spoil the Kickstart's
+            //   OCS/ECS detection.
             case 0x07C: return isECS ? 0xFFFC : 0xFFFF;
 
-            // BPLCON0 ($DFF100) — write-only su OCS.
+            // BPLCON0 ($DFF100): write-only on OCS.
             //
-            // ROOT CAUSE del bug BPLCON0=$1302 invece di $1200:
-            //   Il Kickstart a $FCAF42 esegue:
-            //     MOVE.W  BPLCON0, D0   ; legge BPLCON0
-            //     ORI.W   #$1200, D0    ; aggiunge i bit display
-            //     MOVE.W  D0, BPLCON0   ; scrive il risultato
+            //   The Kickstart at $FCAF42 runs:
+            //     MOVE.W  BPLCON0, D0   ; reads BPLCON0
+            //     ORI.W   #$1200, D0    ; adds the display bits
+            //     MOVE.W  D0, BPLCON0   ; writes the result
             //
-            //   Con la precedente implementazione (return bplcon0 = $0102,
-            //   valore scritto al passo di init a $FCAFBA), il Kickstart calcolava:
-            //     D0 = $0102 | $1200 = $1302  →  BPLCON0 errato  ✗
+            //   Returning the shadow value ($0102, written by the init at $FCAFBA) would give
+            //     D0 = $0102 | $1200 = $1302  -> wrong BPLCON0
+            //   On OCS BPLCON0 is write-only and does not return the shadow value, so
+            //     D0 = $0000 | $1200 = $1200  -> right BPLCON0
             //
-            //   Su hardware OCS reale BPLCON0 è write-only: la lettura restituisce
-            //   il bus aperto (~$FFFF o 0), NON il valore ombra. Il Kickstart
-            //   calcola quindi:
-            //     D0 = $0000 | $1200 = $1200  →  BPLCON0 corretto  ✓
-            //
-            // Per ECS Denise (che rende leggibili tutti i registri di controllo)
-            // si restituisce il valore ombra corrente.
+            // ECS Denise makes every control register readable: it returns the current
+            // shadow value.
             case 0x100: return isECS ? bplcon0 : 0;
 
-            // BPLCON1 ($DFF102) — write-only su OCS, leggibile su ECS.
+            // BPLCON1 ($DFF102): write-only on OCS, readable on ECS.
             case 0x102: return isECS ? bplcon1 : 0;
 
-            // BPLCON2 ($DFF104) — write-only su OCS, leggibile su ECS.
+            // BPLCON2 ($DFF104): write-only on OCS, readable on ECS.
             case 0x104: return isECS ? bplcon2 : 0;
 
-            // BPLCON3 ($DFF106) — registro ECS, inesistente su OCS.
+            // BPLCON3 ($DFF106): ECS register, absent on OCS.
             case 0x106: return isECS ? bplcon3 : 0;
 
-            // BPLCON4 ($DFF10C) — registro ECS/AGA, inesistente su OCS.
+            // BPLCON4 ($DFF10C): ECS/AGA register, absent on OCS.
             case 0x10C: return isECS ? bplcon4 : 0;
 
             default:
-                // Registri colore ($DFF180–$DFF1BE):
-                //   Su ECS Denise sono leggibili; su OCS sono write-only
-                //   (il bus restituisce 0 per i registri non implementati in lettura).
+                // Colour registers ($DFF180-$DFF1BE): readable on ECS Denise; write-only
+                // on OCS (the bus returns 0 for registers not implemented for reading).
                 if (address >= 0x180 && address <= 0x1BE) {
                     return isECS ? palette[(address - 0x180) / 2] : 0;
                 }
@@ -1101,29 +1008,24 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     /**
-     * ⛔ <b>Le due scritture DIW si registrano sull'asse del CONTATORE, non su quello dei
-     * pixel</b>, e i due assi hanno una fase diversa: {@code DIW_AXIS_SHIFT} è quella fase.
+     * <b>The two DIW writes are recorded on the COUNTER's axis, not on the pixels'</b>, and
+     * the two axes have a different phase: {@code DIW_AXIS_SHIFT} is that phase.
      *
-     * <p>Il comparatore della finestra orizzontale è l'unico consumatore di Denise che non
-     * lavora sull'indice di pixel ma su {@code counter} (vedi {@link #updateBorderBuffer()}),
-     * e la conversione {@code counter = 2·HBLANK_MIN + i/2} mancava di una costante. Misurata
-     * sui due lati con {@code WINUAE_HDIWLOG} (metà produttore, in {@code custom.cpp}) e
-     * {@code DiwWriteProbe}, sulla stessa {@code vpos} e sulle stesse sei righe di sweep di
-     * {@code diwtim1}: l'oracolo scrive a {@code agnus_hpos} 178, 180, 182, 184, 186, 188 e
-     * noi ai cck 174, 176, 178, 180, 182, 184 — Δ costante <b>+4</b>, che è la convenzione di
-     * etichetta fra le due griglie già misurata dal §12 sui marcatori di {@code synccpu}.
-     * Appaiando con l'evento {@code CALC} ({@code hcnt = 2·agnus_hpos − 6}), all'istante della
-     * <b>stessa</b> scrittura l'oracolo ha {@code hcnt} = il nostro {@code counter} <b>+ 2</b>,
-     * e due unità di contatore sono <b>un CCK</b>, cioè quattro sub-pixel.
+     * <p>The horizontal window comparator is the only consumer in Denise that works not on
+     * the pixel index but on {@code counter} (see {@link #updateBorderBuffer()}), and the
+     * conversion {@code counter = 2*HBLANK_MIN + i/2} lacked a constant. Measured on the
+     * six sweep lines of {@code diwtim1}: at the instant of the <b>same</b> write the
+     * reference's horizontal counter is our {@code counter} <b>+ 2</b>, and two counter units
+     * are <b>one CCK</b>, i.e. four sub-pixels.
      *
-     * <p>⚠️ <b>Non è un ritardo della scrittura</b>, ed è la distinzione che conta: applicare
-     * lo stesso spostamento a <b>tutte</b> le scritture di Denise porta il §16
-     * {@code Denise/Registers} da 52/16 a <b>27/34</b> — sull'asse dei pixel siamo già giusti,
-     * ed è il §16 a dimostrarlo. Lo spostamento vale per il solo consumatore che cambia asse.
+     * <p><b>It is not a delay of the write</b>, and that is the distinction that matters:
+     * applying the same shift to <b>every</b> Denise write takes {@code Denise/Registers}
+     * (section 16) from 52/16 to <b>27/34</b>; on the pixel axis we are already right. The
+     * shift applies to the one consumer that changes axis.
      *
-     * <p>⚠️ Equivalente e sbagliato: spostare l'origine di {@code counter}. Sposterebbe anche
-     * <b>dove cadono i bordi</b> della finestra, che oggi sono giusti su tutte le righe che non
-     * sono di transizione.
+     * <p>Equivalent and wrong: moving the origin of {@code counter}. It would also move
+     * <b>where the edges</b> of the window fall, which today are right on every line that is
+     * not a transition line.
      */
     private static final int DIW_AXIS_SHIFT = 4;
 
@@ -1142,9 +1044,9 @@ public abstract class AbstractDenise {
     private void setBPLxDAT(int x, int value, int pixel) {
         bpldat[x] = value & 0xFFFF;
         if (x == 0) {
-            // BPL1DAT scritto dal DMA: carica la pipeline e arma i shift register.
-            // BPL1DAT è il trigger perché nel ciclo DMA è l'ultimo piano dispari ad
-            // essere fetchato (Agnus ha già scritto BPL3/5 nei cicli precedenti).
+            // BPL1DAT written by the DMA: loads the pipeline and arms the shift registers.
+            // BPL1DAT is the trigger because in the DMA cycle it is the last odd plane
+            // fetched (Agnus has already written BPL3/5 in the previous cycles).
             System.arraycopy(bpldat, 0, bpldatPipe, 0, 6);
             armedOdd  = true;
             armedEven = true;
@@ -1153,66 +1055,49 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Istante in cui una scrittura a SPRxDATA/SPRxDATB agisce, in pixel dal confine di CCK.
-     * Nell'oracolo è lo stadio {@code expand_drga_early} (idx0) e l'applicazione è
-     * <b>immediata</b>: {@code case 0x144…: sprwrite(sreg, rd->v)}.
+     * Instant at which a write to SPRxDATA/SPRxDATB acts, in pixels from the CCK boundary.
+     * It acts in the early (colour) stage and is applied <b>at once</b>.
      *
-     * <p>⚠️ <b>Valeva 8, ed erano UN CCK DI TROPPO.</b> Misurato il 2026-09-13 con lo sweep
-     * su {@code Denise/Sprites/timing} (POS/CTL disaccoppiato e inchiodato al suo valore,
-     * altrimenti si muovono tutt'e due):
+     * <p>Measured with a sweep on {@code Denise/Sprites/timing} (POS/CTL decoupled and pinned
+     * to its value, otherwise both move):
      * <pre>
      *   SPR_DAT_PX        2  [4]  6   8  10  12
-     *   SprTimingTest     3   0   2   3   3   3        rossi
+     *   SprTimingTest     3   0   2   3   3   3        reds
      *   ManualTest        1   0   0   1   1   1
      * </pre>
-     * ⇒ <b>4 chiude il gruppo intero</b> — `SprTimingTest` 9/0 e `manual6` con esso — con le
-     * pareti su tutti e due i lati.
+     * 4 closes the whole group, `SprTimingTest` 9/0 and `manual6` with it, with walls on
+     * both sides.
      *
-     * <p>⛔ <b>E il dato ricompone la diagnosi</b>: `4 + 2 = 6`, cioè la relazione
-     * {@link #SPR_POSCTL_PX} {@code = SPR_DAT_PX + 2} è quella <b>giusta</b> ed era giusta da
-     * sempre. Sbagliato era l'<b>offset comune</b>: entrambi gli istanti dei registri sprite
-     * stavano <b>un CCK intero troppo tardi</b>. Spostare il solo POS/CTL a 6 — come si era
-     * fatto poche ore prima — azzeccava il suo valore assoluto <i>rompendo</i> la relazione,
-     * ed era una compensazione: chiudeva i tre test POS/CTL e lasciava rossi i tre DAT.
+     * <p>{@link #SPR_POSCTL_PX} {@code = SPR_DAT_PX + 2}: the relation between the two is
+     * fixed, and what the sweep measures is their common offset.
      */
     private static final int SPR_DAT_PX = 4;
 
     /**
-     * Istante in cui una scrittura a SPRxPOS/SPRxCTL agisce: <b>mezzo CCK più tardi</b>
-     * di SPRxDATA.
+     * Instant at which a write to SPRxPOS/SPRxCTL acts: <b>half a CCK later</b> than
+     * SPRxDATA.
      *
-     * <p>⛔ Nell'oracolo POS e CTL <b>non</b> si applicano allo stadio in cui arrivano:
-     * {@code expand_drga_early} li mette da parte ({@code spr_unalign_reg[0]}) e il
-     * consumo avviene nel disegno per-pixel, sulla <b>seconda metà</b> del color clock e
-     * <b>dopo</b> il confronto orizzontale (`drawing.cpp`, percorso OCS/ECS):
+     * <p>POS and CTL are <b>not</b> applied at the stage they arrive in: they are set aside
+     * and consumed during the per-pixel drawing, in the <b>second half</b> of the colour
+     * clock and <b>after</b> the horizontal comparison:
      * <pre>
-     *   if (h &amp;&amp; spr_unalign_reg[0]) {
-     *       matchsprites2(cnt &lt;&lt; 2);                              // il match usa il valore VECCHIO
-     *       sprwrite(spr_unalign_reg[0] - 0x140, spr_unalign_val[0]);
-     *       spr_unalign_reg[0] = 0;
+     *   if (h &amp;&amp; pending_reg) {
+     *       matchsprites(cnt &lt;&lt; 2);                    // the match uses the OLD value
+     *       sprwrite(pending_reg, pending_val);
+     *       pending_reg = 0;
      *   }
      * </pre>
-     * SPRxDATA/SPRxDATB quella deviazione non ce l'hanno: si applicano subito.
+     * SPRxDATA/SPRxDATB have no such detour: they apply at once.
      *
-     * <p>⚠️ <b>La RELAZIONE è sempre stata giusta; sbagliato era l'OFFSET COMUNE.</b> La
-     * coppia valeva {@code (SPR_DAT_PX, SPR_POSCTL_PX) = (8, 10)} e vale <b>(4, 6)</b>:
-     * stessa distanza di mezzo CCK, ma <b>un CCK intero</b> più presto tutti e due. Vedi lo
-     * sweep in {@link #SPR_DAT_PX}.
+     * <p>The pair is {@code (SPR_DAT_PX, SPR_POSCTL_PX) = (4, 6)}: half a CCK apart. When one
+     * constant is expressed in terms of another, sweeping only one cannot tell a wrong
+     * offset from a wrong relation: they have to be decoupled and both swept (see
+     * {@link #SPR_DAT_PX}).
      *
-     * <p>⛔ <b>E questa è la lezione che è costata un commit da rettificare.</b> Spostando il
-     * <i>solo</i> POS/CTL a 6 — con DAT fermo a 8 — si chiudono i tre test POS/CTL e restano
-     * rossi i tre DAT, e sembra una cura: il valore assoluto di POS/CTL è quello giusto. Ma
-     * la relazione risulta invertita ({@code −2}) e va inventata una spiegazione che il
-     * sorgente non sostiene. ⇒ <b>Quando una costante è espressa in funzione di un'altra,
-     * spazzarne una sola non distingue «offset sbagliato» da «relazione sbagliata»</b>:
-     * vanno disaccoppiate e spazzate entrambe.
-     *
-     * <p>✅ Il sintomo che aveva portato fuori strada resta vero e vale come misura: su
-     * `sprtimpos1` riga 73 lo sprite restava a `x = 322` mentre l'oracolo lo porta a
-     * `x = 514`. Una <b>scadenza è un sì/no</b>, non uno scarto di mezzo CCK, e il README lo
-     * dichiara: <i>«When the write happens early enough, the sprite is shifted to the right
-     * in the corresponding line»</i>. Con la coppia a `(8, 10)` <b>rifiutavamo</b> una
-     * scrittura che l'oracolo accetta.
+     * <p>A deadline is a yes/no, not a half-CCK offset. On `sprtimpos1` line 73 the sprite
+     * must move to `x = 514`, not stay at `x = 322`; the test's README says so: <i>"When the
+     * write happens early enough, the sprite is shifted to the right in the corresponding
+     * line"</i>. A pair one CCK late refuses that write.
      */
     private static final int SPR_POSCTL_PX = SPR_DAT_PX + 2;
 
@@ -1225,9 +1110,9 @@ public abstract class AbstractDenise {
     private void pokeSPRxCTL(int x, int value, int pixel) {
         sprctl[x] = value;
         updateSprHCoords(x);
-        // CTL write disarms the sprite immediately (matches vAmiga: CLR_BIT(armed, x)).
-        // This prevents stale data from the previous frame rendering on scanlines
-        // before VSTART (which would create a vertical line artifact).
+        // A CTL write disarms the sprite immediately. This prevents stale data from the
+        // previous frame rendering on scanlines before VSTART (which would create a vertical
+        // line artifact).
         armed &= ~(1 << x);
         sprChanges[x / 2].insert(pixel + SPR_POSCTL_PX, 0x142 + x * 8, value);
     }
@@ -1261,14 +1146,14 @@ public abstract class AbstractDenise {
     }
 
     // =========================================================================
-    // Pipeline principale di rendering (chiamata da Agnus a ogni HSYNC)
+    // Main rendering pipeline (called by Agnus at every HSYNC)
     // =========================================================================
 
     /**
-     * Punto di ingresso principale: processa la scanline appena completata
-     * e scrive i pixel sul display.
+     * Main entry point: processes the scanline just completed and writes the pixels to the
+     * display.
      *
-     * @param vpos  numero di scanline verticale (0-based)
+     * @param vpos  vertical scanline number (0-based)
      */
     public void hsyncHandler(int vpos) {
         lastRenderedBplcon0 = initialBplcon0;
@@ -1276,39 +1161,33 @@ public abstract class AbstractDenise {
             System.arraycopy(spritePixelsThisFrame, 0, spritePixelsLastFrame, 0, 8);
             Arrays.fill(spritePixelsThisFrame, 0L);
         }
-        // PERF (Fase 3): NON si pre-riempie più rgbLine qui. Entrambi i rami sottostanti
-        // coprono già l'INTERA rgbLine[0..HPIXELS): il ramo visibile via colorize()
-        // (colorizeNormal/colorizeHAM scrivono ogni pixel, bordi inclusi, perché i
-        // segmenti di colChanges tassellano [0,HPIXELS)), il ramo VBlank via
-        // fillVBlankLine(). La vecchia Arrays.fill(rgbLine,...) incondizionata era quindi
-        // interamente sovrascritta su ~92% delle righe (le visibili) = lavoro sprecato
-        // (~3,5% del tempo core in Arrays.fill). Rimuoverla è bit-exact (golden CRC
-        // 832316F5 invariata).
-        // Una word armata a fine riga non fa in tempo a uscire tutta: i CCK per farlo non
-        // ci sono più. Il vecchio modello a blocchi quei pixel li aveva già scritti, quindi
-        // qui si finisce di scriverli — è la coda della riga, oltre la finestra di fetch, e
-        // serve solo a NON introdurre una seconda differenza. Vedi srCount.
+        // rgbLine is not pre-filled here: both branches below already cover the WHOLE
+        // rgbLine[0..HPIXELS): the visible branch through colorize() (colorizeNormal/
+        // colorizeHAM write every pixel, borders included, because the colChanges segments
+        // tile [0,HPIXELS)), the VBlank branch through fillVBlankLine().
+        // A word armed at the end of the line cannot shift out completely: the CCKs to do so
+        // are gone. Its remaining pixels are written here: it is the tail of the line, past
+        // the fetch window. See srCount.
         flushShiftOut();
 
         updateBorderBuffer();
         computeBpl1datGate();
 
         if (agnus != null && !agnus.inVBlankArea(vpos)) {
-            // Scanline visibile: pipeline completa.
-            // OCS: gli sprite sono visibili solo nelle righe che hanno prodotto
-            // output bitplane. Una riga senza bitplane (bordo verticale, anche se
-            // dentro la DIW — es. North & South spegne i bitplane sotto le bandiere
-            // ma lascia la DIW aperta fino a riga 299) è interamente bordo: il
-            // cursore/sprite NON vi compare. Cfr. WinUAE pfield_draw_line
-            // (border = plfleft<0 → sprite solo con BRDSPRT/ECS).
+            // Visible scanline: full pipeline.
+            // OCS: sprites are visible only on lines that produced bitplane output. A line
+            // without bitplanes (vertical border, even inside the DIW, e.g. North & South
+            // turns the bitplanes off below the flags but leaves the DIW open until line
+            // 299) is all border: the cursor/sprite does NOT appear on it (sprites in the
+            // border only with BRDSPRT on ECS).
             // A line on which the BPL1DAT gate never opens is all border. See
             // computeBpl1datGate: the gate can also come open from the previous line.
             lineIsVBorder = !playfieldGate.opensWithin(SPRITE_ENABLE_OFFSET, HPIXELS);
             findDiwOpeningSample();
-            // Gli shift register sprite scorrono PRIMA del playfield: la fine della loro
-            // finestra di display e' uno degli istanti in cui Denise ri-seleziona la
-            // configurazione di resa che translate() consuma (vedi renderPlanes). La
-            // composizione sui buffer resta a valle, perche' confronta lo z del playfield.
+            // The sprite shift registers run BEFORE the playfield: the end of their display
+            // window is one of the instants at which Denise re-selects the rendering
+            // configuration translate() consumes (see renderPlanes). The composition onto
+            // the buffers stays downstream, because it compares the playfield's z.
             scanSprites();
             translate();
             blitSprites();
@@ -1316,71 +1195,65 @@ public abstract class AbstractDenise {
             colorize(vpos);
         } else {
             lineIsVBorder = false;
-            // VBlank: riempie con il colore di sfondo per evitare la banda nera.
+            // VBlank: fill with the background colour to avoid a black band.
             fillVBlankLine(vpos);
 
-            // FIX 9: In VBlank scanSprites() NON viene chiamato. Chiamarla
-            // lasciava i sprChanges[i] sporchi perché renderSpriteChunk li
-            // consumava (recorder.clear()) ma le scritture su mBuffer/zBuffer
-            // avrebbero potuto sporcare i buffer per la prima scanline visibile.
-            // I recorder vanno comunque svuotati esplicitamente per evitare
-            // l'accumulo di eventi sprite registrati durante il VBlank.
+            // In VBlank scanSprites() is NOT called: rendering would consume the
+            // sprChanges and could dirty mBuffer/zBuffer for the first visible scanline.
+            // The recorders are still emptied explicitly, so the sprite events recorded
+            // during VBlank do not accumulate.
             for (int i = 0; i < 4; i++) sprChanges[i].clear();
 
             colChanges.clear();
             conChanges.clear();
         }
 
-        // Il decadimento del massimo dei piani (`denise_draw_update()`) NON sta qui: sta
-        // all'inizio della riga DISEGNATA, dentro translate(), dopo la ri-selezione di
-        // inizio riga. Vedi deniseMaxPlanes.
+        // The decay of the plane maximum is NOT here: it is at the start of the DRAWN line,
+        // inside translate(), after the start-of-line re-selection. See deniseMaxPlanes.
 
-        // Pulizia buffer per la prossima scanline.
+        // Buffer cleanup for the next scanline.
         //
-        // STEP 6 (PERFORMANCE_REPORT_FINAL): azzeramento mirato dell'hot path.
-        // hsyncHandler è chiamato ~15.600 volte/s; il fill dello zBuffer (int[984])
-        // era il più costoso. Analisi del data-flow (vedi pipeline translate→...→colorize):
+        // Targeted clearing on the hot path (hsyncHandler runs ~15,600 times/s):
         //
-        //  • dBuffer: scritto con |= da fillShiftRegisters e letto INTERAMENTE da
-        //    translate (arraycopy dBuffer→mBuffer). Richiede clear completo.
-        //  • zBuffer: translate() ASSEGNA (non OR) zBuffer[0..HPIXELS) ad ogni riga
-        //    visibile prima di qualsiasi lettura; la coda [HPIXELS, length) NON è
-        //    toccata da translate ma è usata da blitSprites (|=) e dalle letture,
-        //    quindi va azzerata. → si azzera solo la coda (risparmio: HPIXELS int).
-        //  • mBuffer: translate() lo sovrascrive INTERAMENTE via arraycopy all'inizio
-        //    della pipeline, prima di ogni lettura. → clear ridondante, rimosso.
-        //  • iBuffer: "uso futuro", mai letto né scritto altrove. → clear rimosso.
+        //  - dBuffer: written with |= by fillShiftRegisters and read ENTIRELY by translate
+        //    (arraycopy dBuffer -> mBuffer). Needs a full clear.
+        //  - zBuffer: translate() ASSIGNS (not OR) zBuffer[0..HPIXELS) on every visible line
+        //    before any read; the tail [HPIXELS, length) is not touched by translate but is
+        //    used by blitSprites (|=) and by the reads, so only the tail is cleared.
+        //  - mBuffer: translate() overwrites it ENTIRELY through arraycopy at the start of
+        //    the pipeline, before any read: no clear needed.
+        //  - iBuffer: "future use", never read or written elsewhere: no clear.
         //
-        // In VBlank i buffer non vengono letti (vedi ramo else sopra), quindi non
-        // azzerare [0,HPIXELS) dello zBuffer è sicuro anche al passaggio VBlank→riga
-        // visibile (translate riassegna prima di leggere).
+        // In VBlank the buffers are not read (see the else branch above), so leaving
+        // [0,HPIXELS) of zBuffer uncleared is safe across the VBlank -> visible line
+        // transition too (translate reassigns before reading).
         Arrays.fill(dBuffer, (byte) 0);
         Arrays.fill(zBuffer, HPIXELS, zBuffer.length, 0);
         for (int i = 0; i < 8; i++) { ssra[i] = 0; ssrb[i] = 0; }
         spritesOnLineMask = 0;
 
-        // Gli sprite possono essere visibili ovunque sulla riga attiva;
-        // la posizione orizzontale è già filtrata da sprhppos (negativo se in blanking).
+        // Sprites can be visible anywhere on the active line; the horizontal position is
+        // already filtered by sprhppos (negative when in blanking).
         spriteClipEnd   = HPIXELS + 32;
 
-        // Snapshot dei registri: saranno usati come stato "iniziale" per
-        // la scanline che sta per cominciare, prima di qualsiasi aggiornamento.
+        // Snapshot of the registers: the "initial" state of the scanline about to start,
+        // before any update.
         initialBplcon0 = bplcon0;
         initialBplcon2 = bplcon2;
-        // Stesso ragionamento della palette, per la finestra orizzontale: updateBorderBuffer()
-        // ha appena consumato la riga, quindi i valori vivi sono quelli che la PROSSIMA riga
-        // eredita. Vedi hstrtLineStart.
+        // Same reasoning as the palette, for the horizontal window: updateBorderBuffer() has
+        // just consumed the line, so the live values are those the NEXT line inherits. See
+        // hstrtLineStart.
         hstrtLineStart = hstrt;
         hstopLineStart = hstop;
-        // Snapshot dei registri colore di FINE riga (= inizio della prossima):
-        // nel ramo visibile colorize() ha appena riportato palette[] allo stato di
-        // fine riga; nel ramo VBlank palette[] contiene già i valori live. In
-        // entrambi i casi questo è lo stato ereditato dalla scanline successiva.
+        // Snapshot of the colour registers at the END of the line (= start of the next): in
+        // the visible branch colorize() has just brought palette[] back to the end-of-line
+        // state; in the VBlank branch palette[] already holds the live values. Either way it
+        // is the state the next scanline inherits.
         System.arraycopy(palette, 0, paletteLineStart, 0, 32);
-        // Stesso ragionamento per i registri sprite: nel ramo visibile scanSprites() ha
-        // appena riportato i registri vivi allo stato di fine riga rigiocando le change,
-        // nel ramo VBlank sono già vivi. In entrambi i casi è lo stato ereditato dalla
-        // scanline successiva. Vedi armedLineStart.
+        // Same reasoning for the sprite registers: in the visible branch scanSprites() has
+        // just brought the live registers back to the end-of-line state by replaying the
+        // changes, in the VBlank branch they are already live. Either way it is the state the
+        // next scanline inherits. See armedLineStart.
         armedLineStart = armed;
         System.arraycopy(sprpos,  0, sprposLineStart,  0, 8);
         System.arraycopy(sprctl,  0, sprctlLineStart,  0, 8);
@@ -1397,8 +1270,8 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     /**
-     * Riempie una scanline in area VBlank con il colore di sfondo corrente.
-     * Senza questo, i pixel lasciati non inizializzati appaiono neri.
+     * Fills a scanline in the VBlank area with the current background colour. Without it,
+     * the pixels left uninitialised would show black.
      */
     private void fillVBlankLine(int vpos) {
         int bgRGB    = amigaToRGB(palette[0]);
@@ -1406,29 +1279,28 @@ public abstract class AbstractDenise {
     }
 
     // =========================================================================
-    // Fase 1: caricamento degli shift register ed emissione dei pixel
+    // Phase 1: loading the shift registers and emitting the pixels
     // =========================================================================
 
     /**
-     * <b>Carica</b> gli shift register: non disegna più niente qui. I pixel escono da
-     * {@link #emitBitplanePixels(int)}, quattro per CCK, al passo della risoluzione viva.
-     * Vedi {@link #srCount} per il perché.
-     */
-    /**
-     * @param fineOdd  resto sotto il CCK dello scroll dei piani dispari, in <b>sub-pixel</b>
-     *                 (0÷3); la parte grossa l'ha già applicata Agnus ritardando il CCK di
-     *                 draw. La divisione e la regola stanno in
+     * <b>Loads</b> the shift registers; nothing is drawn here. The pixels leave through
+     * {@link #emitBitplanePixels(int)}, four per CCK, at the step of the live resolution.
+     * See {@link #srCount} for why.
+     *
+     * @param fineOdd  sub-CCK remainder of the odd planes' scroll, in <b>sub-pixels</b>
+     *                 (0-3); the coarse part has already been applied by Agnus by delaying
+     *                 the draw CCK. The split and its rule are in
      *                 {@code AbstractAgnus.scrollSubPixels}.
-     * @param fineEven lo stesso per i piani pari. ⚠️ In SPF Agnus passa qui il valore di
-     *                 PF1H, perché i piani pari scrollano con i dispari.
+     * @param fineEven the same for the even planes. In SPF Agnus passes PF1H here, because
+     *                 the even planes scroll with the odd ones.
      */
     public void drawBitplanesAtPixel(int pixel, boolean drawOdd, boolean drawEven,
                                      int fineOdd, int fineEven) {
-        // ⛔ Lo scroll si legge VIVO, non dallo snapshot di inizio riga: BPLCON1 scritto
-        // dentro la riga vale da subito (l'oracolo aggiorna `bplcon1_shift[]` alla
-        // scrittura, `update_bplcon1()`). Con `initialBplcon1` arrivava una RIGA tardi, e lo
-        // smaschera `BPL0DAT/bpl0dat*`, dove il Copper scrive BPLCON1 e BPL1DAT sulla stessa
-        // riga: la riga a scroll 0 era esatta e tutte le altre indietro del proprio scroll.
+        // The scroll is read LIVE, not from the start-of-line snapshot: BPLCON1 written
+        // within the line acts at once. Read from a snapshot it would arrive one LINE late,
+        // as `BPL0DAT/bpl0dat*` shows, where the Copper writes BPLCON1 and BPL1DAT on the
+        // same line: the line at scroll 0 would be exact and every other one behind by its
+        // own scroll.
         if (drawOdd && armedOdd) {
             loadOddShiftRegisters();
             armShiftOut(0, pixel, fineOdd);
@@ -1442,31 +1314,27 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Arma l'uscita di una word: 16 bit da far scorrere a partire da {@code pixel}, più lo
-     * scroll <b>fine</b> — il resto sotto il CCK, gia' in SUB-PIXEL (0÷3). La parte grossa
-     * l'ha applicata Agnus ritardando il CCK di draw; la regola che le divide sta in
+     * Arms the output of a word: 16 bits to shift out from {@code pixel}, plus the
+     * <b>fine</b> scroll, the sub-CCK remainder, already in SUB-PIXELS (0-3). The coarse part
+     * was applied by Agnus by delaying the draw CCK; the rule that splits them is in
      * {@code AbstractAgnus.scrollSubPixels}.
      *
-     * <p>⚠️ {@code bpu} e il dual-playfield si <b>latchano qui</b>: il modello a blocchi li
-     * congelava all'istante del draw, e tenerli congelati è ciò che rende questo
-     * rifacimento bit-identico a risoluzione costante.
+     * <p>{@code bpu} and dual playfield are <b>latched here</b>, at load time.
      */
     private void armShiftOut(int grp, int pixel, int fineScroll) {
-        final int cursor = pixel + fineScroll;   // fineScroll e' gia' in sub-pixel
-        // ⛔ LO SHIFTER NON SI FERMA FRA UNA WORD E L'ALTRA. Nell'oracolo
-        // (`drawing.cpp`) lo shift register avanza a OGNI pixel della riga e lo scroll
-        // sceglie soltanto la FASE in cui la word nuova viene caricata
-        // (`if (bpldat_copy[x] && dhv == bplcon1_shift_full[x]) copybpl8()`): non c'è un
-        // cursore, quindi non c'è mai un buco. Il nostro modello dipinge invece ogni word
-        // in una finestra assoluta, e quando lo scroll CALA a metà riga la word nuova
-        // parte OLTRE il punto raggiunto da quella vecchia — quei sub-pixel non li
-        // scriveva nessuno e uscivano di colore 0.
+        final int cursor = pixel + fineScroll;   // fineScroll is already in sub-pixels
+        // THE SHIFTER DOES NOT STOP BETWEEN ONE WORD AND THE NEXT. The shift register
+        // advances at EVERY pixel of the line and the scroll only selects the PHASE at
+        // which the new word is loaded: there is no cursor, so there is never a hole. Here
+        // each word is painted in an absolute window, and when the scroll DROPS mid-line the
+        // new word starts PAST the point the old one reached; those sub-pixels would be
+        // written by no one and come out as colour 0.
         //
-        // ⚠️ E non basta «tenere» l'ultimo valore: misurato, il bit tenuto sarebbe 0 e
-        // l'oracolo lì disegna il playfield. Quel che l'oracolo emette sono i BIT
-        // SUCCESSIVI della word vecchia, che continua a scorrere finché la nuova non la
-        // sostituisce. È esattamente ciò che si fa qui, e la finestra è limitata per
-        // costruzione: al più lo scarto fra i due scroll.
+        // Holding the last value is not enough either: measured, the held bit would be 0
+        // where the playfield is drawn. What comes out are the NEXT BITS of the old word,
+        // which keeps shifting until the new one replaces it. That is what is done here, and
+        // the window is bounded by construction: at most the difference between the two
+        // scrolls.
         if (srCount[grp] > 0 && cursor > srCursor[grp]) {
             emitGroup(grp, cursor - srCursor[grp]);
         }
@@ -1478,26 +1346,24 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Fa uscire i <b>due sub-pixel di questa MEZZA CCK</b> da entrambi i gruppi di shift
-     * register. Chiamata <b>due volte per CCK</b> da Agnus: nel fronte di salita (dopo
-     * l'eventuale caricamento) e nel fronte di discesa, subito dopo il Copper.
+     * Shifts out the <b>two sub-pixels of this HALF CCK</b> from both groups of shift
+     * registers. Called <b>twice per CCK</b> by Agnus: on the rising edge (after any load)
+     * and on the falling edge, right after the Copper.
      *
-     * <p>Un bit dura <b>due</b> sub-pixel in lores e <b>uno</b> in hires, e la risoluzione
-     * si rilegge a ogni sub-pixel: è qui, e solo qui, che una commutazione a metà word
-     * cambia il passo di uscita.
+     * <p>A bit lasts <b>two</b> sub-pixels in lores and <b>one</b> in hires, and the
+     * resolution is read again at every sub-pixel: here, and only here, a switch in the
+     * middle of a word changes the output step.
      *
-     * <p>⛔ <b>Perché due mezze-CCK e non un CCK intero.</b> Nell'oracolo la parte
-     * <b>risoluzione</b> di BPLCON0 entra <b>uno stadio prima</b> del resto del registro:
-     * {@code expand_drga_early()} — che chiama {@code expand_bplcon0_early()} — legge lo
-     * slot RGA {@code idx0}, mentre {@code expand_drga()} legge {@code idx1}, cioè uno
-     * indietro. Quello stadio vale <b>mezzo color clock</b>, ed è misurato: emettendo
-     * quattro sub-pixel in blocco in cima al CCK, la commutazione di {@code hilo} cadeva
-     * <b>due sub-pixel tardi</b> su tutte e dodici le righe. Spezzando l'emissione a metà,
-     * la scrittura del Copper del CCK corrente arriva in tempo per la seconda metà.
+     * <p><b>Why two half CCKs and not one whole CCK.</b> The <b>resolution</b> part of
+     * BPLCON0 enters Denise <b>one stage earlier</b> than the rest of the register, and that
+     * stage is <b>half a colour clock</b>, which is measured: emitting four sub-pixels as a
+     * block at the top of the CCK put the {@code hilo} switch <b>two sub-pixels late</b> on
+     * all twelve lines. Splitting the emission in half lets the Copper write of the current
+     * CCK arrive in time for the second half.
      *
-     * <p>⚠️ Spezzarla non cambia <b>quali</b> sub-pixel si scrivono né con che valore: il
-     * cursore avanza allo stesso modo. Cambia solo l'istante in cui {@code hires} viene
-     * riletto, che è esattamente l'unica cosa che questo rifacimento vuole spostare.
+     * <p>Splitting it changes neither <b>which</b> sub-pixels are written nor their values:
+     * the cursor advances the same way. Only the instant at which {@code hires} is re-read
+     * changes.
      */
     public void emitBitplaneHalfCck() {
         if (srCount[0] == 0 && srCount[1] == 0) return;
@@ -1505,7 +1371,7 @@ public abstract class AbstractDenise {
         if (srCount[1] != 0) emitGroup(1, 2);
     }
 
-    /** Fa uscire quel che resta delle due word, a fine riga. Vedi il chiamante. */
+    /** Shifts out what is left of the two words, at the end of the line. See the caller. */
     private void flushShiftOut() {
         while (srCount[0] > 0 || srCount[1] > 0) {
             if (srCount[0] > 0) emitGroup(0, 2);
@@ -1514,14 +1380,14 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Precalcola i <b>sedici slice</b> della word: il contributo a {@code dBuffer} di ogni
-     * bit, già combinato sui tre piani del gruppo.
+     * Precomputes the <b>sixteen slices</b> of the word: the contribution of each bit to
+     * {@code dBuffer}, already combined over the group's three planes.
      *
-     * <p>⚠️ <b>È un'ottimizzazione, non un modello</b>, e la si può fare solo perché nulla
-     * tocca {@code shiftReg} fra un caricamento e il successivo: i BPLxDAT scrivono
-     * {@code bpldat}/{@code bpldatPipe}, e un nuovo caricamento riarma comunque tutto. Senza
-     * di essa l'emissione costa tre test e tre shift <b>per sub-pixel</b> invece che per
-     * word, e si misura: +12,45 % sul banco A/B (`tools/ab-bench`, 5/5 concordi).
+     * <p><b>An optimisation, not a model</b>, possible only because nothing touches
+     * {@code shiftReg} between one load and the next: BPLxDAT writes go to
+     * {@code bpldat}/{@code bpldatPipe}, and a new load re-arms everything anyway. Without it
+     * the emission costs three tests and three shifts <b>per sub-pixel</b> instead of per
+     * word: +12.45% on the A/B bench (`tools/ab-bench`, 5/5 in agreement).
      */
     private void precomputeSlices(int grp) {
         final byte[] dst = srSlice[grp];
@@ -1549,11 +1415,11 @@ public abstract class AbstractDenise {
     private void emitGroup(int grp, int subPixels) {
         final byte[] slices = srSlice[grp];
         final int keepMask = (grp == 0) ? 0x2A : 0x15;
-        final int bitStep  = hires ? 1 : 2;   // sub-pixel per bit — letto VIVO
+        final int bitStep  = hires ? 1 : 2;   // sub-pixels per bit, read LIVE
         int count  = srCount[grp];
         int cursor = srCursor[grp];
         int phase  = srPhase[grp];
-        // Il cursore resta in fase col CCK: due sub-pixel per mezza-CCK, sempre.
+        // The cursor stays in phase with the CCK: two sub-pixels per half CCK, always.
         for (int i = 0; i < subPixels && count > 0; i++) {
             if (cursor >= 0 && cursor < dBuffer.length) {
                 dBuffer[cursor] = (byte) ((dBuffer[cursor] & keepMask) | slices[16 - count]);
@@ -1583,7 +1449,7 @@ public abstract class AbstractDenise {
 
 
     // =========================================================================
-    // Fase 2: updateBorderBuffer — calcola bBuffer (maschera DIW/bordo)
+    // Phase 2: updateBorderBuffer, computes bBuffer (DIW/border mask)
     // =========================================================================
 
     /**
@@ -1678,7 +1544,7 @@ public abstract class AbstractDenise {
     }
 
     // =========================================================================
-    // Fase 3: translate — risolve priorità playfield → mBuffer + zBuffer
+    // Phase 3: translate, resolves playfield priority -> mBuffer + zBuffer
     // =========================================================================
 
     private void translate() {
@@ -1699,10 +1565,9 @@ public abstract class AbstractDenise {
         int     armedCnt       = Integer.bitCount(armedLineStart);
         int     armedsCnt      = Integer.bitCount(armedsLineStart);
 
-        // Inizio riga, nell'ordine dell'oracolo: prima la ri-selezione che scatta quando
-        // nessuno sprite e' piu' in gioco, POI il decadimento del massimo dei piani. E' la
-        // ragione per cui il massimo puo' sopravvivere alla riga: il decadimento non
-        // ri-seleziona nulla in lores.
+        // Start of the line, in this order: first the re-selection that fires when no
+        // sprite is in play any more, THEN the decay of the plane maximum. That is why the
+        // maximum can survive the line: the decay re-selects nothing in lores.
         if (armedCnt == 0 && armedsCnt == 0 && spriteLtsSelected) {
             selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
         }
@@ -1728,9 +1593,9 @@ public abstract class AbstractDenise {
                 if (c.reg == 0x100) {
                     int old = currentBplcon0;
                     currentBplcon0 = c.value;
-                    // `lts_request` di expand_bplcon0: risoluzione, numero di piani o modo.
-                    // BPLCON2 non compare perche' su OCS l'unico suo effetto sul modo e'
-                    // KILLEHB, che e' un bit ECS.
+                    // A re-selection is requested by a change of resolution, number of
+                    // planes or mode. BPLCON2 does not appear because on OCS its only effect
+                    // on the mode is KILLEHB, an ECS bit.
                     if (deniseBpu(old) != deniseBpu(currentBplcon0)
                             || ((old ^ currentBplcon0) & 0x8000) != 0
                             || bplMode(old) != bplMode(currentBplcon0)) {
@@ -1744,11 +1609,11 @@ public abstract class AbstractDenise {
                 boolean up = (key & SPR_EVT_UP) != 0;
                 if ((key & SPR_EVT_ARMEDS) != 0) {
                     armedsCnt += up ? 1 : -1;
-                    // Fine della finestra di display dell'ultimo sprite che disegnava.
-                    // ⛔ Qui NON conta quanti sprite sono armati: conta solo che nessuno
-                    // stia piu' disegnando. Non c'e' da controllare `spriteLtsSelected`:
-                    // uno sprite non puo' arrivare a disegnare senza che una ri-selezione
-                    // precedente l'abbia gia' visto armato.
+                    // End of the display window of the last sprite that was drawing. What
+                    // counts here is NOT how many sprites are armed, only that none is
+                    // drawing any more. No need to check `spriteLtsSelected`: a sprite cannot
+                    // reach the drawing state without an earlier re-selection having seen it
+                    // armed.
                     if (!up && armedsCnt == 0) {
                         selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
                     }
@@ -1767,8 +1632,8 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Il modo di Denise come catena di priorità — {@code setbplmode()} dell'oracolo. Serve
-     * solo a sapere se un cambio di BPLCON0 ri-seleziona la configurazione di resa.
+     * Denise's mode as a priority chain. Used only to know whether a BPLCON0 change
+     * re-selects the rendering configuration.
      */
     private static int bplMode(int bplcon0) {
         if (isHAM(bplcon0))           return 3;
@@ -1778,24 +1643,21 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Single PlayField: la priorità sprite/playfield usa i bit PF2P
-     * (bplcon2 bit 3-5), NON PF1P. In modalità single-playfield il playfield
-     * è valutato come "playfield 2" ai fini della priorità verso gli sprite.
-     *
-     * Confermato da vAmiga (Denise::translateSPF usa state.zpf2 = zPF2(bplcon2))
-     * e WinUAE. In precedenza usavamo erroneamente PF1P (bplcon2 & 7): con
-     * BPLCON2 in cui PF1P!=PF2P (es. Ultima VI menu, BPLCON2=0x0008 → PF1P=0,
-     * PF2P=1) il cursore sprite finiva DIETRO al playfield invece che davanti.
+     * Single playfield: the sprite/playfield priority uses the PF2P bits (bplcon2 bits 3-5),
+     * NOT PF1P. In single-playfield mode the playfield counts as "playfield 2" for its
+     * priority against the sprites. With BPLCON2 where PF1P != PF2P (e.g. the Ultima VI menu,
+     * BPLCON2=0x0008 -> PF1P=0, PF2P=1) the sprite cursor must stay IN FRONT of the
+     * playfield.
      */
     private void translateSPF(int from, int to, int bplcon2, int planesNow) {
         int plf2pri = (bplcon2 >> 3) & 7;
         int zpf2    = zPF(plf2pri);
-        // La regola «SWIV» vive qui: playfield singolo, almeno 5 piani e PF2P >= 5. Il
-        // gemello per il dual-playfield sta in translateDPF. Vedi deniseSpecials().
+        // The "SWIV" rule lives here: single playfield, at least 5 planes and PF2P >= 5. The
+        // dual-playfield twin is in translateDPF. See deniseSpecials().
         //
-        // ⛔ Le due condizioni sono di natura diversa e vanno tenute separate: il conteggio
-        // VIVO dei piani e PF2P sono `update_specials()`, mentre i piani della
-        // configurazione di resa in carica (renderPlanes) sono il gate della routine.
+        // The two conditions are of a different nature and must be kept apart: the LIVE
+        // plane count and PF2P decide whether the special applies, while the planes of the
+        // current rendering configuration (renderPlanes) gate the routine.
         boolean specials = planesNow >= 5 && plf2pri >= 5 && renderPlanes >= 5;
         for (int i = from; i < to && i < mBuffer.length; i++) {
             int s = mBuffer[i] & 0x3F;
@@ -1808,8 +1670,8 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Dual PlayField: separa i bit pari (PF1) e dispari (PF2),
-     * risolve priorità in base a bplcon2.
+     * Dual playfield: separates the even (PF1) and odd (PF2) bits and resolves priority from
+     * bplcon2.
      */
     private void translateDPF(int from, int to, int bplcon2) {
         boolean pf2pri  = (bplcon2 & 0x0040) != 0;
@@ -1820,20 +1682,20 @@ public abstract class AbstractDenise {
 
         for (int i = from; i < to && i < mBuffer.length; i++) {
             int s    = dBuffer[i] & 0x3F;
-            // Bit 0,2,4 → PF1 (piani dispari); bit 1,3,5 → PF2 (piani pari)
+            // Bits 0,2,4 -> PF1 (odd planes); bits 1,3,5 -> PF2 (even planes)
             int idx1 = (s & 1) | ((s & 4) >> 1) | ((s & 16) >> 2);
             int idx2 = ((s & 2) >> 1) | ((s & 8) >> 2) | ((s & 32) >> 3);
 
-            // ⛔ Il COLORE esce dalla tabella dell'oracolo, che è la stessa che serve a
-            // HAM+DPF e che sa già leggere i bit 6/7 del playfield trasparente; la
-            // PRIORITÀ (e quindi lo z per gli sprite) resta decisa dai piani veri, perché
-            // un playfield trasparente continua a coprire quello dietro.
+            // The COLOUR comes from the table shared with HAM+DPF, which already reads bits
+            // 6/7 of the transparent playfield; the PRIORITY (and so the z for the sprites)
+            // is still decided by the real planes, because a transparent playfield still
+            // covers the one behind it.
             int pv  = deniseSpecials(s, renderPlanes, true, plf1pri, plf2pri);
             byte colour = (byte) dualPlayfieldIndex(pv, pf2pri);
 
             if (idx1 != 0) {
                 if (idx2 != 0) {
-                    // Entrambi i playfield visibili: vince la priorità configurata
+                    // Both playfields visible: the configured priority wins
                     if (pf2pri) { mBuffer[i] = colour; zBuffer[i] = zpf2 | 0x05; }
                     else        { mBuffer[i] = colour; zBuffer[i] = zpf1 | 0x04; }
                 } else {
@@ -1847,18 +1709,16 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Mappa il valore dei bit di priorità BPLCON2 PFxP al livello Z corrispondente.
+     * Maps the value of the BPLCON2 PFxP priority bits to the corresponding Z level.
      *
-     * La scala usa "0 = priorità massima" (come i livelli interrupt HW):
-     *   PFP = 0 → Z_0 (playfield davanti a TUTTI gli sprite)
-     *   PFP = 1 → Z_1 (playfield davanti a SP2..SP7, dietro a SP0/SP1)
-     *   PFP = 2 → Z_2 (playfield davanti a SP4..SP7, dietro a SP0..SP3)
-     *   PFP = 3 → Z_3 (playfield davanti a SP6/SP7, dietro agli altri)
-     *   PFP = 4 → Z_4 (playfield dietro a TUTTI gli sprite)
+     * The scale uses "0 = highest priority" (like the hardware interrupt levels):
+     *   PFP = 0 -> Z_0 (playfield in front of ALL the sprites)
+     *   PFP = 1 -> Z_1 (playfield in front of SP2..SP7, behind SP0/SP1)
+     *   PFP = 2 -> Z_2 (playfield in front of SP4..SP7, behind SP0..SP3)
+     *   PFP = 3 -> Z_3 (playfield in front of SP6/SP7, behind the others)
+     *   PFP = 4 -> Z_4 (playfield behind ALL the sprites)
      *
-     * Mapping confermato da vAmiga (DeniseRegs.cpp zPF) e comportamento
-     * osservato su WinUAE: BPLCON2=0x0024 (PFP=4) → sprite 0 (cursore)
-     * davanti al testo.
+     * E.g. BPLCON2=0x0024 (PFP=4): sprite 0 (the cursor) in front of the text.
      */
     private static int zPF(int prio) {
         switch (prio) {
@@ -1872,15 +1732,15 @@ public abstract class AbstractDenise {
     }
 
     // =========================================================================
-    // Fase 4: scanSprites — fa scorrere gli shift register sprite ed emette i pixel
+    // Phase 4: scanSprites, shifts the sprite shift registers and emits the pixels
     // =========================================================================
 
     private void scanSprites() {
-        // Riparti dallo stato EREDITATO dalla riga precedente: i write di questa riga
-        // hanno già aggiornato i registri vivi, ma il replay dei sprChanges deve
-        // applicarli ai loro trigger. Ripristinando lo snapshot di inizio riga il
-        // segmento prima della prima change usa i valori vecchi (corretti) e il replay
-        // riporta i registri allo stato di fine riga. Identico a colorize()/palette.
+        // Start again from the state INHERITED from the previous line: this line's writes
+        // have already updated the live registers, but the replay of sprChanges must apply
+        // them at their triggers. Restoring the start-of-line snapshot, the segment before
+        // the first change uses the old (correct) values and the replay brings the registers
+        // back to the end-of-line state. Same as colorize()/palette.
         armed = armedLineStart;
         System.arraycopy(sprposLineStart,  0, sprpos,  0, 8);
         System.arraycopy(sprctlLineStart,  0, sprctl,  0, 8);
@@ -1900,9 +1760,9 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Riordina per pixel le transizioni raccolte coppia per coppia. Sono poche (al più una
-     * manciata per riga) e quasi sempre già ordinate: un inserimento stabile basta e non
-     * alloca.
+     * Sorts by pixel the transitions collected pair by pair. They are few (a handful per
+     * line at most) and almost always already sorted: a stable insertion sort is enough and
+     * allocates nothing.
      */
     private void sortSprStateEvents() {
         for (int i = 1; i < sprStateEvtCount; i++) {
@@ -1929,11 +1789,10 @@ public abstract class AbstractDenise {
         updateSprHCoords(s2);
         int     strt1   = sprhppos[s1];
         int     strt2   = sprhppos[s2];
-        // `armed` è già stato riportato allo stato d'inizio riga da scanSprites(); il
-        // replay qui sotto lo rialza/riabbassa ai trigger e lo lascia, a fine ciclo,
-        // allo stato di fine riga — che è quello che lo snapshot fotograferà per la
-        // riga successiva. (Prima si lavorava su una copia locale tmpArmed, mai
-        // riscritta: il valore di partenza era già quello di fine riga.)
+        // `armed` has already been brought back to the start-of-line state by
+        // scanSprites(); the replay below raises/lowers it at the triggers and leaves it, at
+        // the end of the loop, in the end-of-line state, which the snapshot will take for
+        // the next line.
         boolean a1      = (armed & (1 << s1)) != 0;
         boolean a2      = (armed & (1 << s2)) != 0;
 
@@ -1946,11 +1805,11 @@ public abstract class AbstractDenise {
             RegChange c    = recorder.elements[recIdx++];
             int       sIdx = (c.reg - 0x140) / 8;
             /*
-             * Identifica il sotto-registro tramite l'offset nel blocco da 8 byte:
-             *   offset & 6 == 0 → POS
-             *   offset & 6 == 2 → CTL
-             *   offset & 6 == 4 → DATA (A)
-             *   offset & 6 == 6 → DATB (B)
+             * Identifies the sub-register from the offset in the 8-byte block:
+             *   offset & 6 == 0 -> POS
+             *   offset & 6 == 2 -> CTL
+             *   offset & 6 == 4 -> DATA (A)
+             *   offset & 6 == 6 -> DATB (B)
              */
             int sub = c.reg & 6;
             if (sub == 4) {                          // DATA
@@ -1969,8 +1828,7 @@ public abstract class AbstractDenise {
                 sprctl[sIdx] = c.value;
                 updateSprHCoords(sIdx);
                 if (sIdx == s1) strt1 = sprhppos[s1]; else strt2 = sprhppos[s2];
-                // CTL write disarms the sprite for the remainder of this scanline.
-                // Matches vAmiga behavior: CLR_BIT(armed, sprite).
+                // A CTL write disarms the sprite for the remainder of this scanline.
                 if ((armed & (1 << sIdx)) != 0) {
                     recordSprStateEvt(trigger, sIdx);
                 }
@@ -1989,15 +1847,12 @@ public abstract class AbstractDenise {
         int     s1  = pair * 2;
         int     s2  = pair * 2 + 1;
 
-        // PERF: quando entrambi gli shift register del pair sono vuoti, l'UNICO
-        // effetto possibile del loop in [from,to) è l'arming di uno sprite (il
-        // caricamento del registro alla sua posizione orizzontale strt). Saltiamo
-        // direttamente al primo arming raggiungibile; se non ce n'è, il chunk non
-        // produce nulla e si ritorna. Il profilo (caricamento di Agony) mostrava
-        // renderSpriteChunk a ~8.5% perché scorreva l'INTERA scanline per ogni pair
-        // ogni riga anche a sprite inattivi. La condizione di raggiungibilità
-        // (parità di strt-from, dato lo step +2) replica ESATTAMENTE il loop
-        // originale: nessun cambiamento di comportamento, solo iterazioni saltate.
+        // PERF: when both shift registers of the pair are empty, the ONLY possible effect of
+        // the loop over [from,to) is the arming of a sprite (the register loading at its
+        // horizontal position strt). Jump straight to the first reachable arming; if there
+        // is none, the chunk produces nothing and returns. The reachability condition
+        // (parity of strt-from, given the +2 step) replicates the loop EXACTLY: no change in
+        // behaviour, only skipped iterations.
         if ((ssra[s1] | ssrb[s1] | ssra[s2] | ssrb[s2]) == 0) {
             int next = Integer.MAX_VALUE;
             if (armed1 && strt1 >= from && strt1 < to && (((strt1 - from) & 1) == 0)) next = strt1;
@@ -2036,20 +1891,20 @@ public abstract class AbstractDenise {
                     if (att) drawAttachedSpritePixel(hpos, s2);
                     else   { drawSpritePixel(hpos, s1); drawSpritePixel(hpos, s2); }
                 }
-                // Shift dei registri sprite (1 bit per CCK = 2 sub-pixel in HPIXELS)
+                // Shift of the sprite registers (1 bit per CCK = 2 sub-pixels in HPIXELS)
                 ssra[s1] = (ssra[s1] << 1) & 0xFFFF; ssrb[s1] = (ssrb[s1] << 1) & 0xFFFF;
                 ssra[s2] = (ssra[s2] << 1) & 0xFFFF; ssrb[s2] = (ssrb[s2] << 1) & 0xFFFF;
-                // Lo sprite smette di disegnare al pixel DOPO quello che ha svuotato il suo
-                // shift register: l'ultimo pixel uscito e' ancora quello appena scalato.
-                // Dopo lo scorrimento resta acceso solo cio' che stava sotto il bit 15,
-                // quindi non serve rileggere i registri.
+                // The sprite stops drawing at the pixel AFTER the one that emptied its shift
+                // register: the last pixel out is still the one just shifted. After the shift
+                // only what was below bit 15 stays on, so there is no need to re-read the
+                // registers.
                 if (r1 != 0 && (r1 & 0x7FFF) == 0) recordSprStateEvt(hpos + 2, s1 | SPR_EVT_ARMEDS);
                 if (r2 != 0 && (r2 & 0x7FFF) == 0) recordSprStateEvt(hpos + 2, s2 | SPR_EVT_ARMEDS);
             }
         }
     }
 
-    /** Sprite normale: 2 bit di colore (da ssrA MSB e ssrB MSB). */
+    /** Plain sprite: 2 colour bits (from the MSB of ssrA and of ssrB). */
     private void drawSpritePixel(int hpos, int x) {
         int col = ((ssra[x] >> 15) & 1) | ((ssrb[x] >> 14) & 2);
         if (col != 0) {
@@ -2061,7 +1916,7 @@ public abstract class AbstractDenise {
         }
     }
 
-    /** Accoda un'emissione sprite; il confronto di profondità avviene nel blit. */
+    /** Queues a sprite emission; the depth comparison happens in the blit. */
     private void emitSpritePixel(int hpos, int value, int z) {
         if (sprEmitCount == sprEmitPos.length) {
             sprEmitPos  = java.util.Arrays.copyOf(sprEmitPos,  sprEmitCount * 2);
@@ -2073,9 +1928,9 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Riversa su {@code mBuffer}/{@code zBuffer} i pixel che {@link #scanSprites()} ha
-     * emesso, nello stesso ordine e con lo stesso confronto di profondità di prima: lo z
-     * si accumula sempre, il colore vince solo su chi sta più indietro.
+     * Pours onto {@code mBuffer}/{@code zBuffer} the pixels {@link #scanSprites()} emitted,
+     * in the same order and with the same depth comparison: the z always accumulates, the
+     * colour wins only over what is further back.
      */
     private void blitSprites() {
         for (int i = 0; i < sprEmitCount; i++) {
@@ -2092,35 +1947,27 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Sprite attached: 4 bit di colore (due sprite abbinati, 15 colori + trasparente).
+     * Attached sprite: 4 colour bits (two paired sprites, 15 colours + transparent).
      *
-     * FIX 3: la base della palette dipende dalla coppia sprite.
-     *   coppia 0 (s0,s1) → palette[16..31]
-     *   coppia 1 (s2,s3) → palette[20..35] (ma 32 è il max: palette[20..31] + wrap)
-     *   ... correttamente: 16 + (x & 6) * 2 per x = sprite dispari (1,3,5,7)
-     *   x=1 → 16+(0)*2=16, x=3 → 16+(2)*2=20, x=5 → 16+(4)*2=24, x=7 → 16+(6)*2=28
+     * The 4-bit code indexes colour registers 16-31 DIRECTLY (one palette shared by every
+     * pair), so the base is ALWAYS 16; the per-pair offset 16+(x&6)*2 applies only to plain
+     * 2-bit sprites (drawSpritePixel).
      *
-     * FIX 4: la profondità Z per gli sprite attached è quella dello sprite pari
-     *   (il "leader" della coppia, con Z maggiore = più in primo piano).
-     *   Z_SP[x & ~1] restituisce Z_SP0, Z_SP2, Z_SP4, Z_SP6 per x=1,3,5,7.
+     * The depth Z of an attached pair is that of the even sprite (the leader of the pair,
+     * the higher Z): Z_SP[x & ~1] gives Z_SP0, Z_SP2, Z_SP4, Z_SP6 for x = 1, 3, 5, 7.
      *
-     * @param x  indice dello sprite DISPARI della coppia (1, 3, 5, 7)
+     * @param x  index of the ODD sprite of the pair (1, 3, 5, 7)
      */
     private void drawAttachedSpritePixel(int hpos, int x) {
-        // x è lo sprite dispari della coppia; x-1 è quello pari
+        // x is the odd sprite of the pair; x-1 the even one
         int col = ((ssra[x-1] >> 15) & 1) | ((ssrb[x-1] >> 14) & 2)
                 | ((ssra[x]   >> 13) & 4) | ((ssrb[x]   >> 12) & 8);
         if (col != 0) {
-            // FIX 4: usa la Z dello sprite pari (priorità più alta nella coppia)
+            // Z of the even sprite (the higher priority in the pair)
             int z    = Z_SP[x & ~1];
-            // Sprite ATTACHED: il codice colore a 4 bit indicizza DIRETTAMENTE i
-            // registri 16-31 (un'unica tavolozza condivisa da tutte le coppie), quindi
-            // la base è SEMPRE 16. NON va usato l'offset per-coppia 16+(x&6)*2 (quello
-            // vale solo per gli sprite non-attached, a 2 bit, in drawSpritePixel): con
-            // l'offset, su coppie diverse da 0+1 il codice 8-11 finiva nei colori 28-31
-            // invece che 24-27 (es. la carne del protagonista di Last Battle, colore 27
-            // EC8, diventava 31 842 → sprite arancione invece che incarnato). Cfr.
-            // vAmiga Denise::drawAttachedSpritePixelPair (mBuffer = 0b10000 | col).
+            // With the per-pair offset, on pairs other than 0+1 the codes 8-11 would land on
+            // colours 28-31 instead of 24-27 (e.g. the flesh of Last Battle's hero, colour 27
+            // EC8, would become 31 842: an orange sprite instead of skin tone).
             int base = 16;
             emitSpritePixel(hpos, base | col, z);
             spritePixelsThisFrame[x - 1] += 2;
@@ -2130,17 +1977,17 @@ public abstract class AbstractDenise {
     }
 
     // =========================================================================
-    // Fase 5: checkCollisions — aggiorna CLXDAT su zBuffer/dBuffer
+    // Phase 5: checkCollisions, updates CLXDAT from zBuffer/dBuffer
     // =========================================================================
 
     /**
-     * Un pixel partecipa alle collisioni solo se Denise lo <b>rende</b>: dentro la
-     * finestra orizzontale e dopo la prima BPL1DAT della riga. Sono gli stessi due bit
-     * che nascondono lo sprite (il gate di BPL1DAT è il secondo), e valgono anche
-     * per il playfield: fuori di lì non c'è pixel bitplane da confrontare, e prenderlo
-     * per un valore vero fa comparire collisioni che l'hardware non riporta — con
-     * CLXCON che si aspetta zero su un piano, il bordo (dove {@code dBuffer} è 0)
-     * accende il confronto su tutta la riga.
+     * A pixel takes part in collisions only if Denise <b>renders</b> it: inside the
+     * horizontal window and after the first BPL1DAT of the line. They are the same two bits
+     * that hide the sprite (the BPL1DAT gate is the second), and they apply to the playfield
+     * too: outside them there is no bitplane pixel to compare, and taking one for a real
+     * value creates collisions the hardware does not report; with CLXCON expecting zero on a
+     * plane, the border (where {@code dBuffer} is 0) would trigger the comparison over the
+     * whole line.
      */
     private boolean collisionActiveAt(int pos) {
         return spriteGate.openAt(pos, SPRITE_ENABLE_OFFSET) && pos < spriteClipEnd
@@ -2148,11 +1995,10 @@ public abstract class AbstractDenise {
     }
 
     private void checkCollisions() {
-        // PERF (bit-identico): salta i loop di collisione che non possono produrre
-        // alcun bit in clxdat. checkS2PCollisions(x) itererebbe tutta la linea solo
-        // per fare 'continue' se lo sprite x non ha pixel; checkS2SCollisions non può
-        // generare collisioni se meno di due coppie sprite sono presenti sulla linea.
-        // I loop saltati non modificano clxdat → risultato identico.
+        // PERF (bit-identical): skips the collision loops that cannot produce any bit in
+        // clxdat. checkS2PCollisions(x) would walk the whole line only to 'continue' if
+        // sprite x has no pixels; checkS2SCollisions cannot produce collisions if fewer than
+        // two sprite pairs are on the line. The skipped loops do not change clxdat.
         int m = spritesOnLineMask;
         if (m != 0) {
             int pairMask = ((m & 0x03) != 0 ? 1 : 0) | ((m & 0x0C) != 0 ? 2 : 0)
@@ -2220,13 +2066,11 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Sprite-Sprite: controlla collisioni tra le 4 coppie sprite.
+     * Sprite-sprite: checks collisions between the 4 sprite pairs.
      *
-     * FIX collisioni (HRM §7 / vAmiga Denise::checkS2SCollisions):
-     *  - i bit CLXDAT sprite-sprite sono 9..14, NON 0..5 (il layout precedente
-     *    era l'inverso di quello hardware);
-     *  - gli sprite DISPARI partecipano solo se il rispettivo bit ENSPx di
-     *    CLXCON (bit 12..15) è settato; i pari partecipano sempre.
+     *  - the sprite-sprite CLXDAT bits are 9..14 (HRM, CLXDAT);
+     *  - ODD sprites take part only if their ENSPx bit in CLXCON (bits 12..15) is set; even
+     *    sprites always take part.
      */
     private void checkS2SCollisions() {
         int z_s01 = Z_SP0 | ((clxcon & 0x1000) != 0 ? Z_SP1 : 0);
@@ -2246,60 +2090,49 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Sprite-Playfield per lo sprite x.
+     * Sprite-playfield for sprite x.
      *
-     * FIX 7: le maschere CLXCON per PF2 erano calcolate in modo errato.
+     * CLXCON (HRM, CLXCON):
+     *   bits 11:6 = ENBP6..ENBP1, enable the comparison for each plane (1 = enabled)
+     *   bits  5:0 = MVBP6..MVBP1, value expected by the comparison
      *
-     * CLXCON (HW Ref Manual §7):
-     *   bit 11:6 = ENBP6..ENBP1 — enable comparison per ogni piano (1=abilitato)
-     *   bit  5:0 = MVBP6..MVBP1 — valore atteso per il confronto
+     * PF1 uses the odd planes  (bits 0,2,4 of dBuffer = BPL1,3,5) -> mask 0x15
+     * PF2 uses the even planes (bits 1,3,5 of dBuffer = BPL2,4,6) -> mask 0x2A
      *
-     * PF1 usa i piani dispari (bit 0,2,4 di dBuffer = BPL1,3,5) → maschera 0x15
-     * PF2 usa i piani pari   (bit 1,3,5 di dBuffer = BPL2,4,6) → maschera 0x2A
-     *
-     * Un pixel di PF1 è "acceso" se:   (dBuffer & enabled1) == (match1 & enabled1)
-     * Un pixel di PF2 è "acceso" se:   (dBuffer & enabled2) == (match2 & enabled2)
-     *
-     * Versione errata originale:
-     *   enabled2 = (clxcon >> 7) & 0x15  → shift errato, maschera errata
-     *   match2   = (clxcon >> 1) & 0x15  → shift errato, maschera errata
+     * A PF1 pixel is "on" if:   (dBuffer & enabled1) == (match1 & enabled1)
+     * A PF2 pixel is "on" if:   (dBuffer & enabled2) == (match2 & enabled2)
      */
     private void checkS2PCollisions(int x) {
-        // Sprite dispari: partecipa solo se il bit ENSPx di CLXCON è settato
-        // (vAmiga: if (IS_ODD(x)) if (!ensp<x>()) return).
+        // Odd sprite: takes part only if its ENSPx bit in CLXCON is set.
         if ((x & 1) != 0 && (clxcon & (1 << (12 + (x >> 1)))) == 0) return;
 
-        // FIX 7: maschere corrette per PF1 (piani dispari) e PF2 (piani pari).
-        // FIX collisioni: il valore di match va mascherato con l'enable
-        // (vAmiga: compare = mvbp() & enabled) — un bit MVBP settato su un
-        // piano NON abilitato altrimenti rende il confronto impossibile.
-        int enabled1 = (clxcon >> 6) & 0x15;   // ENBP per bit 0,2,4
-        int enabled2 = (clxcon >> 6) & 0x2A;   // ENBP per bit 1,3,5
-        int match1   =  clxcon       & 0x15 & enabled1;   // MVBP per bit 0,2,4
-        int match2   =  clxcon       & 0x2A & enabled2;   // MVBP per bit 1,3,5
+        // Masks for PF1 (odd planes) and PF2 (even planes). The match value is masked with
+        // the enable: otherwise an MVBP bit set on a plane that is NOT enabled would make the
+        // comparison impossible.
+        int enabled1 = (clxcon >> 6) & 0x15;   // ENBP of bits 0,2,4
+        int enabled2 = (clxcon >> 6) & 0x2A;   // ENBP of bits 1,3,5
+        int match1   =  clxcon       & 0x15 & enabled1;   // MVBP of bits 0,2,4
+        int match2   =  clxcon       & 0x2A & enabled2;   // MVBP of bits 1,3,5
 
         for (int pos = 0; pos < HPIXELS; pos++) {
             if ((zBuffer[pos] & Z_SP[x]) == 0) continue;
             if (!collisionActiveAt(pos)) continue;
             int d = dBuffer[pos] & 0xFF;
-            // FIX collisioni: layout CLXDAT hardware (HRM §7):
-            //   bit 1-4 = sprite coppia (x>>1) vs piani DISPARI (PF1)
-            //   bit 5-8 = sprite coppia (x>>1) vs piani PARI    (PF2)
-            // (il layout precedente, 6-9/10-13, era l'inverso di quello reale)
+            // CLXDAT layout (HRM, CLXDAT):
+            //   bits 1-4 = sprite pair (x>>1) vs ODD planes  (PF1)
+            //   bits 5-8 = sprite pair (x>>1) vs EVEN planes (PF2)
             if ((d & enabled2) == match2) {
                 clxdat |= (1 << (5 + (x >> 1)));
             } else if ((zBuffer[pos] & 0x07) == 0) {
-                // Stranezza hardware in single-playfield: se PF2 non matcha, nemmeno PF1
-                // matcha. L'oracolo la discrimina su `bpldualpf` (drawing.cpp,
-                // denise_collide_sprites: in DPF i due confronti sono PARALLELI, in SPF
-                // quello di PF1 è ANNIDATO dentro quello di PF2); noi ci serve per-pixel,
-                // perché il Copper commuta SPF/DPF DENTRO la riga.
-                // ⛔ E il marcatore non è il bit 0: translateDPF scrive 0x01..0x05, e i
-                // codici 0x02 (solo PF1 visibile) e 0x04 (entrambi, vince PF1) hanno il
-                // bit 0 a ZERO. Leggendo solo `& 0x01` quei pixel passavano per
-                // single-playfield e si prendevano l'annidamento che non gli spetta.
-                // translateSPF non scrive mai i tre bit bassi e le costanti Z stanno
-                // tutte da 0x0008 in su, quindi `& 0x07` è esattamente «reso in DPF».
+                // Hardware quirk in single playfield: if PF2 does not match, PF1 does not
+                // match either. In DPF the two comparisons are PARALLEL, in SPF the PF1 one
+                // is NESTED inside the PF2 one; it is decided per pixel, because the Copper
+                // switches SPF/DPF WITHIN the line.
+                // The marker is not bit 0: translateDPF writes 0x01..0x05, and codes 0x02
+                // (only PF1 visible) and 0x04 (both, PF1 wins) have bit 0 CLEAR. Reading only
+                // `& 0x01` those pixels would pass for single playfield and get the nesting
+                // they must not have. translateSPF never writes the three low bits and the Z
+                // constants are all 0x0008 and up, so `& 0x07` is exactly "rendered in DPF".
                 continue;
             }
             if ((d & enabled1) == match1) clxdat |= (1 << (1 + (x >> 1)));
@@ -2307,22 +2140,18 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Playfield1 vs Playfield2.
+     * Playfield 1 vs playfield 2.
      *
-     * FIX 8: stesse maschere CLXCON errate di checkS2PCollisions. Corretto.
-     *
-     * Un pixel appartiene a PF1 se i piani dispari abilitati corrispondono
-     * al valore di match; analogamente per PF2 con i piani pari.
-     * Una collisione PF1-PF2 avviene quando lo stesso pixel appartiene
-     * contemporaneamente a entrambi i playfield.
+     * A pixel belongs to PF1 if the enabled odd planes match the match value; likewise for
+     * PF2 with the even planes. A PF1-PF2 collision happens when the same pixel belongs to
+     * both playfields at once.
      */
     private void checkP2PCollisions() {
-        // FIX collisioni: la collisione playfield-playfield è il bit 0 di
-        // CLXDAT (HRM §7), non il bit 14 (che è sprite 4/5 vs 6/7).
-        if ((clxdat & 0x0001) != 0) return;  // già rilevata
+        // The playfield-playfield collision is bit 0 of CLXDAT (HRM), not bit 14 (which is
+        // sprite 4/5 vs 6/7).
+        if ((clxdat & 0x0001) != 0) return;  // already detected
 
-        // FIX 8: maschere corrette per PF1 e PF2
-        // FIX collisioni: match mascherato con l'enable (vAmiga: mvbp() & enabled)
+        // Masks for PF1 and PF2; the match is masked with the enable
         int enabled1 = (clxcon >> 6) & 0x15;
         int enabled2 = (clxcon >> 6) & 0x2A;
         int match1   =  clxcon       & 0x15 & enabled1;
@@ -2339,38 +2168,36 @@ public abstract class AbstractDenise {
     }
 
     // =========================================================================
-    // Fase 6: colorize — traduce indici palette in RGB e scrive sul display
+    // Phase 6: colorize, turns palette indices into RGB and writes to the display
     // =========================================================================
 
     private void colorize(int vpos) {
-        // Riparti dallo stato colore EREDITATO dalla riga precedente: i write di
-        // questa riga hanno già aggiornato palette[] live, ma il replay dei
-        // colChanges deve applicarli ai loro trigger. Ripristinando lo snapshot di
-        // inizio riga, il segmento prima della prima change usa il colore vecchio
-        // (corretto) e il replay riporta palette[] allo stato di fine riga.
+        // Start again from the colour state INHERITED from the previous line: this line's
+        // writes have already updated the live palette[], but the replay of colChanges must
+        // apply them at their triggers. Restoring the start-of-line snapshot, the segment
+        // before the first change uses the old (correct) colour and the replay brings
+        // palette[] back to the end-of-line state.
         System.arraycopy(paletteLineStart, 0, palette, 0, 32);
         int     pixel   = 0;
         int     hold    = palette[0];
         boolean hamMode = isHamActive(initialBplcon0);
-        // ⛔ Anche EHB segue BPLCON0 dentro la riga, esattamente come HAM. Prima veniva
-        // deciso una volta sola da initialBplcon0 (lo snapshot di inizio riga): una riga
-        // in cui il Copper porta BPU a 6 dopo l'inizio veniva colorata TUTTA a piena
-        // luminosità, e quella è una riga sola per schermata — la prima del blocco a sei
-        // piani di `BPLPTR/drop6x` e `dropcpu6x` (riga 22), $88F invece di $447.
-        // Nell'oracolo `bplehb` è ricalcolato da `update_mode()` a ogni scrittura di
-        // BPLCON0 e il decoder lo legge vivo (drawing.cpp:2791).
+        // EHB also follows BPLCON0 within the line, exactly like HAM. Decided once from
+        // initialBplcon0 (the start-of-line snapshot), a line on which the Copper raises BPU
+        // to 6 after the start would be coloured ENTIRELY at full brightness: one line per
+        // screen, the first of the six-plane block of `BPLPTR/drop6x` and `dropcpu6x`
+        // (line 22), $88F instead of $447.
         int curBplcon0 = initialBplcon0;
         boolean killEhb = ehbKilled(initialBplcon2);
         boolean ehbMode = isEHB(curBplcon0) && !killEhb;
-        // ⛔ Il bit DPF serve al decoder HAM ed è quello GREZZO, non quello della catena di
-        // priorità: `decode_ham_pixel()` guarda `bpldualpf` (bit 10 di BPLCON0) anche quando
-        // il modo è HAM. Vedi dualPlayfieldIndex().
+        // The DPF bit the HAM decoder needs is the RAW one (bit 10 of BPLCON0), not the one
+        // of the priority chain: the decoder looks at it even when the mode is HAM. See
+        // dualPlayfieldIndex().
         boolean hamDpf  = (initialBplcon0 & 0x0400) != 0;
-        // PF2PRI parte dallo snapshot di inizio riga e poi segue le scritture della riga:
-        // le porta colChanges, dove BPLCON2 entra quando il bit cambia. Lo pretendono
-        // `BPLCON2/dualpf3` e `dualpf7`, i due test DPF+HAM in cui il Copper abbassa
-        // PF2PRI a metà schermata: senza, la banda a PF1 davanti cominciava e finiva una
-        // riga dopo.
+        // PF2PRI starts from the start-of-line snapshot and then follows the line's writes,
+        // carried by colChanges, where BPLCON2 enters when the bit changes. Required by
+        // `BPLCON2/dualpf3` and `dualpf7`, the two DPF+HAM tests in which the Copper lowers
+        // PF2PRI in the middle of the screen: without it the band with PF1 in front would
+        // start and end one line late.
         boolean hamDpfPri = (initialBplcon2 & 0x0040) != 0;
         int     colIdx  = 0;
 
@@ -2401,16 +2228,16 @@ public abstract class AbstractDenise {
 
     private void colorizeNormal(int vpos, int from, int to, boolean ehb, boolean killEhb) {
         for (int i = from; i < to && i < HPIXELS; i++) {
-            // lineIsVBorder → riga senza output bitplane: tutta bordo (niente sprite)
-            // bBuffer[i] == 0xFF → pixel interno al DIW → usa mBuffer (indice finale)
-            // bBuffer[i] != 0xFF → pixel bordo → usa borderColor (indice 0)
+            // lineIsVBorder -> line with no bitplane output: all border (no sprites)
+            // bBuffer[i] == 0xFF -> pixel inside the DIW -> uses mBuffer (final index)
+            // bBuffer[i] != 0xFF -> border pixel -> uses borderColor (index 0)
             int cIdx  = lineIsVBorder ? (borderColor & 0x3F)
                       : (bBuffer[i] == (byte) 0xFF) ? (mBuffer[i] & 0x3F) : (bBuffer[i] & 0x3F);
             int color;
             if ((cIdx & 0x20) == 0) {
                 color = palette[cIdx];
             } else if (ehb) {
-                // Extra-Half-Brite: luminosità dimezzata su tutti e tre i canali
+                // Extra Half-Brite: brightness halved on all three channels
                 color = palette[cIdx & 0x1F];
                 int r = ((color >> 8) & 0xF) >> 1;
                 int g = ((color >> 4) & 0xF) >> 1;
@@ -2435,70 +2262,65 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Colorize in modalità HAM (Hold-And-Modify).
+     * Colorize in HAM (Hold-And-Modify) mode.
      *
-     * In HAM i 6 bit del dBuffer vanno interpretati così:
-     *   op  = dBuffer[5:4]  (00=palette, 01=modify-B, 10=modify-R, 11=modify-G)
+     * In HAM the 6 bits of dBuffer mean:
+     *   op  = dBuffer[5:4]  (00 = palette, 01 = modify B, 10 = modify R, 11 = modify G)
      *   val = dBuffer[3:0]
      *
-     * FIX 5: la maschera 0x5555 per rilevare sprite era errata.
-     *   Sostituita con Z_ALL_SPRITES (0x6BB0).
-     *   Aggiunto check corretto di priorità: uno sprite interrompe HAM
-     *   solo se la sua Z è maggiore di quella del playfield corrente.
+     * A sprite interrupts HAM only if its Z is above that of the current playfield
+     * (Z_ALL_SPRITES detects the sprite bits).
      *
-     * FIX 6: nell'area bordo (bBuffer != 0xFF) il registro hold NON deve
-     *   essere aggiornato. Sul vero hardware il bitplane non emette dati
-     *   nel bordo, quindi l'operazione HAM non avviene e hold persiste.
-     *   (Il colore mostrato è sempre palette[0], ma hold rimane inalterato.)
+     * In the border (bBuffer != 0xFF) the hold register is NOT updated: the bitplanes emit
+     * no data there, so no HAM operation happens and hold persists. (The colour shown is
+     * always palette[0], but hold is unchanged.)
      *
-     * @param hold  ultimo colore accumulato (12-bit 0x0RGB)
-     * @return      nuovo valore di hold al termine del segmento
+     * @param hold  last accumulated colour (12-bit 0x0RGB)
+     * @return      new value of hold at the end of the segment
      */
     private int colorizeHAM(int vpos, int from, int to, int hold, boolean hamDpf,
                             boolean hamDpfPri) {
-        // FIX 5: Z del playfield corrente. HAM è single-playfield: la priorità
-        // verso gli sprite usa PF2P (bit 3-5), come translateSPF e vAmiga.
+        // Z of the current playfield. HAM is single playfield: the priority against the
+        // sprites uses PF2P (bits 3-5), as in translateSPF.
         int zpf = zPF((initialBplcon2 >> 3) & 7);
 
         for (int i = from; i < to && i < HPIXELS; i++) {
             if (lineIsVBorder || bBuffer[i] != (byte) 0xFF) {
-                // FIX 6: area bordo (orizzontale o verticale) — mostra palette[0]
-                // ma NON aggiornare hold. Sul vero hardware il bitplane non produce
-                // output nel bordo, quindi l'operazione HAM non viene eseguita e
-                // hold persiste.
+                // Border area (horizontal or vertical): shows palette[0] but does NOT update
+                // hold. The bitplanes produce no output in the border, so the HAM operation
+                // does not run and hold persists.
                 rgbLine[i] = amigaToRGB(palette[0]);
                 continue;
             }
 
-            // FIX 5: verifica se c'è uno sprite in primo piano rispetto al playfield.
-            // Non basta rilevare la presenza di uno sprite (Z_ALL_SPRITES): lo sprite
-            // deve avere Z maggiore della Z del playfield corrente.
-            // Integer.highestOneBit(sprBits) è la Z del pixel sprite più prioritario.
+            // Is a sprite in front of the playfield? Detecting a sprite (Z_ALL_SPRITES) is
+            // not enough: the sprite's Z must be above the current playfield's Z.
+            // Integer.highestOneBit(sprBits) is the Z of the highest-priority sprite pixel.
             int sprBits = zBuffer[i] & Z_ALL_SPRITES;
             if (sprBits != 0 && Integer.highestOneBit(sprBits) > zpf) {
-                // Lo sprite è visibile sopra il playfield: mostra il colore sprite
-                // ma NON aggiornare hold (il registro HAM non viene toccato).
+                // The sprite is visible above the playfield: show the sprite colour but do
+                // NOT update hold (the HAM register is not touched).
                 rgbLine[i] = amigaToRGB(palette[mBuffer[i] & 0x1F]);
                 continue;
             }
 
-            // Processo HAM: decodifica op e val dai 6 bit grezzi del bitplane
+            // HAM: decode op and val from the bitplane's 6 raw bits
             int s   = dBuffer[i] & 0x3F;
             int op  = (s >> 4) & 3;
-            // ⛔ HAM + dual-playfield: l'operazione resta quella di HAM (bit 5:4), ma il
-            // VALORE non è più `s & 0xF` — è l'indice risolto dalla PRIORITÀ dei due
-            // playfield. Vedi dualPlayfieldIndex().
+            // HAM + dual playfield: the operation is still HAM's (bits 5:4), but the VALUE is
+            // no longer `s & 0xF`: it is the index resolved by the PRIORITY of the two
+            // playfields. See dualPlayfieldIndex().
             int val = hamDpf ? (dualPlayfieldIndex(s, hamDpfPri) & 0xF) : (s & 0xF);
             int r   = (hold >> 8) & 0xF;
             int g   = (hold >> 4) & 0xF;
             int b   =  hold       & 0xF;
             switch (op) {
-                // op 0 sceglie dalla palette: in HAM+DPF l'indice e' quello risolto, non `val`.
+                // op 0 picks from the palette: in HAM+DPF the index is the resolved one, not `val`.
                 case 0: hold = palette[(hamDpf ? dualPlayfieldIndex(s, hamDpfPri) : val) & 0x1F];
                         break;
-                case 1: b = val; hold = (r<<8)|(g<<4)|b;    break; // modifica B
-                case 2: r = val; hold = (r<<8)|(g<<4)|b;    break; // modifica R
-                case 3: g = val; hold = (r<<8)|(g<<4)|b;    break; // modifica G
+                case 1: b = val; hold = (r<<8)|(g<<4)|b;    break; // modify B
+                case 2: r = val; hold = (r<<8)|(g<<4)|b;    break; // modify R
+                case 3: g = val; hold = (r<<8)|(g<<4)|b;    break; // modify G
             }
             rgbLine[i] = amigaToRGB(hold);
         }
@@ -2510,13 +2332,11 @@ public abstract class AbstractDenise {
     // =========================================================================
 
     /**
-     * STEP 9 (PERFORMANCE_REPORT_FINAL): LUT precalcolata per la conversione
-     * colore Amiga 12-bit (0x0RGB) → RGB 24-bit.
+     * Precomputed LUT for converting the 12-bit Amiga colour (0x0RGB) to 24-bit RGB.
      *
-     * amigaToRGB() è chiamata per ogni pixel colorizzato; la versione originale
-     * eseguiva 3 shift + 3 moltiplicazioni. La LUT (4096 × int = 16 KB, sempre in
-     * cache L1/L2) sostituisce il calcolo con un singolo load. I valori sono
-     * identici bit-per-bit alla formula originale (replica della nibble: 0xF→0xFF).
+     * amigaToRGB() is called for every colorized pixel; the LUT (4096 ints = 16 KB, always
+     * in L1/L2 cache) replaces 3 shifts and 3 multiplications with a single load. The values
+     * replicate the nibble (0xF -> 0xFF).
      */
     private static final int[] AMIGA_RGB_LUT = new int[4096];
     static {
@@ -2529,19 +2349,10 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * LUT dell'ORACOLO usata dai test di regressione vAmigaTS. I riferimenti
-     * {@code .raw} sono rigenerati con WinUAE cycle-exact (vedi
-     * {@code WinUAE-master/tools/winuae-regdump.sh}), la cui LUT e' stata forzata
-     * alla stessa espansione banale del nibble usata da {@code Palette::RGB}:
-     * {@code nibble<<4} (max 0xF0, NON 0xFF=nibble*0x11), senza gamma ne'
-     * round-trip di colore.
-     *
-     * <p>Fino ai riferimenti generati da vAmiga qui c'era in piu' un round-trip
-     * YUV→RGB la cui troncatura spostava di 1 LSB alcuni colori (es. $F0F →
-     * F0,00,EF invece di F0,00,F0). Quella deformazione era un artefatto di
-     * {@code PixelEngine::adjustRGB} e non esiste in WinUAE: rimossa con la
-     * rigenerazione dei .raw. Attivata solo dai test via
-     * {@link #useVAmigaColorLut}; i giochi usano la LUT standard. */
+     * LUT used by the vAmigaTS regression tests. Their {@code .raw} references expand the
+     * nibble trivially, {@code nibble<<4} (max 0xF0, NOT 0xFF = nibble*0x11), with no gamma
+     * and no colour round trip. Enabled only by the tests through
+     * {@link #useVAmigaColorLut}; games use the standard LUT. */
     private static final int[] VAMIGA_RGB_LUT = new int[4096];
     static {
         for (int c = 0; c < 4096; c++) {
@@ -2552,67 +2363,50 @@ public abstract class AbstractDenise {
         }
     }
 
-    /** Se true, {@link #amigaToRGB} usa la LUT esatta di vAmiga (test di
-     *  regressione vAmigaTS). Default false: i giochi mantengono la LUT standard
-     *  nibble*0x11 (nessuna regressione sul golden CRC). */
+    /** If true, {@link #amigaToRGB} uses the test LUT (vAmigaTS regression tests). Default
+     *  false: games keep the standard nibble*0x11 LUT (golden CRCs unchanged). */
     public static volatile boolean useVAmigaColorLut = false;
 
-    /** Converte il colore 12-bit Amiga (0x0RGB) in RGB a 24 bit (via LUT).
-     *  Il mask & 0xFFF replica il comportamento originale (solo i 12 bit bassi
-     *  contribuiscono, gli altri venivano ignorati dagli shift). */
+    /** Converts the 12-bit Amiga colour (0x0RGB) to 24-bit RGB (through the LUT). The
+     *  & 0xFFF mask keeps only the 12 low bits, the only ones that contribute. */
     private static int amigaToRGB(int c) {
         return (useVAmigaColorLut ? VAMIGA_RGB_LUT : AMIGA_RGB_LUT)[c & 0xFFF];
     }
 
     /**
-     * Calcola la coordinata Y effettiva sul display tenendo conto dell'interlace.
-     * Se LACE (bit 2 di bplcon0) è attivo, le scanline vengono raddoppiate
-     * e il campo corrente (field 0 o 1) determina se si disegna sulle righe
-     * pari o dispari.
+     * Computes the effective Y coordinate on the display, taking interlace into account. If
+     * LACE (bit 2 of bplcon0) is on, scanlines are doubled and the current field (0 or 1)
+     * decides whether even or odd rows are drawn.
      */
 
-    /** HAM attivo se bit 11 (HOMOD) di BPLCON0 è impostato. */
+    /** HAM is on if bit 11 (HOMOD) of BPLCON0 is set. */
     private static boolean isHAM(int bplcon0) {
         return (bplcon0 & 0x0800) != 0;
     }
 
     /**
-     * HAM <b>davvero attivo</b>: il bit c'è <i>e</i> i piani sono più di quattro.
+     * HAM <b>really active</b>: the bit is set <i>and</i> there are more than four planes.
      *
-     * <p>⛔ <b>Con quattro piani o meno HAM non è HAM: è una normale lettura di palette.</b>
-     * L'oracolo lo decide in {@code select_lts()} ({@code drawing.cpp}), dopo aver già
-     * scelto il modo:
-     * <pre>
-     * if (denise_max_planes &lt;= 4 &amp;&amp; bm == CMODE_HAM) {
-     *     bm = CMODE_NORMAL;
-     * }
-     * </pre>
-     * (e appena sopra, il gemello per l'Extra-Half-Brite con {@code <= 5}).
+     * <p><b>With four planes or fewer HAM is not HAM: it is a normal palette lookup.</b>
+     * The same holds for Extra Half-Brite with five planes or fewer.
      *
-     * <p>⚠️ Con HAM da solo la deroga è <b>invisibile</b>, ed è per questo che non era mai
-     * emersa: con ≤ 4 piani i bit 5:4 del pixel sono zero, l'operazione HAM è sempre «scegli
-     * dalla palette» e il risultato coincide con la lettura normale. Si vede solo quando
-     * <b>c'è anche il DPF</b>, perché lì l'operazione 0 userebbe l'indice risolto dalla
-     * priorità invece del pixel grezzo — e allora i due modi divergono.
+     * <p>With HAM alone the exception is <b>invisible</b>: with four planes or fewer bits 5:4
+     * of the pixel are zero, the HAM operation is always "pick from the palette" and the
+     * result is the normal lookup. It shows only when <b>DPF is on too</b>, because there
+     * operation 0 would use the index resolved by the priority instead of the raw pixel.
      *
-     * <p>⚠️ L'oracolo usa {@code denise_max_planes}, che è il <b>massimo raggiunto nella
-     * riga</b> e non il valore corrente («if plane count decreases mid-scanline, old data in
-     * higher plane count shifters must be still shifted out»). Qui si usa il conteggio
-     * corrente: nessun test del banco cambia BPU dentro la riga sotto HAM. ⏸ Se un giorno
-     * servisse, il massimo di riga va tenuto in un campo e azzerato all'hsync.
+     * <p>The plane count used is the current one, not the maximum reached in the line: no
+     * test of the bank changes BPU within a line under HAM.
      */
     private static boolean isHamActive(int bplcon0) {
         return isHAM(bplcon0) && deniseBpu(bplcon0) > 4;
     }
 
     /**
-     * Extra Half-Brite attivo quando BPU=6 e HAM=0.
-     *
-     * FIX 1: la versione precedente controllava il bit 7 di BPLCON0 (GAUD =
-     * genlock audio enable), che NON ha relazione con EHB. Su OCS/ECS la
-     * modalità EHB non ha un bit di abilitazione esplicito: si attiva
-     * automaticamente quando si usano 6 piani senza HAM.
-     * (Rif: HW Ref Manual §7, "Extra Half-Brite Mode")
+     * Extra Half-Brite is on when BPU = 6 (or 7 in lores) with neither HAM nor dual
+     * playfield. On OCS/ECS EHB has no explicit enable bit: 6 planes without HAM turn it on.
+     * Bit 7 of BPLCON0 (GAUD, genlock audio enable) has nothing to do with it.
+     * (HRM, "Extra Half-Brite Mode")
      */
     /**
      * KILLEHB (BPLCON2 bit 9), an ECS Denise bit: it turns Extra-Half-Brite off and the sixth
@@ -2633,124 +2427,109 @@ public abstract class AbstractDenise {
     }
 
     /**
-     * Dual-playfield — <b>e HAM non deve essere acceso</b>.
+     * Dual playfield, <b>and HAM must not be on</b>.
      *
-     * <p>⛔ <b>I modi di Denise sono una CATENA DI PRIORITÀ, non tre bit indipendenti.</b>
-     * L'oracolo la scrive in una riga sola ({@code setbplmode()}, {@code drawing.cpp}):
+     * <p><b>Denise's modes are a PRIORITY CHAIN, not three independent bits.</b>
      * <pre>
-     * if      (bplham)               bplmode_next = CMODE_HAM;
-     * else if (bpldualpf)            bplmode_next = CMODE_DUALPF;
-     * else if (bplehb &amp;&amp; bplehb_eke) bplmode_next = CMODE_EXTRAHB_ECS_KILLEHB;
-     * else if (bplehb)               bplmode_next = CMODE_EXTRAHB;
-     * else                           bplmode_next = CMODE_NORMAL;
+     * if      (ham)               mode = HAM;
+     * else if (dualpf)            mode = DUALPF;
+     * else if (ehb &amp;&amp; killehb)    mode = EXTRAHB_ECS_KILLEHB;
+     * else if (ehb)               mode = EXTRAHB;
+     * else                        mode = NORMAL;
      * </pre>
-     * ⇒ <b>HAM vince su tutto</b>, il dual-playfield viene dopo, e l'Extra-Half-Brite si
-     * accende solo se non c'è né l'uno né l'altro:
+     * <b>HAM wins over everything</b>, dual playfield comes next, and Extra Half-Brite is on
+     * only if neither is:
      * <pre>
-     * bplehb = (denise_planes == 6 || (!aga_mode &amp;&amp; denise_planes == 7))
-     *          &amp;&amp; !bplham &amp;&amp; !bpldualpf &amp;&amp; (!ecs_denise || !(bplcon2_denise &amp; 0x200));
+     * ehb = (planes == 6 || planes == 7) &amp;&amp; !ham &amp;&amp; !dualpf
+     *       &amp;&amp; (!ecs_denise || !(bplcon2 &amp; 0x200));
      * </pre>
      *
-     * <p>⚠️ Noi trattavamo i tre come indipendenti: {@code translate()} sceglieva il
-     * dual-playfield dal solo bit 10 e {@code colorize()} decideva HAM per conto suo, così
-     * con <b>HAM e DPF accesi insieme</b> — che i manuali non definiscono — risolvevamo le
-     * priorità come dual-playfield e poi decodificavamo HAM sopra il risultato. È la classe
-     * B del §16: {@code block3}, {@code block3m}, {@code modes3/3b/3c}, {@code modes4},
-     * {@code invprio3}, cioè tutti e soli i test in cui BPLCON0 ha bit 11 e bit 10 alti.
+     * <p>With <b>HAM and DPF on together</b>, which the manuals do not define, the
+     * priorities are NOT resolved as dual playfield with HAM decoded on top: that is
+     * class B of section 16, {@code block3}, {@code block3m}, {@code modes3/3b/3c},
+     * {@code modes4}, {@code invprio3}, i.e. exactly the tests in which BPLCON0 has bits 11
+     * and 10 set.
      *
-     * <p>Su ECS KILLEHB (bit 9 di BPLCON2) spegne l'Extra-Half-Brite: vedi {@link #ehbKilled}.
+     * <p>On ECS KILLEHB (bit 9 of BPLCON2) turns Extra Half-Brite off: see {@link #ehbKilled}.
      */
     private static boolean isDualPlayfield(int bplcon0) {
         return (bplcon0 & 0x0400) != 0 && !isHAM(bplcon0);
     }
 
     /**
-     * L'indice di colore che il <b>dual-playfield</b> risolve per il pixel grezzo
-     * {@code pv}: si separano i due playfield e vince quello che ha priorità, con l'altro
-     * usato solo dove il primo è trasparente.
+     * The colour index <b>dual playfield</b> resolves for the raw pixel {@code pv}: the two
+     * playfields are separated and the one with priority wins, the other being used only
+     * where the first is transparent.
      *
-     * <p>⛔ <b>Serve anche in HAM</b>, ed è il difetto che chiudeva la classe B del §16.
-     * Con HAM e DPF accesi insieme l'operazione resta quella di HAM — la scelgono i bit 5:4
-     * del pixel — ma il <b>valore</b> non è più {@code pv & 0xF}: è questo indice.
-     * L'oracolo ha un ramo apposta in {@code decode_ham_pixel()} ({@code drawing.cpp}):
+     * <p><b>Needed in HAM too.</b> With HAM and DPF on together the operation is still HAM's,
+     * chosen by bits 5:4 of the pixel, but the <b>value</b> is no longer {@code pv & 0xF}:
+     * it is this index.
      * <pre>
      * } else {   /&#42; OCS/ECS mode HAM6 + DPF &#42;/
-     *     int *lookup = bpldualpfpri ? dblpf_ind2 : dblpf_ind1;
+     *     int *lookup = dualpfpri ? dblpf_ind2 : dblpf_ind1;
      *     int idx = lookup[pv];
      *     switch (pv &amp; 0x30) {
-     *         case 0x00: ham_lastcolor = color_regs_ecs[idx]; break;
+     *         case 0x00: ham_lastcolor = color_regs[idx]; break;
      *         case 0x10: ham_lastcolor &amp;= 0xFF0; ham_lastcolor |= (idx &amp; 0xF); break;
      *         ...
      * </pre>
-     * ⚠️ E il {@code bpldualpf} che lo guida è il bit <b>grezzo</b> di BPLCON0, non il modo
-     * risolto da {@code setbplmode()}: lì HAM vince e il modo è {@code CMODE_HAM}, ma il
-     * decoder guarda comunque il bit 10.
+     * The DPF bit that drives it is the <b>raw</b> bit of BPLCON0, not the resolved mode:
+     * there HAM wins and the mode is HAM, but the decoder still looks at bit 10.
      *
-     * <p>La tabella è {@code gen_pfield_tables()}, riprodotta qui alla lettera:
+     * <p>The table:
      * <pre>
-     * plane1 = bit 0,2,4,6 del pixel   →  playfield 1 (piani dispari)
-     * plane2 = bit 1,3,5,7 del pixel   →  playfield 2 (piani pari), +8 se non zero
-     * plane1x = (pv &amp; 0x40) ? 0 : plane1     // "invalid value emulation" di BPLCON2
+     * plane1 = bits 0,2,4,6 of the pixel  ->  playfield 1 (odd planes)
+     * plane2 = bits 1,3,5,7 of the pixel  ->  playfield 2 (even planes), +8 if not zero
+     * plane1x = (pv &amp; 0x40) ? 0 : plane1     // "invalid value emulation" of BPLCON2
      * plane2x = (pv &amp; 0x80) ? 0 : plane2
-     * dblpf_ind1[pv] = plane1 == 0 ? plane2x : plane1x;   // PF1 davanti
-     * dblpf_ind2[pv] = plane2 == 0 ? plane1x : plane2x;   // PF2 davanti (PF2PRI)
+     * dblpf_ind1[pv] = plane1 == 0 ? plane2x : plane1x;   // PF1 in front
+     * dblpf_ind2[pv] = plane2 == 0 ? plane1x : plane2x;   // PF2 in front (PF2PRI)
      * </pre>
      *
-     * <p>⚠️ <b>Verificato in aritmetica, non a occhio</b>: sul pixel {@code pv = $1F} di
-     * {@code block3} la tabella dà {@code plane1 = 7}, {@code plane2 = 3+8 = 11},
-     * {@code dblpf_ind1 = 7}; con l'operazione {@code $10} (modifica blu) il colore diventa
-     * {@code 000070}, che è esattamente il pixel dell'oracolo dove noi davamo {@code 0000F0}.
+     * <p><b>Checked arithmetically</b>: on pixel {@code pv = $1F} of {@code block3} the table
+     * gives {@code plane1 = 7}, {@code plane2 = 3+8 = 11}, {@code dblpf_ind1 = 7}; with
+     * operation {@code $10} (modify blue) the colour becomes {@code 000070}, exactly the
+     * reference pixel.
      *
-     * <p>⏸ I bit 6 e 7 — che l'oracolo usa per emulare i valori <b>non validi</b> di
-     * priorità in BPLCON2 — qui sono sempre zero: il nostro {@code dBuffer} porta sei piani.
-     * È materia della classe A ({@code invprio}), non di questa.
+     * <p>Bits 6 and 7 mark the playfield made transparent by an invalid priority (see
+     * {@link #deniseSpecials}).
      */
     /**
-     * Le due funzioni <b>non documentate</b> che Denise ha quando una priorità di playfield
-     * in BPLCON2 vale <b>5 o più</b> — cioè punta a un playfield che non esiste.
-     * L'oracolo le sceglie in {@code update_specials()} e le applica in
-     * {@code decode_denise_specials()}, sul pixel <b>grezzo</b> e <b>dopo</b> il calcolo
-     * delle collisioni:
+     * The two <b>undocumented</b> functions Denise has when a playfield priority in BPLCON2
+     * is <b>5 or more</b>, i.e. points to a playfield that does not exist. They are applied
+     * to the <b>raw</b> pixel, <b>after</b> the collisions are computed:
      * <pre>
-     * decode_specials = 0;
-     * if (!aga_mode) {
-     *   if ((bplmode == CMODE_NORMAL || bplmode == CMODE_EXTRAHB || ...)
-     *       &amp;&amp; denise_planes &gt;= 5 &amp;&amp; plf2pri &gt;= 5)      decode_specials = 1;
-     *   if (bplmode == CMODE_DUALPF &amp;&amp; (plf1pri &gt;= 5 || plf2pri &gt;= 5))
-     *                                                    decode_specials = 2;
-     * }
+     * specials = 0;
+     * if ((mode == NORMAL || mode == EXTRAHB || ...) &amp;&amp; planes &gt;= 5 &amp;&amp; plf2pri &gt;= 5)
+     *                                                    specials = 1;
+     * if (mode == DUALPF &amp;&amp; (plf1pri &gt;= 5 || plf2pri &gt;= 5))
+     *                                                    specials = 2;
      * </pre>
      *
-     * <p><b>1 — «SWIV»</b>, playfield singolo: con almeno 5 piani e PF2P ≥ 5, se il bit del
-     * <b>piano 5</b> è acceso <i>tutti gli altri piani sono ignorati</i> e l'indice diventa
-     * esattamente 16. L'oracolo la chiama come il gioco che la usa (il pannello punteggi di
-     * SWIV).
+     * <p><b>1, "SWIV"</b>, single playfield: with at least 5 planes and PF2P >= 5, if the bit
+     * of <b>plane 5</b> is set <i>all the other planes are ignored</i> and the index becomes
+     * exactly 16. Named after the game that uses it (the score panel of SWIV).
      *
-     * <p><b>2 — playfield TRASPARENTE</b>, dual-playfield: il playfield la cui priorità è
-     * ≥ 5 mantiene la sua precedenza — continua a coprire l'altro — ma il suo colore diventa
-     * COLOR00. Si segnala accendendo i bit 6 e 7 del pixel, che sono i bit «inutilizzati» dei
-     * piani su OCS/ECS ed è esattamente per questo che
-     * {@link #dualPlayfieldIndex(int, boolean)} li legge: {@code plane1x} e {@code plane2x}
-     * diventano 0 mentre {@code plane1}/{@code plane2} restano non nulli, quindi la priorità
-     * non cambia e il colore sì. (Il logo di Running Man / Scoopex.)
+     * <p><b>2, TRANSPARENT playfield</b>, dual playfield: the playfield whose priority is
+     * >= 5 keeps its precedence (it still covers the other) but its colour becomes COLOR00.
+     * It is signalled by setting bits 6 and 7 of the pixel, the "unused" plane bits on
+     * OCS/ECS, which is exactly why {@link #dualPlayfieldIndex(int, boolean)} reads them:
+     * {@code plane1x} and {@code plane2x} become 0 while {@code plane1}/{@code plane2} stay
+     * non-zero, so the priority does not change and the colour does. (The Running Man /
+     * Scoopex logo.)
      *
-     * @param pv       pixel grezzo a 6 bit
-     * @param planes   piani che Denise sta componendo
-     * @param dpf      true se il modo è dual-playfield
+     * @param pv       raw 6-bit pixel
+     * @param planes   planes Denise is composing
+     * @param dpf      true if the mode is dual playfield
      * @param plf1pri  PF1P = {@code bplcon2 & 7}
      * @param plf2pri  PF2P = {@code (bplcon2 >> 3) & 7}
      */
     private static int deniseSpecials(int pv, int planes, boolean dpf,
                                       int plf1pri, int plf2pri) {
-        // ⛔ ENTRAMBE le funzioni vogliono ALMENO CINQUE PIANI, e la soglia non sta in
-        // `update_specials()`: sta nel GENERATORE delle routine di rendering.
-        // `genlinetoscr.cpp` emette la chiamata a `decode_denise_specials()` solo dentro
-        // le varianti con più di quattro piani —
-        //     if (planes > 4) { outf("if (decode_specials) {");
-        //                       outf("  pix%d = decode_denise_specials(pix%d);", i, i); }
-        // — quindi nelle varianti `p2` e `p4` la specials NON viene mai applicata, per
-        // quanto `decode_specials` valga 2. È il motivo per cui leggere `update_specials()`
-        // e `decode_denise_specials()` non bastava: la condizione è in un file generato.
+        // BOTH functions need AT LEAST FIVE PLANES, and the threshold belongs to the
+        // rendering routine, not to the choice of the special: only the variants with more
+        // than four planes apply it, so with 2 or 4 planes the special is never applied,
+        // even when it reads 2.
         if (planes < 5) {
             return pv;
         }
@@ -2759,7 +2538,7 @@ public abstract class AbstractDenise {
             if (plf2pri >= 5 && (pv & 0x2A) != 0) pv |= 0x80;
             return pv;
         }
-        // Playfield singolo: la regola «SWIV».
+        // Single playfield: the "SWIV" rule.
         if (plf2pri >= 5 && (pv & 0x10) != 0) return 0x10;
         return pv;
     }
@@ -2778,13 +2557,13 @@ public abstract class AbstractDenise {
     // API pubblica aggiuntiva
     // =========================================================================
 
-    /** Segnala al chip Agnus un evento light pen (BPLCON0 bit 3 = LPEN). */
+    /** Signals a light pen event to Agnus (BPLCON0 bit 3 = LPEN). */
     public void triggerLightPen() {
         if ((bplcon0 & 0x0008) != 0 && agnus != null) agnus.triggerLightPen();
     }
 
-    // Disarmo esplicito (debug/harness). Tocca ANCHE lo snapshot d'inizio riga,
-    // altrimenti scanSprites() lo riporterebbe indietro al prossimo hsync.
+    // Explicit disarm (debug/harness). It ALSO touches the start-of-line snapshot, or
+    // scanSprites() would bring it back at the next hsync.
     public void disarmAllSprites()          { armed = 0; armedLineStart = 0; }
     public void disarmSprite(int idx)       {
         if (idx >= 0 && idx < 8) { armed &= ~(1 << idx); armedLineStart &= ~(1 << idx); }
@@ -2792,22 +2571,22 @@ public abstract class AbstractDenise {
     public void setGamePort1(GamePort p)    { gamePort1 = p; }
     public void setGamePort2(GamePort p)    { gamePort2 = p; }
     public int  getBplcon0()                { return bplcon0; }
-    public int  getBpu()                    { return bpu; }     // piani DISEGNATI, vedi deniseBpu()
-    /** BPU grezzo di BPLCON0, senza nessuna clamp: è quello che Agnus filtra da sé. */
+    public int  getBpu()                    { return bpu; }     // planes DRAWN, see deniseBpu()
+    /** Raw BPU of BPLCON0, with no clamp: the value Agnus filters by itself. */
     public int  getRawBpu()                 { return (bplcon0 >> 12) & 7; }
-    /** {@code true} se una word e' ancora da caricare negli shift register: vedi
-     *  AbstractAgnus.handleBitplaneDrawEvent, dove e' il gate del disegno al posto di DMACON. */
+    /** {@code true} if a word is still to be loaded into the shift registers: see
+     *  AbstractAgnus.handleBitplaneDrawEvent, where it gates the drawing instead of DMACON. */
     public boolean isBitplaneArmed()        { return armedOdd || armedEven; }
 
     public boolean isHires()                { return hires; }   // (bplcon0 & 0x8000)!=0, cached
-    /** LACE (BPLCON0 bit 2): il display alterna due semiquadri sfalsati di mezza riga. */
+    /** LACE (BPLCON0 bit 2): the display alternates two fields offset by half a line. */
     public boolean isInterlaced()           { return (bplcon0 & 0x0004) != 0; }
     public int[] getRgbLine()               { return rgbLine; }
     /**
-     * RGB del COLOR00 (bordo) LIVE, usando la stessa LUT di {@link #amigaToRGB}. Serve
-     * al bordo-destro deep-HBLANK (VirtualCRT): l'ultimo CCK visibile di una riga mostra
-     * il COLOR00 al beam cck 0 della riga SEGUENTE (vAmiga Beam::pixel wrap, "belongs to
-     * the previous line"). Campionato a inizio riga successiva (dopo l'eventuale write a cck 0).
+     * RGB of the LIVE COLOR00 (border), through the same LUT as {@link #amigaToRGB}. Used by
+     * the deep-HBLANK right border (VirtualCRT): the last visible CCK of a line shows the
+     * COLOR00 at beam CCK 0 of the NEXT line (the wrap cell belongs to the previous line).
+     * Sampled at the start of the next line (after any write at CCK 0).
      */
     public int  getLiveColor0Rgb()          { return amigaToRGB(palette[0]); }
 
@@ -2840,33 +2619,31 @@ public abstract class AbstractDenise {
     public int  getLastRenderedBplcon0()    { return lastRenderedBplcon0; }
 
     /**
-     * True se la scanline appena renderizzata da {@link #hsyncHandler(int)} è
-     * interamente bordo verticale (il gate di BPL1DAT non si apre mai nella riga:
-     * {@link #lineIsVBorder}), false se i bitplane hanno prodotto pixel. È l'analogo di
-     * WinUAE {@code thisframe_*_drawn_line} (cfr. drawing.cpp finish_playfield_line):
-     * VirtualCRT lo usa per inquadrare il display sull'estensione effettivamente
-     * disegnata invece che sulla finestra DIW (che può essere aperta su tutto
-     * l'overscan, es. It Came From The Desert: DIW [5,320) ma box [72,255]).
+     * True if the scanline just rendered by {@link #hsyncHandler(int)} is entirely vertical
+     * border (the BPL1DAT gate never opens on the line: {@link #lineIsVBorder}), false if
+     * the bitplanes produced pixels. VirtualCRT uses it to frame the display on the extent
+     * actually drawn rather than on the DIW window (which can be open over the whole
+     * overscan, e.g. It Came From The Desert: DIW [5,320) but box [72,255]).
      */
     public boolean isLastLineVBorder()      { return lineIsVBorder; }
 
-    /** Ritorna la coordinata x (in pixel raw) del bordo sinistro della Display Window. */
+    /** Returns the x coordinate (in raw pixels) of the left edge of the display window. */
     public int getDiwHStartPixel()  { return (hstrt - HBLANK_MIN * 2) * 2; }
 
-    /** Ritorna la coordinata x (in pixel raw) del bordo destro della Display Window. */
+    /** Returns the x coordinate (in raw pixels) of the right edge of the display window. */
     public int getDiwHStopPixel()   { return (hstop - HBLANK_MIN * 2) * 2; }
 
     /**
-     * Ritorna il numero di pixel resi dallo sprite {@code idx} nell'ultimo frame
-     * completato (frame corrente escluso, conteggio resettato a ogni vsync).
+     * Returns the number of pixels rendered by sprite {@code idx} in the last completed
+     * frame (current frame excluded, count reset at every vsync).
      */
     public long getSpritePixelCountLastFrame(int idx) {
         return (idx >= 0 && idx < 8) ? spritePixelsLastFrame[idx] : 0;
     }
 
     /**
-     * Ritorna il numero di pixel resi dallo sprite {@code idx} nel frame corrente
-     * (ancora in corso, resettato all'inizio del frame).
+     * Returns the number of pixels rendered by sprite {@code idx} in the current frame
+     * (still in progress, reset at the start of the frame).
      */
     public long getSpritePixelCountThisFrame(int idx) {
         return (idx >= 0 && idx < 8) ? spritePixelsThisFrame[idx] : 0;

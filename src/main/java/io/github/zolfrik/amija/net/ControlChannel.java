@@ -28,29 +28,29 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 
 /**
- * Il canale di controllo: messaggi rari e affidabili su TCP
- * ({@code docs/remote-play-plan.md} §3, §4).
+ * The control channel: rare, reliable messages over TCP ({@code docs/remote-play-plan.md}
+ * sections 3, 4).
  *
- * <p>Ci passano l'handshake e poi pochissimo altro — pausa e ripresa dell'host, ping,
- * chiusura ordinata. Su TCP l'ordine e la consegna sono gratis, quindi il framing e' quanto
- * di piu' semplice possa esistere:
+ * <p>The handshake goes through it and then very little else: host pause and resume, ping,
+ * orderly close. Over TCP ordering and delivery come free, so the framing is as simple as it
+ * gets:
  *
  * <pre>
- *   u16 length     numero di byte che seguono, tipo compreso
+ *   u16 length     number of bytes that follow, type included
  *   u8  type
  *   ... payload
  * </pre>
  *
- * <h2>La lunghezza si controlla prima di allocare</h2>
- * Regola del §8.2, e qui e' facilissima da rispettare: il buffer di ricezione e' <b>uno
- * solo</b>, allocato alla costruzione su {@link RemotePlayProtocol#MAX_CONTROL_MESSAGE}. Un
- * mittente che dichiara di piu' non ottiene memoria: ottiene una eccezione e la chiusura del
- * socket. Nessun messaggio definito arriva a 200 byte, quindi il tetto e' venti volte il
- * necessario e non stringe niente di legittimo.
+ * <h2>The length is checked before allocating</h2>
+ * The rule of section 8.2, very easy to honour here: the receive buffer is <b>a single
+ * one</b>, allocated at construction at {@link RemotePlayProtocol#MAX_CONTROL_MESSAGE}. A
+ * sender that declares more gets no memory: it gets an exception and the socket closed. No
+ * defined message reaches 200 bytes, so the cap is twenty times what is needed and restricts
+ * nothing legitimate.
  *
- * <p>Non e' thread-safe. Nel disegno del gioco a distanza il canale di controllo e' letto da
- * un solo thread e scritto da un solo thread; dove le due cose si incontrano
- * ({@code RemotePlayHost}) la scrittura e' sincronizzata da chi la usa.
+ * <p>Not thread-safe. In the remote play design the control channel is read by a single
+ * thread and written by a single thread; where the two meet ({@code RemotePlayHost}) the
+ * writing is synchronised by the user.
  */
 public final class ControlChannel implements AutoCloseable {
 
@@ -62,7 +62,7 @@ public final class ControlChannel implements AutoCloseable {
     private final byte[] rxBuffer = new byte[RemotePlayProtocol.MAX_CONTROL_MESSAGE];
     private final byte[] txBuffer = new byte[LENGTH_PREFIX + RemotePlayProtocol.MAX_CONTROL_MESSAGE];
 
-    /** Un messaggio ricevuto. Il buffer e' riusato: va consumato prima della prossima lettura. */
+    /** A message received. The buffer is reused: it must be consumed before the next read. */
     public record Message(int type, byte[] data, int length) {
         public ByteBuffer body() {
             return RemotePlayProtocol.wrap(data, 0, length);
@@ -71,7 +71,7 @@ public final class ControlChannel implements AutoCloseable {
 
     public ControlChannel(Socket socket) throws IOException {
         this.socket = socket;
-        socket.setTcpNoDelay(true);   // messaggi minuscoli: Nagle qui aggiunge solo ritardo
+        socket.setTcpNoDelay(true);   // tiny messages: Nagle only adds delay here
         this.in = socket.getInputStream();
         this.out = socket.getOutputStream();
     }
@@ -80,12 +80,12 @@ public final class ControlChannel implements AutoCloseable {
         return socket;
     }
 
-    /** Timeout di lettura, in millisecondi. 0 = attesa indefinita. */
+    /** Read timeout, in milliseconds. 0 = wait indefinitely. */
     public void setTimeout(int millis) throws IOException {
         socket.setSoTimeout(millis);
     }
 
-    /** Manda un messaggio senza corpo. */
+    /** Sends a message without a body. */
     public void send(int type) throws IOException {
         send(type, null, 0, 0);
     }
@@ -112,11 +112,11 @@ public final class ControlChannel implements AutoCloseable {
     }
 
     /**
-     * Legge il prossimo messaggio.
+     * Reads the next message.
      *
-     * @throws java.net.SocketTimeoutException se scade il timeout impostato
-     * @throws EOFException se il peer ha chiuso
-     * @throws ProtocolException se il framing non torna
+     * @throws java.net.SocketTimeoutException if the set timeout expires
+     * @throws EOFException if the peer closed
+     * @throws ProtocolException if the framing does not add up
      */
     public Message receive() throws IOException {
         int total = (readByte() & 0xFF) | ((readByte() & 0xFF) << 8);
@@ -134,10 +134,10 @@ public final class ControlChannel implements AutoCloseable {
     }
 
     /**
-     * Legge il messaggio atteso, o fallisce.
+     * Reads the expected message, or fails.
      *
-     * <p>Durante l'handshake un messaggio fuori sequenza non e' un caso da gestire: e' un
-     * peer che non parla questo protocollo, o non lo parla onestamente. Si chiude.
+     * <p>During the handshake a message out of sequence is not a case to handle: it is a peer
+     * that does not speak this protocol, or does not speak it honestly. Close.
      */
     public Message expect(int type) throws IOException {
         Message m = receive();
@@ -153,36 +153,34 @@ public final class ControlChannel implements AutoCloseable {
         try {
             socket.close();
         } catch (IOException ignored) {
-            // Chiudere e' l'unica cosa che si stava facendo: non c'e' niente da recuperare.
+            // Closing is the only thing being done: there is nothing to recover.
         }
     }
 
     /**
-     * Chiude dopo essersi assicurati che l'ultimo messaggio sia arrivato.
+     * Closes after making sure the last message has arrived.
      *
-     * <p>Serve per il REJECT, e la ragione e' una trappola classica di TCP: chiudere un
-     * socket che ha ancora dati non letti in ingresso fa mandare un <b>RST</b>, e il RST
-     * <i>cancella</i> quel che era gia' partito. Il peer, invece del motivo del rifiuto,
-     * vede una connessione azzerata — cioe' esattamente il messaggio oscuro che il motivo
-     * doveva evitare. Windows lo fa sistematicamente; il collaudo del "secondo ospite" e'
-     * arrivato proprio cosi'.
+     * <p>Needed for the REJECT, because of a classic TCP trap: closing a socket that still has
+     * unread incoming data sends an <b>RST</b>, and the RST <i>cancels</i> what had already left.
+     * Instead of the reason for the refusal the peer sees a reset connection, exactly the
+     * obscure message the reason was meant to avoid. Windows does it systematically.
      *
-     * <p>La cura e' la chiusura a meta': si annuncia la fine dell'invio, si consuma quel
-     * che il peer aveva ancora in canna, e solo allora si chiude davvero.
+     * <p>The cure is the half close: announce the end of sending, consume what the peer still
+     * had in the pipe, and only then really close.
      *
-     * <h2>Svuotare non vuol dire ascoltare all'infinito</h2>
-     * Il timeout del socket limita <b>il silenzio</b>, non la durata: un peer che spedisce
-     * senza sosta fa tornare ogni {@code read} prima della scadenza, e il ciclo non finisce
-     * mai. Non e' una sottigliezza: chi chiama questo metodo sta chiudendo una connessione
-     * che ha appena <b>rifiutato</b>, quindi il peer dall'altra parte non si e' autenticato
-     * e non conosce il join code — e gli bastava parlare per tenersi un thread di
-     * {@code RemotePlayHost} finche' voleva.
+     * <h2>Draining does not mean listening forever</h2>
+     * The socket timeout limits <b>silence</b>, not duration: a peer that sends without pause
+     * makes every {@code read} return before the deadline, and the loop never ends. Not a
+     * subtlety: whoever calls this method is closing a connection it has just <b>refused</b>,
+     * so the peer on the other side has not authenticated and does not know the join code, and
+     * talking would be enough for it to hold a {@code RemotePlayHost} thread as long as it
+     * liked.
      *
-     * <p>Percio' la coda si svuota entro due tetti <i>costanti</i>: {@value #LINGER_MS} ms
-     * complessivi e {@value #LINGER_MAX_BYTES} byte. Oltre, il RST che si voleva evitare e'
-     * comunque preferibile a un thread che non torna. Chi chiama tiene comunque questa
-     * attesa fuori dai propri percorsi critici (vedi {@code RemotePlayHost.closeAside}):
-     * il tetto e' la seconda rete, non la prima.
+     * <p>So the queue is drained within two <i>constant</i> caps: {@value #LINGER_MS} ms in all
+     * and {@value #LINGER_MAX_BYTES} bytes. Beyond them, the RST being avoided is still
+     * preferable to a thread that does not come back. The callers keep this wait off their
+     * critical paths anyway (see {@code RemotePlayHost.closeAside}): the cap is the second net,
+     * not the first.
      */
     public void closeGracefully() {
         try {
@@ -193,23 +191,23 @@ public final class ControlChannel implements AutoCloseable {
             int drained = 0;
             int n;
             while ((n = in.read(sink)) >= 0) {
-                // Si butta: serve solo a svuotare la coda, cosi' la chiusura non e' un RST.
+                // Discarded: it only serves to drain the queue, so the close is not an RST.
                 drained += n;
                 if (drained >= LINGER_MAX_BYTES || System.nanoTime() - deadline >= 0) {
-                    break;   // il peer non sta salutando: sta parlando addosso
+                    break;   // the peer is not saying goodbye: it is talking over us
                 }
             }
         } catch (IOException ignored) {
-            // Il peer se n'e' andato per conto suo: e' l'esito che si voleva comunque.
+            // The peer left on its own: the outcome wanted anyway.
         } finally {
             close();
         }
     }
 
-    /** Quanto si aspetta il peer prima di chiudere davvero, dopo un REJECT. */
+    /** How long to wait for the peer before really closing, after a REJECT. */
     private static final int LINGER_MS = 500;
 
-    /** Quanti byte si accetta di buttare via, in tutto, mentre si svuota la coda. */
+    /** How many bytes in all may be thrown away while draining the queue. */
     private static final int LINGER_MAX_BYTES = 64 * 1024;
 
     // =====================================================================

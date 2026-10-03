@@ -23,12 +23,12 @@ package io.github.zolfrik.amija.net;
 import java.io.IOException;
 
 /**
- * Dati di rete rifiutati: malformati, incoerenti, troppo grandi o non autenticati.
+ * Network data refused: malformed, inconsistent, too large or not authenticated.
  *
- * <p>Come {@code CodecException} per il codec, e' <b>controllata</b> di proposito: i byte
- * che la provocano vengono da fuori, e il compilatore deve costringere chi legge a decidere
- * cosa farne. Nel gioco a distanza la risposta e' sempre la stessa — scarta e continua — ma
- * dev'essere una decisione scritta, non un'omissione.
+ * <p>Like {@code CodecException} for the codec, it is <b>checked</b> on purpose: the bytes that
+ * cause it come from outside, and the compiler must force the reader to decide what to do with
+ * them. In remote play the answer is always the same (discard and carry on), but it must be a
+ * written decision, not an omission.
  */
 public class ProtocolException extends IOException {
 

@@ -23,31 +23,30 @@ package io.github.zolfrik.amija.net.codec;
 import java.util.zip.Deflater;
 
 /**
- * Codificatore video <b>AJV1</b> del gioco a distanza: da un raster RGB e dal suo
- * riferimento produce il payload lossless descritto in {@link FrameCodec}.
+ * <b>AJV1</b> video encoder of remote play: from an RGB raster and its reference it produces
+ * the lossless payload described in {@link FrameCodec}.
  *
- * <p>Funzione pura sul piano logico — stesso ingresso, stessa uscita — ma <b>non</b> priva
- * di stato: possiede i propri buffer di lavoro e non alloca niente per frame, perche' gira
- * 50 volte al secondo. Non e' thread-safe: un'istanza per thread di codifica.
+ * <p>Logically a pure function (same input, same output) but <b>not</b> stateless: it owns
+ * its work buffers and allocates nothing per frame, because it runs 50 times a second. Not
+ * thread-safe: one instance per encoding thread.
  *
- * <h2>La griglia di tile non serve a comprimere, serve a costare poco</h2>
- * Deflate azzererebbe comunque le zone ferme, quindi saltare i tile puliti quasi non cambia
- * i byte sul filo. Cambia il <b>tempo</b>, ed e' li' che si gioca tutto: la Fase 0 ha
- * misurato che una codifica che scandisce l'intero raster costa 2,7-4,0 ms per frame
- * <i>anche a schermo fermo</i>, perche' il lavoro non dipende da quanto e' cambiato. Con la
- * griglia si scende a 0,15-0,4 ms sul caso comune. Un emulatore che gira a 50 fps con poco
- * margine non puo' pagare 4 ms per un frame in cui non si e' mosso niente
- * ({@code docs/remote-play-plan.md} §11.3).
+ * <h2>The tile grid is not for compression, it is for low cost</h2>
+ * Deflate would zero the still areas anyway, so skipping clean tiles hardly changes the bytes
+ * on the wire. It changes the <b>time</b>, and that is what matters: an encoding that scans
+ * the whole raster costs 2.7-4.0 ms per frame <i>even with a still screen</i>, because the
+ * work does not depend on how much changed. With the grid it drops to 0.15-0.4 ms in the
+ * common case. An emulator running at 50 fps with little margin cannot pay 4 ms for a frame
+ * in which nothing moved ({@code docs/remote-play-plan.md} section 11.3).
  *
- * <h2>Dettagli che sembrano micro-ottimizzazioni e non lo sono</h2>
+ * <h2>Details that look like micro-optimisations and are not</h2>
  * <ul>
- *   <li>Il marcatore {@code seen[4096]} della palette si ripulisce <b>solo sulle voci
- *       usate</b>. Un {@code Arrays.fill} su 4096 booleani a ogni frame costerebbe piu'
- *       dell'intera codifica di una scena ferma (0,16 ms).</li>
- *   <li>I due modi si producono in <b>una sola passata</b> sui pixel sporchi, non due:
- *       l'unica conversione a 12 bit alimenta sia gli indici di palette sia lo XOR.</li>
- *   <li>La rilevazione dei tile sporchi confronta gli <b>int RGB</b>, non i 12 bit: cosi'
- *       non serve convertire il raster intero per sapere cosa e' cambiato.</li>
+ *   <li>The palette's {@code seen[4096]} marker is cleared <b>only on the entries used</b>.
+ *       An {@code Arrays.fill} on 4096 booleans every frame would cost more than the whole
+ *       encoding of a still scene (0.16 ms).</li>
+ *   <li>The two modes are produced in <b>a single pass</b> over the dirty pixels, not two:
+ *       the single 12-bit conversion feeds both the palette indices and the XOR.</li>
+ *   <li>Dirty-tile detection compares the <b>RGB ints</b>, not the 12 bits: so the whole
+ *       raster need not be converted to know what changed.</li>
  * </ul>
  */
 public final class FrameEncoder implements AutoCloseable {
@@ -62,14 +61,14 @@ public final class FrameEncoder implements AutoCloseable {
 
     private final boolean[] dirty;
 
-    /** Corpo del modo X: bitmap + 2 byte per pixel sporco. */
+    /** Body of mode X: bitmap + 2 bytes per dirty pixel. */
     private final byte[] bodyXor;
-    /** Corpo del modo P: bitmap + 3 byte di intestazione + max 2 byte/pixel + palette. */
+    /** Body of mode P: bitmap + 3 header bytes + max 2 bytes/pixel + palette. */
     private final byte[] bodyPal;
-    /** Corpo del modo R. Allocato pigramente: in pratica non serve mai (vedi Fase 0). */
+    /** Body of mode R. Allocated lazily: in practice it is never needed. */
     private byte[] bodyRgb;
 
-    /** Uscita compressa dei modi X e R (mutuamente esclusivi) e del modo P. */
+    /** Compressed output of modes X and R (mutually exclusive) and of mode P. */
     private final byte[] outXor;
     private final byte[] outPal;
 
@@ -88,14 +87,14 @@ public final class FrameEncoder implements AutoCloseable {
     private int dirtyPixels;
     private int paletteSize;
     private boolean indexed;
-    /** Lunghezza del corpo NON compresso, -1 se il modo non e' stato prodotto. */
+    /** Length of the UNcompressed body, -1 if the mode was not produced. */
     private int paletteBytes = -1;
     private int xorBytes = -1;
-    /** Lunghezza del payload compresso di ciascun modo, -1 se non prodotto. */
+    /** Length of the compressed payload of each mode, -1 if not produced. */
     private int encodedPaletteBytes = -1;
     private int encodedXorBytes = -1;
 
-    /** Encoder con il livello di compressione di default (quello con cui la Fase 0 ha misurato). */
+    /** Encoder with the default compression level. */
     public FrameEncoder(int width, int height) {
         this(width, height, Deflater.DEFAULT_COMPRESSION);
     }
@@ -122,28 +121,28 @@ public final class FrameEncoder implements AutoCloseable {
     // =====================================================================
 
     /**
-     * Codifica {@code frame} contro {@code reference}, scegliendo il modo piu' piccolo.
+     * Encodes {@code frame} against {@code reference}, choosing the smallest mode.
      *
-     * @param frame     raster RGB, {@code width*height} pixel; i bit 24..31 sono ignorati
-     * @param reference raster di riferimento con la stessa geometria, oppure {@code null}
-     *                  per un <b>keyframe</b> (delta contro il nero)
-     * @return la lunghezza del payload, che si legge in {@link #payload()}
+     * @param frame     RGB raster, {@code width*height} pixels; bits 24..31 are ignored
+     * @param reference reference raster with the same geometry, or {@code null} for a
+     *                  <b>keyframe</b> (delta against black)
+     * @return the length of the payload, read through {@link #payload()}
      */
     public int encode(int[] frame, int[] reference) {
         return encode(frame, reference, FrameCodec.MODE_AUTO);
     }
 
     /**
-     * Come {@link #encode(int[], int[])} ma con il modo imposto.
+     * Like {@link #encode(int[], int[])} but with the mode imposed.
      *
-     * <p>Serve ai test per esercitare rami che la scelta automatica non raggiungerebbe mai
-     * (il ripiego a 12 bit grezzi del modo P non e' mai stato osservato in Fase 0), e sara'
-     * la leva dell'eventuale <b>isteresi</b> del §4.1: tenere il modo che ha vinto l'ultimo
-     * frame dimezza il lavoro di codifica sul picco. Va fatta solo se la misura la chiede.
+     * <p>Used by the tests to exercise branches the automatic choice would never reach (the
+     * raw 12-bit fallback of mode P has never been observed), and the lever for a possible
+     * <b>hysteresis</b> (section 4.1): keeping the mode that won the last frame halves the
+     * encoding work at the peak. To be done only if measurement calls for it.
      *
-     * <p>Il modo imposto non e' una garanzia: se il frame contiene un pixel fuori dai 4096
-     * colori Amiga si ripiega comunque sul modo R, perche' l'alternativa sarebbe spedire
-     * un frame sbagliato.
+     * <p>The imposed mode is not a guarantee: if the frame contains a pixel outside the 4096
+     * Amiga colours, mode R is used anyway, because the alternative would be sending a wrong
+     * frame.
      */
     public int encode(int[] frame, int[] reference, int forcedMode) {
         if (closed) {
@@ -183,8 +182,8 @@ public final class FrameEncoder implements AutoCloseable {
             return emitRgb(frame);   // pixel fuori dai 4096 colori: unica via lossless
         }
         if (xorBytes < 0 && paletteBytes < 0) {
-            // Modo X imposto, ma il riferimento contiene un pixel fuori tavolozza: lo XOR
-            // non e' calcolabile e non resta che il modo assoluto.
+            // Mode X imposed, but the reference contains a pixel outside the palette: the XOR
+            // cannot be computed and only the absolute mode is left.
             return emitRgb(frame);
         }
 
@@ -198,7 +197,7 @@ public final class FrameEncoder implements AutoCloseable {
         int lenXor = encodedXorBytes < 0 ? Integer.MAX_VALUE : encodedXorBytes;
         int lenPal = encodedPaletteBytes < 0 ? Integer.MAX_VALUE : encodedPaletteBytes;
 
-        // A parita' vince P: 1 byte per pixel si decodifica con meta' delle letture.
+        // On a tie P wins: 1 byte per pixel decodes with half the reads.
         if (lenPal <= lenXor) {
             payload = outPal;
             payloadLength = lenPal;
@@ -212,9 +211,9 @@ public final class FrameEncoder implements AutoCloseable {
     }
 
     /**
-     * Buffer che contiene il payload dell'ultima {@link #encode}, dall'offset 0 per
-     * {@link #payloadLength()} byte. <b>E' un buffer interno</b>: vale fino alla codifica
-     * successiva, chi deve conservarlo lo copia.
+     * Buffer holding the payload of the last {@link #encode}, from offset 0 for
+     * {@link #payloadLength()} bytes. <b>It is an internal buffer</b>: valid until the next
+     * encoding; whoever must keep it copies it.
      */
     public byte[] payload() {
         return payload;
@@ -224,14 +223,14 @@ public final class FrameEncoder implements AutoCloseable {
         return payloadLength;
     }
 
-    /** Copia difensiva del payload, per i test e per chi deve accodarlo. */
+    /** Defensive copy of the payload, for the tests and for whoever must queue it. */
     public byte[] payloadCopy() {
         byte[] copy = new byte[payloadLength];
         System.arraycopy(payload, 0, copy, 0, payloadLength);
         return copy;
     }
 
-    /** Modo scelto dall'ultima codifica: {@code MODE_PALETTE}, {@code MODE_XOR} o {@code MODE_RGB}. */
+    /** Mode chosen by the last encoding: {@code MODE_PALETTE}, {@code MODE_XOR} or {@code MODE_RGB}. */
     public int lastMode() {
         return mode;
     }
@@ -244,26 +243,26 @@ public final class FrameEncoder implements AutoCloseable {
         return dirtyPixels;
     }
 
-    /** Colori distinti nei tile sporchi, o 0 se il modo P non e' stato prodotto. */
+    /** Distinct colours in the dirty tiles, or 0 if mode P was not produced. */
     public int lastPaletteSize() {
         return paletteSize;
     }
 
-    /** false = il modo P ha superato i 256 colori ed e' ripiegato sui 12 bit grezzi. */
+    /** false = mode P went past 256 colours and fell back on raw 12 bits. */
     public boolean lastIndexed() {
         return indexed;
     }
 
     /**
-     * Byte compressi che sarebbe costato il modo P, o -1 se non prodotto. Insieme a
-     * {@link #lastXorBytes()} misura quanto rende davvero la scelta per frame — cioe' se
-     * l'isteresi del §4.1 costerebbe poco o tanto.
+     * Compressed bytes mode P would have cost, or -1 if not produced. Together with
+     * {@link #lastXorBytes()} it measures how much the per-frame choice really yields, i.e.
+     * whether the hysteresis of section 4.1 would cost little or much.
      */
     public int lastPaletteBytes() {
         return encodedPaletteBytes;
     }
 
-    /** Byte compressi che sarebbe costato il modo X, o -1 se non prodotto. */
+    /** Compressed bytes mode X would have cost, or -1 if not produced. */
     public int lastXorBytes() {
         return encodedXorBytes;
     }
@@ -281,13 +280,13 @@ public final class FrameEncoder implements AutoCloseable {
     }
 
     // =====================================================================
-    // Interno
+    // Internal
     // =====================================================================
 
     /**
-     * Marca i tile in cui almeno un pixel differisce dal riferimento. Il confronto e' sugli
-     * int RGB con uscita anticipata al primo pixel diverso: su una scena in movimento la
-     * maggior parte dei tile sporchi esce dopo pochi pixel.
+     * Marks the tiles in which at least one pixel differs from the reference. The comparison
+     * is on the RGB ints with an early exit at the first different pixel: on a moving scene
+     * most dirty tiles exit after a few pixels.
      */
     private void markDirty(int[] cur, int[] ref) {
         int tiles = 0;
@@ -345,16 +344,16 @@ public final class FrameEncoder implements AutoCloseable {
     }
 
     /**
-     * Passata unica sui pixel sporchi: riempie il corpo del modo X e quello del modo P.
+     * Single pass over the dirty pixels: fills the bodies of mode X and mode P.
      *
-     * @return false se un pixel del <b>frame</b> non e' rappresentabile a 12 bit, cioe' se
-     *         l'unico modo lossless e' R. Un pixel non rappresentabile nel <b>riferimento</b>
-     *         non e' invece fatale: disabilita il solo modo X, perche' P spedisce valori
-     *         assoluti e non gli importa cosa ci fosse prima.
+     * @return false if a pixel of the <b>frame</b> cannot be represented in 12 bits, i.e. if
+     *         the only lossless mode is R. A pixel not representable in the <b>reference</b> is
+     *         not fatal: it disables mode X only, because P sends absolute values and does
+     *         not care what was there before.
      */
     private boolean scanDirtyPixels(int[] cur, int[] ref, boolean wantXor, boolean wantPal) {
         int px = bitmapBytes;
-        int pp = bitmapBytes + 3;   // dopo u8 indexed + u16 palCount, riempiti alla fine
+        int pp = bitmapBytes + 3;   // after u8 indexed + u16 palCount, filled at the end
         int nPal = 0;
         boolean overflow = false;
         int t = 0;
@@ -412,8 +411,8 @@ public final class FrameEncoder implements AutoCloseable {
             clearPalette(nPal);
             paletteBytes = -1;
         } else if (overflow) {
-            // Mai osservato in Fase 0. Il modo P rinuncia agli indici e spedisce i 12 bit
-            // grezzi: seconda passata sui soli pixel sporchi, in un caso che non capita.
+            // Never observed. Mode P gives up the indices and sends the raw 12 bits: a second
+            // pass over the dirty pixels only, in a case that does not happen.
             clearPalette(nPal);
             paletteSize = 0;
             indexed = false;
@@ -435,7 +434,7 @@ public final class FrameEncoder implements AutoCloseable {
         return true;
     }
 
-    /** Ripiego del modo P quando i colori distinti superano 256: valori assoluti a 12 bit. */
+    /** Fallback of mode P when the distinct colours exceed 256: absolute 12-bit values. */
     private int writeRaw12(int[] cur) {
         bodyPal[bitmapBytes] = 0;
         bodyPal[bitmapBytes + 1] = 0;
@@ -464,7 +463,7 @@ public final class FrameEncoder implements AutoCloseable {
         return p;
     }
 
-    /** Modo R: RGB assoluto, 3 byte per pixel sporco. Non guarda il riferimento. */
+    /** Mode R: absolute RGB, 3 bytes per dirty pixel. It does not look at the reference. */
     private int emitRgb(int[] cur) {
         if (bodyRgb == null) {
             bodyRgb = new byte[bitmapBytes + 3 * pixelCount];
@@ -504,7 +503,7 @@ public final class FrameEncoder implements AutoCloseable {
         return payloadLength;
     }
 
-    /** Comprime {@code body[0..len)} in {@code dest[1..)}, con {@code dest[0]} = byte di modo. */
+    /** Compresses {@code body[0..len)} into {@code dest[1..)}, with {@code dest[0]} = mode byte. */
     private int deflateInto(byte[] body, int len, byte[] dest, int modeByte) {
         dest[0] = (byte) modeByte;
         deflater.reset();

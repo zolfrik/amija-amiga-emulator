@@ -21,40 +21,37 @@
 package io.github.zolfrik.amija.net.codec;
 
 /**
- * IMA-ADPCM 4:1 per il canale audio del gioco a distanza
- * ({@code docs/remote-play-plan.md} §4.2, §15.5).
+ * 4:1 IMA ADPCM for the remote play audio channel ({@code docs/remote-play-plan.md} sections
+ * 4.2, 15.5).
  *
- * <h2>Perche' l'audio e' diventato la voce cara</h2>
- * Quando il video era <i>stimato</i> a 12–36 Mbit/s, 1,41 Mbit/s di PCM S16 erano rumore di
- * fondo. Col video <b>misurato</b> a 1–3 Mbit/s (§6), lo stesso audio e' fra il 30% e il 50%
- * dello stream: e' la voce piu' cara delle due. IMA-ADPCM lo porta a **355 kbit/s** in una
- * cinquantina di righe e senza dipendenze nuove.
+ * <h2>Why audio became the expensive item</h2>
+ * With the video measured at 1-3 Mbit/s (section 6), 1.41 Mbit/s of PCM S16 audio is between 30%
+ * and 50% of the stream: the more expensive of the two. IMA ADPCM brings it to 355 kbit/s in
+ * some fifty lines and with no new dependencies.
  *
- * <h2>Ogni blocco riparte da zero, e non e' un dettaglio</h2>
- * ADPCM e' un codificatore <b>a stato</b>: predittore e indice di passo si portano avanti da
- * un campione al successivo. Su UDP questo sarebbe fatale — un pacchetto perso
- * disallineerebbe lo stato del decodificatore e da li' in poi l'audio sarebbe <i>sbagliato
- * per sempre</i>, non solo bucato.
+ * <h2>Every block starts from zero, and that matters</h2>
+ * ADPCM is a <b>stateful</b> coder: predictor and step index carry over from one sample to the
+ * next. On UDP that would be fatal: a lost packet would misalign the decoder's state and from
+ * then on the audio would be <i>wrong forever</i>, not just gapped.
  *
- * <p>Percio' ogni blocco e' <b>indipendente</b>: lo stato riparte dal predittore e
- * dall'indice scritti nella sua intestazione, come nei blocchi IMA dei file WAV. Un blocco
- * perso costa 23 ms di silenzio e nient'altro. Il prezzo sono 4 byte di intestazione per
- * canale ogni 1024 campioni — lo 0,8%.
+ * <p>So every block is <b>independent</b>: the state restarts from the predictor and index
+ * written in its header, as in the IMA blocks of WAV files. A lost block costs 23 ms of silence
+ * and nothing else. The price is 4 bytes of header per channel every 1024 samples: 0.8%.
  *
  * <pre>
- *   blocco := canale L { i16 predittore, u8 indice, u8 riservato, nibble[] }
- *             canale R { idem }
+ *   block := channel L { i16 predictor, u8 index, u8 reserved, nibble[] }
+ *            channel R { same }
  * </pre>
- * I due canali sono <b>consecutivi, non interlacciati</b>: l'interlacciamento per nibble dei
- * WAV stereo fa risparmiare zero byte e si sbaglia facilmente.
+ * The two channels are <b>consecutive, not interleaved</b>: the per-nibble interleaving of stereo
+ * WAVs saves zero bytes and is easy to get wrong.
  *
- * <p>La qualita' non e' un'opinione ma non e' nemmeno il criterio: il §15.5 dice che la
- * scelta si fa <b>ascoltando</b>. Qui c'e' il codec e c'e' {@link #signalToNoiseDb}, che
- * misura quanto si perde; il giudizio resta all'orecchio.
+ * <p>Quality is not a matter of opinion, but it is not the criterion either: section 15.5 says
+ * the choice is made <b>by listening</b>. Here there is the codec and {@link #signalToNoiseDb},
+ * which measures how much is lost; the judgement stays with the ear.
  */
 public final class ImaAdpcm {
 
-    /** Byte di intestazione per canale in ogni blocco. */
+    /** Header bytes per channel in each block. */
     public static final int BLOCK_HEADER = 4;
 
     private static final int[] STEP_TABLE = {
@@ -73,24 +70,24 @@ public final class ImaAdpcm {
     private ImaAdpcm() {
     }
 
-    /** Byte occupati da un blocco stereo di {@code frames} campioni. */
+    /** Bytes taken by a stereo block of {@code frames} samples. */
     public static int blockBytes(int frames, int channels) {
         return channels * (BLOCK_HEADER + (frames + 1) / 2);
     }
 
     /**
-     * Codifica un blocco stereo S16LE interlacciato.
+     * Encodes an interleaved S16LE stereo block.
      *
-     * @param pcm    campioni interlacciati L,R,L,R... (2 byte l'uno, little-endian)
-     * @param frames campioni per canale
-     * @param dst    destinazione, almeno {@link #blockBytes} byte
-     * @return byte scritti
+     * @param pcm    interleaved samples L,R,L,R... (2 bytes each, little-endian)
+     * @param frames samples per channel
+     * @param dst    destination, at least {@link #blockBytes} bytes
+     * @return bytes written
      */
     public static int encode(byte[] pcm, int pcmOffset, int frames, byte[] dst, int dstOffset) {
         int p = dstOffset;
         for (int ch = 0; ch < 2; ch++) {
-            // Il predittore parte dal primo campione vero del canale: cosi' il blocco
-            // comincia esatto invece di rincorrere il segnale dai primi campioni.
+            // The predictor starts from the channel's first real sample: so the block starts
+            // exact instead of chasing the signal from the first samples.
             int predictor = sample(pcm, pcmOffset, 0, ch);
             int index = 0;
             dst[p] = (byte) predictor;
@@ -124,9 +121,9 @@ public final class ImaAdpcm {
     }
 
     /**
-     * Decodifica un blocco prodotto da {@link #encode}.
+     * Decodes a block produced by {@link #encode}.
      *
-     * @throws CodecException se il blocco e' troncato o l'indice di passo e' fuori tabella
+     * @throws CodecException if the block is truncated or the step index is outside the table
      */
     public static void decode(byte[] src, int srcOffset, int length, int frames, byte[] pcm,
                               int pcmOffset) throws CodecException {
@@ -140,7 +137,7 @@ public final class ImaAdpcm {
             int predictor = (short) ((src[p] & 0xFF) | ((src[p + 1] & 0xFF) << 8));
             int index = src[p + 2] & 0xFF;
             if (index >= STEP_TABLE.length) {
-                // Viene dalla rete: un indice fuori tabella sarebbe un accesso fuori array.
+                // It comes from the network: an index outside the table would be an access outside the array.
                 throw new CodecException("indice di passo ADPCM " + index + " fuori tabella");
             }
             p += BLOCK_HEADER;
@@ -164,11 +161,11 @@ public final class ImaAdpcm {
     }
 
     /**
-     * Rapporto segnale/rumore fra due buffer S16LE, in decibel.
+     * Signal-to-noise ratio between two S16LE buffers, in decibels.
      *
-     * <p>Serve a <b>quantificare</b> quanto costa la compressione, non a decidere: il §15.5
-     * chiude ascoltando. Un numero alto non garantisce che non si senta niente, e uno basso
-     * su materiale che parte da campioni a 8 bit non vuol dire granche'.
+     * <p>Used to <b>quantify</b> what the compression costs, not to decide: section 15.5 closes by
+     * listening. A high number does not guarantee nothing is heard, and a low one on material
+     * that starts from 8-bit samples does not mean much.
      */
     public static double signalToNoiseDb(byte[] reference, byte[] test, int frames) {
         double signal = 0;
@@ -220,7 +217,7 @@ public final class ImaAdpcm {
         return code;
     }
 
-    /** Applica un codice e restituisce {@code predittore | indice<<16}. */
+    /** Applies one code and returns {@code predictor | index<<16}. */
     private static int advance(int code, int predictor, int index) {
         int step = STEP_TABLE[index];
         int delta = step >> 3;

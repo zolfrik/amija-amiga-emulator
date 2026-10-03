@@ -23,67 +23,62 @@ package io.github.zolfrik.amija.net;
 import java.nio.ByteBuffer;
 
 /**
- * Il pacchetto che l'ospite manda all'host, 200 volte al secondo
- * ({@code docs/remote-play-plan.md} §4.3).
+ * The packet the guest sends to the host, 200 times a second
+ * ({@code docs/remote-play-plan.md} section 4.3).
  *
- * <h2>Stato completo, mai eventi</h2>
- * Ogni pacchetto porta lo <b>stato intero</b> dei controlli. Un pacchetto perso non ha
- * conseguenze: il successivo riporta la verita' completa, e nessun rilascio puo' restare
- * appeso. Il movimento del mouse, che per natura sarebbe un delta, e' riportato a stato con
- * due <b>contatori cumulativi</b> che non si azzerano mai: l'host applica la differenza
- * signed, e un pacchetto perso viene recuperato dal successivo senza che nessuno debba
- * chiedere niente. Combacia anche col modello hardware, dove {@code AmigaMouse} e' gia' una
- * coppia di contatori di quadratura che avvolgono.
+ * <h2>Complete state, never events</h2>
+ * Every packet carries the <b>whole state</b> of the controls. A lost packet has no
+ * consequences: the next one carries the complete truth, and no release can stay hanging.
+ * Mouse movement, by nature a delta, is turned into state with two <b>cumulative
+ * counters</b> that are never reset: the host applies the signed difference, and a lost
+ * packet is recovered by the next one without anyone having to ask. It also matches the
+ * hardware model, where {@code AmigaMouse} is already a pair of wrapping quadrature
+ * counters.
  *
- * <h2>Ci viaggia sopra anche l'ACK video</h2>
- * {@code ackVideoFrameId} e' l'ultimo frame video ricevuto <b>per intero</b>: e' il perno del
- * §4.1, cioe' cio' che permette all'host di comprimere sempre contro qualcosa che l'ospite ha
- * davvero. Sta qui invece che in un pacchetto suo perche' questo flusso c'e' gia', e' il piu'
- * frequente dei due, e cosi' l'ACK non costa un solo byte in piu' di quanti ne costerebbe il
- * suo header.
+ * <h2>The video ACK rides on it too</h2>
+ * {@code ackVideoFrameId} is the last video frame received <b>in full</b>: the pivot of
+ * section 4.1, what lets the host always compress against something the guest really has.
+ * It is here rather than in a packet of its own because this stream already exists, is the
+ * more frequent of the two, and so the ACK costs not one byte more than its header would.
  *
  * <pre>
- *    0  u32 seq                monotono; l'host scarta tutto cio' che e' &lt;= all'ultimo applicato
- *    4  u32 sessionGen         cambia a ogni riconnessione: azzera i baseline dei contatori
- *    8  u32 ackVideoFrameId    ultimo frame video ricevuto INTERO
- *   12  u32 mouseCounterX      cumulativo, mai azzerato
- *   16  u32 mouseCounterY      cumulativo, mai azzerato
- *   20  u16 audioFillMs        telemetria per il governatore di banda
+ *    0  u32 seq                monotonic; the host discards anything &lt;= the last applied
+ *    4  u32 sessionGen         changes at every reconnection: resets the counters' baselines
+ *    8  u32 ackVideoFrameId    last video frame received WHOLE
+ *   12  u32 mouseCounterX      cumulative, never reset
+ *   16  u32 mouseCounterY      cumulative, never reset
+ *   20  u16 audioFillMs        telemetry for the bandwidth governor
  *   22  i8  joyX               -1 / 0 / +1
  *   23  i8  joyY               -1 / 0 / +1
  *   24  u8  buttons            fire, b2, b3, mouseL, mouseR, mouseM
- *   25  u8  portDevice         cosa l'ospite ha collegato: NONE | MOUSE | JOYSTICK
- *   26  u16 riservato          deve essere 0
- *   28  u8  keys[16]           bitmap dei 128 codici raw Amiga, con latch appiccicoso
+ *   25  u8  portDevice         what the guest plugged in: NONE | MOUSE | JOYSTICK
+ *   26  u16 reserved           must be 0
+ *   28  u8  keys[16]           bitmap of the 128 Amiga raw codes, with a sticky latch
  *   44  = SIZE
  * </pre>
  *
- * <p><b>Sono 44 byte, non i 48 stimati nel piano.</b> La differenza e' irrilevante per la
- * banda (44 x 200 x 8 = 70 kbit/s contro i 77 stimati) ed e' la conseguenza di aver
- * disposto i campi <b>allineati</b> invece che nell'ordine in cui il §4.3 li elenca: i due
- * contatori del mouse sono saliti accanto agli altri interi. Il campo riservato che resta
- * esiste per lasciare spazio, ed e' <b>verificato a zero</b> apposta — un campo di riserva
- * che il ricevente ignora non e' spazio per il futuro, e' un canale silenzioso.
+ * <p><b>44 bytes, not the 48 estimated in the plan.</b> The difference is irrelevant for the
+ * bandwidth (44 x 200 x 8 = 70 kbit/s against the 77 estimated) and comes from laying the
+ * fields out <b>aligned</b> rather than in the order section 4.3 lists them: the two mouse
+ * counters moved up next to the other integers. The reserved field left exists to leave
+ * room, and is <b>checked to be zero</b> on purpose: a reserved field the receiver ignores
+ * is not room for the future, it is a silent channel.
  *
- * <h2>Perche' la periferica sta qui e non nell'handshake</h2>
- * L'host assegna all'ospite <b>una</b> game port; cosa infilarci dentro — mouse, joystick,
- * niente — lo decide l'ospite, ed e' una cosa che puo' cambiare <b>a partita in corso</b>
- * (il popup F12 dell'ospite e' aperto proprio per quello). Un parametro d'handshake sarebbe
- * fissato al momento sbagliato, e un messaggio di controllo apposta andrebbe scritto,
- * ordinato e ripetuto alla riconnessione. Qui invece costa <b>zero byte</b> — il posto
- * c'era gia' — arriva 200 volte al secondo, e soprattutto <b>e' stato come tutto il resto
- * del pacchetto</b>: se si perde quello che porta il cambio, il successivo lo riporta
- * uguale. La regola del §4.3 vale anche per questo campo, senza eccezioni da ricordare.
- *
- * <p>I campi di input restano a zero fino alla Fase 3: qui serve gia' tutto il resto — seq,
- * sessionGen, ACK — e definire il formato una volta sola evita di doverlo cambiare quando
- * l'input arrivera' davvero.
+ * <h2>Why the device is here and not in the handshake</h2>
+ * The host assigns the guest <b>one</b> game port; what to plug into it (mouse, joystick,
+ * nothing) is decided by the guest, and it can change <b>mid-game</b> (the guest's F12 popup
+ * is open exactly for that). A handshake parameter would be fixed at the wrong moment, and a
+ * dedicated control message would have to be written, ordered and repeated at reconnection.
+ * Here it costs <b>zero bytes</b> (the room was already there), arrives 200 times a second,
+ * and above all <b>is state like the rest of the packet</b>: if the packet carrying the
+ * change is lost, the next one carries it again. The rule of section 4.3 holds for this field
+ * too, with no exceptions to remember.
  */
 public final class FeedbackPacket {
 
     public static final int SIZE = 44;
 
-    /** Bitmap dei 128 codici raw della tastiera Amiga: 16 byte. */
+    /** Bitmap of the 128 raw codes of the Amiga keyboard: 16 bytes. */
     public static final int KEY_BYTES = 16;
 
     public static final int BUTTON_FIRE = 0x01;
@@ -94,7 +89,7 @@ public final class FeedbackPacket {
     public static final int BUTTON_MOUSE_MIDDLE = 0x20;
     private static final int BUTTON_MASK = 0x3F;
 
-    /** Porta vuota: l'ospite non ha collegato niente, e {@code JOYxDAT} deve leggere 0. */
+    /** Empty port: the guest has plugged nothing in, and {@code JOYxDAT} must read 0. */
     public static final int DEVICE_NONE = 0;
     public static final int DEVICE_MOUSE = 1;
     public static final int DEVICE_JOYSTICK = 2;
@@ -109,11 +104,11 @@ public final class FeedbackPacket {
     public int joyX;
     public int joyY;
     public int buttons;
-    /** Cosa l'ospite ha collegato alla porta che l'host gli ha assegnato. */
+    /** What the guest plugged into the port the host assigned to it. */
     public int portDevice;
     public final byte[] keys = new byte[KEY_BYTES];
 
-    /** Scrive il pacchetto in {@code dst}, che deve avere almeno {@link #SIZE} byte. */
+    /** Writes the packet into {@code dst}, which must have at least {@link #SIZE} bytes. */
     public void writeTo(byte[] dst) {
         ByteBuffer b = RemotePlayProtocol.wrap(dst, 0, SIZE);
         b.putInt(seq);
@@ -131,14 +126,14 @@ public final class FeedbackPacket {
     }
 
     /**
-     * Legge e <b>valida</b> un pacchetto ricevuto.
+     * Reads and <b>validates</b> a received packet.
      *
-     * <p>Sono byte che arrivano dalla rete e finiscono a pilotare una macchina: qui non si
-     * accetta niente che non sia esattamente cio' che il formato prevede. Gli assi fuori da
-     * [-1, +1] e i bit di pulsante non definiti sono rifiutati invece che ritagliati —
-     * ritagliare nasconderebbe un mittente che non parla questo protocollo.
+     * <p>These are bytes arriving from the network that end up driving a machine: nothing is
+     * accepted that is not exactly what the format provides. Axes outside [-1, +1] and
+     * undefined button bits are refused rather than clipped: clipping would hide a sender
+     * that does not speak this protocol.
      *
-     * @throws ProtocolException se la lunghezza o un campo non tornano
+     * @throws ProtocolException if the length or a field does not add up
      */
     public void readFrom(byte[] src, int length) throws ProtocolException {
         if (length != SIZE) {
@@ -175,7 +170,7 @@ public final class FeedbackPacket {
         }
     }
 
-    /** Azzera tutto: nuova sessione, nessuno stato ereditato da quella precedente. */
+    /** Clears everything: new session, no state inherited from the previous one. */
     public void clear() {
         seq = 0;
         sessionGen = 0;
@@ -190,7 +185,7 @@ public final class FeedbackPacket {
         java.util.Arrays.fill(keys, (byte) 0);
     }
 
-    /** Copia i campi in {@code other}, senza allocare. */
+    /** Copies the fields into {@code other}, without allocating. */
     public void copyTo(FeedbackPacket other) {
         other.seq = seq;
         other.sessionGen = sessionGen;
@@ -205,7 +200,7 @@ public final class FeedbackPacket {
         System.arraycopy(keys, 0, other.keys, 0, KEY_BYTES);
     }
 
-    /** L'ACK vale solo se parla di un frame vero: {@link RemotePlayProtocol#NO_REFERENCE} no. */
+    /** The ACK counts only if it refers to a real frame: {@link RemotePlayProtocol#NO_REFERENCE} does not. */
     public boolean hasAck() {
         return ackVideoFrameId != RemotePlayProtocol.NO_REFERENCE;
     }

@@ -39,9 +39,9 @@ public class NopInstruction extends AbstractM68kInstruction {
     public boolean executeStep(Motorola68000 cpu) {
         // Overlapped prefetch (Phase 1): issue the terminal np and finalize in a SINGLE
         // executeStep invocation, exactly like MOVEQ. The np runs in the background while the
-        // next instruction decodes the instant the bus drains → seam cost 0 (delta 4 mc),
+        // next instruction decodes the instant the bus drains: seam cost 0 (delta 4 mc),
         // instead of deferring finalize to a later step (which wasted 1 mc). See
-        // docs/cpu-overlapped-prefetch-rework-plan.md §Phase 1.
+        // docs/cpu-overlapped-prefetch-rework-plan.md, Phase 1.
         refillPipeline(cpu); // np
         return finalizeInstructionSafe(cpu);
     }

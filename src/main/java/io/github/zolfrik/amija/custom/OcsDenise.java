@@ -21,14 +21,13 @@
 package io.github.zolfrik.amija.custom;
 
 /**
- * Denise OCS (8362) — Display Encoder dell'Amiga 500 base.
+ * OCS Denise (8362): display encoder of the stock Amiga 500.
  *
- * <p>Tutto il comportamento vive in {@link AbstractDenise}. La variante OCS lascia il
- * flag {@code isECS} al suo default ({@code false}): DENISEID restituisce {@code 0xFFFF},
- * i registri di controllo (BPLCON0/2/3/4) e la palette non sono rileggibili, niente
- * super-hires né effetti BPLCON3 — esattamente il comportamento storico. Questa
- * sottoclasse è quindi un <i>no-op semantico</i> e fa da contraltare a {@code EcsDenise}
- * nella factory del chipset.
+ * <p>All the behaviour lives in {@link AbstractDenise}. The OCS variant leaves the
+ * {@code isECS} flag at its default ({@code false}): DENISEID returns {@code 0xFFFF}, the control
+ * registers (BPLCON0/2/3/4) and the palette are not readable, no super-hires and no BPLCON3
+ * effects. This subclass is therefore a <i>semantic no-op</i> and the counterpart of
+ * {@code EcsDenise} in the chipset factory.
  */
 public final class OcsDenise extends AbstractDenise {
 

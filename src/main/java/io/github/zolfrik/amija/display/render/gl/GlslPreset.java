@@ -30,26 +30,25 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Parser di un preset shader RetroArch {@code .glslp} (formato GLSL "classico").
+ * Parser of a RetroArch {@code .glslp} shader preset ("classic" GLSL format).
  *
- * <p>Non tocca OpenGL: legge il file, ne estrae la lista dei pass e delle texture LUT,
- * e conserva le coppie {@code chiave=valore} grezze per gli override dei parametri
- * ({@code #pragma parameter}). La compilazione/esecuzione è in {@link ShaderChain}.
+ * <p>It does not touch OpenGL: it reads the file, extracts the list of passes and LUT textures,
+ * and keeps the raw {@code key=value} pairs for the parameter overrides
+ * ({@code #pragma parameter}). Compilation/execution is in {@link ShaderChain}.
  *
- * <p>Formato: righe {@code chiave = valore} (valori eventualmente fra virgolette),
- * commenti con {@code #} o {@code ;}. Chiavi per pass {@code K} = 0..{@code shaders}-1:
- * {@code shaderK}, {@code filter_linearK}, {@code wrap_modeK}, {@code scale_typeK} /
- * {@code scale_type_xK} / {@code scale_type_yK}, {@code scaleK} / {@code scale_xK} /
- * {@code scale_yK}, {@code float_framebufferK}, {@code srgb_framebufferK},
- * {@code mipmap_inputK}, {@code aliasK}, {@code frame_count_modK}. Texture LUT:
- * {@code textures = "n1;n2"} + {@code n1 = path.png}, {@code n1_linear},
- * {@code n1_wrap_mode}, {@code n1_mipmap}.
+ * <p>Format: {@code key = value} lines (values possibly quoted), comments with {@code #} or
+ * {@code ;}. Keys per pass {@code K} = 0..{@code shaders}-1: {@code shaderK},
+ * {@code filter_linearK}, {@code wrap_modeK}, {@code scale_typeK} / {@code scale_type_xK} /
+ * {@code scale_type_yK}, {@code scaleK} / {@code scale_xK} / {@code scale_yK},
+ * {@code float_framebufferK}, {@code srgb_framebufferK}, {@code mipmap_inputK}, {@code aliasK},
+ * {@code frame_count_modK}. LUT textures: {@code textures = "n1;n2"} + {@code n1 = path.png},
+ * {@code n1_linear}, {@code n1_wrap_mode}, {@code n1_mipmap}.
  */
 public final class GlslPreset {
 
-    /** Descrittore di un singolo pass. */
+    /** Descriptor of a single pass. */
     public static final class PassSpec {
-        public Path shader;             // percorso assoluto del .glsl
+        public Path shader;             // absolute path of the .glsl
         public boolean filterLinear = true;   // default RetroArch: bilineare
         public String wrapMode = "clamp_to_border";
         public String scaleTypeX = "source";  // source | viewport | absolute
@@ -60,10 +59,10 @@ public final class GlslPreset {
         public boolean srgbFramebuffer = false;
         public boolean mipmapInput = false;
         public String alias = "";
-        public int frameCountMod = 0;   // 0 = nessun modulo
+        public int frameCountMod = 0;   // 0 = no modulo
     }
 
-    /** Descrittore di una texture LUT. */
+    /** Descriptor of a LUT texture. */
     public static final class TextureSpec {
         public String name;
         public Path path;
@@ -89,12 +88,12 @@ public final class GlslPreset {
     public List<TextureSpec> textures() { return textures; }
     public Path baseDir() { return baseDir; }
 
-    /** Valore grezzo di una chiave del preset, o {@code null}. Usato per gli override dei parametri. */
+    /** Raw value of a preset key, or {@code null}. Used for the parameter overrides. */
     public String rawValue(String key) {
         return raw.get(key);
     }
 
-    /** Carica e valida un preset. Lancia {@link IOException} se il file è assente o malformato. */
+    /** Loads and validates a preset. Throws {@link IOException} if the file is missing or malformed. */
     public static GlslPreset load(Path glslp) throws IOException {
         Map<String, String> map = new LinkedHashMap<>();
         for (String line : Files.readAllLines(glslp, StandardCharsets.UTF_8)) {
@@ -160,12 +159,12 @@ public final class GlslPreset {
         return new GlslPreset(baseDir, passes, textures, map);
     }
 
-    // ---- helper di parsing ----------------------------------------------------------
+    // ---- parsing helpers ------------------------------------------------------------
 
     private static String stripComment(String line) {
-        // Un commento ('#' o ';') vale solo FUORI da una stringa fra virgolette: la
-        // chiave RetroArch {@code textures = "a;b;c"} usa ';' come separatore dentro le
-        // virgolette e NON deve essere troncata (era il bug che azzerava le LUT).
+        // A comment ('#' or ';') counts only OUTSIDE a quoted string: the key
+        // {@code textures = "a;b;c"} uses ';' as a separator inside the quotes and must NOT be
+        // truncated (truncating it would wipe out the LUTs).
         boolean inQuotes = false;
         for (int i = 0; i < line.length(); i++) {
             char c = line.charAt(i);
@@ -186,7 +185,7 @@ public final class GlslPreset {
     }
 
     private static Path resolve(Path baseDir, String rel) {
-        // I preset usano '/' come separatore: normalizzato da Path su Windows.
+        // Presets use '/' as separator: normalised by Path on Windows.
         return baseDir.resolve(rel.replace('\\', '/')).normalize();
     }
 

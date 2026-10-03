@@ -37,9 +37,8 @@ public class LinkInstruction extends AbstractM68kInstruction {
     }
 
     /**
-     * WinUAE emette qui `ipl_fetch_now()`, al PRIMO ciclo dell'istruzione e prima di
-     * qualunque accesso (`set_ipl_now()`, `ipl_fetched = 3`): il pin vale quello di adesso e
-     * nessun accesso successivo sposta l'ancora.
+     * The IPL anchor is a `now` sample at the FIRST cycle of the instruction, before any
+     * access: the pin counts as it is now and no later access moves the anchor.
      */
     @Override
     public void prepareInstruction(Motorola68000 cpu) {
@@ -79,7 +78,7 @@ public class LinkInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                     return false;
                 }
-                case 3 -> { // Update registers + Refill (np) + finalize (np is last bus cycle → seam 0)
+                case 3 -> { // Update registers + Refill (np) + finalize (np is the last bus cycle: seam 0)
                     if (!cpu.isBusCycleIdle()) return false;
                     cpu.setA7(cpu.getA7() - 4);
                     cpu.setA(reg, cpu.getA7());

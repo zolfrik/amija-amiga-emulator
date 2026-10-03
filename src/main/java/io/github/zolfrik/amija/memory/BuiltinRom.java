@@ -25,30 +25,28 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
 /**
- * La ROM di avvio AmiJa, inclusa nel jar.
+ * The AmiJa boot ROM, included in the jar.
  *
- * E' un firmware originale scritto per questo progetto (sorgente in
- * {@code rom/}), non un Kickstart Commodore: si puo' quindi ridistribuire con
- * l'emulatore. Serve a far partire l'A500 anche a chi non possiede un
- * Kickstart, e avvia i giochi su floppy con bootblock autonomo.
+ * It is original firmware written for this project (source in {@code rom/}), not a Commodore
+ * Kickstart: it can therefore be redistributed with the emulator. It lets the A500 start even
+ * for those who own no Kickstart, and boots floppy games with a self-contained bootblock.
  *
- * Non e' un sostituto completo del Kickstart: non implementa AmigaDOS, quindi
- * i dischi che si appoggiano a {@code dos.library} continuano a richiedere una
- * ROM Commodore.
+ * It is not a full replacement for the Kickstart: it does not implement AmigaDOS, so disks
+ * that rely on {@code dos.library} still need a Commodore ROM.
  */
 public final class BuiltinRom {
 
-    /** Percorso nel classpath dell'immagine prodotta da {@code romgen/RomBuilder}. */
+    /** Classpath location of the image produced by {@code romgen/RomBuilder}. */
     public static final String RESOURCE = "/rom/amija.rom";
 
     /**
-     * Inizio del tag di versione incorporato nell'immagine, nella forma
-     * {@code "$VER: AmiJa ROM 1.0 (gg.mm.aaaa)"} con cui l'Amiga marca i propri
-     * binari. Lo scrive {@code romgen/RomVersion} subito dopo i vettori di reset.
+     * Start of the version tag embedded in the image, in the form
+     * {@code "$VER: AmiJa ROM 1.0 (dd.mm.yyyy)"} with which the Amiga marks its binaries.
+     * {@code romgen/RomVersion} writes it right after the reset vectors.
      */
     private static final String VERSION_TAG = "$VER: ";
 
-    /** Come si chiama la ROM quando il tag non c'e' (immagine anteriore alla 1.0). */
+    /** What the ROM is called when the tag is missing (an image older than 1.0). */
     private static final String UNVERSIONED = "ROM AmiJa";
 
     private static byte[] cached;
@@ -56,7 +54,7 @@ public final class BuiltinRom {
 
     private BuiltinRom() {}
 
-    /** Vero se l'immagine e' presente nel jar. */
+    /** True if the image is present in the jar. */
     public static boolean isAvailable() {
         try (InputStream in = BuiltinRom.class.getResourceAsStream(RESOURCE)) {
             return in != null;
@@ -66,11 +64,11 @@ public final class BuiltinRom {
     }
 
     /**
-     * Carica l'immagine della ROM. Il risultato viene tenuto in cache: un cold
-     * restart la rilegge e non ha senso ripagare l'estrazione dal jar.
+     * Loads the ROM image. The result is cached: a cold restart reads it again and there is no
+     * point paying the extraction from the jar twice.
      *
-     * @throws IOException se l'immagine non e' nel jar, il che significa che la
-     *                     build e' incompleta
+     * @throws IOException if the image is not in the jar, which means the build is
+     *                     incomplete
      */
     public static synchronized byte[] load() throws IOException {
         if (cached != null) return cached.clone();
@@ -84,12 +82,12 @@ public final class BuiltinRom {
     }
 
     /**
-     * Come si presenta la ROM inclusa, p.es. {@code "AmiJa ROM 1.0"}: il tag
-     * {@code $VER} dell'immagine, senza la data.
+     * How the included ROM presents itself, e.g. {@code "AmiJa ROM 1.0"}: the image's
+     * {@code $VER} tag, without the date.
      *
-     * Serve perche' chi segnala un problema possa dire con quale ROM lo ha
-     * visto: il numero e' scritto nell'immagine, non in una costante Java, per
-     * cui non puo' descrivere una ROM diversa da quella davvero montata.
+     * So whoever reports a problem can say with which ROM they saw it: the number is written in
+     * the image, not in a Java constant, so it cannot describe a ROM other than the one really
+     * mounted.
      */
     public static synchronized String version() {
         if (version != null) return version;
@@ -107,8 +105,8 @@ public final class BuiltinRom {
                 if (!name.isEmpty()) version = name;
             }
         } catch (IOException e) {
-            // Immagine assente: il chiamante lo scoprira' da load(), qui basta
-            // non far fallire una riga di log.
+            // Image missing: the caller will find out from load(), here it is enough not to
+            // fail a log line.
         }
         return version;
     }

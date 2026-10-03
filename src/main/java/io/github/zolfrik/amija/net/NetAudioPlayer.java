@@ -27,41 +27,40 @@ import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.SourceDataLine;
 
 /**
- * L'uscita audio dell'ospite ({@code docs/remote-play-plan.md} §4.2).
+ * The guest's audio output ({@code docs/remote-play-plan.md} section 4.2).
  *
- * <h2>La trappola che questa classe esiste per evitare</h2>
- * I campioni che arrivano hanno <b>gia'</b> passato il filtro RC e, se acceso, quello del
- * LED: li ha applicati l'host prima di spedirli. Rimetterli dentro
- * {@code JavaSoundAudioOutput} vorrebbe dire filtrarli <b>due volte</b>, e il risultato non
- * sarebbe un po' piu' scuro — sarebbe sbagliato. Quindi si scrivono <b>direttamente</b> su
- * una {@code SourceDataLine}, e questa classe non condivide una riga con quella.
+ * <h2>The trap this class exists to avoid</h2>
+ * The samples that arrive have <b>already</b> been through the RC filter and, if on, the LED
+ * filter: the host applied them before sending. Putting them through
+ * {@code JavaSoundAudioOutput} again would filter them <b>twice</b>, and the result would not be
+ * a little darker, it would be wrong. So they are written <b>straight</b> to a
+ * {@code SourceDataLine}, and this class shares not one line with that one.
  *
- * <p>Corollario per la UI: sull'ospite la spunta «filtro LED» non ha effetto. Lo decide chi
- * ospita, e va scritto nel {@code .tip} (§10).
+ * <p>Corollary for the UI: on the guest the "LED filter" option has no effect. The host
+ * decides it, and the {@code .tip} must say so (section 10).
  *
- * <h2>La deriva dei clock, che non e' un dettaglio su dieci minuti</h2>
- * Host e ospite hanno due schede audio con quarzi diversi: una produce piu' campioni di
- * quanti l'altra ne consumi. Su qualche minuto il buffer dell'ospite si svuota o si riempie
- * fino a rompersi. L'ASR esistente sta sul <i>produttore</i> (Paula) e serve l'host; l'ospite
- * non puo' pilotarlo.
+ * <h2>Clock drift, which over ten minutes is not a detail</h2>
+ * Host and guest have two sound cards with different crystals: one produces more samples than
+ * the other consumes. Over a few minutes the guest's buffer empties or fills until it breaks.
+ * The existing ASR sits on the <i>producer</i> (Paula) and serves the host; the guest cannot
+ * drive it.
  *
- * <p>Rimedio locale: sorvegliare il proprio riempimento e, fuori da una banda morta,
- * <b>duplicare o saltare un campione ogni 1024</b>. E' lo 0,1%: al di sotto di qualunque
- * soglia di percezione, e sufficiente a compensare quarzi che differiscono molto meno di
- * cosi'. Correggere di piu' si sentirebbe; correggere solo fuori dalla banda morta evita di
- * inseguire il rumore di misura.
+ * <p>Local remedy: watch its own fill level and, outside a dead band, <b>duplicate or skip one
+ * sample in 1024</b>. That is 0.1%: below any threshold of perception, and enough to
+ * compensate crystals that differ by much less. Correcting more would be audible; correcting
+ * only outside the dead band avoids chasing measurement noise.
  *
- * <h2>Senza scheda audio non succede niente</h2>
- * Come {@code FloppySound}: se la linea non si apre, {@link #isActive()} e' {@code false} e
- * ogni chiamata e' un no-op. Un ospite senza audio deve poter giocare, e i collaudi girano su
- * macchine che una scheda audio non ce l'hanno.
+ * <h2>Without a sound card nothing happens</h2>
+ * As with {@code FloppySound}: if the line does not open, {@link #isActive()} is {@code false}
+ * and every call is a no-op. A guest without audio must be able to play, and the tests run on
+ * machines that have no sound card.
  */
 public final class NetAudioPlayer implements AudioReceiver.PcmSink {
 
-    /** Riempimento a cui si punta: tre blocchi, ~70 ms. Copre il jitter senza aggiungere latenza. */
+    /** Target fill: three blocks, ~70 ms. It covers the jitter without adding latency. */
     public static final int TARGET_FILL_FRAMES = AudioBlockHeader.FRAMES_PER_BLOCK * 3;
 
-    /** Banda morta attorno al bersaglio: dentro non si corregge nulla. */
+    /** Dead band around the target: inside it nothing is corrected. */
     public static final int DEADBAND_FRAMES = AudioBlockHeader.FRAMES_PER_BLOCK;
 
     private final int sampleRate;
@@ -74,8 +73,8 @@ public final class NetAudioPlayer implements AudioReceiver.PcmSink {
     private volatile boolean running;
     private Thread thread;
 
-    private int head;          // byte in scrittura
-    private int tail;          // byte in lettura
+    private int head;          // write byte
+    private int tail;          // read byte
     private int fillBytes;
 
     private long framesWritten;
@@ -87,16 +86,16 @@ public final class NetAudioPlayer implements AudioReceiver.PcmSink {
 
     public NetAudioPlayer(int sampleRate) {
         this.sampleRate = sampleRate;
-        // Mezzo secondo di margine: abbastanza per assorbire una pausa dell'host o un
-        // sussulto dello scheduler, non tanto da poter accumulare latenza senza accorgersene.
+        // Half a second of margin: enough to absorb a host pause or a scheduler hiccup, not so
+        // much that latency can build up unnoticed.
         this.capacityFrames = sampleRate / 2;
         this.ring = new byte[capacityFrames * 4];
     }
 
     /**
-     * Apre la linea audio e avvia la riproduzione.
+     * Opens the audio line and starts playback.
      *
-     * @return {@code false} se non c'e' una scheda audio utilizzabile: non e' un errore
+     * @return {@code false} if there is no usable sound card: not an error
      */
     public boolean start() {
         AudioFormat format = new AudioFormat(sampleRate, 16, 2, true, false);
@@ -124,14 +123,14 @@ public final class NetAudioPlayer implements AudioReceiver.PcmSink {
         return active;
     }
 
-    /** Campioni attualmente in coda: e' la telemetria che l'ospite riporta all'host (§4.3). */
+    /** Samples currently queued: the telemetry the guest reports to the host (section 4.3). */
     public int fillFrames() {
         synchronized (lock) {
             return fillBytes / 4;
         }
     }
 
-    /** Riempimento in millisecondi, per il campo {@code audioFillMs} del feedback. */
+    /** Fill in milliseconds, for the {@code audioFillMs} field of the feedback. */
     public int fillMillis() {
         return (int) Math.min(65535L, (long) fillFrames() * 1000 / sampleRate);
     }
@@ -144,9 +143,8 @@ public final class NetAudioPlayer implements AudioReceiver.PcmSink {
         int bytes = frames * 4;
         synchronized (lock) {
             if (fillBytes + bytes > ring.length) {
-                // Il consumatore non sta dietro: si butta il piu' vecchio, non il piu'
-                // nuovo. Restare indietro e' l'unico modo di accumulare latenza, ed e'
-                // esattamente cio' che non si vuole in un gioco.
+                // The consumer cannot keep up: drop the oldest, not the newest. Falling behind
+                // is the only way to build latency, exactly what a game does not want.
                 int excess = fillBytes + bytes - ring.length;
                 tail = (tail + excess) % ring.length;
                 fillBytes -= excess;
@@ -196,12 +194,12 @@ public final class NetAudioPlayer implements AudioReceiver.PcmSink {
         return overflows;
     }
 
-    /** Campioni duplicati per inseguire un clock piu' lento: la deriva, misurata. */
+    /** Samples duplicated to follow a slower clock: the drift, measured. */
     public long framesDuplicated() {
         return framesDuplicated;
     }
 
-    /** Campioni saltati per inseguire un clock piu' veloce. */
+    /** Samples skipped to follow a faster clock. */
     public long framesDropped() {
         return framesDropped;
     }
@@ -211,7 +209,7 @@ public final class NetAudioPlayer implements AudioReceiver.PcmSink {
     private void playLoop() {
         byte[] chunk = new byte[AudioBlockHeader.FRAMES_PER_BLOCK * 4];
         byte[] corrected = new byte[chunk.length + 4];
-        // Priming: si parte con un cuscinetto, o il primo sussulto e' un underrun.
+        // Priming: start with a cushion, or the first hiccup is an underrun.
         synchronized (lock) {
             long deadline = System.currentTimeMillis() + 2000;
             while (running && fillBytes < TARGET_FILL_FRAMES * 4
@@ -259,24 +257,25 @@ public final class NetAudioPlayer implements AudioReceiver.PcmSink {
     }
 
     /**
-     * @return {@code +1} per duplicare un campione, {@code -1} per saltarne uno, 0 dentro la
-     *         banda morta
+     * @return {@code +1} to duplicate a sample, {@code -1} to skip one, 0 inside the dead
+     *         band
      */
     private int driftCorrection(int fillFrames) {
         if (fillFrames > TARGET_FILL_FRAMES + DEADBAND_FRAMES) {
-            return -1;    // troppa roba in coda: il nostro clock e' piu' lento, si accelera
+            return -1;    // too much queued: our clock is slower, speed up
         }
         if (fillFrames < TARGET_FILL_FRAMES - DEADBAND_FRAMES) {
-            return +1;    // coda che si assottiglia: si rallenta
+            return +1;    // queue thinning out: slow down
         }
         return 0;
     }
 
     /**
-     * Duplica o salta <b>un</b> campione a meta' del blocco.
+     * Duplicates or skips <b>one</b> sample in the middle of the block.
      *
-     * <p>A meta' e non in testa: nel punto di giunzione fra due blocchi il segnale ha gia'
-     * una discontinuita' potenziale, e sommarci la correzione la renderebbe piu' udibile.
+     * <p>In the middle and not at the start: at the junction between two blocks the signal
+     * already has a potential discontinuity, and adding the correction would make it more
+     * audible.
      */
     private int applyCorrection(byte[] chunk, int frames, int correction, byte[] out) {
         if (correction == 0) {

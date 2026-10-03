@@ -120,7 +120,7 @@ public class AddqInstruction extends AbstractM68kInstruction {
                         // JSON single-instruction path keeps the historic 6-cycle (np n) count.
                         cpu.idleCycles(2);
                     } else {
-                        // Moira execAddqAn/execAddqDn (Long): prefetch<POLL>() then SYNC(4).
+                        // ADDQ.L to An/Dn: prefetch (with the IPL poll), then 4 internal cycles.
                         // ADDQ.L to An is 8 cycles (np + nn) on real hardware, same as Dn.L.
                         cpu.idleCycles(4);
                     }

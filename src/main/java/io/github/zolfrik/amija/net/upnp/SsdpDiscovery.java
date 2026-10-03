@@ -41,56 +41,56 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Trova i router che parlano UPnP, con SSDP ({@code docs/remote-play-plan.md} §7.1).
+ * Finds the routers that speak UPnP, with SSDP ({@code docs/remote-play-plan.md} section
+ * 7.1).
  *
- * <p>Un M-SEARCH in multicast a {@code 239.255.255.250:1900}, si raccolgono per qualche
- * secondo le risposte e da ognuna si tiene l'header {@code LOCATION}: l'URL del documento
- * che descrive il dispositivo. Da li' in poi e' {@link IgdClient} a lavorare.
+ * <p>A multicast M-SEARCH to {@code 239.255.255.250:1900}; the answers are collected for a few
+ * seconds and from each one the {@code LOCATION} header is kept: the URL of the document that
+ * describes the device. From there on {@link IgdClient} does the work.
  *
- * <h2>Si cerca da ogni interfaccia, non da quella predefinita</h2>
- * E' la sola cosa non ovvia di questa classe, e senza di essa la funzione non parte
- * proprio sulle macchine in cui serve di piu'. Un multicast spedito da un socket con
- * destinazione predefinita esce da <b>una</b> interfaccia — quella che il sistema sceglie —
- * e su un computer con una VPN, una macchina virtuale o due schede di rete quella scelta
- * e' spesso la scheda sbagliata, dove nessun router risponde. Si spedisce quindi da
- * ciascun indirizzo IPv4 attivo, e si tiene traccia di <b>quale</b> ha ricevuto risposta:
- * quell'indirizzo e' anche quello da dichiarare al router come destinazione della
- * mappatura, ed e' l'unico che si sa per certo essere sulla stessa rete di chi ha
- * risposto (§7.2 lo cercava con l'euristica della {@code connect} verso l'esterno; qui non
- * serve indovinare, perche' e' dimostrato dalla risposta).
+ * <h2>The search goes out from every interface, not the default one</h2>
+ * The only non-obvious thing in this class, and without it the feature does not start on
+ * exactly the machines where it is needed most. A multicast sent from a socket with a
+ * default destination goes out of <b>one</b> interface, the one the system chooses, and on a
+ * computer with a VPN, a virtual machine or two network adapters that choice is often the
+ * wrong adapter, where no router answers. So it is sent from each active IPv4 address, and
+ * <b>which</b> one got an answer is tracked: that address is also the one to declare to the
+ * router as the mapping's destination, and the only one known for sure to be on the same
+ * network as whoever answered (no need to guess with a {@code connect} toward the outside,
+ * as in section 7.2: the answer proves it).
  *
- * <h2>Si chiede piu' volte, e a piu' bersagli</h2>
- * UDP non garantisce la consegna e un M-SEARCH perso e' una funzione che «non funziona».
- * Si ripete la richiesta, e con due {@code ST} diversi: alcuni router rispondono al tipo di
- * dispositivo, altri solo al tipo di servizio.
+ * <h2>Asked several times, and of several targets</h2>
+ * UDP does not guarantee delivery, and a lost M-SEARCH is a feature that "does not work".
+ * The request is repeated, with two different {@code ST}s: some routers answer to the device
+ * type, others only to the service type.
  */
 public final class SsdpDiscovery {
 
-    /** L'indirizzo multicast di SSDP, fissato dalla specifica UPnP. */
+    /** The SSDP multicast address, fixed by the UPnP specification. */
     private static final String SSDP_ADDRESS = "239.255.255.250";
     private static final int SSDP_PORT = 1900;
 
-    /** Attesa dichiarata nel campo MX: il router risponde entro questo numero di secondi. */
+    /** Wait declared in the MX field: the router answers within this number of seconds. */
     private static final int MX_SECONDS = 2;
 
-    /** Quante volte si ripete la richiesta, per non farsi fermare da un datagramma perso. */
+    /** How many times the request is repeated, so a lost datagram does not stop it. */
     private static final int ATTEMPTS = 2;
 
     private static final int RECEIVE_BUFFER = 2048;
 
     /**
-     * Quanti gateway distinti si accetta di tenere da parte.
+     * How many distinct gateways may be kept.
      *
-     * <p>Le risposte a un M-SEARCH arrivano da chiunque sia in ascolto sul multicast, e
-     * nessuno impedisce a una macchina della rete di risponderne diecimila con un
-     * {@code LOCATION} sempre diverso. La mappa che le deduplica crescerebbe con loro; un
-     * tetto costante la lascia dove deve stare. Le reti vere hanno un router, al massimo due.
+     * <p>Answers to an M-SEARCH come from anyone listening on the multicast, and nothing
+     * stops a machine on the network from sending ten thousand with an ever different
+     * {@code LOCATION}. The map that deduplicates them would grow with them; a constant cap
+     * keeps it where it belongs. Real networks have one router, two at most.
      */
     private static final int MAX_GATEWAYS = 8;
 
     /**
-     * I bersagli della ricerca. Il dispositivo per primo — e' quello che risponde con la
-     * descrizione completa — poi i due servizi, per i router che rispondono solo a quelli.
+     * The search targets. The device first (it answers with the complete description), then
+     * the two services, for the routers that answer only to those.
      */
     private static final String[] SEARCH_TARGETS = {
         "urn:schemas-upnp-org:device:InternetGatewayDevice:1",
@@ -102,24 +102,24 @@ public final class SsdpDiscovery {
     }
 
     /**
-     * Un router che ha risposto.
+     * A router that answered.
      *
-     * @param descriptionUrl l'URL del documento di descrizione (header {@code LOCATION})
-     * @param localAddress   l'indirizzo di <b>questa</b> macchina sulla rete da cui e'
-     *                       arrivata la risposta: e' quello che il router deve mappare
+     * @param descriptionUrl the URL of the description document ({@code LOCATION} header)
+     * @param localAddress   the address of <b>this</b> machine on the network the answer came
+     *                       from: the one the router must map
      */
     public record Gateway(URI descriptionUrl, InetAddress localAddress) {
     }
 
     /**
-     * Cerca i gateway raggiungibili.
+     * Looks for reachable gateways.
      *
-     * @param timeoutMs quanto si resta in ascolto delle risposte, per interfaccia
-     * @return i gateway trovati, senza duplicati, nell'ordine in cui hanno risposto
+     * @param timeoutMs how long to listen for answers, per interface
+     * @return the gateways found, without duplicates, in the order they answered
      */
     public static List<Gateway> search(int timeoutMs) {
-        // Chiave = URL della descrizione: lo stesso router risponde piu' volte (una per
-        // tentativo e una per ST) e senza deduplica lo si interrogherebbe sei volte.
+        // Key = URL of the description: the same router answers several times (once per
+        // attempt and once per ST) and without deduplication it would be queried six times.
         Map<URI, Gateway> found = new LinkedHashMap<>();
         for (InetAddress local : localIpv4Addresses()) {
             searchFrom(local, timeoutMs, found);
@@ -139,13 +139,13 @@ public final class SsdpDiscovery {
                 collect(socket, local, found);
             }
         } catch (IOException e) {
-            // Un'interfaccia che non sa spedire multicast non e' un guasto: e' il caso
-            // normale di una scheda virtuale spenta. Si prova la prossima.
+            // An interface that cannot send multicast is not a failure: it is the normal case
+            // of a disabled virtual adapter. Try the next.
             RemotePlaySettings.log("SSDP da %s non praticabile: %s", local.getHostAddress(), e.getMessage());
         }
     }
 
-    /** Raccoglie le risposte finche' il socket non va in timeout. */
+    /** Collects the answers until the socket times out. */
     private static void collect(DatagramSocket socket, InetAddress local,
                                 Map<URI, Gateway> found) throws IOException {
         byte[] buffer = new byte[RECEIVE_BUFFER];
@@ -154,7 +154,7 @@ public final class SsdpDiscovery {
             try {
                 socket.receive(response);
             } catch (SocketTimeoutException e) {
-                return;   // nessuno risponde piu': e' cosi' che finisce una ricerca SSDP
+                return;   // nobody answers any more: that is how an SSDP search ends
             }
             String text = new String(response.getData(), response.getOffset(),
                     response.getLength(), StandardCharsets.US_ASCII);
@@ -174,27 +174,27 @@ public final class SsdpDiscovery {
     }
 
     /**
-     * Se ci si puo' fidare abbastanza di un {@code LOCATION} da andarlo a leggere.
+     * Whether a {@code LOCATION} can be trusted enough to go and read it.
      *
-     * <h2>Chi risponde a un M-SEARCH non e' necessariamente un router</h2>
-     * Il multicast lo riceve chiunque sia sulla rete, e a rispondere fa in tempo chiunque:
-     * non serve <i>essere</i> il gateway, basta arrivare prima. Il {@code LOCATION} e' quindi
-     * un URL scelto da un estraneo, e su quell'URL AmiJa poi fa una GET e — attraverso
-     * {@code URLBase} e {@code controlURL} — una POST di XML. Senza controlli, una macchina
-     * qualunque della rete potrebbe far parlare AmiJa con un indirizzo a sua scelta: un
-     * servizio in ascolto solo su {@code localhost}, un altro apparecchio della LAN, o un
-     * host su Internet. E' il classico <i>server-side request forgery</i>, e qui la vittima
-     * e' la macchina di casa di chi sta giocando.
+     * <h2>Whoever answers an M-SEARCH is not necessarily a router</h2>
+     * Anyone on the network receives the multicast, and anyone can answer in time: there is
+     * no need to <i>be</i> the gateway, only to arrive first. The {@code LOCATION} is
+     * therefore a URL chosen by a stranger, and on that URL AmiJa then does a GET and,
+     * through {@code URLBase} and {@code controlURL}, a POST of XML. Unchecked, any machine on
+     * the network could make AmiJa talk to an address of its choice: a service listening only
+     * on {@code localhost}, another device on the LAN, or a host on the Internet. The classic
+     * <i>server-side request forgery</i>, and here the victim is the home machine of whoever
+     * is playing.
      *
-     * <p>Due condizioni lo chiudono, e nessuna delle due infastidisce un router vero:
+     * <p>Two conditions close it, and neither bothers a real router:
      * <ol>
-     *   <li>lo <b>schema</b> dev'essere {@code http} o {@code https}: un IGD non serve la
-     *       propria descrizione da nessun'altra parte, mentre {@code file:} e compagnia sono
-     *       solo modi di far leggere ad AmiJa qualcosa che non e' suo;</li>
-     *   <li>l'<b>host dev'essere chi ha risposto</b>. E' la condizione che conta: la
-     *       descrizione di un apparecchio sta <i>su</i> quell'apparecchio, quindi un
-     *       {@code LOCATION} che punta altrove non e' un router distratto, e' un rimbalzo.
-     *       Il confronto e' sull'indirizzo del datagramma, che non si puo' dichiarare.</li>
+     *   <li>the <b>scheme</b> must be {@code http} or {@code https}: an IGD serves its
+     *       description nowhere else, while {@code file:} and the like are only ways to make
+     *       AmiJa read something that is not its own;</li>
+     *   <li>the <b>host must be whoever answered</b>. This is the condition that counts: a
+     *       device's description lives <i>on</i> that device, so a {@code LOCATION} pointing
+     *       elsewhere is not a careless router, it is a bounce. The comparison is on the
+     *       datagram's address, which cannot be declared.</li>
      * </ol>
      */
     static boolean isTrustworthy(URI url, InetAddress responder) {
@@ -218,13 +218,12 @@ public final class SsdpDiscovery {
     }
 
     /**
-     * Se il nome host di un URL designa proprio la macchina che ha spedito la risposta.
+     * Whether a URL's host name designates the very machine that sent the answer.
      *
-     * <p>Si confrontano prima le forme testuali — i router mettono quasi sempre un indirizzo
-     * IP letterale, ed e' un confronto che non chiede niente a nessuno. Solo se non
-     * combaciano si risolve il nome, e si pretende che <b>ogni</b> indirizzo a cui risolve
-     * sia quello del mittente: un nome che ne porta anche uno solo di diverso e' esattamente
-     * il rimbalzo che si sta escludendo.
+     * <p>The textual forms are compared first (routers almost always put a literal IP
+     * address, and that comparison asks nothing of anyone). Only if they do not match is the
+     * name resolved, and <b>every</b> address it resolves to must be the sender's: a name that
+     * carries even one different address is exactly the bounce being excluded.
      */
     private static boolean sameHost(String host, InetAddress responder) {
         String bare = host.startsWith("[") && host.endsWith("]")
@@ -250,11 +249,11 @@ public final class SsdpDiscovery {
     }
 
     /**
-     * Il valore di un header di una risposta SSDP, o {@code null} se non c'e'.
+     * The value of a header of an SSDP answer, or {@code null} if absent.
      *
-     * <p>Il confronto e' <b>senza distinzione di maiuscole</b> perche' HTTP lo prescrive e
-     * i router lo sfruttano: si vedono {@code LOCATION}, {@code Location} e {@code location}
-     * dallo stesso modello a seconda del firmware.
+     * <p>The comparison is <b>case-insensitive</b> because HTTP prescribes it and routers rely
+     * on it: {@code LOCATION}, {@code Location} and {@code location} are seen from the same
+     * model depending on the firmware.
      */
     static String header(String message, String name) {
         String wanted = name.toLowerCase(Locale.ROOT) + ":";
@@ -268,9 +267,9 @@ public final class SsdpDiscovery {
     }
 
     private static String mSearch(String searchTarget) {
-        // Le due virgolette attorno a "ssdp:discover" sono obbligatorie: senza, diversi
-        // router non rispondono affatto. Le righe finiscono in CRLF e il messaggio in una
-        // riga vuota, come ogni richiesta HTTP.
+        // The quotes around "ssdp:discover" are mandatory: without them several routers do
+        // not answer at all. Lines end in CRLF and the message in an empty line, as every HTTP
+        // request.
         return "M-SEARCH * HTTP/1.1\r\n"
                 + "HOST: " + SSDP_ADDRESS + ":" + SSDP_PORT + "\r\n"
                 + "MAN: \"ssdp:discover\"\r\n"
@@ -280,10 +279,10 @@ public final class SsdpDiscovery {
     }
 
     /**
-     * Gli indirizzi IPv4 da cui vale la pena cercare.
+     * The IPv4 addresses worth searching from.
      *
-     * <p>Si scartano le interfacce spente, il loopback e quelle che non sanno fare
-     * multicast: non risponderebbe nessuno e ognuna costerebbe l'intera attesa.
+     * <p>Interfaces that are down, loopback and those that cannot multicast are discarded:
+     * nobody would answer and each would cost the whole wait.
      */
     private static List<InetAddress> localIpv4Addresses() {
         List<InetAddress> addresses = new ArrayList<>();

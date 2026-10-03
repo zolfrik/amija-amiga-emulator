@@ -105,8 +105,8 @@ public class DivuInstruction extends AbstractM68kInstruction {
                     if (divisor == 0) {
                         cpu.writeCCR(cpu.x ? 0x10 : 0);
                         cpu.addInternalCycles(4);
-                        // Group 2: il PC impilato e' quello dell'istruzione SEGUENTE, non
-                        // quella che ha fallito — un RTE deve proseguire, non ridividere.
+                        // Group 2: the PC stacked is that of the NEXT instruction, not the one
+                        // that failed: an RTE must continue, not divide again.
                         int extensions = (hasExt1(eaMode, eaReg) ? 1 : 0)
                                 + (hasExt2(eaMode, eaReg, 2) ? 1 : 0);
                         int nxt = cpu.getOpcodeAddress() + 2 + extensions * 2;
@@ -116,10 +116,9 @@ public class DivuInstruction extends AbstractM68kInstruction {
                     int msw = (int)(regVal >>> 16) & 0xFFFF;
                     if (msw >= divisor) {
                         cpu.v = true; cpu.c = false;
-                        // Ordine np-LAST (hardware, confermato da WinUAE e Tom Harte):
-                        // idle interni, poi la prefetch terminale in step 8. Il vecchio
-                        // ramo seamOverlap usava l'ordine np-first e contro WinUAE
-                        // sfasava il marker delle bande contese (G1).
+                        // np-LAST order (the hardware's, confirmed by the Tom Harte vectors):
+                        // internal idles, then the terminating prefetch in step 8. The np-first
+                        // order would shift the marker of the contended bands.
                         cpu.idleCycles(6);
                         setStep(cpu, 8);
                         return false;
@@ -135,7 +134,7 @@ public class DivuInstruction extends AbstractM68kInstruction {
                     setTemp(cpu, PQ, q);
                     setTemp(cpu, LAST_MSB, msb);
                     setTemp(cpu, LOOP_COUNT, 15);
-                    // Ordine np-LAST (vedi commento nel ramo overflow sopra).
+                    // np-LAST order (see the comment in the overflow branch above).
                     cpu.idleCycles(6);
                     nextStep(cpu);
                     return false;
@@ -191,14 +190,14 @@ public class DivuInstruction extends AbstractM68kInstruction {
                 }
                 case 8 -> {
                     if (cpu.isBusCycleIdle()) {
-                        // WinUAE op_80d0_14_ff: fra la lettura dell'operando e la prefetch
-                        // finale corrono i cicli della divisione, e `ipl_fetch_next()` sta
-                        // subito prima della prefetch — l'ancora e' lei, non la lettura.
+                        // Between the operand read and the final prefetch run the division's
+                        // cycles, and the `next` sample sits right before the prefetch: the
+                        // anchor is the prefetch, not the read.
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         refillPipeline(cpu);
-                        // Overlapped prefetch (Phase 4): the terminal np is the last bus cycle —
+                        // Overlapped prefetch (Phase 4): the terminal np is the last bus cycle;
                         // finalize in this same step (seam 0). See
-                        // docs/cpu-overlapped-prefetch-rework-plan.md §Phase 4.
+                        // docs/cpu-overlapped-prefetch-rework-plan.md, Phase 4.
                         return finalizeInstructionSafe(cpu);
                     }
                     return false;

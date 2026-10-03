@@ -69,15 +69,15 @@ public final class AudioRingBuffer {
         return CAPACITY;
     }
 
-    /** Numero totale di sample scartati per overflow (diagnostica). */
+    /** Total number of samples dropped on overflow (diagnostics). */
     public long overflowCount() {
         return overflows.get();
     }
 
     /**
-     * Riempimento del buffer normalizzato in [0,1].
-     * 0 = vuoto (rischio underrun), 1 = pieno (rischio overflow).
-     * Usato dall'algoritmo ASR (Adaptive Sample Rate) per centrare il buffer.
+     * Fill level of the buffer, normalised to [0,1]. 0 = empty (risk of underrun), 1 = full
+     * (risk of overflow). Used by the ASR (Adaptive Sample Rate) algorithm to centre the
+     * buffer.
      */
     public double fillLevel() {
         return (double) available() / CAPACITY;

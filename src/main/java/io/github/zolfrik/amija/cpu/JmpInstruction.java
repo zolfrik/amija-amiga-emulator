@@ -58,34 +58,29 @@ public class JmpInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                 }
                 case 2 -> {
-                    // Ancora IPL di JMP. gencpu emette `ipl_fetch_now()` per TUTTI e sette i
-                    // modi, ma a distanze diverse dalla fine: -8 per (An) e (xxx).L, -12 per
-                    // (d16,An)/(xxx).W/(d16,PC), -20 per i due INDICIZZATI, che hanno 6 cicli
-                    // interni fra l'ancora e le prefetch. Noi la dichiariamo SOLO per i due
-                    // indicizzati, e la ragione e' MISURATA, non dedotta.
+                    // IPL anchor of JMP. A `now` sample exists for ALL seven modes, but at
+                    // different distances from the end: -8 for (An) and (xxx).L, -12 for
+                    // (d16,An)/(xxx).W/(d16,PC), -20 for the two INDEXED modes, which have 6
+                    // internal cycles between the anchor and the prefetches. It is declared ONLY
+                    // for the two indexed modes, and the reason is MEASURED.
                     //
-                    // La misura (2026-08-21, il passo che il piano §6.1.4 prescriveva): istante
-                    // di accettazione dell'interrupt nel loop `.mainLoop: jmp (a6)` di
-                    // CPU/Timing/JMP3, `WINUAE_DOINTLOG` contro la sonda gemella, avvio e
-                    // angolo fissati, 3096 interrupt confrontati uno per uno:
-                    //   • senza ancora: Δ = **46 cck costanti su 3095 su 3096** — cioe' solo la
-                    //     fase di boot. Per il modo 2 il nostro default RIPRODUCE ESATTAMENTE
-                    //     l'oracolo, benche' l'audit lo descriva come `next @-4` contro `now @-8`;
-                    //   • con l'ancora su tutti i modi: Δ = 46/48/50/51/52, cioe' da 2 a 6 cck
-                    //     di RITARDO, variabile. Il nostro `markIplAnchor(NOW)` in questo punto
-                    //     NON e' la `ipl_fetch_now()` di WinUAE.
-                    // Da cui: sui modi corti la dichiarazione non serve (il default e' gia'
-                    // esatto) e per giunta fa danno; sugli indicizzati serve, ed e' la stessa
-                    // struttura di PEA (op_4870/op_487b, vedi PeaInstruction step 1).
+                    // The measurement: interrupt acceptance instant in the `.mainLoop: jmp (a6)`
+                    // loop of CPU/Timing/JMP3, boot and angle pinned, 3096 interrupts compared
+                    // one by one against the reference:
+                    //   - without the anchor: delta = 46 CCK constant on 3095 of 3096, i.e. only
+                    //     the boot phase: for mode 2 the default path is already exact;
+                    //   - with the anchor on every mode: delta = 46/48/50/51/52, i.e. 2 to 6 CCK
+                    //     of variable DELAY.
+                    // So on the short modes the declaration is not needed (the default is
+                    // already exact) and even does harm; on the indexed ones it is needed, with
+                    // the same structure as PEA (see PeaInstruction step 1).
                     //
-                    // ⚠️ RESIDUO APERTO, e non e' il modo 2: e' che il nostro ramo NOW timbra
-                    // l'ancora in un istante che non coincide con quello dell'oracolo sui modi
-                    // corti. Finche' resta cosi', questa dichiarazione per-modo e' la forma piu'
-                    // fedele che sappiamo scrivere, non la trascrizione di gencpu.
-                    // ⛔ Altri due fatti gia' stabiliti, per non rifare la strada: il .raw di
-                    // JMP3 rigenerato con WinUAE e' BYTE-IDENTICO a quello distribuito (la
-                    // contraddizione non era fra emulatori), e il POLL a S0 e' load-bearing
-                    // (spostarlo manda 245 test su 253 in rosso, piano §6.1.4).
+                    // OPEN RESIDUE, and it is not mode 2: our NOW branch stamps the anchor at an
+                    // instant that on the short modes does not coincide with the reference's.
+                    // As long as that holds, this per-mode declaration is the most faithful form
+                    // we know how to write. Two facts already established: the JMP3 reference
+                    // regenerated is BYTE-IDENTICAL to the one shipped, and the poll at S0 is
+                    // load-bearing (moving it turns 245 tests of 253 red, plan section 6.1.4).
                     if (eaMode == 6 || (eaMode == 7 && eaReg == 3)) {
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                     }

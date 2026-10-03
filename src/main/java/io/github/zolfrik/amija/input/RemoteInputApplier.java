@@ -24,61 +24,60 @@ import io.github.zolfrik.amija.net.FeedbackPacket;
 import io.github.zolfrik.amija.net.GuestInputTarget;
 
 /**
- * Lato host dell'input: applica alla macchina lo stato mandato dall'ospite
- * ({@code docs/remote-play-plan.md} §4.3).
+ * Host side of the input: applies to the machine the state sent by the guest
+ * ({@code docs/remote-play-plan.md} section 4.3).
  *
- * <h2>Un punto solo, una volta per frame, sul thread giusto</h2>
- * Questa classe <b>non</b> viene chiamata dal thread di rete. Il thread di rete si limita a
- * depositare l'ultimo stato autenticato; e' il <b>thread di emulazione</b> a raccoglierlo, al
- * confine di frame, sempre nello stesso punto. Due ragioni, ed entrambe contano:
- * si evita di introdurre scritture concorrenti sullo stato di macchina, e si ottiene un
- * punto di quantizzazione riproducibile — che e' poi come si comporta anche l'input locale,
- * che l'EDT consegna comunque a raffiche.
+ * <h2>One place, once per frame, on the right thread</h2>
+ * This class is <b>not</b> called by the network thread. The network thread only deposits
+ * the last authenticated state; the <b>emulation thread</b> collects it, at the frame
+ * boundary, always in the same place. Two reasons, both important: no concurrent writes to
+ * the machine state are introduced, and the quantisation point is reproducible, which is
+ * also how local input behaves, since the EDT delivers it in bursts anyway.
  *
- * <h2>Applicare uno stato non e' riprodurre eventi</h2>
- * Quel che arriva e' una fotografia, non un racconto. La si applica per differenza:
+ * <h2>Applying a state is not replaying events</h2>
+ * What arrives is a snapshot, not a story. It is applied by difference:
  * <ul>
- *   <li><b>tasti</b>: {@code bitmap ^ ultimaBitmap}, e sui bit cambiati press o release.
- *       E' cio' che rende impossibile un tasto appeso — se un pacchetto si perde, il
- *       successivo porta comunque la verita' e la differenza la recupera;</li>
- *   <li><b>mouse</b>: la <b>differenza signed</b> dei contatori cumulativi, che gestisce da
- *       sola l'avvolgimento a 32 bit e recupera il movimento dei pacchetti persi;</li>
- *   <li><b>joystick e pulsanti</b>: stato puro, si scrive e basta;</li>
- *   <li><b>la periferica collegata</b>: idem, ed e' l'ospite a dirla. La porta gliel'ha
- *       assegnata l'host, ma cosa infilarci — mouse, joystick, niente — lo sceglie lui nel
- *       proprio popup, anche a partita in corso. Si posa <b>per ultima</b>, dopo i gesti, e
- *       non e' un dettaglio: i gesti sono una <i>differenza</i> rispetto al pacchetto
- *       precedente, quindi possono riguardare la periferica di prima, e {@code GamePort}
- *       deduce la propria da cio' che le si fa. Chi molla il fuoco e nello stesso istante
- *       svuota la porta si ritroverebbe un joystick fermo invece di una porta vuota.</li>
+ *   <li><b>keys</b>: {@code bitmap ^ lastBitmap}, and press or release on the bits that
+ *       changed. That makes a stuck key impossible: if a packet is lost, the next one still
+ *       carries the truth and the difference recovers it;</li>
+ *   <li><b>mouse</b>: the <b>signed difference</b> of the cumulative counters, which handles
+ *       the 32-bit wrap by itself and recovers the movement of lost packets;</li>
+ *   <li><b>joystick and buttons</b>: pure state, simply written;</li>
+ *   <li><b>the device plugged in</b>: likewise, and the guest states it. The host assigned
+ *       the port, but what to plug into it (mouse, joystick, nothing) the guest chooses in
+ *       its own popup, even mid-game. It is set <b>last</b>, after the gestures, and that
+ *       matters: the gestures are a <i>difference</i> from the previous packet, so they may
+ *       concern the previous device, and {@code GamePort} infers its own from what is done to
+ *       it. Releasing fire and emptying the port at the same instant would otherwise leave a
+ *       stationary joystick instead of an empty port.</li>
  * </ul>
  *
- * <h2>Qui sta il confine di fiducia</h2>
- * L'ospite puo' mandare qualunque bitmap: il pacchetto e' 44 byte e chiunque puo' scriverne
- * uno. Percio' i divieti stanno <b>qui</b> e non sull'ospite:
+ * <h2>The trust boundary is here</h2>
+ * The guest can send any bitmap: the packet is 44 bytes and anyone can write one. So the
+ * prohibitions are <b>here</b>, not on the guest:
  * <ul>
- *   <li><b>CTRL+Amiga+Amiga non resetta la macchina di qualcun altro</b>, salvo che l'host
- *       lo consenta esplicitamente. Il filtro non nega i tre tasti — servono, singolarmente,
- *       in mezzo mondo di programmi — ma <b>nega la terna</b>: quando tutti e tre
- *       risulterebbero premuti insieme, l'Amiga destra non viene consegnata. Vietare i tasti
- *       sarebbe mutilare la tastiera per prevenire una combinazione;</li>
- *   <li><b>la tastiera si condivide solo se l'host lo ha concesso</b>: con
- *       {@code keyboardShared} spento, dell'ospite arriva solo la game port.</li>
+ *   <li><b>CTRL+Amiga+Amiga does not reset someone else's machine</b>, unless the host
+ *       explicitly allows it. The filter does not deny the three keys (each is needed alone
+ *       by half the programs in the world) but <b>denies the triple</b>: when all three would
+ *       be held together, the right Amiga is not delivered. Forbidding the keys would
+ *       mutilate the keyboard to prevent a combination;</li>
+ *   <li><b>the keyboard is shared only if the host granted it</b>: with
+ *       {@code keyboardShared} off, only the game port comes from the guest.</li>
  * </ul>
- * Le hotkey locali dell'host (F12 in primis, che aprirebbe un dialog modale sulla macchina
- * di qualcun altro) non passano nemmeno da qui: sono intercettate da {@code Amija} prima
- * degli adapter di macchina, e l'ospite scrive solo su questi ultimi.
+ * The host's local hotkeys (F12 above all, which would open a modal dialog on someone
+ * else's machine) do not even come through here: {@code Amija} intercepts them before the
+ * machine's adapters, and the guest writes only to the latter.
  */
 public final class RemoteInputApplier implements GuestInputTarget {
 
     private static final int KEY_COUNT = 128;
 
-    /** I tre tasti della terna di reset (vedi {@code Keyboard.KEY_*}). */
+    /** The three keys of the reset triple (see {@code Keyboard.KEY_*}). */
     private static final int KEY_CTRL = 0x63;
     private static final int KEY_L_AMIGA = 0x66;
     private static final int KEY_R_AMIGA = 0x67;
 
-    /** La terna, per scorrerla quando si cerca il tasto che la completerebbe. */
+    /** The triple, to walk through when looking for the key that would complete it. */
     private static final int[] RESET_KEYS = { KEY_CTRL, KEY_L_AMIGA, KEY_R_AMIGA };
 
     private final GamePortControls port;
@@ -99,9 +98,9 @@ public final class RemoteInputApplier implements GuestInputTarget {
     private long resetCombosBlocked;
 
     /**
-     * @param port           la game port assegnata all'ospite (default: la 1, quella joystick)
-     * @param keyboard       la tastiera Amiga, o {@code null} per non condividerla
-     * @param allowReset     se l'ospite puo' resettare la macchina con CTRL+Amiga+Amiga
+     * @param port           the game port assigned to the guest (default: 1, the joystick one)
+     * @param keyboard       the Amiga keyboard, or {@code null} not to share it
+     * @param allowReset     whether the guest may reset the machine with CTRL+Amiga+Amiga
      */
     public RemoteInputApplier(GamePortControls port, AmigaKeyTarget keyboard,
                               boolean allowReset) {
@@ -112,14 +111,14 @@ public final class RemoteInputApplier implements GuestInputTarget {
     }
 
     /**
-     * Applica lo stato. <b>Chiamato dal thread di emulazione, una volta per frame.</b>
+     * Applies the state. <b>Called by the emulation thread, once per frame.</b>
      */
     @Override
     public void apply(FeedbackPacket state) {
         if (!started || state.sessionGen != lastSessionGen) {
-            // Nuova sessione (o prima applicazione): i contatori del mouse ripartono da
-            // un'altra origine, e prenderne la differenza vorrebbe dire teletrasportare il
-            // puntatore. Si riparte dai valori correnti, cioe' da nessun movimento.
+            // New session (or first application): the mouse counters start from another
+            // origin, and taking their difference would teleport the pointer. Start again
+            // from the current values, i.e. from no movement.
             resetBaseline(state);
         }
 
@@ -160,11 +159,11 @@ public final class RemoteInputApplier implements GuestInputTarget {
             lastButtons = state.buttons;
         }
 
-        // Cosa l'ospite ha collegato, e per ULTIMA: i rilasci appena applicati sono la
-        // differenza rispetto al pacchetto precedente, quindi possono riguardare la
-        // periferica di PRIMA — e GamePort deduce la propria da cio' che le si fa. Lasciare
-        // che a parlare per ultimo sia il pacchetto significa che chi molla il fuoco e nello
-        // stesso istante svuota la porta ottiene una porta vuota, non un joystick fermo.
+        // What the guest has plugged in, and LAST: the releases just applied are the
+        // difference from the previous packet, so they may concern the PREVIOUS device, and
+        // GamePort infers its own from what is done to it. Letting the packet speak last means
+        // that releasing fire and emptying the port at the same instant gives an empty port,
+        // not a stationary joystick.
         port.setDevice(hardwareDevice(state.portDevice));
 
         if (keyboardShared) {
@@ -174,16 +173,16 @@ public final class RemoteInputApplier implements GuestInputTarget {
     }
 
     /**
-     * Riporta la macchina a riposo: tutto rilasciato, e la porta <b>vuota</b>.
+     * Brings the machine back to rest: everything released, and the port <b>empty</b>.
      *
-     * <p>Va chiamato quando l'ospite se ne va, altrimenti l'ultimo tasto che aveva premuto
-     * resta premuto per sempre — non perche' il protocollo abbia perso qualcosa, ma perche'
-     * non arriva piu' nessuno stato che lo contraddica.
+     * <p>Must be called when the guest leaves, or the last key it pressed stays pressed
+     * forever, not because the protocol lost something but because no state arrives any more
+     * to contradict it.
      *
-     * <p>Anche la periferica se ne va con lui: chi la teneva collegata non c'e' piu', e una
-     * porta che continuasse a dichiarare un joystick fermo sarebbe una bugia che i giochi
-     * leggono. La porta resta comunque <b>riservata</b> — l'host non se la riprende finche'
-     * ospita, perche' un altro ospite puo' arrivare.
+     * <p>The device leaves with the guest too: whoever kept it plugged in is gone, and a port
+     * that kept declaring a stationary joystick would be a lie the games read. The port stays
+     * <b>reserved</b>, though: the host does not take it back while hosting, because another
+     * guest may arrive.
      */
     @Override
     public void releaseAll() {
@@ -194,7 +193,7 @@ public final class RemoteInputApplier implements GuestInputTarget {
         port.pressMouseLeft(false);
         port.pressMouseRight(false);
         port.pressMouseMiddle(false);
-        // Dopo i rilasci, e non prima: ognuno di essi fa dedurre a GamePort una periferica.
+        // After the releases, not before: each of them makes GamePort infer a device.
         port.setDevice(GamePortDevice.NONE);
         if (keyboardShared) {
             for (int k = 0; k < KEY_COUNT; k++) {
@@ -210,12 +209,12 @@ public final class RemoteInputApplier implements GuestInputTarget {
         started = false;
     }
 
-    /** Quante volte lo stato dell'ospite e' stato applicato. */
+    /** How many times the guest state has been applied. */
     public long applied() {
         return applied;
     }
 
-    /** Quante volte la terna di reset e' stata negata: diagnostica, non un errore. */
+    /** How many times the reset triple was denied: diagnostics, not an error. */
     public long resetCombosBlocked() {
         return resetCombosBlocked;
     }
@@ -252,25 +251,25 @@ public final class RemoteInputApplier implements GuestInputTarget {
     }
 
     /**
-     * Quale tasto della terna di reset non va consegnato, o {@code -1} se nessuno.
+     * Which key of the reset triple must not be delivered, or {@code -1} if none.
      *
-     * <h2>Due modi di formare la terna, non uno</h2>
-     * Il caso ovvio e' l'ospite che tiene tutti e tre i tasti: li' si nega la <b>sola</b>
-     * Amiga destra, perche' vietare i tre tasti sarebbe mutilare la tastiera per prevenire
-     * una combinazione, e CTRL e l'Amiga sinistra servono da soli in mezzo mondo di
-     * programmi.
+     * <h2>Two ways to form the triple, not one</h2>
+     * The obvious case is the guest holding all three keys: there <b>only</b> the right Amiga
+     * is denied, because forbidding the three keys would mutilate the keyboard to prevent a
+     * combination, and CTRL and the left Amiga are needed alone by half the programs in the
+     * world.
      *
-     * <p>Il caso meno ovvio e' la terna <b>a cavallo delle due tastiere</b>: l'host tiene
-     * CTRL e un'Amiga per i fatti suoi — succede, sono modificatori di uso comune — e
-     * all'ospite basta portare il terzo tasto. Nessuno dei suoi pacchetti contiene la terna,
-     * quindi il controllo sulla sola bitmap ricevuta non vede niente di strano, eppure la
-     * macchina di qualcun altro si resetta. Il pezzo mancante e' lo stato dell'host, che
-     * questo oggetto non ha: lo si chiede alla tastiera, che e' l'unica a saperlo, e si
-     * trattiene il tasto che <b>completerebbe</b> la terna, qualunque dei tre sia.
+     * <p>The less obvious case is the triple <b>split across the two keyboards</b>: the host
+     * holds CTRL and one Amiga key on its own account (it happens, they are common
+     * modifiers) and the guest only has to bring the third key. None of its packets contains
+     * the triple, so checking the received bitmap alone sees nothing strange, yet someone
+     * else's machine resets. The missing piece is the host's state, which this object does
+     * not have: it is asked of the keyboard, the only one that knows, and the key that
+     * <b>would complete</b> the triple is held back, whichever of the three it is.
      *
-     * <p>Si guarda solo cio' che l'ospite <b>sta iniziando a premere</b>: un tasto che
-     * teneva gia' non completa niente che non sia gia' successo, e trattenerlo produrrebbe
-     * un rilascio che l'ospite non ha chiesto.
+     * <p>Only what the guest <b>is starting to press</b> is looked at: a key it was already
+     * holding completes nothing that has not already happened, and holding it back would
+     * produce a release the guest did not ask for.
      */
     private int keyToWithhold(byte[] keys) {
         if (isSet(keys, KEY_CTRL) && isSet(keys, KEY_L_AMIGA) && isSet(keys, KEY_R_AMIGA)) {
@@ -289,11 +288,11 @@ public final class RemoteInputApplier implements GuestInputTarget {
     }
 
     /**
-     * La periferica corrispondente al codice del pacchetto.
+     * The device matching the packet's code.
      *
-     * <p>Un codice fuori catalogo non arriva fin qui — {@code FeedbackPacket.readFrom} lo
-     * rifiuta — ma questo resta il confine di fiducia, e un {@code default} che sceglie la
-     * porta vuota e' l'unica risposta che non inventa una periferica per conto di nessuno.
+     * <p>A code outside the catalogue never gets here ({@code FeedbackPacket.readFrom} refuses
+     * it), but this is still the trust boundary, and a {@code default} choosing the empty
+     * port is the only answer that invents no device on anyone's behalf.
      */
     private static GamePortDevice hardwareDevice(int wire) {
         return switch (wire) {

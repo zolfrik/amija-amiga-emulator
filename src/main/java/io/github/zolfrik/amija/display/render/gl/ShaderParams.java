@@ -36,18 +36,18 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Estrazione e persistenza dei parametri {@code #pragma parameter} di un preset shader
- * RetroArch. Non tocca OpenGL.
+ * Extraction and persistence of the {@code #pragma parameter} parameters of a RetroArch shader
+ * preset. It does not touch OpenGL.
  *
- * <p>Ogni pass del preset può dichiarare parametri con la sintassi
- * {@code #pragma parameter NOME "descrizione" default min max [step]}. Questa classe li
- * raccoglie (deduplicando per nome) con i relativi metadati, e legge/scrive gli override
- * dell'utente in un file affiancato al preset ({@code <preset>.params}, formato
- * {@code nome=valore}). {@link ShaderChain} applica quegli override al build.
+ * <p>Every pass of the preset can declare parameters with the syntax
+ * {@code #pragma parameter NAME "description" default min max [step]}. This class collects them
+ * (deduplicated by name) with their metadata, and reads/writes the user's overrides in a file
+ * next to the preset ({@code <preset>.params}, format {@code name=value}). {@link ShaderChain}
+ * applies those overrides at build time.
  */
 public final class ShaderParams {
 
-    /** Metadati di un parametro shader. */
+    /** Metadata of a shader parameter. */
     public record Param(String name, String desc, float def, float min, float max, float step) { }
 
     private static final Pattern PRAGMA = Pattern.compile(
@@ -57,8 +57,8 @@ public final class ShaderParams {
     private ShaderParams() { }
 
     /**
-     * Elenca i parametri del preset, in ordine di prima apparizione fra i pass. Riconosce
-     * sia i {@code .glslp} sia i {@code .slangp}. Lancia se il preset non è leggibile.
+     * Lists the preset's parameters, in order of first appearance among the passes. Recognises
+     * both {@code .glslp} and {@code .slangp}. Throws if the preset cannot be read.
      */
     public static List<Param> parse(Path preset) throws IOException {
         LinkedHashMap<String, Param> out = new LinkedHashMap<>();
@@ -66,18 +66,18 @@ public final class ShaderParams {
             SlangPreset sp = SlangPreset.load(preset);
             for (SlangPreset.PassSpec pass : sp.passes()) {
                 try {
-                    // La versione GLSL è irrilevante qui: interessano solo i #pragma.
+                    // The GLSL version is irrelevant here: only the #pragmas matter.
                     for (Param p : SlangSource.load(pass.shader, 330).parameters()) {
                         out.putIfAbsent(p.name(), p);
                     }
                 } catch (RuntimeException | IOException e) {
-                    // pass illeggibile o non traducibile: salta, non bloccare l'intero
-                    // elenco — e soprattutto non lasciar salire l'eccezione fino all'EDT.
+                    // unreadable or untranslatable pass: skip it, do not block the whole list,
+                    // and above all do not let the exception climb up to the EDT.
                 }
             }
-            // Il preset (e la sua catena di #reference) può cambiare il valore di default
-            // mostrato dal popup: senza questo, i cursori partono dal default dello shader
-            // invece che da quello effettivamente in uso.
+            // The preset (and its #reference chain) can change the default value the popup
+            // shows: without this, the sliders would start from the shader's default instead of
+            // the one really in use.
             for (Map.Entry<String, Float> e : sp.paramOverrides().entrySet()) {
                 Param p = out.get(e.getKey());
                 if (p != null) {
@@ -94,7 +94,7 @@ public final class ShaderParams {
             try {
                 body = ShaderChain.loadWithIncludes(pass.shader, new HashSet<>());
             } catch (IOException e) {
-                continue; // pass illeggibile: salta, non bloccare l'intero elenco
+                continue; // unreadable pass: skip it, do not block the whole list
             }
             for (String line : body.split("\n")) {
                 Matcher m = PRAGMA.matcher(line);
@@ -110,18 +110,18 @@ public final class ShaderParams {
         return new ArrayList<>(out.values());
     }
 
-    /** {@code true} per i preset in formato slang ({@code .slangp}). */
+    /** {@code true} for presets in slang format ({@code .slangp}). */
     public static boolean isSlang(Path preset) {
         return preset.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
                 .endsWith(".slangp");
     }
 
-    /** File affiancato al preset con gli override dell'utente. */
+    /** File next to the preset with the user's overrides. */
     public static Path sidecar(Path glslp) {
         return glslp.resolveSibling(glslp.getFileName().toString() + ".params");
     }
 
-    /** Legge gli override dell'utente ({@code nome->valore}); mappa vuota se assenti/illeggibili. */
+    /** Reads the user overrides ({@code name->value}); empty map if absent/unreadable. */
     public static Map<String, Float> loadOverrides(Path glslp) {
         Map<String, Float> out = new HashMap<>();
         Path s = sidecar(glslp);
@@ -136,13 +136,13 @@ public final class ShaderParams {
             try {
                 out.put(k, Float.parseFloat(p.getProperty(k).trim()));
             } catch (NumberFormatException ignore) {
-                // valore non numerico: ignorato
+                // non-numeric value: ignored
             }
         }
         return out;
     }
 
-    /** Scrive gli override dell'utente accanto al preset. */
+    /** Writes the user overrides next to the preset. */
     public static void saveOverrides(Path glslp, Map<String, Float> values) throws IOException {
         Properties p = new Properties();
         for (Map.Entry<String, Float> e : values.entrySet()) {

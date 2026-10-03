@@ -28,68 +28,65 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Manifest dell'assistente di download: l'elenco dei pacchetti di terze parti che
- * AmiJa sa procurare, con la fonte ufficiale di ciascuno.
+ * Manifest of the download assistant: the list of third-party packages AmiJa can fetch,
+ * with the official source of each.
  *
- * <p>Nessuno di questi file è ridistribuito da AmiJa e nessuno finisce nel jar:
- * l'assistente li preleva dal sito del titolare dei diritti su richiesta esplicita
- * dell'utente. Il razionale giuridico, i verdetti di licenza e le regole per
- * aggiungere una voce stanno in {@code THIRD-PARTY-NOTICES.md} §4 e §5.
+ * <p>None of these files is redistributed by AmiJa and none ends up in the jar: the
+ * assistant fetches them from the rights holder's site at the user's explicit request. The
+ * legal rationale, the licence verdicts and the rules for adding an entry are in
+ * {@code THIRD-PARTY-NOTICES.md} sections 4 and 5.
  *
- * <p><b>Mai</b> aggiungere qui ROM Kickstart o immagini disco: restano a carico
- * dell'utente e nessun automatismo può procurarle.
+ * <p><b>Never</b> add Kickstart ROMs or disk images here: they remain the user's
+ * responsibility and no automation can fetch them.
  *
- * <p>Gli SHA-256 sono stati verificati a mano il 2026-08-01 scaricando gli
- * archivi. Sono indicativi: gli URL non sono versionati (puntano sempre all'ultimo
- * rilascio), quindi un aggiornamento a monte li cambierà legittimamente — vedi
- * {@link AssetPackage#sha256()}.
+ * <p>The SHA-256 values were checked by hand on 2026-08-01 by downloading the archives. They
+ * are indicative: the URLs are not versioned (they always point to the latest release), so an
+ * upstream update will legitimately change them; see {@link AssetPackage#sha256()}.
  *
- * <p>I campioni audio del drive stavano qui fino al 2026-08-07, quando AmiJa ha
- * cominciato a portarsi i propri: ora {@code floppysounds/} è pieno all'installazione
- * e non c'è più niente da scaricare.
+ * <p>The drive sound samples were here until 2026-08-07, when AmiJa started bringing its
+ * own: {@code floppysounds/} is full at installation and there is nothing to download.
  */
 public final class AssetCatalog {
 
-    /** Radice delle risorse WHDLoad, la stessa che legge {@code WhdLoadManager}. */
+    /** Root of the WHDLoad resources, the same one {@code WhdLoadManager} reads. */
     private static final Path WHDLOAD_FILES = AppHome.resolve("whdload", "WHDLoad_files");
 
     private AssetCatalog() {}
 
     /**
-     * I pacchetti offerti all'utente, nell'ordine in cui vanno mostrati.
+     * The packages offered to the user, in the order they are shown.
      *
-     * @param config configurazione da cui leggere eventuali override degli URL
-     *               (chiave {@code assets.<id>.url}); può essere {@code null}
+     * @param config configuration from which to read any URL overrides (key
+     *               {@code assets.<id>.url}); may be {@code null}
      */
     public static List<AssetPackage> packages(AmigaConfig config) {
         return List.of(whdload(config), whdloadRtb(config));
     }
 
     /**
-     * I pacchetti <b>definiti ma non offerti</b>: i due del Mega Bezel, nascosti
-     * dall'assistente dal 2026-08-09.
+     * The packages <b>defined but not offered</b>: the two Mega Bezel ones, hidden from the
+     * assistant since 2026-08-09.
      *
-     * <p>Non è una questione di licenze — quelle sono a posto e restano registrate
-     * in {@code THIRD-PARTY-NOTICES.md} §2.1 — ma di collaudo: la catena slang del
-     * Mega Bezel non è ancora stata verificata abbastanza da poterla proporre, e
-     * un pacchetto che si scarica (fino a 347 MB) per poi non funzionare è peggio
-     * di un pacchetto assente. Le definizioni restano intatte e vive proprio per
-     * questo: per riaprirle basta rimetterle nella lista di {@link #packages},
-     * senza ricostruire nulla. Chi vuole provarle intanto può installarle a mano
-     * nelle stesse cartelle di destinazione descritte qui sotto.
+     * <p>Not a licensing question (those are in order and stay recorded in
+     * {@code THIRD-PARTY-NOTICES.md} section 2.1) but a testing one: the Mega Bezel slang
+     * chain has not been verified enough to be offered, and a package that downloads (up to
+     * 347 MB) and then does not work is worse than a missing one. The definitions stay intact
+     * and alive for exactly that reason: reopening them only takes putting them back in the
+     * list of {@link #packages}, rebuilding nothing. Whoever wants to try them meanwhile can
+     * install them by hand in the same destination folders described below.
      *
-     * @param config come in {@link #packages(AmigaConfig)}
+     * @param config as in {@link #packages(AmigaConfig)}
      */
     public static List<AssetPackage> hiddenPackages(AmigaConfig config) {
         return List.of(megaBezel(config), megaBezelCommodore(config));
     }
 
     // -------------------------------------------------------------------------
-    // WHDLoad. L'archivio ufficiale contiene C/, S/, Docs/ e l'Install script;
-    // teniamo solo C/ e S/ — Docs/ sono oltre 500 file di documentazione HTML,
-    // inutili dentro l'hard disk generato, e le icone .info non servono a nulla
-    // in un avvio non presidiato. NB: la S/WHDLoad.prefs qui installata viene
-    // comunque riscritta da WhdLoadManager con quella generata dalla config.
+    // WHDLoad. The official archive contains C/, S/, Docs/ and the Install script; only C/
+    // and S/ are kept: Docs/ is over 500 HTML documentation files, useless inside the
+    // generated hard disk, and the .info icons serve no purpose in an unattended boot. The
+    // S/WHDLoad.prefs installed here is rewritten anyway by WhdLoadManager with the one
+    // generated from the config.
     // -------------------------------------------------------------------------
     private static AssetPackage whdload(AmigaConfig config) {
         return new AssetPackage(
@@ -112,11 +109,10 @@ public final class AssetCatalog {
     }
 
     // -------------------------------------------------------------------------
-    // Le tabelle di rilocazione .RTB, richieste dagli install che usano il
-    // kickemu. NON fanno parte di WHDLoad: vengono da SoftKick, che la doc di
-    // WHDLoad (Docs/en/need.html) indica come fonte. L'archivio è ridistribuibile
-    // solo intatto — infatti lo scarichiamo intatto, ed è l'utente a scompattarlo
-    // sulla propria macchina.
+    // The .RTB relocation tables, required by the installs that use the kickemu. They are
+    // NOT part of WHDLoad: they come from SoftKick, which the WHDLoad docs
+    // (Docs/en/need.html) name as the source. The archive is redistributable only intact,
+    // and indeed it is downloaded intact, and the user unpacks it on their own machine.
     // -------------------------------------------------------------------------
     private static AssetPackage whdloadRtb(AmigaConfig config) {
         final String prefix = "Kickstarts/";
@@ -139,17 +135,16 @@ public final class AssetCatalog {
     }
 
     // -------------------------------------------------------------------------
-    // Il Mega Bezel di HyperspaceMadness: la catena shader slang che disegna un
-    // monitor attorno all'immagine, con cornice generata, riflessi e maschera
-    // fosfori. NASCOSTO all'utente — vedi hiddenPackages(). È GPLv3 —
-    // ridistribuibile, quindi qui la scelta di scaricarlo invece di versionarlo non
-    // è giuridica ma di peso: sono 14,7 MB di cui 12 di sole texture, e chi non usa
-    // gli shader non ne ha bisogno.
+    // HyperspaceMadness's Mega Bezel: the slang shader chain that draws a monitor around the
+    // image, with a generated frame, reflections and phosphor mask. HIDDEN from the user; see
+    // hiddenPackages(). It is GPLv3, redistributable, so here the choice of downloading it
+    // instead of versioning it is not legal but about weight: 14.7 MB, 12 of them textures
+    // alone, and those who do not use shaders do not need it.
     //
-    // Lo zip ha una cartella radice col numero di versione dentro; il mapper la
-    // toglie, così l'albero finisce in shaders/shaders_slang/bezel/Mega_Bezel/ —
-    // dove i suoi #include che escono dal pacchetto (../../../../include/,
-    // ../../../../blurs/) trovano i file comuni libretro che AmiJa porta con sé.
+    // The zip has a root folder with the version number inside; the mapper removes it, so
+    // the tree ends up in shaders/shaders_slang/bezel/Mega_Bezel/, where its #includes that
+    // leave the package (../../../../include/, ../../../../blurs/) find the libretro common
+    // files AmiJa brings with it.
     // -------------------------------------------------------------------------
     private static AssetPackage megaBezel(AmigaConfig config) {
         final String version = "Mega_Bezel_V1.17.1_2024-04-14";
@@ -171,25 +166,25 @@ public final class AssetCatalog {
     }
 
     // -------------------------------------------------------------------------
-    // Il pacchetto Commodore di TheNamec: cornici fotorealistiche in 4K per Amiga
-    // 500/500+/600/1200/CD32/CDTV e per i monitor Commodore, da montare sopra il
-    // Mega Bezel che AmiJa installa in shaders/shaders_slang/bezel/.
-    // NASCOSTO all'utente insieme al Mega Bezel — vedi hiddenPackages().
+    // TheNamec's Commodore pack: photorealistic 4K frames for Amiga
+    // 500/500+/600/1200/CD32/CDTV and the Commodore monitors, to be mounted on top of the
+    // Mega Bezel AmiJa installs in shaders/shaders_slang/bezel/. HIDDEN from the user along
+    // with the Mega Bezel; see hiddenPackages().
     //
-    // È l'unica voce del catalogo che AmiJa non potrebbe ridistribuire nemmeno
-    // volendo: è CC BY-NC-ND 4.0, e le clausole NonCommercial e NoDerivatives sono
-    // incompatibili con la GPL-3.0-or-later del progetto. Da qui due conseguenze
-    // che NON vanno "ottimizzate" via:
-    //   - si scompatta VERBATIM (mapper identità). Gli altri pacchetti filtrano le
-    //     voci inutili; qui filtrare sarebbe produrre un'opera derivata.
-    //   - la destinazione è Mega_Bezel_Packs/thenamec-commodore-pack, e il nome
-    //     della cartella è vincolato: i preset del pacchetto risalgono di sette
-    //     livelli per ritrovare shaders_slang/bezel/Mega_Bezel, quindi la radice
-    //     dev'essere esattamente due cartelle sotto shaders/.
+    // It is the only entry of the catalogue AmiJa could not redistribute even if it wanted
+    // to: it is CC BY-NC-ND 4.0, and the NonCommercial and NoDerivatives clauses are
+    // incompatible with the project's GPL-3.0-or-later. Two consequences follow that must
+    // NOT be "optimised" away:
+    //   - it is unpacked VERBATIM (identity mapper). The other packages filter out useless
+    //     entries; here filtering would produce a derivative work.
+    //   - the destination is Mega_Bezel_Packs/thenamec-commodore-pack, and the folder name
+    //     is constrained: the pack's presets climb seven levels to find
+    //     shaders_slang/bezel/Mega_Bezel, so the root must be exactly two folders below
+    //     shaders/.
     //
-    // Lo sha256 non è fissato: l'archivio è di 347 MB e non è stato scaricato per
-    // calcolarlo. L'URL però è ancorato al tag RC4.1, quindi il contenuto non
-    // cambia sotto i piedi, e l'integrità la verifica requiredEntries.
+    // The sha256 is not fixed: the archive is 347 MB and was not downloaded to compute it.
+    // The URL is anchored to the RC4.1 tag, though, so the content does not change under
+    // our feet, and requiredEntries checks the integrity.
     // -------------------------------------------------------------------------
     private static AssetPackage megaBezelCommodore(AmigaConfig config) {
         Path dest = AppHome.resolve("shaders", "Mega_Bezel_Packs", "thenamec-commodore-pack");
@@ -214,20 +209,20 @@ public final class AssetCatalog {
 
     // -------------------------------------------------------------------------
 
-    /** URL del pacchetto: quello di default, salvo override in {@code amiga.properties}. */
+    /** URL of the package: the default one, unless overridden in {@code amiga.properties}. */
     private static String url(AmigaConfig config, String id, String fallback) {
         return config == null ? fallback : config.assetUrl(id, fallback);
     }
 
-    /** Come {@link #leafUnder(String, String, boolean)}, ma solo per voci non annidate. */
+    /** Like {@link #leafUnder(String, String, boolean)}, but only for non-nested entries. */
     private static String leafUnder(String entry, String prefix) {
         return leafUnder(entry, prefix, false);
     }
 
     /**
-     * Porzione di {@code entry} che segue {@code prefix}, oppure {@code null} se la
-     * voce non sta sotto quel prefisso (o è la directory stessa). Con
-     * {@code nested=false} scarta anche le voci in sottocartelle.
+     * Part of {@code entry} that follows {@code prefix}, or {@code null} if the entry is not
+     * under that prefix (or is the directory itself). With {@code nested=false} it also
+     * discards entries in subfolders.
      */
     private static String leafUnder(String entry, String prefix, boolean nested) {
         if (!entry.startsWith(prefix)) return null;

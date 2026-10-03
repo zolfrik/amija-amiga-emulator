@@ -21,27 +21,28 @@
 package io.github.zolfrik.amija.custom;
 
 /**
- * Denise ECS (8373 "Super Denise") — Enhanced Chip Set.
+ * ECS Denise (8373 "Super Denise"): Enhanced Chip Set.
  *
- * <p>Imposta il chip in modalità ECS (DENISEID {@code 0xFFFC}); di conseguenza, tramite
- * il gating {@code isECS} già presente in {@link AbstractDenise}, diventano attivi:
+ * <p>Sets the chip in ECS mode (DENISEID {@code 0xFFFC}); as a consequence, through the
+ * {@code isECS} gating already in {@link AbstractDenise}, these become active:
  * <ul>
- *   <li><b>D1 DENISEID</b> ($07C) = {@code 0xFFFC} (il Kickstart rileva l'ECS).</li>
- *   <li><b>D4 Readback</b>: BPLCON0/1/2/3/4 e i registri colore ($180-$1BE) sono leggibili.</li>
- *   <li><b>D5 DIWHIGH-H</b>: i bit alti H8 di HSTART/HSTOP (gestiti in
+ *   <li><b>D1 DENISEID</b> ($07C) = {@code 0xFFFC} (the Kickstart detects ECS).</li>
+ *   <li><b>D4 Readback</b>: BPLCON0/1/2/3/4 and the colour registers ($180-$1BE) are
+ *       readable.</li>
+ *   <li><b>D5 DIWHIGH-H</b>: the high H8 bits of HSTART/HSTOP (handled in
  *       {@code AbstractDenise.writeRegisterAtPixel}, case $1E4, gate {@code isECS}).</li>
  * </ul>
  *
- * <p><b>Non ancora implementati</b> (richiedono contenuti ECS per la validazione — Fase 6;
- * vedi {@code docs/ECS-Chipset-Implementation-Plan.md}):
+ * <p><b>Not implemented yet</b> (they need ECS content for validation; see
+ * {@code docs/ECS-Chipset-Implementation-Plan.md}):
  * <ul>
- *   <li><b>D2 Super-hires</b> (BPLCON0 bit 6 SHRES, 35 ns/pixel): richiede di raddoppiare
- *       la larghezza del framebuffer raw ({@code RAW_LINE_PIXELS} è a risoluzione hires) e
- *       di adeguare VirtualCRT/display. Oggi un eventuale bit SHRES viene ignorato (reso
- *       come hires) per non regredire l'OCS.</li>
- *   <li><b>D3/D6 BPLCON3 effetti</b> (BRDRBLNK, BRDSPRT/sprite nel bordo, color bank):
- *       il registro è memorizzato e leggibile, ma gli effetti di rendering non sono
- *       applicati per non regredire i fix OCS su bordo/sprite (North &amp; South, Last Battle).</li>
+ *   <li><b>D2 Super-hires</b> (BPLCON0 bit 6 SHRES, 35 ns/pixel): needs doubling the width of
+ *       the raw framebuffer ({@code RAW_LINE_PIXELS} is at hires resolution) and adapting
+ *       VirtualCRT/display. A SHRES bit is ignored (rendered as hires) so OCS does not
+ *       regress.</li>
+ *   <li><b>D3/D6 BPLCON3 effects</b> (BRDRBLNK, BRDSPRT/sprites in the border, colour bank): the
+ *       register is stored and readable, but the rendering effects are not applied, so the OCS
+ *       border/sprite fixes (North &amp; South, Last Battle) do not regress.</li>
  * </ul>
  */
 public final class EcsDenise extends AbstractDenise {

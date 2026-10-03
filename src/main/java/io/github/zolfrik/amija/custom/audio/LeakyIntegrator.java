@@ -21,15 +21,13 @@
 package io.github.zolfrik.amija.custom.audio;
 
 /**
- * Filtro RC del primo ordine (passa-basso a 6 dB/ottava), il mattone con cui è
- * costruita tutta la catena audio analogica dell'Amiga.
+ * First-order RC filter (6 dB/octave low-pass), the building block of the whole analogue
+ * audio chain of the Amiga.
  *
- * <p>Il coefficiente è calcolato come in WinUAE ({@code audio.cpp},
- * {@code rc_calculate_a0}): trasformata bilineare con <b>pre-warping</b> della
- * pulsazione, cioè {@code omega = 2*tan(pi*fc/fs)} invece di {@code 2*pi*fc/fs}.
- * Senza il pre-warping la frequenza di taglio effettiva scivola verso il basso
- * man mano che ci si avvicina a Nyquist — a 6,2 kHz su 44,1 kHz l'errore è già
- * del 7% — e la catena suona più cupa dell'oracolo.
+ * <p>The coefficient comes from a bilinear transform with <b>pre-warping</b> of the angular
+ * frequency, i.e. {@code omega = 2*tan(pi*fc/fs)} instead of {@code 2*pi*fc/fs}. Without
+ * pre-warping the effective cut-off frequency slips downward as it approaches Nyquist (at
+ * 6.2 kHz on 44.1 kHz the error is already 7%) and the chain sounds darker than it should.
  */
 public final class LeakyIntegrator {
 
@@ -40,9 +38,9 @@ public final class LeakyIntegrator {
         this.alpha = (float) calculateA0(cutoffHz, sampleRate);
     }
 
-    /** Oracolo: WinUAE {@code rc_calculate_a0}. */
+    /** Bilinear coefficient with pre-warping. */
     static double calculateA0(double cutoffHz, int sampleRate) {
-        // Sopra Nyquist la formula bilineare esplode: il filtro diventa un passa-tutto.
+        // Above Nyquist the bilinear formula blows up: the filter becomes an all-pass.
         if (cutoffHz >= sampleRate / 2.0) return 1.0;
         double omega = 2.0 * Math.PI * cutoffHz / sampleRate;
         omega = Math.tan(omega / 2.0) * 2.0;

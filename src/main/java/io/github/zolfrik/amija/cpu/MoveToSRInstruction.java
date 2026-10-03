@@ -118,12 +118,12 @@ public class MoveToSRInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                     return false;
                 }
-                case 7 -> { // refill 2 + finalize (overlapped, seam 0 — like MoveToCCR/Andi-to-CCR)
+                case 7 -> { // refill 2 + finalize (overlapped, seam 0, like MoveToCCR/Andi-to-CCR)
                     if (!cpu.isBusCycleIdle()) return false;
-                    // WinUAE op_46d0_14_ff (MV2SR.W): `ipl_fetch_next()` sta FRA le due
-                    // prefetch di refill, non sulla lettura dell'operando.
+                    // MOVE to SR ($46D0): the `next` sample sits BETWEEN the two refill
+                    // prefetches, not on the operand read.
                     cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
-                    cpu.startPrefetchCycle(); // np 2 (last bus cycle — overlaps next dispatch)
+                    cpu.startPrefetchCycle(); // np 2 (last bus cycle, overlaps the next dispatch)
                     return finalizeInstructionSafe(cpu);
                 }
                 default -> { return finalizeInstruction(cpu); }

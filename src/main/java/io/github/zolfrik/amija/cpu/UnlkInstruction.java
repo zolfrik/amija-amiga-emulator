@@ -45,8 +45,8 @@ public class UnlkInstruction extends AbstractM68kInstruction {
                     return false;
                 }
 
-                // WinUAE op_4e58_14_ff: `ipl_fetch_now()` sta prima della PRIMA delle due
-                // word lette, a 12 clock dalla fine, non sulla seconda a 8.
+                // UNLK ($4E58): the `now` sample sits before the FIRST of the two words read, 12
+                // clocks from the end, not on the second at 8.
                 cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                 cpu.scheduleReadWord(addr, Motorola68000.OpPurpose.DATA_READ); // nU
                 nextStep(cpu);

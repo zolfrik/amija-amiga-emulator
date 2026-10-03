@@ -27,12 +27,12 @@ import io.github.zolfrik.amija.memory.RAM;
 import io.github.zolfrik.amija.memory.ROM;
 
 /**
- * Agnus OCS (8371) — variante Original Chip Set dell'Amiga 500 base (512 KB chip RAM).
+ * OCS Agnus (8371): Original Chip Set variant of the stock Amiga 500 (512 KB chip RAM).
  *
- * <p>Tutto il comportamento vive in {@link AbstractAgnus}: i suoi hook di
- * specializzazione hanno già i default OCS, quindi questa sottoclasse è un
- * <i>no-op semantico</i> (non ridefinisce nulla). Esiste per dare un tipo concreto
- * istanziabile e fare da contraltare a {@code EcsAgnus} nella factory del chipset.
+ * <p>All the behaviour lives in {@link AbstractAgnus}: its specialisation hooks already have
+ * the OCS defaults, so this subclass is a <i>semantic no-op</i> (it overrides nothing). It
+ * exists to give a concrete instantiable type and to be the counterpart of {@code EcsAgnus} in
+ * the chipset factory.
  */
 public final class OcsAgnus extends AbstractAgnus {
 

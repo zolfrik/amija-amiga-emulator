@@ -25,26 +25,24 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Lettore minimale delle icone AmigaDOS ({@code .info}), limitato a ciò che serve
- * qui: il <b>tool di default</b> e le <b>tooltype</b>.
+ * Minimal reader of AmigaDOS icons ({@code .info}), limited to what is needed here: the
+ * <b>default tool</b> and the <b>tooltypes</b>.
  *
- * <p>In un pacchetto WHDLoad l'icona del gioco non è decorazione: è il file che
- * dice <i>come</i> va lanciato lo slave. Il tool di default è {@code WHDLoad} e le
- * tooltype portano gli argomenti — {@code SLAVE=}, {@code DATA=}, {@code PRELOAD},
- * {@code CUSTOM1=}, {@code QUITKEY=}… Senza di esse molti giochi si fermano
- * subito: chi tiene le immagini in una sottocartella dichiara {@code DATA=data},
- * e WHDLoad senza quell'argomento cerca i file nella cartella dello slave e non
- * li trova (DOS-Error #205).
+ * <p>In a WHDLoad package the game's icon is not decoration: it is the file that says
+ * <i>how</i> the slave must be launched. The default tool is {@code WHDLoad} and the tooltypes
+ * carry the arguments ({@code SLAVE=}, {@code DATA=}, {@code PRELOAD}, {@code CUSTOM1=},
+ * {@code QUITKEY=}...). Without them many games stop at once: a package that keeps the images
+ * in a subfolder declares {@code DATA=data}, and without that argument WHDLoad looks for the
+ * files in the slave's folder and does not find them (DOS-Error #205).
  *
- * <p>Struttura del file (Workbench 1.x–3.x): {@code DiskObject} di 78 byte, poi in
- * ordine — se i puntatori corrispondenti non sono nulli — {@code DrawerData} (56
- * byte), l'immagine del gadget, l'immagine selezionata, la stringa del tool di
- * default, l'elenco delle tooltype e la {@code ToolWindow}. Ogni stringa è una
- * lunghezza a 32 bit (NUL incluso) seguita dai byte.
+ * <p>File structure (Workbench 1.x-3.x): a 78-byte {@code DiskObject}, then in order (if the
+ * matching pointers are not null) {@code DrawerData} (56 bytes), the gadget image, the
+ * selected image, the default tool string, the tooltype list and the {@code ToolWindow}. Every
+ * string is a 32-bit length (NUL included) followed by the bytes.
  */
 final class AmigaIcon {
 
-    /** Magic del {@code DiskObject}. */
+    /** Magic of the {@code DiskObject}. */
     private static final int DO_MAGIC = 0xE310;
     private static final int DISK_OBJECT_SIZE = 78;
     private static final int DRAWER_DATA_SIZE = 56;
@@ -58,16 +56,16 @@ final class AmigaIcon {
         this.toolTypes = toolTypes;
     }
 
-    /** Tool di default dell'icona (mai {@code null}; vuoto se assente). */
+    /** Default tool of the icon (never {@code null}; empty if absent). */
     String defaultTool() { return defaultTool; }
 
-    /** Tooltype dell'icona, nell'ordine in cui compaiono. */
+    /** Tooltypes of the icon, in the order they appear. */
     List<String> toolTypes() { return toolTypes; }
 
     /**
-     * Legge {@code data} come icona AmigaDOS. Restituisce {@code null} se il file
-     * non è un'icona leggibile: qui un'icona illeggibile non è un errore, è solo
-     * un file che non ha nulla da dire sul lancio del gioco.
+     * Reads {@code data} as an AmigaDOS icon. Returns {@code null} if the file is not a
+     * readable icon: here an unreadable icon is not an error, just a file with nothing to say
+     * about launching the game.
      */
     static AmigaIcon parse(byte[] data) {
         if (data == null || data.length < DISK_OBJECT_SIZE) return null;
@@ -95,8 +93,8 @@ final class AmigaIcon {
         List<String> types = new ArrayList<>();
         if (pToolTypes != 0) {
             if (pos + 4 > data.length) return null;
-            // Il campo memorizzato è (numero di tooltype + 1) * 4: è la dimensione
-            // dell'array di puntatori terminato da NULL, non il conteggio.
+            // The stored field is (number of tooltypes + 1) * 4: the size of the
+            // NULL-terminated pointer array, not the count.
             long raw = u32(data, pos);
             pos += 4;
             long count = raw / 4 - 1;
@@ -111,7 +109,7 @@ final class AmigaIcon {
         return new AmigaIcon(tool, types);
     }
 
-    /** Salta una {@code struct Image} e i suoi piani di bit. */
+    /** Skips a {@code struct Image} and its bitplanes. */
     private static int skipImage(byte[] d, int pos) {
         if (pos + IMAGE_SIZE > d.length) return -1;
         int width  = u16(d, pos + 4);
@@ -125,14 +123,14 @@ final class AmigaIcon {
     }
 
     /**
-     * Legge una stringa (lunghezza a 32 bit NUL inclusa, poi i byte). Restituisce
-     * {@code {valore, posizioneSuccessiva}} oppure {@code null} se non ci sta.
+     * Reads a string (32-bit length including NUL, then the bytes). Returns
+     * {@code {value, nextPosition}} or {@code null} if it does not fit.
      */
     private static String[] readString(byte[] d, int pos) {
         if (pos + 4 > d.length) return null;
         long len = u32(d, pos);
         if (len < 1 || pos + 4 + len > d.length) return null;
-        int n = (int) len - 1;      // esclude il NUL finale
+        int n = (int) len - 1;      // excludes the trailing NUL
         String s = new String(d, pos + 4, n, StandardCharsets.ISO_8859_1);
         return new String[] { s, Integer.toString(pos + 4 + (int) len) };
     }

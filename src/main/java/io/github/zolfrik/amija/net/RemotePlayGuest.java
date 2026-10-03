@@ -29,28 +29,28 @@ import java.net.SocketTimeoutException;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * Lato ospite di una sessione di gioco a distanza: si collega, riceve il video e manda
- * indietro il proprio stato ({@code docs/remote-play-plan.md} §3, §4).
+ * Guest side of a remote play session: connects, receives the video and sends back its own
+ * state ({@code docs/remote-play-plan.md} sections 3, 4).
  *
- * <h2>Questa macchina non emula niente</h2>
- * Nessun Kickstart, nessuna ROM, nessun {@code MasterClock} (§3). L'ospite riceve il
- * <b>raster grezzo</b> di Denise e lo consegna a chi lo disegna, che nella app e' lo stesso
- * {@code AmigaDisplay.renderFrame} usato dall'emulazione: crop, integer scaling, overscan,
- * shader, LED e fullscreen restano quindi scelte <b>locali</b> dell'ospite, e funzionano
- * senza che una riga di quel codice sappia della rete.
+ * <h2>This machine emulates nothing</h2>
+ * No Kickstart, no ROM, no {@code MasterClock} (section 3). The guest receives Denise's
+ * <b>raw raster</b> and hands it to whoever draws it, which in the app is the same
+ * {@code AmigaDisplay.renderFrame} the emulation uses: crop, integer scaling, overscan,
+ * shaders, LEDs and fullscreen stay <b>local</b> choices of the guest, and work without one
+ * line of that code knowing about the network.
  *
- * <h2>Il feedback parte subito, e non e' un dettaglio</h2>
- * Il primo datagramma dell'ospite e' cio' che permette all'host di sapere <b>dove</b>
- * mandare il video: dietro NAT la porta UDP sorgente non e' prevedibile, quindi l'host
- * adotta il mittente del primo datagramma che si apre con la chiave di sessione
- * ({@link MediaLink}). Finche' l'ospite tace, l'host non ha nessun indirizzo a cui parlare.
+ * <h2>The feedback starts at once, and that matters</h2>
+ * The guest's first datagram is what tells the host <b>where</b> to send the video: behind
+ * NAT the source UDP port is not predictable, so the host adopts the sender of the first
+ * datagram that opens with the session key ({@link MediaLink}). While the guest is silent,
+ * the host has no address to talk to.
  *
- * <p>Il ritmo e' {@value #FEEDBACK_HZ} Hz: sono 44 byte a colpo, cioe' 70 kbit/s — nulla — e
- * in cambio si dimezza la parte di latenza di input dovuta al campionamento (§4.3, §5).
+ * <p>The rate is {@value #FEEDBACK_HZ} Hz: 44 bytes a time, i.e. 70 kbit/s (nothing), and in
+ * exchange the part of input latency due to sampling is halved (sections 4.3, 5).
  */
 public final class RemotePlayGuest implements AutoCloseable {
 
-    /** Campionamento e invio dello stato dei controlli: 200 Hz, cioe' un colpo ogni 5 ms. */
+    /** Sampling and sending of the controls' state: 200 Hz, i.e. once every 5 ms. */
     public static final int FEEDBACK_HZ = 200;
 
     private static final int POLL_MS = 200;
@@ -63,7 +63,7 @@ public final class RemotePlayGuest implements AutoCloseable {
     private final Handshake.Session session;
     private final VideoReceiver receiver;
     private final VideoReceiver.FrameSink sink;
-    /** {@code null} se l'host non manda audio, o se non c'e' una scheda audio qui. */
+    /** {@code null} if the host sends no audio, or if there is no sound card here. */
     private final AudioReceiver audioReceiver;
     private final NetAudioPlayer audioPlayer;
     private final AudioReceiver.PcmSink audioSink;
@@ -85,11 +85,11 @@ public final class RemotePlayGuest implements AutoCloseable {
     private final Thread controlThread;
 
     /**
-     * Si collega a un host, esegue l'handshake e comincia a ricevere.
+     * Connects to a host, performs the handshake and starts receiving.
      *
-     * @param sink chi riceve i frame ricostruiti; puo' essere {@code null} per limitarsi a
-     *             tenere viva la sessione
-     * @throws Handshake.RejectedException se l'host ha rifiutato, col motivo da mostrare
+     * @param sink who receives the rebuilt frames; may be {@code null} to just keep the
+     *             session alive
+     * @throws Handshake.RejectedException if the host refused, with the reason to show
      */
     public static RemotePlayGuest connect(String host, int port, String joinCode,
                                           NetImpairment impairment,
@@ -123,11 +123,11 @@ public final class RemotePlayGuest implements AutoCloseable {
         outgoing.clear();
         outgoing.sessionGen = session.sessionGen();
 
-        // Il ricevitore c'e' se l'host manda audio; il RIPRODUTTORE solo se c'e' anche una
-        // scheda che lo suoni. Sono due cose distinte di proposito: un ospite senza scheda
-        // audio deve poter giocare lo stesso, e tenere separati il decodificatore e l'uscita
-        // significa anche che il percorso di rete e' collaudabile su una macchina che una
-        // scheda audio non ce l'ha — cioe' su quasi ogni macchina di collaudo.
+        // The receiver exists if the host sends audio; the PLAYER only if there is also a
+        // card to play it. They are separate on purpose: a guest without a sound card must
+        // still be able to play, and keeping decoder and output apart also means the network
+        // path can be tested on a machine with no sound card, i.e. on almost every test
+        // machine.
         if (session.audioFormat() != 0) {
             this.audioReceiver = new AudioReceiver();
             NetAudioPlayer player = new NetAudioPlayer(session.audioSampleRate());
@@ -160,24 +160,24 @@ public final class RemotePlayGuest implements AutoCloseable {
     }
 
     /**
-     * Perche' la sessione e' finita.
+     * Why the session ended.
      *
-     * <p>Esiste per una ragione sola, e non e' diagnostica: quando il collegamento cade
-     * mentre si gioca, l'utente deve <b>sapere che e' caduto e perche'</b>. Una spia che si
-     * spegne non lo dice a chi sta guardando il gioco, e un'ultima immagine congelata
-     * somiglia troppo a un emulatore piantato. Il motivo lo conosce solo chi era in ascolto
-     * sui socket, cioe' questa classe: da qui sale fino al messaggio che l'utente legge.
+     * <p>It exists for one reason, and it is not diagnostics: when the connection drops while
+     * playing, the user must <b>know that it dropped and why</b>. A light going off does not
+     * tell someone watching the game, and a last frozen image looks too much like a hung
+     * emulator. Only whoever was listening on the sockets knows the reason, i.e. this class:
+     * from here it goes up to the message the user reads.
      */
     public enum EndCause {
-        /** La sessione e' ancora viva. */
+        /** The session is still alive. */
         RUNNING,
-        /** L'abbiamo chiusa noi ({@link #close()}): nessuno da avvisare. */
+        /** We closed it ({@link #close()}): nobody to notify. */
         LOCAL,
-        /** L'host ha salutato o ha chiuso il canale di controllo. */
+        /** The host said goodbye or closed the control channel. */
         HOST_CLOSED,
-        /** Nessun video per {@value #SESSION_TIMEOUT_MS} ms: il collegamento non c'e' piu'. */
+        /** No video for {@value #SESSION_TIMEOUT_MS} ms: the connection is gone. */
         TIMEOUT,
-        /** Un guasto sui socket; {@link #endDetail()} porta il messaggio di sistema. */
+        /** A socket failure; {@link #endDetail()} carries the system message. */
         ERROR
     }
 
@@ -185,17 +185,17 @@ public final class RemotePlayGuest implements AutoCloseable {
         return alive;
     }
 
-    /** Perche' la sessione e' finita, o {@link EndCause#RUNNING} se e' ancora viva. */
+    /** Why the session ended, or {@link EndCause#RUNNING} if it is still alive. */
     public EndCause endCause() {
         return endCause;
     }
 
-    /** Dettaglio tecnico del guasto (messaggio di sistema), o {@code null} se non c'e'. */
+    /** Technical detail of the failure (system message), or {@code null} if none. */
     public String endDetail() {
         return endDetail;
     }
 
-    /** Vero quando l'host ha il popup F12 aperto: lo schermo e' fermo, non piantato (§9). */
+    /** True while the host has the F12 popup open: the screen is still, not hung (section 9). */
     public boolean hostPaused() {
         return hostPaused;
     }
@@ -213,39 +213,40 @@ public final class RemotePlayGuest implements AutoCloseable {
     }
 
     /**
-     * La game port che l'host ha assegnato a questa macchina (0 o 1), dal WELCOME.
+     * The game port the host assigned to this machine (0 or 1), from the WELCOME.
      *
-     * <p>Non e' la stessa cosa di {@code config.remotePlayGuestPort()}: quella dice quale
-     * porta <i>questa</i> macchina darebbe a un proprio ospite quando ospita. Qui si ospiti
-     * non si e', e la porta la sceglie chi possiede la macchina emulata. E' il numero su cui
-     * l'ospite deve leggere la propria tendina «Port 0»/«Port 1» del popup F12, perche' e'
-     * quello a cui i suoi comandi arriveranno davvero.
+     * <p>Not the same as {@code config.remotePlayGuestPort()}: that says which port
+     * <i>this</i> machine would give its own guest when hosting. Here it is the guest, and
+     * the port is chosen by whoever owns the emulated machine. It is the number the guest
+     * must read its own "Port 0"/"Port 1" drop-down of the F12 popup on, because that is the
+     * one its commands will really reach.
      */
     public int gamePort() {
         return session.guestGamePort();
     }
 
-    /** Se l'host ha concesso la tastiera. Lo decide lui: e' la sua macchina. */
+    /** Whether the host granted the keyboard. The host decides: it is its machine. */
     public boolean keyboardShared() {
         return session.keyboardShared();
     }
 
-    /** {@code null} se l'audio non e' attivo (host che non lo manda, o niente scheda). */
+    /** {@code null} if audio is not active (host not sending it, or no card). */
     public AudioReceiver audioReceiver() {
         return audioReceiver;
     }
 
-    /** {@code null} se non c'e' una scheda audio: si gioca in silenzio, non si fallisce. */
+    /** {@code null} if there is no sound card: play goes on in silence, it does not fail. */
     public NetAudioPlayer audioPlayer() {
         return audioPlayer;
     }
 
     /**
-     * Ascolta il PCM decodificato <b>in aggiunta</b> all'uscita audio, senza sostituirla.
+     * Listens to the decoded PCM <b>in addition</b> to the audio output, without replacing
+     * it.
      *
-     * <p>Serve al collaudo e alla prova d'ascolto del §15.5, che ha bisogno di scrivere su
-     * file quel che l'ospite sente davvero. Sostituire l'uscita invece che affiancarla
-     * avrebbe voluto dire poter zittire il gioco per sbaglio.
+     * <p>Used by the tests and by the listening check of section 15.5, which needs to write to
+     * a file what the guest really hears. Replacing the output instead of flanking it would
+     * make it possible to mute the game by mistake.
      */
     public void setAudioMonitor(AudioReceiver.PcmSink monitor) {
         this.audioMonitor = monitor;
@@ -256,28 +257,28 @@ public final class RemotePlayGuest implements AutoCloseable {
     }
 
     /**
-     * Installa chi riempie lo stato dei controlli prima di ogni invio.
+     * Installs whatever fills in the controls' state before each send.
      *
-     * <p>{@code null} lascia il pacchetto a zero: la sessione resta viva e il video
-     * continua ad arrivare, ma questa macchina non tocca niente. E' anche cio' che rende
-     * collaudabile il trasporto senza costruire un input finto.
+     * <p>{@code null} leaves the packet at zero: the session stays alive and the video keeps
+     * arriving, but this machine touches nothing. It is also what makes the transport
+     * testable without building a fake input.
      */
     public void setInputSource(InputSource source) {
         this.inputSource = source;
     }
 
-    /** Chi riempie i campi di input del pacchetto, chiamato a {@value #FEEDBACK_HZ} Hz. */
+    /** Who fills the input fields of the packet, called at {@value #FEEDBACK_HZ} Hz. */
     public interface InputSource {
         void snapshot(FeedbackPacket out);
     }
 
     /**
-     * Chiude la sessione e libera tutto.
+     * Closes the session and releases everything.
      *
-     * <p>La guardia e' su {@link #closed}, non su {@link #alive}: una sessione puo' essere
-     * gia' <b>morta da se'</b> — l'host ha chiuso, il link e' caduto — e in quel caso i
-     * socket, i tre thread e la linea audio sono ancora tutti aperti. Guardando {@code alive}
-     * questa chiamata non avrebbe fatto niente proprio nel caso in cui c'e' piu' da chiudere.
+     * <p>The guard is on {@link #closed}, not on {@link #alive}: a session may already have
+     * <b>died by itself</b> (the host closed, the link dropped), and in that case the sockets,
+     * the three threads and the audio line are all still open. Guarding on {@code alive}
+     * this call would do nothing exactly when there is most to close.
      */
     @Override
     public void close() {
@@ -285,11 +286,11 @@ public final class RemotePlayGuest implements AutoCloseable {
             return;
         }
         closed = true;
-        end(EndCause.LOCAL, null);   // no-op se era gia' finita per conto suo
+        end(EndCause.LOCAL, null);   // no-op if it had already ended on its own
         try {
             control.send(RemotePlayProtocol.CTRL_BYE);
         } catch (IOException ignored) {
-            // Un saluto: se non parte, ci si disconnette lo stesso.
+            // A goodbye: if it does not go out, disconnect anyway.
         }
         control.close();
         mediaSocket.close();
@@ -300,9 +301,9 @@ public final class RemotePlayGuest implements AutoCloseable {
             audioPlayer.stop();
         }
         receiver.close();
-        // L'impairment per ultimo, e a thread fermi: il thread di feedback potrebbe essere
-        // dentro una send, e togliergli lo scheduler sotto i piedi trasformerebbe una
-        // chiusura ordinata in un'eccezione su un thread che nessuno guarda.
+        // The impairment last, with the threads stopped: the feedback thread could be inside
+        // a send, and taking the scheduler from under it would turn an orderly close into an
+        // exception on a thread nobody watches.
         impairment.close();
     }
 
@@ -348,34 +349,34 @@ public final class RemotePlayGuest implements AutoCloseable {
                     try {
                         audioReceiver.accept(plain, received.length(), audioSink);
                     } catch (ProtocolException e) {
-                        // Un blocco audio scartato costa 23 ms di silenzio, e l'indice
-                        // assoluto fa si' che il successivo riparta in fase da solo.
+                        // A dropped audio block costs 23 ms of silence, and the absolute index
+                        // makes the next one restart in phase by itself.
                         RemotePlaySettings.log("blocco audio scartato: %s", e.getMessage());
                     }
                 }
                 continue;
             }
             if (received.type() != RemotePlayProtocol.TYPE_VIDEO) {
-                continue;   // TYPE_FEEDBACK in questo verso e' un errore del peer
+                continue;   // TYPE_FEEDBACK in this direction is a peer error
             }
             lastVideoNanos = System.nanoTime();
             try {
                 receiver.accept(plain, received.length(), sink);
             } catch (ProtocolException e) {
-                // Il frame non e' stato ACKato, quindi l'host comprimera' il prossimo contro
-                // un riferimento piu' vecchio: lo schermo non ha visto niente di sbagliato e
-                // il sistema si e' gia' rimesso in pari da solo. Si continua.
+                // The frame was not ACKed, so the host will compress the next one against an
+                // older reference: the screen has seen nothing wrong and the system has
+                // already caught up by itself. Carry on.
                 RemotePlaySettings.log("frame scartato: %s", e.getMessage());
             }
         }
     }
 
     /**
-     * Manda lo stato dei controlli a ritmo fisso.
+     * Sends the controls' state at a fixed rate.
      *
-     * <p>{@link LockSupport#parkNanos} invece di {@code Thread.sleep}: il quanto e' 5 ms e la
-     * granularita' del sonno su Windows non lo rispetterebbe, mentre qui un ritardo si
-     * recupera sul colpo successivo invece di accumularsi.
+     * <p>{@link LockSupport#parkNanos} instead of {@code Thread.sleep}: the quantum is 5 ms and
+     * the sleep granularity on Windows would not respect it, while here a delay is recovered
+     * at the next tick instead of accumulating.
      */
     private void feedbackLoop() {
         final long periodNanos = 1_000_000_000L / FEEDBACK_HZ;
@@ -383,10 +384,10 @@ public final class RemotePlayGuest implements AutoCloseable {
         while (alive) {
             InputSource source = inputSource;
             if (source != null) {
-                // Il campionamento sta QUI, non su un timer suo: il pacchetto porta lo stato
-                // al momento in cui parte, e il latch appiccicoso scorre di un passo per
-                // pacchetto spedito. Campionare altrove vorrebbe dire che il latch conta
-                // campionamenti che non hanno mai attraversato la rete.
+                // The sampling is HERE, not on a timer of its own: the packet carries the
+                // state at the moment it leaves, and the sticky latch advances one step per
+                // packet sent. Sampling elsewhere would make the latch count samples that
+                // never crossed the network.
                 source.snapshot(outgoing);
             }
             outgoing.seq++;
@@ -409,7 +410,7 @@ public final class RemotePlayGuest implements AutoCloseable {
             if (wait > 0) {
                 LockSupport.parkNanos(wait);
             } else {
-                next = System.nanoTime();   // rimasti indietro: si riparte da adesso
+                next = System.nanoTime();   // fell behind: restart from now
             }
         }
     }
@@ -467,16 +468,16 @@ public final class RemotePlayGuest implements AutoCloseable {
     }
 
     /**
-     * Registra come e' finita e la dichiara finita, <b>in quest'ordine</b>.
+     * Records how it ended and declares it ended, <b>in this order</b>.
      *
-     * <p>L'ordine e' l'unica cosa non ovvia qui: chi sorveglia la sessione guarda
-     * {@link #isAlive()} e, appena la vede finita, legge il motivo. Scrivendo {@code alive}
-     * per primo esisterebbe una finestra in cui la sessione risulta finita senza motivo, e
-     * l'utente riceverebbe l'avviso piu' generico invece di quello vero.
+     * <p>The order is the only non-obvious thing here: whoever watches the session looks at
+     * {@link #isAlive()} and, as soon as it sees it ended, reads the reason. Writing
+     * {@code alive} first would open a window in which the session reads as ended without a
+     * reason, and the user would get the most generic warning instead of the real one.
      */
     private void end(EndCause cause, String detail) {
         if (!alive) {
-            return;   // la prima causa e' quella vera: le successive sono conseguenze
+            return;   // the first cause is the real one: later ones are consequences
         }
         endDetail = detail;
         endCause = cause;

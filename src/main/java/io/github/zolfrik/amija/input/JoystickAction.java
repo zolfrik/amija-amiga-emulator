@@ -21,12 +21,11 @@
 package io.github.zolfrik.amija.input;
 
 /**
- * Funzione del joystick emulato via tastiera: le quattro direzioni più il pulsante
- * di fuoco. A ciascuna è associato un tasto host, configurabile per porta (vedi
- * {@link JoystickKeyMap}).
+ * Function of the keyboard-emulated joystick: the four directions plus the fire button. Each
+ * one has a host key, configurable per port (see {@link JoystickKeyMap}).
  *
- * <p>L'ordine di dichiarazione è quello con cui le voci compaiono nel popup di
- * configurazione dei tasti.
+ * <p>The declaration order is the one in which the entries appear in the key configuration
+ * popup.
  */
 public enum JoystickAction {
 
@@ -45,11 +44,11 @@ public enum JoystickAction {
     }
 
     /**
-     * Suffisso della chiave in {@code amiga.properties}
+     * Suffix of the key in {@code amiga.properties}
      * ({@code input.portN.joystick.<configKey>}).
      */
     public String configKey() { return configKey; }
 
-    /** Chiave i18n dell'etichetta mostrata nel popup dei tasti joystick. */
+    /** i18n key of the label shown in the joystick keys popup. */
     public String messageKey() { return messageKey; }
 }

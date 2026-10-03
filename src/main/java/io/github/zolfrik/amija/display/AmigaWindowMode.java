@@ -21,7 +21,7 @@
 package io.github.zolfrik.amija.display;
 
 /**
- * Modalita' della finestra principale dell'emulatore.
+ * Modes of the emulator's main window.
  */
 public enum AmigaWindowMode {
     WINDOWED("windowed"),

@@ -44,38 +44,38 @@ import java.util.Locale;
 import java.util.Properties;
 
 /**
- * Configurazione dell'emulatore caricata da un file {@code amiga.properties}.
+ * Emulator configuration loaded from an {@code amiga.properties} file.
  *
- * <p>Strategia di ricerca del file (in ordine):
+ * <p>Where the file is looked for (in order):
  * <ol>
- *   <li>{@code amiga.properties} nella home dell'applicazione ({@link AppHome}, che
- *       di norma è la directory di lavoro);</li>
- *   <li>{@code /amiga.properties} sul classpath (es. {@code src/main/resources});</li>
- *   <li>se non esiste in nessuno dei due posti, viene <b>creato</b> nella home con i
- *       valori di default e usato.</li>
+ *   <li>{@code amiga.properties} in the application home ({@link AppHome}, normally the
+ *       working directory);</li>
+ *   <li>{@code /amiga.properties} on the class path (e.g. {@code src/main/resources});</li>
+ *   <li>if it exists in neither place, it is <b>created</b> in the home with the default
+ *       values and used.</li>
  * </ol>
  *
- * <p>Proprietà gestite:
+ * <p>Properties handled:
  * <ul>
- *   <li>{@code auto.enabled} – modalità automatica (default {@code true}): Kickstart,
- *       memorie, chipset e modalità video sono dedotti dal supporto attivo
- *       ({@code auto.*}) invece che scelti a mano;</li>
- *   <li>{@code kickstart.path} – percorso assoluto del file ROM Kickstart;</li>
- *   <li>{@code chipram.kb} / {@code slowram.kb} – quantità di Chip/Slow RAM in KB;</li>
- *   <li>{@code drive.df0..df3.enabled} – se il drive è collegato;</li>
- *   <li>{@code drive.df0..df3.disk} – percorso assoluto del .adf/.ipf da inserire
- *       automaticamente all'avvio;</li>
- *   <li>{@code floppy.sound.volume} – volume dei suoni del floppy: 0 = nessun suono,
- *       1 = volume minimo, poi a salire;</li>
- *   <li>{@code leds.visible} – mostra o nasconde il pannello dei LED power/drive.</li>
+ *   <li>{@code auto.enabled}: automatic mode (default {@code true}): Kickstart, memory,
+ *       chipset and video mode are derived from the active media ({@code auto.*}) instead
+ *       of chosen by hand;</li>
+ *   <li>{@code kickstart.path}: absolute path of the Kickstart ROM file;</li>
+ *   <li>{@code chipram.kb} / {@code slowram.kb}: amount of Chip/Slow RAM in KB;</li>
+ *   <li>{@code drive.df0..df3.enabled}: whether the drive is connected;</li>
+ *   <li>{@code drive.df0..df3.disk}: absolute path of the .adf/.ipf to insert
+ *       automatically at start-up;</li>
+ *   <li>{@code floppy.sound.volume}: floppy sound volume: 0 = no sound, 1 = minimum
+ *       volume, then upward;</li>
+ *   <li>{@code leds.visible}: shows or hides the power/drive LED panel.</li>
  * </ul>
  */
 public final class AmigaConfig {
 
-    /** Nome del file di configurazione cercato nella dir corrente e sul classpath. */
+    /** Name of the configuration file looked for in the current dir and on the class path. */
     public static final String FILE_NAME = "amiga.properties";
 
-    // Chiavi delle proprietà.
+    // Property keys.
     private static final String K_AUTO_EN     = "auto.enabled";
     private static final String K_AUTO_KS13   = "auto.kickstart13.path";
     private static final String K_AUTO_KS31   = "auto.kickstart31.path";
@@ -97,13 +97,13 @@ public final class AmigaConfig {
     private static final String K_LAST_HDF_DIR    = "chooser.hdf.lastDirectory";
     private static final String K_LAST_WHDLOAD_DIR = "chooser.whdload.lastDirectory";
 
-    /** Unità hard disk: indice 0 = master, indice 1 = slave. */
+    /** Hard disk units: index 0 = master, index 1 = slave. */
     public static final String[] HD_UNITS = { "master", "slave" };
     private static final String K_SND_VOLUME  = "floppy.sound.volume";
     private static final String K_LEDS        = "leds.visible";
-    /** Periferica host collegata a una game port: {@code input.port0.device} / {@code input.port1.device}. */
+    /** Host device plugged into a game port: {@code input.port0.device} / {@code input.port1.device}. */
     private static final String K_PORT_DEVICE = "input.port%d.device";
-    /** Tasto del joystick da tastiera: {@code input.port<N>.joystick.<up|down|right|left|fire>}. */
+    /** Keyboard joystick key: {@code input.port<N>.joystick.<up|down|right|left|fire>}. */
     private static final String K_JOY_KEY = "input.port%d.joystick.%s";
     private static final String K_LANGUAGE    = "ui.language";
     private static final String K_UI_SCALE    = "ui.scale";
@@ -115,16 +115,16 @@ public final class AmigaConfig {
     private static final String K_MONITOR = "video.monitor";
     private static final String K_RENDERER = "video.renderer";
     private static final String K_SHADER = "video.shader";
-    /** Slot di stato su cui agiscono "Salva stato" e "Carica stato" (1..5). */
+    /** State slot "Save state" and "Load state" act on (1..5). */
     private static final String K_STATE_SLOT = "savestate.slot";
-    // Overlay diagnostici (NON esposti nel popup F12): solo da file.
+    // Diagnostic overlays (NOT exposed in the F12 popup): file only.
     private static final String K_OVERLAY_FPS = "overlay.fps.enabled";
     private static final String K_OVERLAY_FRAMECOUNTER = "overlay.framecounter.enabled";
-    // Immediate blit (NON esposto nel popup F12): solo da file.
+    // Immediate blit (NOT exposed in the F12 popup): file only.
     private static final String K_BLITTER_IMMEDIATE = "blitter.immediate";
 
-    // Gioco a distanza (docs/remote-play-plan.md §10). Il join code NON si salva su file:
-    // e' un segreto di sessione e si rigenera a ogni avvio dell'host.
+    // Remote play (docs/remote-play-plan.md section 10). The join code is NOT saved to the
+    // file: it is a session secret and is regenerated at every start of the host.
     private static final String K_RP_PORT = "remoteplay.port";
     private static final String K_RP_UPNP = "remoteplay.upnp";
     private static final String K_RP_BIND = "remoteplay.bind";
@@ -136,25 +136,25 @@ public final class AmigaConfig {
     private static final String K_RP_LAST_HOST = "remoteplay.last.host";
 
     // =========================================================================
-    // Parametri WHDLoad (sezione whdload.prefs.* in fondo ad amiga.properties).
-    // Da qui viene GENERATO il file S:WHDLoad.prefs dell'hard disk WHDLoad creato
-    // al volo. NON esposti nel popup F12: solo da file.
+    // WHDLoad parameters (section whdload.prefs.* at the end of amiga.properties).
+    // The S:WHDLoad.prefs file of the WHDLoad hard disk built on the fly is GENERATED from
+    // here. NOT exposed in the F12 popup: file only.
     // =========================================================================
 
-    /** Tipo di parametro WHDLoad: keyword di presenza (flag) o coppia nome=valore. */
+    /** Kind of WHDLoad parameter: presence keyword (flag) or name=value pair. */
     private enum WhdPrefType { FLAG, VALUE }
 
     /**
-     * Descrittore di un parametro WHDLoad: chiave in {@code amiga.properties},
-     * keyword corrispondente nel file {@code WHDLoad.prefs}, tipo, default e commento.
+     * Descriptor of a WHDLoad parameter: key in {@code amiga.properties}, matching keyword in
+     * the {@code WHDLoad.prefs} file, kind, default and comment.
      */
     private record WhdPref(String key, String whdName, WhdPrefType type, String def, String comment) { }
 
     /**
-     * Tabella di tutti i parametri WHDLoad gestiti. L'ordine determina sia la sezione
-     * in {@code amiga.properties} sia l'ordine delle voci nel {@code WHDLoad.prefs}
-     * generato. Per i {@code FLAG} il valore è {@code true}/{@code false} (true = la
-     * keyword è presente); per i {@code VALUE} è la stringa da emettere (vuota = omessa).
+     * Table of every WHDLoad parameter handled. The order decides both the section in
+     * {@code amiga.properties} and the order of the entries in the generated
+     * {@code WHDLoad.prefs}. For {@code FLAG}s the value is {@code true}/{@code false} (true =
+     * the keyword is present); for {@code VALUE}s it is the string to emit (empty = omitted).
      */
     private static final WhdPref[] WHD_PREFS = {
         new WhdPref("whdload.prefs.buttonWait",     "ButtonWait",     WhdPrefType.FLAG,  "false",     "ButtonWait: wait for a button press before starting (false = start automatically)."),
@@ -188,13 +188,13 @@ public final class AmigaConfig {
     };
 
     // =========================================================================
-    // Modalità automatica (auto.*)
+    // Automatic mode (auto.*)
     // =========================================================================
 
     /**
-     * Profilo hardware della modalità Auto: prefisso delle chiavi in
-     * {@code amiga.properties} e valori di default se l'utente non li ha ridefiniti.
-     * Ce ne sono due, scelti in base al supporto attivo (vedi {@link #autoProfile}).
+     * Hardware profile of Auto mode: prefix of the keys in {@code amiga.properties} and
+     * default values if the user has not overridden them. There are two, chosen from the
+     * active media (see {@link #autoProfile}).
      */
     private record AutoDefaults(String prefix, int chipRamKb, int slowRamKb, int fastRamKb,
             Chipset chipset) {
@@ -210,20 +210,19 @@ public final class AmigaConfig {
         }
     }
 
-    /** Solo floppy: la configurazione dell'A500 base che quasi tutti i giochi si aspettano. */
+    /** Floppy only: the stock A500 configuration almost every game expects. */
     private static final AutoDefaults AUTO_FLOPPY =
             new AutoDefaults("auto.floppy.", 512, 512, 0, Chipset.OCS);
 
     /**
-     * Hard disk o WHDLoad attivo: la macchina espansa che quel software richiede.
+     * Hard disk or WHDLoad active: the expanded machine that software requires.
      *
-     * <p>2 MB di Chip RAM, non 1: è l'A1200 che gli installer WHDLoad danno per
-     * scontato. Ogni slave dichiara nell'header (ws_BaseMemSize) quanta memoria
-     * contigua vuole a partire da $000000, e quel blocco può stare solo in Chip;
-     * quando non ce n'è abbastanza WHDLoad si ferma con "you need chipmem up to
-     * $xxxxxx". Ce ne sono parecchi sopra 1 MB — p.es. Dragon's Lair chiede
-     * $180000 (1,5 MB) — mentre chi ne vuole meno gira identico su una macchina
-     * più grande: il massimo è la sola scelta che non fallisce mai.
+     * <p>2 MB of Chip RAM, not 1: the A1200 the WHDLoad installers take for granted. Every
+     * slave declares in its header (ws_BaseMemSize) how much contiguous memory it wants
+     * from $000000, and that block can only be Chip; when there is not enough, WHDLoad stops
+     * with "you need chipmem up to $xxxxxx". Quite a few want more than 1 MB (e.g. Dragon's
+     * Lair asks for $180000, 1.5 MB), while those that want less run the same on a larger
+     * machine: the maximum is the only choice that never fails.
      */
     private static final AutoDefaults AUTO_EXPANDED =
             new AutoDefaults("auto.hd.", 2048, 512, 8192, Chipset.ECS);
@@ -231,10 +230,10 @@ public final class AmigaConfig {
     private static final AutoDefaults[] AUTO_PROFILES = { AUTO_FLOPPY, AUTO_EXPANDED };
 
     /**
-     * Impostazioni di sistema dedotte dalla modalità Auto: quello che la macchina
-     * userà davvero al prossimo avvio senza che l'utente debba scegliere nulla.
+     * System settings derived by Auto mode: what the machine will really use at the next
+     * start without the user having to choose anything.
      *
-     * @param expanded {@code true} se è attivo un hard disk o WHDLoad (profilo espanso)
+     * @param expanded {@code true} if a hard disk or WHDLoad is active (expanded profile)
      */
     public record AutoProfile(String kickstartPath, boolean expanded, int chipRamKb,
             int slowRamKb, int fastRamKb, Chipset chipset, VideoMode videoMode) { }
@@ -246,31 +245,30 @@ public final class AmigaConfig {
     }
 
     // =========================================================================
-    // Caricamento
+    // Loading
     // =========================================================================
 
     /**
-     * Carica la configurazione seguendo l'ordine di ricerca descritto nella classe.
-     * Non lancia mai: in caso di problemi di I/O ripiega sui valori di default in
-     * memoria.
+     * Loads the configuration following the search order described in the class. Never
+     * throws: on I/O problems it falls back on the default values in memory.
      */
     public static AmigaConfig load() {
-        // 1. File nella home dell'applicazione (di norma la directory di lavoro).
+        // 1. File in the application home (normally the working directory).
         Path homeFile = AppHome.resolve(FILE_NAME);
         if (Files.isRegularFile(homeFile)) {
-            // UTF-8, e con un Reader: vedi il commento di save(). Con un InputStream
-            // Properties decodifica ISO-8859-1, che e' cio' che corrompeva i percorsi
-            // accentati a ogni giro di salvataggio e rilettura.
+            // UTF-8, and through a Reader: see the comment of save(). With an InputStream
+            // Properties decodes ISO-8859-1, which corrupted accented paths at every round
+            // of saving and reading back.
             try (Reader in = Files.newBufferedReader(homeFile, StandardCharsets.UTF_8)) {
                 Properties p = new Properties();
                 p.load(in);
                 System.out.println("[CONFIG] Loaded " + homeFile.toAbsolutePath());
                 return new AmigaConfig(p);
             } catch (MalformedInputException e) {
-                // File scritto prima che le due meta' fossero d'accordo, oppure a mano
-                // con l'editor di sistema: non e' UTF-8 valido. Si rilegge in Latin-1,
-                // che accetta qualunque byte, cosi' la configurazione non va persa; il
-                // primo salvataggio la riporta in UTF-8.
+                // A file written before the two halves agreed, or by hand with the system
+                // editor: not valid UTF-8. It is read again as Latin-1, which accepts any
+                // byte, so the configuration is not lost; the first save brings it back to
+                // UTF-8.
                 System.err.println("[CONFIG] " + homeFile + " non e' UTF-8 valido, "
                         + "rileggo in ISO-8859-1 (sara' riscritto in UTF-8 al salvataggio)");
                 try (InputStream in = Files.newInputStream(homeFile)) {
@@ -285,9 +283,9 @@ public final class AmigaConfig {
             }
         }
 
-        // 2. File sul classpath (es. src/main/resources/amiga.properties). UTF-8 come
-        //    gli altri due percorsi: la charset di questo file dev'essere UNA, o si torna
-        //    al disaccordo che corrompeva i percorsi accentati.
+        // 2. File on the class path (e.g. src/main/resources/amiga.properties). UTF-8 like
+        //    the other two paths: the charset of this file must be ONE, or the disagreement
+        //    that corrupted accented paths comes back.
         try (InputStream in = AmigaConfig.class.getResourceAsStream("/" + FILE_NAME)) {
             if (in != null) {
                 Properties p = new Properties();
@@ -299,12 +297,12 @@ public final class AmigaConfig {
             System.err.println("[CONFIG] Failed to read from classpath: " + e.getMessage());
         }
 
-        // 3. Nessun file: crea quello di default nella home.
+        // 3. No file: create the default one in the home.
         Properties defaults = defaultProperties();
         try (Writer out = Files.newBufferedWriter(homeFile, StandardCharsets.UTF_8)) {
-            // store(Writer) e non store(OutputStream): il secondo scrive ISO-8859-1 e
-            // rimetterebbe le due meta' in disaccordo appena un default smettesse di
-            // essere ASCII.
+            // store(Writer) and not store(OutputStream): the latter writes ISO-8859-1 and
+            // would put the two halves in disagreement again as soon as a default stopped
+            // being ASCII.
             defaults.store(out, "AmiJa configuration - Java Amiga emulator");
             System.out.println("[CONFIG] Created default file " + homeFile.toAbsolutePath());
         } catch (IOException e) {
@@ -313,12 +311,12 @@ public final class AmigaConfig {
         return new AmigaConfig(defaults);
     }
 
-    /** Proprietà di default usate alla prima esecuzione (file mancante). */
+    /** Default properties used at the first run (file missing). */
     private static Properties defaultProperties() {
         Properties p = new Properties();
-        // Modalità automatica: attiva di default (è la ragione per cui esiste).
+        // Automatic mode: on by default (it is why it exists).
         p.setProperty(K_AUTO_EN, "true");
-        p.setProperty(K_AUTO_KS13, "");                 // da impostare a cura dell'utente
+        p.setProperty(K_AUTO_KS13, "");                 // to be set by the user
         p.setProperty(K_AUTO_KS31, "");
         for (AutoDefaults d : AUTO_PROFILES) {
             p.setProperty(d.prefix() + "chipram.kb", Integer.toString(d.chipRamKb()));
@@ -326,27 +324,27 @@ public final class AmigaConfig {
             p.setProperty(d.prefix() + "fastram.kb", Integer.toString(d.fastRamKb()));
             p.setProperty(d.prefix() + "chipset", d.chipset().name());
         }
-        p.setProperty(K_KICKSTART, "");                 // da impostare a cura dell'utente
+        p.setProperty(K_KICKSTART, "");                 // to be set by the user
         p.setProperty(K_CHIPRAM_KB, "512");
         p.setProperty(K_SLOWRAM_KB, "512");
-        p.setProperty(K_FASTRAM_KB, "0");               // nessuna Fast RAM di default
-        // Solo DF0 e DF1 attivi di default.
+        p.setProperty(K_FASTRAM_KB, "0");               // no Fast RAM by default
+        // Only DF0 and DF1 enabled by default.
         p.setProperty(String.format(K_DRIVE_EN, 0), "true");
         p.setProperty(String.format(K_DRIVE_EN, 1), "true");
         p.setProperty(String.format(K_DRIVE_EN, 2), "false");
         p.setProperty(String.format(K_DRIVE_EN, 3), "false");
-        // Nessun disco inserito di default.
+        // No disk inserted by default.
         for (int i = 0; i < 4; i++) {
             p.setProperty(String.format(K_DRIVE_DISK, i), "");
             p.setProperty(String.format(K_DRIVE_RO, i), "false");
         }
-        // Hard disk (master/slave): assenti di default.
+        // Hard disks (master/slave): absent by default.
         for (String unit : HD_UNITS) {
             p.setProperty(String.format(K_HD_EN, unit), "false");
             p.setProperty(String.format(K_HD_DISK, unit), "");
             p.setProperty(String.format(K_HD_RO, unit), "false");
         }
-        // WHDLoad: assente di default.
+        // WHDLoad: absent by default.
         p.setProperty(K_WHDLOAD_EN, "false");
         p.setProperty(K_WHDLOAD_FILE, "");
         p.setProperty(K_LAST_MEDIA_DIR, "");
@@ -356,11 +354,11 @@ public final class AmigaConfig {
         p.setProperty(K_LAST_WHDLOAD_DIR, "");
         p.setProperty(K_SND_VOLUME, "1");               // volume minimo
         p.setProperty(K_LEDS, "true");                   // pannello LED visibile
-        // Periferiche delle game port: Port 0 = mouse, Port 1 = joystick da tastiera.
+        // Game port devices: Port 0 = mouse, Port 1 = keyboard joystick.
         p.setProperty(String.format(K_PORT_DEVICE, 0), PortDevice.MOUSE.configValue());
         p.setProperty(String.format(K_PORT_DEVICE, 1), PortDevice.JOYSTICK_KEYBOARD.configValue());
-        // Tasti del joystick da tastiera: Port 0 = W/A/S/D + Ctrl destro,
-        // Port 1 = frecce + Ctrl sinistro.
+        // Keyboard joystick keys: Port 0 = W/A/S/D + right Ctrl,
+        // Port 1 = arrows + left Ctrl.
         for (int port = 0; port < 2; port++) {
             JoystickKeyMap map = JoystickKeyMap.defaults(port);
             for (JoystickAction a : JoystickAction.values()) {
@@ -368,15 +366,15 @@ public final class AmigaConfig {
                         map.get(a).configValue());
             }
         }
-        p.setProperty(K_LANGUAGE, "en");                 // lingua di default: inglese
-        p.setProperty(K_VIDEO_MODE, VideoMode.PAL.name()); // modalita' video di default: PAL
-        p.setProperty(K_CHIPSET, Chipset.OCS.name());      // chipset di default: OCS
-        // Le DUE scale, separate e indipendenti. Vanno tenute entrambe qui: questo e' il
-        // file che l'utente si ritrova alla prima esecuzione, e una chiave assente e' una
-        // funzione che non sa di avere.
+        p.setProperty(K_LANGUAGE, "en");                 // default language: English
+        p.setProperty(K_VIDEO_MODE, VideoMode.PAL.name()); // default video mode: PAL
+        p.setProperty(K_CHIPSET, Chipset.OCS.name());      // default chipset: OCS
+        // The TWO scales, separate and independent. Both must be kept here: this is the file
+        // the user finds at the first run, and a missing key is a feature the user does not
+        // know exists.
         p.setProperty(K_INTEGER_SCALING, "1");            // finestra emulata a dimensione nativa
         p.setProperty(K_UI_SCALE, "1");                   // interfaccia a dimensione nativa
-        p.setProperty(K_OVERSCAN, "true");               // overscan abilitato di default
+        p.setProperty(K_OVERSCAN, "true");               // overscan enabled by default
         p.setProperty(K_WINDOW_MODE, AmigaWindowMode.WINDOWED.configValue());
         p.setProperty(K_MONITOR, "0");                   // 0 = monitor principale
         p.setProperty(K_RENDERER, RendererType.SOFTWARE.configValue());
@@ -384,18 +382,18 @@ public final class AmigaConfig {
         p.setProperty(K_OVERLAY_FPS, "false");           // overlay FPS disattivo
         p.setProperty(K_OVERLAY_FRAMECOUNTER, "false");  // contatore fotogrammi disattivo
         p.setProperty(K_BLITTER_IMMEDIATE, "false");     // immediate blit disattivo (cycle-exact)
-        // Gioco a distanza: spento finche' l'utente non preme "Ospita" nel popup. Le chiavi
-        // ci sono comunque, perche' una chiave assente e' una funzione che non sa di avere.
+        // Remote play: off until the user presses "Host" in the popup. The keys are there
+        // anyway, because a missing key is a feature the user does not know exists.
         p.setProperty(K_RP_PORT, "7788");
         p.setProperty(K_RP_UPNP, "true");
         p.setProperty(K_RP_BIND, "");
         p.setProperty(K_RP_LAN_ONLY, "true");
-        p.setProperty(K_RP_GUEST_PORT, "1");             // la porta joystick all'ospite
+        p.setProperty(K_RP_GUEST_PORT, "1");             // the joystick port to the guest
         p.setProperty(K_RP_GUEST_KEYBOARD, "true");
         p.setProperty(K_RP_GUEST_ALLOWRESET, "false");
-        p.setProperty(K_RP_AUDIO_MODE, "adpcm");         // §15.5, chiusa ascoltando
+        p.setProperty(K_RP_AUDIO_MODE, "adpcm");         // section 15.5, closed while listening
         p.setProperty(K_RP_LAST_HOST, "");
-        // Parametri WHDLoad (sezione whdload.prefs.*): default come da WHDLoad.prefs storico.
+        // WHDLoad parameters (section whdload.prefs.*): defaults as in the stock WHDLoad.prefs.
         for (WhdPref pref : WHD_PREFS) {
             p.setProperty(pref.key(), pref.def());
         }
@@ -403,34 +401,34 @@ public final class AmigaConfig {
     }
 
     // =========================================================================
-    // Modalità automatica: deduzione del profilo di sistema
+    // Automatic mode: derivation of the system profile
     // =========================================================================
 
     /**
-     * {@code true} (default) se la macchina si configura da sé: Kickstart, memorie,
-     * chipset e modalità video sono dedotti dal supporto attivo invece che scelti a
-     * mano. Nel popup F12 è la casella <b>"Expert mode"</b>, che vale l'opposto: spenta
-     * (il default) la macchina si configura da sé, accesa valgono le impostazioni
-     * salvate dall'utente e tutto si comporta come prima che questa modalità esistesse.
+     * {@code true} (default) if the machine configures itself: Kickstart, memory, chipset
+     * and video mode are derived from the active media instead of chosen by hand. In the
+     * F12 popup it is the <b>"Expert mode"</b> box, which means the opposite: off (the
+     * default) the machine configures itself, on the settings saved by the user apply and
+     * everything behaves as before this mode existed.
      */
     public boolean autoEnabled() {
         return getBool(K_AUTO_EN, true);
     }
 
-    /** Kickstart 1.3 della modalità Auto (profilo solo floppy); vuoto se non impostato. */
+    /** Kickstart 1.3 of Auto mode (floppy-only profile); empty if not set. */
     public String autoKickstart13() {
         return props.getProperty(K_AUTO_KS13, "").trim();
     }
 
-    /** Kickstart 3.1 della modalità Auto (profilo hard disk/WHDLoad); vuoto se non impostato. */
+    /** Kickstart 3.1 of Auto mode (hard disk/WHDLoad profile); empty if not set. */
     public String autoKickstart31() {
         return props.getProperty(K_AUTO_KS31, "").trim();
     }
 
     /**
-     * {@code true} se è attivo almeno un hard disk o l'avvio WHDLoad, cioè se la
-     * modalità Auto deve usare il profilo espanso. "Attivo" vuol dire spuntato
-     * <i>e</i> con un file indicato: un'unità spuntata ma vuota non monta nulla.
+     * {@code true} if at least one hard disk or the WHDLoad boot is active, i.e. if Auto mode
+     * must use the expanded profile. "Active" means ticked <i>and</i> with a file named: a
+     * ticked but empty unit mounts nothing.
      */
     public boolean expandedMediaActive() {
         for (int unit = 0; unit < HD_UNITS.length; unit++) {
@@ -440,9 +438,9 @@ public final class AmigaConfig {
     }
 
     /**
-     * Tutti i file effettivamente in uso: i dischi dei drive collegati, gli hard disk
-     * montati e l'archivio WHDLoad. È l'insieme su cui la modalità Auto cerca gli
-     * indizi di regione (vedi {@link #impliesNtsc}).
+     * Every file actually in use: the disks of the connected drives, the mounted hard disks
+     * and the WHDLoad archive. The set on which Auto mode looks for region hints (see
+     * {@link #impliesNtsc}).
      */
     public java.util.List<String> activeMediaFiles() {
         java.util.List<String> files = new java.util.ArrayList<>();
@@ -457,15 +455,13 @@ public final class AmigaConfig {
     }
 
     /**
-     * {@code true} se uno dei file attivi si dichiara NTSC nel proprio <b>nome</b>:
-     * la stringa {@code NTSC} oppure {@code (USA)}, senza distinzione fra maiuscole e
-     * minuscole. Sono le due convenzioni con cui le raccolte di immagini (TOSEC,
-     * No-Intro, WHDLoad) marcano le versioni a 60 Hz, che su una macchina PAL girano
-     * troppo lente o con il quadro tagliato.
+     * {@code true} if one of the active files declares itself NTSC in its <b>name</b>: the
+     * string {@code NTSC} or {@code (USA)}, case-insensitive. These are the two conventions
+     * by which image collections (TOSEC, No-Intro, WHDLoad) mark the 60 Hz versions, which on
+     * a PAL machine run too slow or with a cut picture.
      *
-     * <p>Si guarda al solo nome del file, non all'intero percorso: una cartella
-     * chiamata p.es. {@code USA} o {@code NTSC dumps} non deve trascinare in NTSC
-     * tutto quello che contiene.
+     * <p>Only the file name is looked at, not the whole path: a folder called e.g.
+     * {@code USA} or {@code NTSC dumps} must not drag everything it contains into NTSC.
      */
     public static boolean impliesNtsc(java.util.List<String> files) {
         for (String f : files) {
@@ -476,23 +472,23 @@ public final class AmigaConfig {
         return false;
     }
 
-    /** Ultimo segmento di un percorso, qualunque separatore usi (o l'intera stringa). */
+    /** Last segment of a path, whatever separator it uses (or the whole string). */
     private static String fileName(String path) {
         int cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
         return cut < 0 ? path : path.substring(cut + 1);
     }
 
     /**
-     * Impostazioni di sistema dedotte dalla modalità Auto per il supporto descritto dai
-     * parametri; {@link #autoProfile()} è la stessa cosa applicata allo stato corrente.
+     * System settings derived by Auto mode for the media described by the parameters;
+     * {@link #autoProfile()} is the same applied to the current state.
      *
-     * <p>Il profilo è uno dei due: solo floppy (A500 base, Kickstart 1.3) oppure hard
-     * disk/WHDLoad (macchina espansa, Kickstart 3.1). Ogni valore viene da
-     * {@code amiga.properties} ({@code auto.floppy.*} / {@code auto.hd.*}), così chi
-     * vuole può cambiarlo a mano senza rinunciare all'automatismo.
+     * <p>The profile is one of two: floppy only (stock A500, Kickstart 1.3) or hard
+     * disk/WHDLoad (expanded machine, Kickstart 3.1). Every value comes from
+     * {@code amiga.properties} ({@code auto.floppy.*} / {@code auto.hd.*}), so anyone can
+     * change it by hand without giving up the automation.
      *
-     * @param expanded    è attivo un hard disk o WHDLoad
-     * @param activeFiles file in uso, per la deduzione PAL/NTSC
+     * @param expanded    a hard disk or WHDLoad is active
+     * @param activeFiles files in use, for the PAL/NTSC derivation
      */
     private AutoProfile autoProfile(boolean expanded, java.util.List<String> activeFiles) {
         AutoDefaults d = expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
@@ -502,11 +498,10 @@ public final class AmigaConfig {
     }
 
     /**
-     * Standard video dedotto dalla modalità Auto. Un archivio WHDLoad lo <b>dichiara</b>
-     * nelle tooltype della propria icona, e quella dichiarazione vince: dice come il
-     * gioco va visto, mentre {@link #impliesNtsc} può solo leggere il nome del file.
-     * Quando l'icona tace — o non c'è alcun archivio WHDLoad — resta la convenzione sul
-     * nome.
+     * Video standard derived by Auto mode. A WHDLoad archive <b>declares</b> it in the
+     * tooltypes of its icon, and that declaration wins: it says how the game is meant to be
+     * seen, while {@link #impliesNtsc} can only read the file name. When the icon is silent
+     * (or there is no WHDLoad archive) the name convention remains.
      */
     private VideoMode autoVideoMode(java.util.List<String> activeFiles) {
         if (whdloadEnabled()) {
@@ -517,16 +512,16 @@ public final class AmigaConfig {
         return impliesNtsc(activeFiles) ? VideoMode.NTSC : VideoMode.PAL;
     }
 
-    /** Impostazioni dedotte dalla modalità Auto per il supporto attualmente configurato. */
+    /** Settings derived by Auto mode for the media currently configured. */
     public AutoProfile autoProfile() {
         return autoProfile(expandedMediaActive(), activeMediaFiles());
     }
 
     /**
-     * ROM scelta dalla modalità Auto: il Kickstart 3.1 per il profilo espanso, l'1.3
-     * per il solo floppy. Se la casella del profilo è vuota si ripiega sull'altra e
-     * infine sul Kickstart impostato a mano — così chi arriva da una configurazione
-     * precedente (dove esisteva solo {@code kickstart.path}) parte comunque.
+     * ROM chosen by Auto mode: Kickstart 3.1 for the expanded profile, 1.3 for floppy only.
+     * If the profile's box is empty it falls back on the other and finally on the Kickstart
+     * set by hand, so anyone coming from an earlier configuration (where only
+     * {@code kickstart.path} existed) still starts.
      */
     private String autoKickstartPath(boolean expanded) {
         String preferred = expanded ? autoKickstart31() : autoKickstart13();
@@ -537,16 +532,15 @@ public final class AmigaConfig {
     }
 
     // =========================================================================
-    // Getter tipizzati (con fallback ai default se la chiave manca/è invalida)
+    // Typed getters (falling back to the defaults if the key is missing/invalid)
     //
-    // Con la modalità Auto attiva i parametri di sistema non sono più quelli salvati
-    // ma quelli dedotti dal supporto: i getter qui sotto restituiscono il valore
-    // EFFETTIVO, cioè quello con cui la macchina viene costruita. I valori scelti a
-    // mano restano intatti nel file (getter stored*) e tornano in vigore appena Auto
-    // viene spento.
+    // With Auto mode on, the system parameters are no longer those saved but those derived
+    // from the media: the getters below return the EFFECTIVE value, the one the machine is
+    // built with. The values chosen by hand stay untouched in the file (stored* getters)
+    // and come back into force as soon as Auto is switched off.
     // =========================================================================
 
-    /** Percorso assoluto del Kickstart, o stringa vuota se non configurato. */
+    /** Absolute path of the Kickstart, or the empty string if not configured. */
     public String kickstartPath() {
         return autoEnabled() ? autoProfile().kickstartPath() : storedKickstartPath();
     }
@@ -556,98 +550,97 @@ public final class AmigaConfig {
         return autoEnabled() ? autoProfile().chipRamKb() : storedChipRamKb();
     }
 
-    /** Slow RAM in KB (default 512); 0 = nessuna Slow RAM. */
+    /** Slow RAM in KB (default 512); 0 = no Slow RAM. */
     public int slowRamKb() {
         return autoEnabled() ? autoProfile().slowRamKb() : storedSlowRamKb();
     }
 
     /**
-     * Fast RAM in KB (default 0 = nessuna Fast RAM). Espansione Zorro II con
-     * AutoConfig: valori validi 0/512/1024/2048/4096/8192 (potenze di due da
-     * 512 KB a 8 MB). Serve per i giochi via hard disk e WHDLoad.
+     * Fast RAM in KB (default 0 = no Fast RAM). Zorro II expansion with AutoConfig: valid
+     * values 0/512/1024/2048/4096/8192 (powers of two from 512 KB to 8 MB). Needed by games
+     * run from hard disk and WHDLoad.
      */
     public int fastRamKb() {
         return autoEnabled() ? autoProfile().fastRamKb() : storedFastRamKb();
     }
 
-    /** Kickstart scelto a mano (chiave {@code kickstart.path}), ignorato da Auto. */
+    /** Kickstart chosen by hand (key {@code kickstart.path}), ignored by Auto. */
     public String storedKickstartPath() {
         return props.getProperty(K_KICKSTART, "").trim();
     }
 
-    /** Chip RAM scelta a mano, ignorata da Auto. */
+    /** Chip RAM chosen by hand, ignored by Auto. */
     public int storedChipRamKb() {
         return getInt(K_CHIPRAM_KB, 512);
     }
 
-    /** Slow RAM scelta a mano, ignorata da Auto. */
+    /** Slow RAM chosen by hand, ignored by Auto. */
     public int storedSlowRamKb() {
         return getInt(K_SLOWRAM_KB, 512);
     }
 
-    /** Fast RAM scelta a mano, ignorata da Auto. */
+    /** Fast RAM chosen by hand, ignored by Auto. */
     public int storedFastRamKb() {
         return getInt(K_FASTRAM_KB, 0);
     }
 
-    /** {@code true} se il drive {@code df<index>} (0..3) è collegato. */
+    /** {@code true} if drive {@code df<index>} (0..3) is connected. */
     public boolean driveEnabled(int index) {
-        boolean def = (index == 0 || index == 1); // df0/df1 attivi di default
+        boolean def = (index == 0 || index == 1); // df0/df1 enabled by default
         return getBool(String.format(K_DRIVE_EN, index), def);
     }
 
     /**
-     * Percorso assoluto del .adf/.ipf da inserire nel drive {@code df<index>} (0..3),
-     * o {@code null} se non configurato.
+     * Absolute path of the .adf/.ipf to insert in drive {@code df<index>} (0..3), or
+     * {@code null} if not configured.
      */
     public String driveDisk(int index) {
         String v = props.getProperty(String.format(K_DRIVE_DISK, index), "").trim();
         return v.isEmpty() ? null : v;
     }
 
-    /** {@code true} se il disco del drive {@code df<index>} va montato in sola lettura. */
+    /** {@code true} if the disk of drive {@code df<index>} must be mounted read-only. */
     public boolean driveReadOnly(int index) {
         return getBool(String.format(K_DRIVE_RO, index), false);
     }
 
-    /** {@code true} se l'unità hard disk {@code unit} (0=master, 1=slave) è collegata. */
+    /** {@code true} if hard disk unit {@code unit} (0=master, 1=slave) is connected. */
     public boolean hdEnabled(int unit) {
         return getBool(String.format(K_HD_EN, hdUnitName(unit)), false);
     }
 
     /**
-     * Percorso assoluto del file {@code .hdf} da montare sull'unità {@code unit}
-     * (0=master, 1=slave), o {@code null} se non configurato.
+     * Absolute path of the {@code .hdf} file to mount on unit {@code unit} (0=master,
+     * 1=slave), or {@code null} if not configured.
      */
     public String hdDisk(int unit) {
         String v = props.getProperty(String.format(K_HD_DISK, hdUnitName(unit)), "").trim();
         return v.isEmpty() ? null : v;
     }
 
-    /** {@code true} se l'hard disk dell'unità {@code unit} va montato in sola lettura. */
+    /** {@code true} if the hard disk of unit {@code unit} must be mounted read-only. */
     public boolean hdReadOnly(int unit) {
         return getBool(String.format(K_HD_RO, hdUnitName(unit)), false);
     }
 
-    /** Ultima cartella usata dal browser degli .hdf, o stringa vuota se non configurata. */
+    /** Last folder used by the .hdf browser, or the empty string if not configured. */
     public String lastHdfDirectory() {
         return props.getProperty(K_LAST_HDF_DIR, "").trim();
     }
 
-    /** {@code true} se l'avvio automatico WHDLoad è abilitato. */
+    /** {@code true} if the automatic WHDLoad boot is enabled. */
     public boolean whdloadEnabled() {
         return getBool(K_WHDLOAD_EN, false);
     }
 
     /**
-     * URL da cui l'assistente di download preleva il pacchetto {@code id}
-     * (chiave {@code assets.<id>.url}), oppure {@code fallback} se non configurato.
+     * URL from which the download assistant fetches package {@code id} (key
+     * {@code assets.<id>.url}), or {@code fallback} if not configured.
      *
-     * <p>Esiste per una ragione pratica: quegli URL puntano a siti di terzi e prima o
-     * poi cambieranno. Questa chiave permette di correggerli senza ricompilare. Vale
-     * comunque la regola di {@code THIRD-PARTY-NOTICES.md} §5: la fonte dev'essere
-     * quella ufficiale del titolare dei diritti, mai un mirror o un sito di
-     * abandonware.
+     * <p>It exists for a practical reason: those URLs point to third-party sites and sooner
+     * or later they will change. This key lets them be fixed without recompiling. The rule of
+     * {@code THIRD-PARTY-NOTICES.md} section 5 still applies: the source must be the
+     * official one of the rights holder, never a mirror or an abandonware site.
      */
     public String assetUrl(String id, String fallback) {
         String v = props.getProperty("assets." + id + ".url", "").trim();
@@ -655,9 +648,9 @@ public final class AmigaConfig {
     }
 
     /**
-     * Percorso assoluto dell'archivio WHDLoad ({@code .lha}/{@code .lzh}) da avviare
-     * automaticamente, o {@code null} se non configurato. Viene estratto e impacchettato
-     * in un hard disk avviabile (vedi {@code WhdLoadManager}).
+     * Absolute path of the WHDLoad archive ({@code .lha}/{@code .lzh}) to start
+     * automatically, or {@code null} if not configured. It is extracted and packed into a
+     * bootable hard disk (see {@code WhdLoadManager}).
      */
     public String whdloadFile() {
         String v = props.getProperty(K_WHDLOAD_FILE, "").trim();
@@ -665,10 +658,10 @@ public final class AmigaConfig {
     }
 
     /**
-     * Genera il contenuto del file {@code S:WHDLoad.prefs} a partire dalla sezione
-     * {@code whdload.prefs.*} di {@code amiga.properties}. I flag {@code true} emettono
-     * la keyword WHDLoad corrispondente; i valori vuoti vengono omessi. Usato da
-     * {@code WhdLoadManager} durante la costruzione dell'hard disk WHDLoad.
+     * Generates the content of the {@code S:WHDLoad.prefs} file from the
+     * {@code whdload.prefs.*} section of {@code amiga.properties}. {@code true} flags emit the
+     * corresponding WHDLoad keyword; empty values are omitted. Used by
+     * {@code WhdLoadManager} while building the WHDLoad hard disk.
      */
     public String whdloadPrefsContent() {
         StringBuilder sb = new StringBuilder();
@@ -685,7 +678,7 @@ public final class AmigaConfig {
         return sb.toString();
     }
 
-    /** Ultima cartella usata dal browser WHDLoad, o stringa vuota se non configurata. */
+    /** Last folder used by the WHDLoad browser, or the empty string if not configured. */
     public String lastWhdloadDirectory() {
         return props.getProperty(K_LAST_WHDLOAD_DIR, "").trim();
     }
@@ -694,56 +687,56 @@ public final class AmigaConfig {
         return HD_UNITS[unit < 0 ? 0 : Math.min(unit, HD_UNITS.length - 1)];
     }
 
-    /** Ultima cartella usata dal browser dei floppy, o stringa vuota se non configurata. */
+    /** Last folder used by the floppy browser, or the empty string if not configured. */
     public String lastFloppyDirectory() {
         return props.getProperty(K_LAST_FLOPPY_DIR, "").trim();
     }
 
     /**
-     * Ultima cartella usata dal browser unico della modalità Auto, che accetta ogni
-     * tipo di supporto. Ha una memoria propria perché mescola floppy, hard disk e
-     * archivi WHDLoad; finché è vuota ripiega su quella dei floppy, così chi arriva da
-     * una configurazione precedente non riparte dal nulla.
+     * Last folder used by Auto mode's single browser, which accepts every kind of media. It
+     * has its own memory because it mixes floppies, hard disks and WHDLoad archives; while
+     * it is empty it falls back on the floppies', so anyone coming from an earlier
+     * configuration does not start from nothing.
      */
     public String lastMediaDirectory() {
         String v = props.getProperty(K_LAST_MEDIA_DIR, "").trim();
         return v.isEmpty() ? lastFloppyDirectory() : v;
     }
 
-    /** Ultima cartella usata dal browser ROM, o stringa vuota se non configurata. */
+    /** Last folder used by the ROM browser, or the empty string if not configured. */
     public String lastRomDirectory() {
         return props.getProperty(K_LAST_ROM_DIR, "").trim();
     }
 
-    /** Volume dei suoni floppy: 0 = nessun suono, 1 = minimo, poi a salire (default 1). */
+    /** Floppy sound volume: 0 = no sound, 1 = minimum, then upward (default 1). */
     public int floppySoundVolume() {
         return Math.max(0, getInt(K_SND_VOLUME, 1));
     }
 
-    /** {@code true} se i suoni del floppy sono attivi (volume &gt; 0). */
+    /** {@code true} if the floppy sounds are on (volume &gt; 0). */
     public boolean floppySoundEnabled() {
         return floppySoundVolume() > 0;
     }
 
     /**
-     * Converte il volume intero ({@link #floppySoundVolume()}) nell'attenuazione in dB
-     * usata da {@code FloppySound}: volume 1 ≈ -36 dB (minimo udibile), +6 dB per ogni
-     * passo, con tetto a 0 dB. Significativo solo se {@link #floppySoundEnabled()}.
+     * Converts the integer volume ({@link #floppySoundVolume()}) into the attenuation in dB
+     * used by {@code FloppySound}: volume 1 = about -36 dB (minimum audible), +6 dB per step,
+     * capped at 0 dB. Meaningful only if {@link #floppySoundEnabled()}.
      */
     public float floppySoundGainDb() {
         int v = floppySoundVolume();
         return Math.min(0f, -42f + v * 6f);
     }
 
-    /** {@code true} se il pannello dei LED power/drive deve essere visibile (default true). */
+    /** {@code true} if the power/drive LED panel must be visible (default true). */
     public boolean ledsVisible() {
         return getBool(K_LEDS, true);
     }
 
     /**
-     * Periferica host collegata alla game port {@code port} (0 = "Port 0", la porta
-     * mouse/JOY0DAT; 1 = "Port 1", la porta joystick/JOY1DAT). Default: Port 0 = mouse,
-     * Port 1 = joystick da tastiera.
+     * Host device plugged into game port {@code port} (0 = "Port 0", the mouse/JOY0DAT port;
+     * 1 = "Port 1", the joystick/JOY1DAT port). Default: Port 0 = mouse, Port 1 = keyboard
+     * joystick.
      */
     public PortDevice portDevice(int port) {
         PortDevice def = (port == 0) ? PortDevice.MOUSE : PortDevice.JOYSTICK_KEYBOARD;
@@ -752,10 +745,9 @@ public final class AmigaConfig {
     }
 
     /**
-     * Tasti host che pilotano il joystick da tastiera della porta {@code port} (0 o 1).
-     * Le chiavi mancanti o non riconosciute ricadono sul default della porta
-     * ({@link JoystickKeyMap#defaults(int)}): Port 0 = W/A/S/D + Ctrl destro,
-     * Port 1 = frecce + Ctrl sinistro.
+     * Host keys driving the keyboard joystick of port {@code port} (0 or 1). Missing or
+     * unrecognised keys fall back on the port's default ({@link JoystickKeyMap#defaults(int)}):
+     * Port 0 = W/A/S/D + right Ctrl, Port 1 = arrows + left Ctrl.
      */
     public JoystickKeyMap joystickKeyMap(int port) {
         JoystickKeyMap map = JoystickKeyMap.defaults(port);
@@ -774,24 +766,23 @@ public final class AmigaConfig {
         return map;
     }
 
-    /** Codice lingua dell'interfaccia ({@code "en"} o {@code "it"}; default {@code "en"}). */
+    /** Interface language code ({@code "en"} or {@code "it"}; default {@code "en"}). */
     public String language() {
         return props.getProperty(K_LANGUAGE, "en").trim();
     }
 
-    /** Fattore di scala minimo e massimo accettati per l'interfaccia. */
+    /** Minimum and maximum scale factor accepted for the interface. */
     public static final double UI_SCALE_MIN = 1.0;
     public static final double UI_SCALE_MAX = 4.0;
 
     /**
-     * Fattore di scala della <b>sola interfaccia</b> (popup F12, dialoghi, chooser);
-     * 1 = dimensione nativa. A differenza di {@link #integerScaling()} può essere
-     * frazionario — un artefatto nell'interfaccia non tocca la qualità dell'emulazione —
-     * e non ha alcun effetto sulla finestra emulata.
+     * Scale factor of the <b>interface only</b> (F12 popup, dialogs, choosers); 1 = native
+     * size. Unlike {@link #integerScaling()} it can be fractional (an artefact in the
+     * interface does not touch the quality of the emulation) and has no effect on the
+     * emulated window.
      *
-     * <p>Non esiste una modalità "automatica": il fattore di scala del desktop non viene
-     * né letto né usato, e chi non tocca niente ottiene 1. Vedi
-     * {@code docs/gui-scaling-flatlaf-plan.md}.
+     * <p>There is no "automatic" mode: the desktop's scale factor is neither read nor used,
+     * and whoever touches nothing gets 1. See {@code docs/gui-scaling-flatlaf-plan.md}.
      */
     public double uiScale() {
         double v = getDouble(K_UI_SCALE, 1.0);
@@ -804,16 +795,16 @@ public final class AmigaConfig {
     }
 
     /**
-     * Modalita' video della macchina emulata: {@link VideoMode#PAL} (default) o
-     * {@link VideoMode#NTSC}. Determina frequenza del Color Clock, numero di righe
-     * per frame (312 PAL / 262 NTSC) e l'ID Agnus letto dal Kickstart. Il cambio ha
-     * effetto solo a macchina riavviata (cold restart).
+     * Video mode of the emulated machine: {@link VideoMode#PAL} (default) or
+     * {@link VideoMode#NTSC}. Decides the colour clock frequency, the number of lines per
+     * frame (312 PAL / 262 NTSC) and the Agnus ID read by the Kickstart. A change takes
+     * effect only after a restart (cold restart).
      */
     public VideoMode videoMode() {
         return autoEnabled() ? autoProfile().videoMode() : storedVideoMode();
     }
 
-    /** Modalità video scelta a mano (chiave {@code video.mode}), ignorata da Auto. */
+    /** Video mode chosen by hand (key {@code video.mode}), ignored by Auto. */
     public VideoMode storedVideoMode() {
         String v = props.getProperty(K_VIDEO_MODE, VideoMode.PAL.name()).trim();
         try {
@@ -825,22 +816,21 @@ public final class AmigaConfig {
     }
 
     /**
-     * Chipset custom della macchina emulata: {@link Chipset#OCS} (default) o
-     * {@link Chipset#ECS}. Seleziona la variante di Agnus/Denise istanziata e abilita
-     * i registri ECS-only (BEAMCON0, DIWHIGH, BPLCON3, super-hires, ...). Il cambio ha
-     * effetto solo a macchina riavviata (cold restart). Vincolo: chip RAM &gt; 512 KB
-     * richiede ECS (validato in fase di boot).
+     * Custom chipset of the emulated machine: {@link Chipset#OCS} (default) or
+     * {@link Chipset#ECS}. Selects the Agnus/Denise variant instantiated and enables the
+     * ECS-only registers (BEAMCON0, DIWHIGH, BPLCON3, super-hires, ...). A change takes
+     * effect only after a restart (cold restart).
      */
     public Chipset chipset() {
         return autoEnabled() ? autoProfile().chipset() : storedChipset();
     }
 
-    /** Chipset scelto a mano (chiave {@code chipset}), ignorato da Auto. */
+    /** Chipset chosen by hand (key {@code chipset}), ignored by Auto. */
     public Chipset storedChipset() {
         return parseChipset(props.getProperty(K_CHIPSET), Chipset.OCS);
     }
 
-    /** Converte il valore testuale di un chipset; {@code def} se manca o non è valido. */
+    /** Converts the text value of a chipset; {@code def} if missing or invalid. */
     private static Chipset parseChipset(String value, Chipset def) {
         if (value == null || value.trim().isEmpty()) return def;
         try {
@@ -852,48 +842,47 @@ public final class AmigaConfig {
     }
 
     /**
-     * Fattore di integer scaling della <b>sola finestra emulata</b>; 1 = dimensione
-     * nativa. Non tocca l'interfaccia: lo scaling della GUI è una property a parte.
+     * Integer scaling factor of the <b>emulated window only</b>; 1 = native size. It does
+     * not touch the interface: the GUI scale is a separate property.
      */
     public int integerScaling() {
         return Math.max(1, getInt(K_INTEGER_SCALING, 1));
     }
 
-    /** {@code true} se l'overscan e' abilitato (default true). */
+    /** {@code true} if overscan is enabled (default true). */
     public boolean overscanEnabled() {
         return getBool(K_OVERSCAN, true);
     }
 
-    /** Modalita' della finestra principale (default windowed). */
+    /** Mode of the main window (default windowed). */
     public AmigaWindowMode windowMode() {
         return AmigaWindowMode.fromConfigValue(props.getProperty(K_WINDOW_MODE));
     }
 
     /**
-     * Indice del monitor su cui aprire la finestra dell'emulatore: 0 = schermo
-     * principale (default). Se l'indice configurato non corrisponde a un monitor
-     * collegato si ricade sul principale (gestito da {@code AmigaDisplay}).
+     * Index of the monitor on which to open the emulator window: 0 = primary screen
+     * (default). If the configured index matches no connected monitor, the primary is used
+     * (handled by {@code AmigaDisplay}).
      */
     public int monitorIndex() {
         return Math.max(0, getInt(K_MONITOR, 0));
     }
 
     /**
-     * Backend di rendering del display: {@link RendererType#SOFTWARE} (Java2D, default)
-     * o {@link RendererType#OPENGL} (LWJGL, predisposto per gli shader RetroArch). Il
-     * cambio richiede la ricreazione della finestra (cold restart), gestito da
-     * {@code Amija}.
+     * Rendering backend of the display: {@link RendererType#SOFTWARE} (Java2D, default) or
+     * {@link RendererType#OPENGL} (LWJGL, with RetroArch shaders). A change requires
+     * re-creating the window (cold restart), handled by {@code Amija}.
      */
     public RendererType renderer() {
         return RendererType.fromConfigValue(props.getProperty(K_RENDERER));
     }
 
     /**
-     * Nome dello shader RetroArch selezionato (solo renderer OpenGL): percorso del preset
-     * {@code .slangp} o {@code .glslp} relativo alla cartella {@code shaders}, con
-     * separatori {@code /} e senza estensione (es. {@code Mega_Bezel/Presets/MBZ__5__POTATO}),
-     * oppure {@code "none"} (default) per nessuno shader (passthrough). Applicabile a caldo
-     * dal popup F12.
+     * Name of the selected RetroArch shader (OpenGL renderer only): path of the
+     * {@code .slangp} or {@code .glslp} preset relative to the {@code shaders} folder, with
+     * {@code /} separators and no extension (e.g. {@code Mega_Bezel/Presets/MBZ__5__POTATO}),
+     * or {@code "none"} (default) for no shader (passthrough). Can be applied live from the
+     * F12 popup.
      */
     public String shader() {
         String v = props.getProperty(K_SHADER, "none").trim();
@@ -901,39 +890,38 @@ public final class AmigaConfig {
     }
 
     /**
-     * Slot di stato attivo: quello su cui agiscono "Salva stato" e "Carica stato"
-     * (1 = il primo, default). Lo scelgono le linguette della sezione "Stato salvato" del
-     * popup F12; qui si conserva perché all'avvio successivo si riparta dallo stesso slot.
-     * Il valore non è un parametro della macchina — l'intervallo valido lo impone
-     * {@code SaveStateManager}, che è l'unico a sapere quanti slot esistono.
+     * Active state slot: the one "Save state" and "Load state" act on (1 = the first,
+     * default). Chosen by the tabs of the "Saved state" section of the F12 popup; it is kept
+     * here so the next start resumes from the same slot. The value is not a machine
+     * parameter: the valid range is imposed by {@code SaveStateManager}, the only one that
+     * knows how many slots exist.
      */
     public int saveStateSlot() {
         return Math.max(1, getInt(K_STATE_SLOT, 1));
     }
 
-    /** {@code true} se l'overlay degli FPS reali deve essere mostrato (default false). */
+    /** {@code true} if the real FPS overlay must be shown (default false). */
     public boolean fpsOverlayEnabled() {
         return getBool(K_OVERLAY_FPS, false);
     }
 
-    /** {@code true} se l'overlay del contatore fotogrammi emulati deve essere mostrato (default false). */
+    /** {@code true} if the emulated frame counter overlay must be shown (default false). */
     public boolean frameCounterOverlayEnabled() {
         return getBool(K_OVERLAY_FRAMECOUNTER, false);
     }
 
     /**
-     * {@code true} se l'immediate blit è attivo (default false). In questa modalità
-     * il blitter completa ogni operazione istantaneamente alla scrittura di BLTSIZE
-     * (zero cicli di bus emulati, BBUSY mai osservato alto): NON è cycle-exact, ma
-     * velocizza i giochi che attendono in polling il blitter. Configurabile solo da
-     * {@code amiga.properties}; non esposto nel popup F12.
+     * {@code true} if immediate blit is on (default false). In this mode the Blitter
+     * completes every operation at once at the BLTSIZE write (no bus cycles emulated, BBUSY
+     * never seen high): it is NOT cycle-exact, but speeds up games that poll the Blitter.
+     * Configurable only from {@code amiga.properties}; not exposed in the F12 popup.
      */
     public boolean blitterImmediate() {
         return getBool(K_BLITTER_IMMEDIATE, false);
     }
 
     // =========================================================================
-    // Setter (usati dal popup di configurazione prima di {@link #save()})
+    // Setters (used by the configuration popup before {@link #save()})
     // =========================================================================
 
     public void setAutoEnabled(boolean enabled) {
@@ -1029,7 +1017,7 @@ public final class AmigaConfig {
                 (device == null ? PortDevice.NONE : device).configValue());
     }
 
-    /** Scrive i tasti del joystick da tastiera della porta {@code port} (0 o 1). */
+    /** Writes the keyboard joystick keys of port {@code port} (0 or 1). */
     public void setJoystickKeyMap(int port, JoystickKeyMap map) {
         if (map == null) return;
         for (JoystickAction action : JoystickAction.values()) {
@@ -1057,27 +1045,27 @@ public final class AmigaConfig {
     }
 
     /**
-     * Sceglie lo slot di stato attivo. A differenza delle altre impostazioni del popup
-     * questa ha effetto subito, anche se il popup viene chiuso con Annulla: scegliere una
-     * linguetta non è una modifica in sospeso alla macchina, è dire dove salvare adesso.
+     * Chooses the active state slot. Unlike the other settings of the popup this takes
+     * effect at once, even if the popup is closed with Cancel: choosing a tab is not a
+     * pending change to the machine, it says where to save now.
      */
     public void setSaveStateSlot(int slot) {
         props.setProperty(K_STATE_SLOT, Integer.toString(Math.max(1, slot)));
     }
 
     /**
-     * Scrive il fattore di scala dell'interfaccia. Il valore va sul file con il punto
-     * decimale e senza zeri inutili (1, 1.25, 1.5, 2): {@code Double.toString} usa il
-     * punto a prescindere dalla lingua del sistema, mentre un {@code String.format} con
-     * la locale di default scriverebbe "1,25" su una macchina italiana — e alla
-     * rilettura {@code Double.parseDouble} lo rifiuterebbe.
+     * Writes the interface scale factor. The value goes to the file with a decimal point and
+     * no needless zeros (1, 1.25, 1.5, 2): {@code Double.toString} uses the point whatever
+     * the system language, while a {@code String.format} with the default locale would
+     * write "1,25" on an Italian machine, which {@code Double.parseDouble} would refuse on
+     * reading.
      */
     public void setUiScale(double scale) {
         props.setProperty(K_UI_SCALE, formatScale(
                 Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, scale))));
     }
 
-    /** Il fattore corrente nella forma in cui va sul file ({@code 1}, {@code 1.25}, ...). */
+    /** The current factor in the form it takes in the file ({@code 1}, {@code 1.25}, ...). */
     public String uiScaleValue() {
         return formatScale(uiScale());
     }
@@ -1087,10 +1075,10 @@ public final class AmigaConfig {
     }
 
     // =========================================================================
-    // Gioco a distanza (docs/remote-play-plan.md §10)
+    // Remote play (docs/remote-play-plan.md section 10)
     // =========================================================================
 
-    /** Porta TCP+UDP su cui l'host ascolta. */
+    /** TCP+UDP port the host listens on. */
     public int remotePlayPort() {
         int p = getInt(K_RP_PORT, 7788);
         return p < 0 || p > 65535 ? 7788 : p;
@@ -1100,7 +1088,7 @@ public final class AmigaConfig {
         props.setProperty(K_RP_PORT, Integer.toString(port));
     }
 
-    /** Se provare ad aprire la porta sul router con UPnP (Fase 6). */
+    /** Whether to try opening the port on the router with UPnP. */
     public boolean remotePlayUpnp() {
         return getBool(K_RP_UPNP, true);
     }
@@ -1109,7 +1097,7 @@ public final class AmigaConfig {
         props.setProperty(K_RP_UPNP, Boolean.toString(enabled));
     }
 
-    /** Interfaccia su cui ascoltare; vuoto = tutte. */
+    /** Interface to listen on; empty = all. */
     public String remotePlayBind() {
         return props.getProperty(K_RP_BIND, "").trim();
     }
@@ -1119,10 +1107,10 @@ public final class AmigaConfig {
     }
 
     /**
-     * Se rifiutare le connessioni che non vengono dalla rete locale.
+     * Whether to refuse connections that do not come from the local network.
      *
-     * <p>Acceso di default (§8.5): una porta in ascolto su Internet la si apre <b>dopo</b>
-     * averlo deciso, non per il fatto di aver provato il gioco a distanza in casa.
+     * <p>On by default (section 8.5): a port listening on the Internet is opened <b>after</b>
+     * deciding to, not as a side effect of having tried remote play at home.
      */
     public boolean remotePlayLanOnly() {
         return getBool(K_RP_LAN_ONLY, true);
@@ -1132,7 +1120,7 @@ public final class AmigaConfig {
         props.setProperty(K_RP_LAN_ONLY, Boolean.toString(lanOnly));
     }
 
-    /** Game port pilotata dall'ospite: 0 o 1. */
+    /** Game port driven by the guest: 0 or 1. */
     public int remotePlayGuestPort() {
         int p = getInt(K_RP_GUEST_PORT, 1);
         return p == 0 ? 0 : 1;
@@ -1150,7 +1138,7 @@ public final class AmigaConfig {
         props.setProperty(K_RP_GUEST_KEYBOARD, Boolean.toString(shared));
     }
 
-    /** Se l'ospite puo' resettare la macchina con CTRL+Amiga+Amiga. Spento di default. */
+    /** Whether the guest may reset the machine with CTRL+Amiga+Amiga. Off by default. */
     public boolean remotePlayGuestAllowReset() {
         return getBool(K_RP_GUEST_ALLOWRESET, false);
     }
@@ -1159,7 +1147,7 @@ public final class AmigaConfig {
         props.setProperty(K_RP_GUEST_ALLOWRESET, Boolean.toString(allow));
     }
 
-    /** Formato audio verso l'ospite: {@code adpcm}, {@code pcm16} o {@code off}. */
+    /** Audio format toward the guest: {@code adpcm}, {@code pcm16} or {@code off}. */
     public String remotePlayAudioMode() {
         String v = props.getProperty(K_RP_AUDIO_MODE, "adpcm").trim().toLowerCase(Locale.ROOT);
         return switch (v) {
@@ -1172,7 +1160,7 @@ public final class AmigaConfig {
         props.setProperty(K_RP_AUDIO_MODE, mode == null ? "adpcm" : mode.trim());
     }
 
-    /** Ultimo host a cui ci si e' uniti: il popup lo ripropone. */
+    /** Last host joined: the popup offers it again. */
     public String remotePlayLastHost() {
         return props.getProperty(K_RP_LAST_HOST, "").trim();
     }
@@ -1209,22 +1197,22 @@ public final class AmigaConfig {
     // =========================================================================
 
     /**
-     * Scrive la configurazione corrente in {@code amiga.properties} nella home
-     * ({@link AppHome}), così da avere precedenza sull'eventuale copia nel classpath al
-     * successivo avvio. Il file viene riscritto in forma ordinata e commentata.
+     * Writes the current configuration to {@code amiga.properties} in the home
+     * ({@link AppHome}), so it takes precedence over any copy on the class path at the next
+     * start. The file is rewritten sorted and commented.
      *
-     * <p><b>UTF-8, dichiarato.</b> La charset va detta qui e in {@link #load()}, e deve
-     * essere la stessa: {@code Files.writeString} scrive UTF-8 per default, mentre
-     * {@code Properties.load(InputStream)} decodifica <i>ISO-8859-1</i> per contratto. Le
-     * due meta' non erano d'accordo, e ogni percorso con un accento — cioe' il caso
-     * normale su un'installazione italiana — si corrompeva alla rilettura, peggiorando a
-     * ogni giro perche' i byte sbagliati venivano riscritti come tali.
+     * <p><b>UTF-8, declared.</b> The charset is stated here and in {@link #load()}, and must
+     * be the same: {@code Files.writeString} writes UTF-8 by default, while
+     * {@code Properties.load(InputStream)} decodes <i>ISO-8859-1</i> by contract. With the
+     * two halves in disagreement every path with an accent (the normal case on an Italian
+     * installation) would be corrupted on reading, getting worse at every round because the
+     * wrong bytes are written back as such.
      *
-     * <p><b>Prima su un temporaneo, poi uno spostamento atomico.</b> Il file si riscrive
-     * per intero a ogni conferma del popup: scrivendo direttamente sulla destinazione,
-     * un'interruzione a meta' (crash, disco pieno, la JVM che esce mentre lo shutdown hook
-     * gira) lascerebbe una configurazione troncata al posto di quella buona. Con lo
-     * spostamento atomico o si vede il file nuovo o si vede ancora il vecchio.
+     * <p><b>First to a temporary file, then an atomic move.</b> The file is rewritten
+     * entirely at every confirmation of the popup: writing straight to the destination, an
+     * interruption halfway (crash, full disk, the JVM exiting while the shutdown hook runs)
+     * would leave a truncated configuration in place of the good one. With the atomic move
+     * either the new file or still the old one is seen.
      */
     public void save() throws IOException {
         Path target = AppHome.resolve(FILE_NAME);
@@ -1233,19 +1221,18 @@ public final class AmigaConfig {
     }
 
     /**
-     * Scrive {@code text} in {@code target} passando da un temporaneo nella stessa
-     * cartella — dev'essere la stessa, o lo spostamento attraverserebbe un file system e
-     * smetterebbe di essere atomico.
+     * Writes {@code text} to {@code target} through a temporary file in the same folder; it
+     * must be the same, or the move would cross a file system and stop being atomic.
      *
-     * <p>Se il sistema non offre {@code ATOMIC_MOVE} si ripiega su uno spostamento
-     * normale: resta molto meglio di una scrittura sul posto, perche' la finestra in cui
-     * la destinazione e' incompleta si riduce a quella della {@code move}.
+     * <p>If the system does not offer {@code ATOMIC_MOVE} a normal move is used: still much
+     * better than writing in place, because the window in which the destination is
+     * incomplete shrinks to that of the {@code move}.
      */
     private static void writeAtomically(Path target, String text) throws IOException {
-        // Il temporaneo DEVE stare nella stessa cartella della destinazione: altrove
-        // finirebbe su un altro file system e lo spostamento smetterebbe di essere
-        // atomico (o fallirebbe). Con AppHome il genitore c'e' sempre; il ripiego sulla
-        // cartella corrente e' per non dipendere da quel dettaglio.
+        // The temporary file MUST be in the destination's folder: elsewhere it would land on
+        // another file system and the move would stop being atomic (or fail). With AppHome
+        // the parent always exists; the fallback on the current folder avoids depending on
+        // that detail.
         Path dir = target.getParent() != null ? target.getParent() : Path.of(".");
         Files.createDirectories(dir);
         Path tmp = Files.createTempFile(dir, FILE_NAME, ".tmp");
@@ -1263,22 +1250,22 @@ public final class AmigaConfig {
         }
     }
 
-    /** Configurazione coi soli valori di default, senza toccare il disco. */
+    /** Configuration with only the default values, without touching the disk. */
     public static AmigaConfig defaults() {
         return new AmigaConfig(defaultProperties());
     }
 
-    /** Configurazione costruita su proprietà già lette: il rovescio di {@link #toPropertiesText}. */
+    /** Configuration built on properties already read: the reverse of {@link #toPropertiesText}. */
     public static AmigaConfig fromProperties(Properties props) {
         return new AmigaConfig(props);
     }
 
     /**
-     * Il file di configurazione come testo, ordinato e commentato.
+     * The configuration file as text, sorted and commented.
      *
-     * <p>Separato dalla scrittura di proposito: così la serializzazione è una funzione pura
-     * — quel che conta, cioè che ogni chiave ci sia e col valore giusto, si verifica senza
-     * un disco di mezzo e senza dipendere da dove {@code AppHome} abbia deciso di puntare.
+     * <p>Separate from the writing on purpose: so serialisation is a pure function, and
+     * what counts (that every key is there with the right value) is checked without a disk
+     * in between and without depending on where {@code AppHome} decided to point.
      */
     public String toPropertiesText() {
         StringBuilder sb = new StringBuilder();
@@ -1520,26 +1507,26 @@ public final class AmigaConfig {
         return sb.toString();
     }
 
-    /** Emette una riga {@code chiave=valore} con escaping del backslash (path Windows). */
+    /** Emits a {@code key=value} line, escaping backslashes (Windows paths). */
     private static void line(StringBuilder sb, String key, String value) {
         sb.append(key).append('=').append(value.replace("\\", "\\\\")).append('\n');
     }
 
     // =========================================================================
-    // Fotografia della configurazione (save state)
+    // Snapshot of the configuration (save state)
     // =========================================================================
 
     /**
-     * Le chiavi che descrivono <b>la macchina</b>, cioè quelle da cui dipende com'è
-     * fatto l'Amiga acceso: modalità automatica e suoi profili, Kickstart, memorie,
-     * chipset, modalità video e supporti montati. Tutto il resto di
-     * {@code amiga.properties} (lingua, finestra, monitor, renderer, shader, volumi,
-     * ultime cartelle) descrive <i>l'emulatore</i>, non la macchina.
+     * The keys that describe <b>the machine</b>, i.e. those that decide what the running
+     * Amiga is made of: automatic mode and its profiles, Kickstart, memory, chipset, video
+     * mode and mounted media. Everything else in {@code amiga.properties} (language,
+     * window, monitor, renderer, shader, volumes, last folders) describes <i>the
+     * emulator</i>, not the machine.
      *
-     * <p>È la distinzione che serve al save state: uno slot si ricarica ricostruendo la
-     * macchina com'era, non riportando indietro le preferenze d'interfaccia dell'utente —
-     * ritrovarsi la finestra a schermo intero o l'emulatore in un'altra lingua per aver
-     * caricato una partita sarebbe un effetto collaterale, non un ripristino.
+     * <p>That is the distinction save states need: a slot is reloaded by rebuilding the
+     * machine as it was, not by rolling back the user's interface preferences; finding the
+     * window fullscreen or the emulator in another language because a game was loaded would
+     * be a side effect, not a restore.
      */
     private static java.util.List<String> machineKeys() {
         java.util.List<String> keys = new java.util.ArrayList<>();
@@ -1574,9 +1561,9 @@ public final class AmigaConfig {
     }
 
     /**
-     * Copia indipendente delle proprietà correnti, cioè {@code amiga.properties} così
-     * com'è in memoria. Il save state ne conserva una dentro lo slot: è la sola
-     * descrizione della macchina che quello stato pretende.
+     * Independent copy of the current properties, i.e. {@code amiga.properties} as it is in
+     * memory. Save states keep one inside the slot: it is the only description of the
+     * machine that state requires.
      */
     public Properties snapshot() {
         Properties copy = new Properties();
@@ -1585,8 +1572,8 @@ public final class AmigaConfig {
     }
 
     /**
-     * {@code true} se {@code saved} descrive una macchina diversa da quella configurata
-     * adesso, cioè se {@link #restoreMachineSettings} avrebbe qualcosa da fare.
+     * {@code true} if {@code saved} describes a machine different from the one configured
+     * now, i.e. if {@link #restoreMachineSettings} would have something to do.
      */
     public boolean machineDiffers(Properties saved) {
         if (saved == null) return false;
@@ -1599,11 +1586,10 @@ public final class AmigaConfig {
     }
 
     /**
-     * Riporta le sole chiavi di macchina (vedi {@link #machineKeys()}) ai valori di
-     * {@code saved}, lasciando intatte le preferenze d'interfaccia. Una chiave assente
-     * da {@code saved} viene <b>rimossa</b>, non lasciata com'è: significa che quella
-     * macchina girava col valore di default, e conservare quello attuale la ricostruirebbe
-     * diversa.
+     * Brings only the machine keys (see {@link #machineKeys()}) back to the values of
+     * {@code saved}, leaving the interface preferences untouched. A key absent from
+     * {@code saved} is <b>removed</b>, not left as it is: it means that machine ran with the
+     * default value, and keeping the current one would rebuild it differently.
      */
     public void restoreMachineSettings(Properties saved) {
         if (saved == null) return;
@@ -1618,7 +1604,7 @@ public final class AmigaConfig {
     }
 
     // =========================================================================
-    // Helper di parsing
+    // Parsing helpers
     // =========================================================================
 
     private int getInt(String key, int def) {
@@ -1639,9 +1625,9 @@ public final class AmigaConfig {
     }
 
     /**
-     * Come {@link #getInt}, ma per i fattori frazionari. Il separatore decimale e' il
-     * PUNTO, sempre: questo e' un file di configurazione, non un testo localizzato, e
-     * deve restare leggibile allo stesso modo su ogni macchina.
+     * Like {@link #getInt}, but for fractional factors. The decimal separator is ALWAYS the
+     * POINT: this is a configuration file, not localised text, and it must read the same on
+     * every machine.
      */
     private double getDouble(String key, double def) {
         String v = props.getProperty(key);

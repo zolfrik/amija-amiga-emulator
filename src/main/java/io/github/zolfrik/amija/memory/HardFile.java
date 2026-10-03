@@ -28,44 +28,41 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Immagine di hard disk Amiga (file {@code .hdf}) montata come "hardfile".
+ * Amiga hard disk image ({@code .hdf} file) mounted as a "hardfile".
  *
- * <p>Scopo: lanciare giochi installati su .hdf (e in futuro WHDLoad) con un costo
- * di implementazione minimo, privilegiando le prestazioni. Il file viene caricato
- * interamente in un {@code byte[]}; le letture/scritture del driver sono semplici
- * copie di memoria (nessuna emulazione cycle-exact del bus SCSI/IDE). Il driver
- * AmigaOS è fornito dalla {@link io.github.zolfrik.amija.custom.HdController}.
+ * <p>Purpose: launching games installed on .hdf (and WHDLoad) at minimal implementation cost,
+ * favouring performance. The file is loaded entirely into a {@code byte[]}; the driver's
+ * reads/writes are plain memory copies (no cycle-exact emulation of the SCSI/IDE bus). The
+ * AmigaOS driver is provided by {@link io.github.zolfrik.amija.custom.HdController}.
  *
- * <p>Sono riconosciuti due formati:
+ * <p>Two formats are recognised:
  * <ul>
- *   <li><b>RDB</b> (Rigid Disk Block): l'immagine contiene un blocco {@code RDSK}
- *       fra i primi 16 settori con geometria e tabella delle partizioni;</li>
- *   <li><b>headerless</b> (single partition): l'intero file è un unico filesystem
- *       AmigaDOS (il blocco 0 inizia con {@code DOS}). La geometria viene
- *       sintetizzata dalla dimensione del file e il {@code DosType} è letto dal
- *       boot block. È il caso di "Castle Master v2.0.hdf" (DOS\1 = FFS).</li>
+ *   <li><b>RDB</b> (Rigid Disk Block): the image contains an {@code RDSK} block among the
+ *       first 16 sectors, with the geometry and the partition table;</li>
+ *   <li><b>headerless</b> (single partition): the whole file is a single AmigaDOS file
+ *       system (block 0 starts with {@code DOS}). The geometry is synthesised from the file
+ *       size and the {@code DosType} is read from the boot block. That is the case of
+ *       "Castle Master v2.0.hdf" (DOS\1 = FFS).</li>
  * </ul>
  *
- * <p>La logica di parsing replica vAmiga ({@code HDFFile}/{@code DeviceDescriptors}).
- * I filesystem custom referenziati nell'RDB (LSEG) non sono supportati: si assume
- * che le partizioni usino il filesystem in ROM (OFS/FFS), presente dal Kickstart
- * 2.0 in poi.
+ * <p>Custom file systems referenced in the RDB (LSEG) are not supported: the partitions are
+ * assumed to use the file system in ROM (OFS/FFS), present from Kickstart 2.0 on.
  */
 public final class HardFile {
 
     private static final int BSIZE = 512;
 
-    // Limiti geometria (cfr. vAmiga Constants.h).
+    // Geometry limits.
     private static final int C_MIN = 16,  C_MAX = 16384;
     private static final int H_MIN = 1,   H_MAX = 16;
     private static final int S_MIN = 16,  S_MAX = 63;
 
-    /** Descrittore di una partizione (sottoinsieme del DOS environment necessario al boot). */
+    /** Descriptor of a partition (the subset of the DOS environment needed for the boot). */
     public static final class Partition {
         public String name = "DH";
         public int flags;        // bit0 = bootable
-        public int sizeBlock;    // longword per blocco (512/4 = 128)
-        public int reserved;     // boot block riservati (di norma 2)
+        public int sizeBlock;    // longwords per block (512/4 = 128)
+        public int reserved;     // reserved boot blocks (normally 2)
         public int lowCyl;
         public int highCyl;
         public int dosType;      // es. 0x444F5301 = "DOS\1" (FFS)
@@ -83,7 +80,7 @@ public final class HardFile {
     private final List<Partition> partitions = new ArrayList<>();
 
     // =========================================================================
-    // Costruzione
+    // Construction
     // =========================================================================
 
     private HardFile(Path path, byte[] data, boolean readOnly) {
@@ -93,11 +90,11 @@ public final class HardFile {
     }
 
     /**
-     * Carica e analizza un file {@code .hdf}.
+     * Loads and parses an {@code .hdf} file.
      *
-     * @param filePath percorso del file
-     * @param readOnly se {@code true} le scritture sono ignorate
-     * @throws IOException se il file non è leggibile o è troppo piccolo
+     * @param filePath path of the file
+     * @param readOnly if {@code true} writes are ignored
+     * @throws IOException if the file cannot be read or is too small
      */
     public static HardFile load(String filePath, boolean readOnly) throws IOException {
         Path p = Paths.get(filePath);
@@ -122,12 +119,12 @@ public final class HardFile {
             parseHeaderless();
         }
         if (partitions.isEmpty()) {
-            // Non dovrebbe accadere: garantisce sempre almeno una partizione.
+            // Should not happen: there is always at least one partition.
             parseHeaderless();
         }
     }
 
-    /** Cerca il blocco {@code RDSK} fra i primi 16 settori; -1 se assente. */
+    /** Looks for the {@code RDSK} block among the first 16 sectors; -1 if absent. */
     private int seekRDB() {
         int blocks = Math.min(16, data.length / BSIZE);
         for (int i = 0; i < blocks; i++) {
@@ -143,7 +140,7 @@ public final class HardFile {
         int bs    = r32(rdb + 16);
         if (bs == 512) bsize = bs;
 
-        // Lista delle partizioni: PartitionList nel RDB → catena di blocchi PART.
+        // List of partitions: PartitionList in the RDB -> chain of PART blocks.
         int partRef = r32(rdb + 28); // rdb_PartitionList
         int guard = 0;
         while (partRef != -1 && partRef >= 0 && (long) (partRef + 1) * BSIZE <= data.length && guard++ < 64) {
@@ -152,7 +149,7 @@ public final class HardFile {
             Partition part = new Partition();
             part.name      = readBStr(pb + 36, 31);
             part.flags     = r32(pb + 20);
-            // DOS environment: comincia a offset 128 nel blocco PART.
+            // DOS environment: starts at offset 128 in the PART block.
             part.sizeBlock = r32(pb + 132);
             part.reserved  = r32(pb + 152);
             part.lowCyl    = r32(pb + 164);
@@ -180,28 +177,26 @@ public final class HardFile {
         part.highCyl   = cylinders - 1;
         part.bootPri   = 0;
         part.flags     = 1;                   // bootable
-        // Il DosType è l'identificatore del boot block (es. "DOS\1"); se l'immagine
-        // non è formattata ripiega su OFS ("DOS\0").
+        // The DosType is the boot block identifier (e.g. "DOS\1"); if the image is not
+        // formatted it falls back on OFS ("DOS\0").
         int boot = r32(0);
         part.dosType = id4(0).equals("DOS") ? boot : 0x444F5300;
         partitions.add(part);
     }
 
     /**
-     * Predice il numero di blocchi della partizione di un HDF headerless.
+     * Predicts the number of blocks of the partition of a headerless HDF.
      *
-     * <p>Spesso l'immagine ha qualche blocco di padding oltre la fine reale della
-     * partizione: la dimensione del file <b>non</b> coincide con i blocchi del
-     * filesystem. La verità è la posizione del <i>root block</i> FFS/OFS, che si
-     * trova a {@code (reserved + numBlocks - 1) / 2}. Replico l'euristica di vAmiga
-     * ({@code HDFFile::predictNumBlocks}): provo dei candidati e accetto il primo il
-     * cui root block previsto è effettivamente un root block valido.
+     * <p>The image often has a few blocks of padding past the real end of the partition: the
+     * file size does <b>not</b> match the file system's blocks. The truth is the position of
+     * the FFS/OFS <i>root block</i>, which is at {@code (reserved + numBlocks - 1) / 2}. A few
+     * candidates are tried and the first whose predicted root block is a valid root block is
+     * accepted.
      */
     private int predictNumBlocks() {
         int fileBlocks = data.length / BSIZE;
-        // Candidato 1: l'intero file. Candidato 2: arrotondato a multiplo di 32
-        // (geometria standard a 32 settori/traccia, usata dalla maggior parte degli
-        // installer headerless).
+        // Candidate 1: the whole file. Candidate 2: rounded to a multiple of 32 (standard
+        // geometry of 32 sectors/track, used by most headerless installers).
         int rounded32 = 32 * (fileBlocks / 32);
         for (int nb : new int[] { fileBlocks, rounded32 }) {
             if (nb > 0 && isRootBlock((2 + nb - 1) / 2)) return nb;
@@ -209,7 +204,7 @@ public final class HardFile {
         return fileBlocks;
     }
 
-    /** {@code true} se il blocco {@code n} è un root block FFS/OFS (type=2, sec=ST_ROOT=1). */
+    /** {@code true} if block {@code n} is an FFS/OFS root block (type=2, sec=ST_ROOT=1). */
     private boolean isRootBlock(int n) {
         long off = (long) n * BSIZE;
         if (n < 0 || off + BSIZE > data.length) return false;
@@ -217,21 +212,20 @@ public final class HardFile {
     }
 
     /**
-     * Sintetizza una geometria CHS con {@code C*H*S == numBlocks} esatto (requisito
-     * perché la partizione copra esattamente i blocchi e il root block cada dove il
-     * filesystem lo cerca). Preferisce 32 settori/traccia (standard); altrimenti
-     * cerca una qualsiasi fattorizzazione valida; in ultima istanza ripiega su una
-     * geometria approssimata.
+     * Synthesises a CHS geometry with exactly {@code C*H*S == numBlocks} (needed so the
+     * partition covers exactly the blocks and the root block falls where the file system
+     * looks for it). Prefers 32 sectors/track (standard); otherwise looks for any valid
+     * factorisation; as a last resort falls back on an approximate geometry.
      */
     private int[] predictGeometry(int numBlocks) {
-        // Preferenza: 32 settori/traccia, teste minime così che i cilindri rientrino.
+        // Preference: 32 sectors/track, minimal heads so the cylinders fit.
         for (int h = H_MIN; h <= H_MAX; h++) {
             if (numBlocks % (h * 32) == 0) {
                 int c = numBlocks / (h * 32);
                 if (c >= 1 && c <= C_MAX) return new int[] { c, h, 32 };
             }
         }
-        // Generale: qualsiasi settore in [16,63], minor numero di cilindri.
+        // General case: any sector count in [16,63], fewest cylinders.
         int bestC = 0, bestH = 0, bestS = 0;
         for (int h = H_MIN; h <= H_MAX; h++) {
             for (int s = S_MIN; s <= S_MAX; s++) {
@@ -245,7 +239,7 @@ public final class HardFile {
         }
         if (bestC != 0) return new int[] { bestC, bestH, bestS };
 
-        // Fallback: geometria standard a 32 settori (può eccedere numBlocks).
+        // Fallback: standard geometry with 32 sectors (may exceed numBlocks).
         int s = 32, h = 1;
         int c = (numBlocks + s - 1) / s;
         while (c > 1024) { c = (c + 1) / 2; h *= 2; }
@@ -253,20 +247,20 @@ public final class HardFile {
     }
 
     // =========================================================================
-    // Accesso ai dati (usato dal driver host)
+    // Data access (used by the host driver)
     // =========================================================================
 
-    /** {@code true} se l'offset/lunghezza ricadono interamente nell'immagine. */
+    /** {@code true} if the offset/length fall entirely inside the image. */
     public boolean inRange(long offset, long length) {
         return offset >= 0 && length >= 0 && offset + length <= data.length;
     }
 
-    /** Byte all'offset assoluto nell'immagine (per la copia verso la RAM Amiga). */
+    /** Byte at the absolute offset in the image (for the copy to Amiga RAM). */
     public int readByte(int offset) {
         return data[offset] & 0xFF;
     }
 
-    /** Scrive un byte all'offset assoluto (no-op se l'immagine è in sola lettura). */
+    /** Writes a byte at the absolute offset (no-op if the image is read-only). */
     public void writeByte(int offset, int value) {
         if (readOnly) return;
         data[offset] = (byte) value;
@@ -274,18 +268,18 @@ public final class HardFile {
     }
 
     /**
-     * Array byte grezzo dell'immagine, per i trasferimenti in blocco del driver host
-     * ({@code System.arraycopy} invece della copia byte-per-byte, come il {@code mem.patch}
-     * di vAmiga e il {@code memcpy} di WinUAE). Usato come sorgente in lettura disco→RAM
-     * e come destinazione in scrittura RAM→disco; il chiamante ({@link
-     * io.github.zolfrik.amija.custom.HdController}) ha già verificato range e sola lettura.
+     * Raw byte array of the image, for the host driver's block transfers
+     * ({@code System.arraycopy} instead of a byte-by-byte copy). Used as the source of
+     * disk -> RAM reads and as the destination of RAM -> disk writes; the caller
+     * ({@link io.github.zolfrik.amija.custom.HdController}) has already checked the range and
+     * the read-only flag.
      */
     public byte[] rawData() { return data; }
 
-    /** Segna l'immagine come modificata dopo una scrittura in blocco su {@link #rawData()}. */
+    /** Marks the image as modified after a block write to {@link #rawData()}. */
     public void markModified() { if (!readOnly) modified = true; }
 
-    /** Salva su disco le eventuali modifiche (no-op se sola lettura o invariato). */
+    /** Saves any changes to disk (no-op if read-only or unchanged). */
     public void flush() {
         if (readOnly || !modified) return;
         try {
@@ -312,9 +306,9 @@ public final class HardFile {
     public Path path()           { return path; }
 
     /**
-     * Forza la bootabilità di tutte le partizioni (bit 0 di {@code flags}). Usato per
-     * marcare come NON avviabile un disco di servizio (es. il volume dei salvataggi
-     * WHDLoad), così da non comparire mai nella lista di boot.
+     * Forces the bootability of every partition (bit 0 of {@code flags}). Used to mark a
+     * service disk (e.g. the WHDLoad saves volume) as NOT bootable, so it never appears in
+     * the boot list.
      */
     public void setBootable(boolean bootable) {
         for (Partition p : partitions) {
@@ -322,7 +316,7 @@ public final class HardFile {
         }
     }
 
-    /** {@code true} se almeno una partizione ha il bit di boot. */
+    /** {@code true} if at least one partition has the boot bit. */
     public boolean isBootable() {
         for (Partition p : partitions) {
             if ((p.flags & 1) != 0) return true;
@@ -340,7 +334,7 @@ public final class HardFile {
     }
 
     private String id4(int off) {
-        // Identificatore a 4 byte, troncato al primo NUL (es. "DOS\1" → "DOS").
+        // 4-byte identifier, truncated at the first NUL (e.g. "DOS\1" -> "DOS").
         StringBuilder sb = new StringBuilder(4);
         for (int i = 0; i < 4; i++) {
             int c = data[off + i] & 0xFF;
@@ -351,7 +345,7 @@ public final class HardFile {
     }
 
     private String readBStr(int off, int max) {
-        // BCPL string: lunghezza nel primo byte, poi i caratteri.
+        // BCPL string: length in the first byte, then the characters.
         int len = Math.min(data[off] & 0xFF, max);
         StringBuilder sb = new StringBuilder(len);
         for (int i = 0; i < len; i++) sb.append((char) (data[off + 1 + i] & 0xFF));

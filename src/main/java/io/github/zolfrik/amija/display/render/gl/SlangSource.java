@@ -36,46 +36,44 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Traduzione di un singolo shader RetroArch {@code .slang} (Vulkan-GLSL) in due sorgenti
- * GLSL desktop compilabili da OpenGL, più la <i>riflessione</i> che serve a legarne le
- * uniform.
+ * Translation of a single RetroArch {@code .slang} shader (Vulkan GLSL) into two desktop GLSL
+ * sources OpenGL can compile, plus the <i>reflection</i> needed to bind its uniforms.
  *
- * <p>RetroArch fa lo stesso passaggio con glslang (→ SPIR-V) e SPIRV-Cross. Qui non
- * servono binari nativi: il sottoinsieme di Vulkan-GLSL usato dagli shader slang si
- * riporta a GLSL desktop con riscritture testuali, perché le uniche differenze reali
- * sono nei qualificatori {@code layout}:
+ * <p>No native binaries are needed: the subset of Vulkan GLSL used by slang shaders is brought
+ * back to desktop GLSL with textual rewrites, because the only real differences are in the
+ * {@code layout} qualifiers:
  *
  * <ul>
- *   <li><b>{@code #pragma stage vertex|fragment}</b> — un solo file contiene entrambi gli
- *       stadi. Quello che precede la prima direttiva è comune a tutti e due.</li>
- *   <li><b>{@code layout(push_constant) uniform Push {...} params;}</b> — i push constant
- *       non esistono in GL: diventano un normale uniform block {@code std140}, caricato da
- *       {@link SlangChain} con un UBO dedicato.</li>
- *   <li><b>{@code layout(std140, set = 0, binding = 0) uniform UBO {...} global;}</b> —
- *       {@code set}/{@code binding} sono concetti Vulkan: si tengono solo {@code std140} e
- *       si assegna il binding point da codice.</li>
- *   <li><b>{@code layout(set = 0, binding = N) uniform sampler2D X;}</b> — il binding dei
- *       sampler è assegnato da codice con {@code glUniform1i}: il qualificatore sparisce.</li>
- *   <li><b>{@code layout(location = N)}</b> sui varying — legale solo da GLSL 4.10 in poi.
- *       Si toglie dove è un varying (gli stadi sono linkati insieme, i nomi bastano) e si
- *       tiene sugli attributi di vertice e sull'output del fragment.</li>
+ *   <li><b>{@code #pragma stage vertex|fragment}</b>: one file holds both stages. What precedes
+ *       the first directive is common to both.</li>
+ *   <li><b>{@code layout(push_constant) uniform Push {...} params;}</b>: push constants do not
+ *       exist in GL: they become a normal {@code std140} uniform block, uploaded by
+ *       {@link SlangChain} with a dedicated UBO.</li>
+ *   <li><b>{@code layout(std140, set = 0, binding = 0) uniform UBO {...} global;}</b>:
+ *       {@code set}/{@code binding} are Vulkan concepts: only {@code std140} is kept and the
+ *       binding point is assigned from code.</li>
+ *   <li><b>{@code layout(set = 0, binding = N) uniform sampler2D X;}</b>: the sampler binding is
+ *       assigned from code with {@code glUniform1i}: the qualifier goes away.</li>
+ *   <li><b>{@code layout(location = N)}</b> on varyings: legal only from GLSL 4.10 up. It is
+ *       removed where it is a varying (the stages are linked together, names are enough) and
+ *       kept on vertex attributes and on the fragment output.</li>
  * </ul>
  *
- * <p>Il blocco uniform è tenuto <b>intero</b>, membri inutilizzati compresi: è ciò che
- * rende calcolabili gli offset {@code std140} senza interrogare il driver (in RetroArch
- * glslang elimina i membri morti, e infatti là un membro senza semantica nota — es.
- * {@code OriginalFeedbackSize} in Mega Bezel — non dà errore proprio perché sparisce).
+ * <p>The uniform block is kept <b>whole</b>, unused members included: that is what makes the
+ * {@code std140} offsets computable without asking the driver (a shader compiler would
+ * remove the dead members, which is why a member with no known semantic, e.g.
+ * {@code OriginalFeedbackSize} in the Mega Bezel, causes no error: it disappears).
  */
 public final class SlangSource {
 
-    /** Un membro di uniform block, con il suo offset {@code std140} nel buffer. */
+    /** A member of a uniform block, with its {@code std140} offset in the buffer. */
     public record Member(String name, String type, int offset, int size) { }
 
-    /** Un uniform block ({@code UBO} o {@code Push}) tradotto in {@code layout(std140)}. */
+    /** A uniform block ({@code UBO} or {@code Push}) translated to {@code layout(std140)}. */
     public static final class Block {
-        public final String name;          // nome del blocco: "UBO", "Push", ...
+        public final String name;          // block name: "UBO", "Push", ...
         public final List<Member> members;
-        public final int size;             // dimensione std140, multiplo di 16
+        public final int size;             // std140 size, a multiple of 16
 
         Block(String name, List<Member> members, int size) {
             this.name = name;
@@ -83,7 +81,7 @@ public final class SlangSource {
             this.size = size;
         }
 
-        /** Offset del membro, o -1 se il blocco non lo dichiara. */
+        /** Offset of the member, or -1 if the block does not declare it. */
         public int offsetOf(String member) {
             for (Member m : members) {
                 if (m.name().equals(member)) return m.offset();
@@ -102,9 +100,9 @@ public final class SlangSource {
             + "([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s+([-+0-9.eE]+)(?:\\s+([-+0-9.eE]+))?");
     private static final Pattern INCLUDE = Pattern.compile(
             "^\\s*#include\\s+[\"<]([^\">]+)[\">]");
-    // Ancorato a inizio parola e vietato ai newline: senza il primo, "phosphor_layout("
-    // sarebbe un qualificatore; senza il secondo, un "layout(" dentro un commento
-    // divorerebbe tutto il codice fino alla prima parentesi chiusa che trova.
+    // Anchored at a word start and barred from newlines: without the first,
+    // "phosphor_layout(" would be a qualifier; without the second, a "layout(" inside a
+    // comment would swallow all the code up to the first closing parenthesis it finds.
     private static final Pattern LAYOUT = Pattern.compile(
             "(?<![A-Za-z0-9_])layout\\s*\\(([^)\\n]*)\\)");
     private static final Pattern SAMPLER_DECL = Pattern.compile(
@@ -138,22 +136,22 @@ public final class SlangSource {
     public String vertexSource() { return vertexSrc; }
     public String fragmentSource() { return fragmentSrc; }
     public List<Block> blocks() { return blocks; }
-    /** Nomi dei sampler dichiarati (semantica risolta da {@link SlangChain}). */
+    /** Names of the declared samplers (semantics resolved by {@link SlangChain}). */
     public Set<String> samplers() { return samplers; }
     public List<ShaderParams.Param> parameters() { return parameters; }
-    /** Valore di {@code #pragma format}, o {@code null}. */
+    /** Value of {@code #pragma format}, or {@code null}. */
     public String format() { return format; }
-    /** Valore di {@code #pragma name} (alias del pass), o {@code null}. */
+    /** Value of {@code #pragma name} (the pass alias), or {@code null}. */
     public String name() { return name; }
 
     /**
-     * Legge e traduce un {@code .slang}. {@code glslVersion} è la direttiva
-     * {@code #version} da emettere (es. 430).
+     * Reads and translates a {@code .slang}. {@code glslVersion} is the {@code #version}
+     * directive to emit (e.g. 430).
      */
     public static SlangSource load(Path slang, int glslVersion) throws IOException {
         String body = readWithIncludes(slang);
 
-        // Metadati (#pragma) raccolti prima di togliere le direttive dal sorgente.
+        // Metadata (#pragma) collected before removing the directives from the source.
         List<ShaderParams.Param> params = new ArrayList<>();
         Set<String> seenParams = new LinkedHashSet<>();
         String format = null;
@@ -172,8 +170,8 @@ public final class SlangSource {
             if (mn.find()) { passName = mn.group(1); }
         }
 
-        // Divisione in comune / vertex / fragment. Il testo che precede la prima
-        // "#pragma stage" appartiene a entrambi gli stadi.
+        // Split into common / vertex / fragment. The text before the first "#pragma stage"
+        // belongs to both stages.
         StringBuilder common = new StringBuilder();
         StringBuilder vert = new StringBuilder();
         StringBuilder frag = new StringBuilder();
@@ -187,7 +185,7 @@ public final class SlangSource {
                 continue;
             }
             if (VERSION.matcher(line).matches() || PRAGMA_LINE.matcher(line).matches()) {
-                cur.append('\n');   // riga sostituita, ma la numerazione dei log resta utile
+                cur.append('\n');   // line replaced, but the log line numbers stay useful
                 continue;
             }
             cur.append(line).append('\n');
@@ -219,13 +217,13 @@ public final class SlangSource {
     // =====================================================================================
 
     /**
-     * Espande gli {@code #include} come farebbe il preprocessore C: <b>senza</b>
-     * deduplicare (a differenza del percorso {@code .glslp}), perché gli slang contano
-     * sull'inclusione ripetuta — un {@code .inc} può essere incluso una volta per stadio.
-     * Un file mancante non è fatale: alcuni include del pacchetto Mega Bezel puntano fuori
-     * dall'albero, alla cartella {@code include/} comune di RetroArch, e nei fatti non
-     * servono (le funzioni che definiscono non vengono chiamate). Se invece servissero,
-     * l'errore arriva comunque dal compilatore GLSL, con un messaggio migliore di questo.
+     * Expands the {@code #include}s as the C preprocessor would: <b>without</b> deduplicating
+     * (unlike the {@code .glslp} path), because slang shaders rely on repeated inclusion (an
+     * {@code .inc} can be included once per stage). A missing file is not fatal: some includes
+     * of the Mega Bezel pack point outside the tree, to RetroArch's common {@code include/}
+     * folder, and in practice they are not needed (the functions they define are not
+     * called). If they were, the error would come from the GLSL compiler anyway, with a
+     * better message than this.
      */
     private static String readWithIncludes(Path file) throws IOException {
         StringBuilder sb = new StringBuilder();
@@ -265,10 +263,10 @@ public final class SlangSource {
     private enum Stage { COMMON, VERTEX, FRAGMENT }
 
     /**
-     * Riscrive i qualificatori {@code layout(...)}. La decisione dipende dal contenuto del
-     * qualificatore e, per {@code location}, da cosa segue: in un vertex shader un
-     * {@code out} è un varying (location da togliere) mentre un {@code in} è un attributo
-     * (location da tenere); nel fragment shader vale l'opposto.
+     * Rewrites the {@code layout(...)} qualifiers. The decision depends on the qualifier's
+     * content and, for {@code location}, on what follows: in a vertex shader an {@code out} is
+     * a varying (location to remove) while an {@code in} is an attribute (location to keep);
+     * in the fragment shader the opposite holds.
      */
     private static String rewrite(String src, Stage stage) {
         Matcher m = LAYOUT.matcher(src);
@@ -281,7 +279,7 @@ public final class SlangSource {
             } else if (inner.contains("location")) {
                 repl = keepLocation(src, m.end(), stage) ? m.group() : "";
             } else if (inner.contains("binding") || inner.contains("set")) {
-                repl = "";   // sampler o immagine: il binding lo assegna glUniform1i
+                repl = "";   // sampler or image: glUniform1i assigns the binding
             } else {
                 repl = m.group();
             }
@@ -291,17 +289,17 @@ public final class SlangSource {
         return out.toString();
     }
 
-    /** {@code true} se il {@code layout(location=…)} che finisce a {@code from} va tenuto. */
+    /** {@code true} if the {@code layout(location=...)} ending at {@code from} must be kept. */
     private static boolean keepLocation(String src, int from, Stage stage) {
         int i = from;
         while (i < src.length() && Character.isWhitespace(src.charAt(i))) i++;
         boolean isIn = src.startsWith("in", i) && isBoundary(src, i + 2);
         boolean isOut = src.startsWith("out", i) && isBoundary(src, i + 3);
-        if (!isIn && !isOut) return true;               // non è un varying: non toccarlo
+        if (!isIn && !isOut) return true;               // not a varying: leave it alone
         return switch (stage) {
-            case VERTEX -> isIn;                        // attributo di vertice: si tiene
-            case FRAGMENT -> isOut;                     // output del fragment: si tiene
-            case COMMON -> false;                       // non dovrebbe capitare: si toglie
+            case VERTEX -> isIn;                        // vertex attribute: kept
+            case FRAGMENT -> isOut;                     // fragment output: kept
+            case COMMON -> false;                       // should not happen: removed
         };
     }
 
@@ -310,7 +308,7 @@ public final class SlangSource {
     }
 
     // =====================================================================================
-    // Riflessione dei blocchi uniform (offset std140)
+    // Reflection of the uniform blocks (std140 offsets)
     // =====================================================================================
 
     private static List<Block> reflectBlocks(String src) throws IOException {
@@ -322,13 +320,13 @@ public final class SlangSource {
             int open = m.end() - 1;
             int close = matchBrace(clean, open);
             if (close < 0) throw new IOException("Blocco uniform '" + blockName + "' non chiuso");
-            if (out.containsKey(blockName)) continue;   // stesso blocco nei due stadi
+            if (out.containsKey(blockName)) continue;   // same block in both stages
             out.put(blockName, layoutStd140(blockName, clean.substring(open + 1, close)));
         }
         return new ArrayList<>(out.values());
     }
 
-    /** Calcola gli offset std140 dei membri dichiarati nel corpo del blocco. */
+    /** Computes the std140 offsets of the members declared in the block's body. */
     private static Block layoutStd140(String blockName, String body) {
         List<Member> members = new ArrayList<>();
         int offset = 0;
@@ -353,7 +351,7 @@ public final class SlangSource {
                     memberName = memberName.substring(0, br).trim();
                 }
                 if (memberName.isEmpty()) continue;
-                // In std140 ogni elemento di array è allineato (e quindi spaziato) a 16 byte.
+                // In std140 every array element is aligned (and so spaced) to 16 bytes.
                 int align = array ? Math.max(as[0], 16) : as[0];
                 int stride = array ? roundUp(as[1], 16) : as[1];
                 offset = roundUp(offset, align);
@@ -364,7 +362,7 @@ public final class SlangSource {
         return new Block(blockName, members, roundUp(offset, 16));
     }
 
-    /** {@code [baseAlignment, size]} std140 del tipo, o {@code null} se sconosciuto. */
+    /** std140 {@code [baseAlignment, size]} of the type, or {@code null} if unknown. */
     private static int[] alignSize(String type) {
         return switch (type) {
             case "float", "int", "uint", "bool" -> new int[]{4, 4};
@@ -402,7 +400,7 @@ public final class SlangSource {
         return -1;
     }
 
-    /** Toglie commenti {@code //} e {@code /*…}, preservando i newline. */
+    /** Removes {@code //} and {@code /*...} comments, keeping the newlines. */
     private static String stripComments(String s) {
         StringBuilder out = new StringBuilder(s.length());
         for (int i = 0; i < s.length(); i++) {

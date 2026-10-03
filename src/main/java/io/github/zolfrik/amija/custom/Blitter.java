@@ -21,20 +21,19 @@
 package io.github.zolfrik.amija.custom;
 
 /**
- * Blitter (Block Image Transferrer) dell'Amiga 500.
+ * Blitter (Block Image Transferrer) of the Amiga 500.
  *
- * <p><b>Fase 3 (refactoring timing, docs/agnus-timing-refactor-plan.md §9/§10):</b>
- * il percorso copy-blit è ora un motore a <b>micro-programmi</b> portato da vAmiga
- * ({@code SlowBlitter.cpp}). Ogni CCK esegue una micro-op (bitmask
- * {@code BUSIDLE/BUS/WRITE_D/FETCH_x/HOLD_x/FILL/BLTDONE/REPEAT}); la tabella
- * {@link #COPY_PROG}{@code [USE][fill][step]} riproduce esattamente la Table 6.2 dell'HRM
- * (con la D <b>pipelinata</b> di una word tramite {@code HOLD_D}/{@link #lockD} e i cicli
- * morti "--"). L'esecuzione è single-phase: l'accesso a memoria avviene in modo sincrono
- * via {@link AbstractAgnus#blitterImmediateRead}/{@code blitterImmediateWrite} nel momento
- * in cui l'arbitraggio del bus concede il CCK ({@link #stepCck(boolean)}).
+ * <p>The copy blit is a <b>micro-program</b> engine (docs/agnus-timing-refactor-plan.md
+ * sections 9 and 10). Each CCK executes one micro-op (bitmask
+ * {@code BUSIDLE/BUS/WRITE_D/FETCH_x/HOLD_x/FILL/BLTDONE/REPEAT}); the table
+ * {@link #COPY_PROG}{@code [USE][fill][step]} reproduces Table 6.2 of the HRM (with D
+ * <b>pipelined</b> by one word through {@code HOLD_D}/{@link #lockD}, and the dead "--"
+ * cycles). Execution is single-phase: the memory access happens synchronously through
+ * {@link AbstractAgnus#blitterImmediateRead}/{@code blitterImmediateWrite} when the bus
+ * arbitration grants the CCK ({@link #stepCck(boolean)}).
  *
- * <p>Il line-mode conserva il percorso-dati validato (Bresenham, texture BSH su BLTBDAT) ed
- * è anch'esso guidato single-phase; il porting completo di {@code lineBlitInstr} è rimandato.
+ * <p>Line mode runs on a micro-program generated per blit ({@link #buildLineProg}), with the
+ * Bresenham stepping distributed over its slots.
  *
  * @author alessio.carotenuto
  */
@@ -47,7 +46,7 @@ public final class Blitter {
     private final AbstractAgnus agnus;
 
     // =========================================================================
-    // Registri
+    // Registers
     // =========================================================================
 
     private int bltcon0;
@@ -55,14 +54,14 @@ public final class Blitter {
     private int bltafwm;
     private int bltalwm;
 
-    // Puntatori DMA. La larghezza NON è fissa: come ogni canale DMA di Agnus è
-    // quella della Chip RAM installata (vedi ptrMask/ptrHiMask), fino a 21 bit.
+    // DMA pointers. Their width is NOT fixed: like every Agnus DMA channel it is that of
+    // the installed Chip RAM (see ptrMask/ptrHiMask), up to 21 bits.
     private int bltapt;
     private int bltbpt;
     private int bltcpt;
     private int bltdpt;
 
-    // Moduli (16 bit con segno)
+    // Modulos (signed 16 bit)
     private int bltamod, bltbmod, bltcmod, bltdmod;
 
     /**
@@ -91,9 +90,9 @@ public final class Blitter {
     private static final int BLTCON0_USEA = 0x0800;
     private static final int BLTCON0_USEB = 0x0400;
     private static final int BLTCON0_USEC = 0x0200;
-    // USED (0x0100) non compare: il canale D non è mai interrogato con isUsed() —
-    // la sua presenza è già codificata nei micro-programmi COPY_PROG, indicizzati
-    // sui quattro bit USEx di BLTCON0.
+    // USED (0x0100) does not appear: channel D is never queried with isUsed(); its
+    // presence is already encoded in the COPY_PROG micro-programs, indexed by the four
+    // USEx bits of BLTCON0.
     private static final int BLTCON0_LF   = 0x00FF;
 
     private static final int BLTCON1_BSH     = 0xF000;
@@ -104,7 +103,7 @@ public final class Blitter {
     private static final int BLTCON1_LINE    = 0x0001;
 
     private static final int BLTCON1_SIGN    = 0x0040;
-    /** Passo X pendente all'avvio del blit (`blit_ovf` dell'oracolo). */
+    /** X step pending at the start of the blit (BLTCON1 bit 5). */
     private static final int BLTCON1_OVF     = 0x0020;
     private static final int BLTCON1_SUD     = 0x0010;
     private static final int BLTCON1_SUL     = 0x0008;
@@ -112,7 +111,7 @@ public final class Blitter {
     private static final int BLTCON1_SING    = 0x0002;
 
     // =========================================================================
-    // Micro-op del copy blitter (vAmiga SlowBlitter.cpp)
+    // Copy blitter micro-ops
     // =========================================================================
 
     private static final int NOTHING = 0x0000;
@@ -128,45 +127,41 @@ public final class Blitter {
     private static final int FILL    = 0x0200;
     private static final int BLTDONE = 0x0400;
     private static final int REPEAT  = 0x0800;
-    /** LINE: slot canale A (074): ciclo di pipe SENZA trasferimento, mai bus (idle). */
+    /** LINE: channel A slot (074): pipe cycle WITHOUT a transfer, never on the bus (idle). */
     private static final int LINE_BUS_A    = 0x1000;
-    /** LINE: ultimo ciclo di bus del pixel — sull'ultimo pixel arma il clear BBUSY. */
+    /** LINE: last bus cycle of the pixel; on the last pixel it arms the BBUSY clear. */
     private static final int LINE_LAST_BUS = 0x2000;
     /**
-     * LINE: lettura di B che NON avanza BLTBPT. In line mode il puntatore non ha
-     * l'auto-incremento — {@code process_blitter()}: {@code if (!blitline) pt += rga->bltadd;}
-     * — e il modulo lo somma solo il passaggio con {@code addmod}, cioe' l'ULTIMO
-     * ({@code blitter_hcounter + 1 == hblitsize}). Le letture B di un pixel sono quindi
-     * {@code hblitsize}, tutte dallo STESSO indirizzo, e il modulo si applica una volta sola.
+     * LINE: read of B that does NOT advance BLTBPT. In line mode the pointer has no
+     * auto-increment, and the modulo is added only by the pass that applies it, i.e. the
+     * LAST one ({@code hcounter + 1 == hblitsize}). A pixel therefore reads B
+     * {@code hblitsize} times, all from the SAME address, and the modulo is applied once.
      */
     private static final int FETCH_B_NOMOD = 0x4000;
     /**
-     * LINE: slot A del PRIMO passaggio del pixel. Lì lo stato del pixel si decide
-     * ({@code blitter_line_proc_status()}) e l'accumulatore Bresenham avanza
-     * ({@code blitter_line_proc_apt()}). Esiste solo con USEA: senza, quello slot è
-     * {@code c == 0} e nessuna delle due gira.
+     * LINE: slot A of the FIRST pass of the pixel. There the state of the pixel is decided
+     * ({@link #lineProcStatus}) and the Bresenham accumulator advances
+     * ({@link #lineProcApt}). It exists only with USEA: without it that slot is idle and
+     * neither runs.
      */
     private static final int LINE_PROC_APT   = 0x00008000;
     /**
-     * LINE: slot C del PRIMO passaggio. Il passo X si applica <b>dopo</b> la lettura,
-     * quindi i passaggi successivi leggono C dall'indirizzo già mosso.
+     * LINE: slot C of the FIRST pass. The X step is applied <b>after</b> the read, so the
+     * later passes read C from the address already moved.
      */
     private static final int LINE_PROC_CPT_X = 0x00010000;
     /**
-     * LINE: slot C di un passaggio di MEZZO. Il passo Y si applica <b>prima</b> della
-     * lettura, e solo una volta per pixel ({@code blitlineloop}) e solo con SUD spento;
-     * altrimenti resta allo slot libero dell'ultimo passaggio.
+     * LINE: slot C of a MIDDLE pass. The Y step is applied <b>before</b> the read, only once
+     * per pixel and only with SUD off; otherwise it stays at the free slot of the last pass.
      */
     private static final int LINE_PROC_CPT_Y = 0x00020000;
     private static final int FETCH   = FETCH_A | FETCH_B | FETCH_C;
 
     /**
-     * Micro-programmi copy (full execution / level 2), indicizzati
-     * {@code [USE 0..15][fill 0..1][step 0..5]}. Trascrizione 1:1 dei blocchi
-     * "Full execution" di {@code copyBlitInstr} in vAmiga {@code SlowBlitter.cpp}
-     * (derivati dalla Table 6.2 HRM + Errata 1985). La D è pipelinata di una word
-     * (HOLD_D calcola dhold della word precedente, WRITE_D lo scrive). I 4 casi
-     * di fill con timing diverso (USE=$1/$5/$9/$D) hanno una sequenza a 6 passi.
+     * Copy micro-programs (full execution), indexed {@code [USE 0..15][fill 0..1][step 0..5]}.
+     * Derived from Table 6.2 of the HRM and the 1985 errata. D is pipelined by one word
+     * (HOLD_D computes dhold of the previous word, WRITE_D writes it). The four fill cases
+     * with a different timing (USE=$1/$5/$9/$D) have a 6-step sequence.
      */
     private static final int[][][] COPY_PROG = new int[16][2][];
     static {
@@ -220,86 +215,29 @@ public final class Blitter {
         COPY_PROG[0xF][1] = new int[]{ FETCH_A|FILL|HOLD_D, FETCH_B|HOLD_A, FETCH_C|HOLD_B, WRITE_D|REPEAT, HOLD_D, WRITE_D|BLTDONE };
     }
 
-    // Micro-programmi LINE (Fase 5, B3) — trascrizione di vAmiga lineBlitInstr[BC][0]
-    // ("Full execution", accuracy level 2). Indice BC = (USEB?2:0)|(USEC?1:0).
-    // La CADENZA (cicli morti BUSIDLE, dummy BUS) è quella di vAmiga; il PERCORSO-DATI
-    // resta quello validato (Bresenham/BSH): HOLD_A/HOLD_B non fanno lavoro-dati
-    // separato — il calcolo di dhold è tutto in HOLD_D (calculateLineWord, funzione
-    // pura), quindi l'output di linea è BIT-IDENTICO al modello precedente e cambia
-    // solo QUANDO i cicli di bus cadono (contesa). Vedi docs/agnus-timing-refactor-plan.md §12.
     /**
-     * Micro-programma LINE, <b>generato per blit</b> da (USEA, USEB, USEC, {@code bltsizeH}).
+     * LINE micro-program, <b>generated per blit</b> from (USEA, USEB, USEC, {@code bltsizeH}).
      *
-     * <p>⛔ Sostituisce una tabella a quattro righe che cablava {@code hblitsize == 2}. La
-     * legge dell'oracolo è in {@code blit_bltset()}:
+     * <p>A <b>pass</b> of the shifter takes <b>2 CCKs</b> without B and <b>3</b> with B, and
+     * a <b>line pixel takes {@code hblitsize} passes</b> (the horizontal counter counts up to
+     * {@code hblitsize}, then the vertical counter advances).
      *
-     * <pre>
-     *   shifter_skip_b = (bltcon0 &amp; BLTCHB) == 0;
-     *   if (blitline) shifter_skip_y = true;
-     *   blit_cyclecount = 4 - (shifter_skip_b + shifter_skip_y);
-     * </pre>
-     *
-     * ⇒ un <b>passaggio</b> dello shifter dura <b>2 CCK</b> (senza B) o <b>3</b> (con B), e un
-     * <b>pixel di linea dura {@code hblitsize} passaggi</b> — {@code blitter_hcounter} conta
-     * fino a {@code hblitsize} e solo allora {@code blitter_vcounter++}.
-     *
-     * <p>I ruoli degli slot vengono da {@code get_current_channel()}, con
-     * {@code lastw = hcounter + 1 == hblitsize}:
+     * <p>Slot roles, with {@code lastw = hcounter + 1 == hblitsize}:
      * <ul>
-     *   <li><b>stadio 0</b>: {@code lastw} ⇒ slot «libero» {@code c==5} (adat/ovf/sign/nxline e
-     *       il minterm, cioè il nostro {@code HOLD_D}); altrimenti slot <b>A</b> se USEA, se no
-     *       idle. ⚠️ Lo slot A non alloca MAI il bus: in line mode BLTAPT è l'accumulatore
-     *       Bresenham, non un puntatore;</li>
-     *   <li><b>stadio 1</b> (esiste solo con USEB): lettura <b>B</b> — in <b>ogni</b> passaggio,
-     *       quindi {@code hblitsize} volte per pixel;</li>
-     *   <li><b>stadio 2</b>: {@code lastw} ⇒ scrittura <b>D</b> se USEC ({@code c==4}), se no
-     *       idle ({@code c==6}); altrimenti lettura <b>C</b> se USEC, se no idle.</li>
+     *   <li><b>stage 0</b>: {@code lastw} -> the "free" slot (adat/ovf/sign/nxline and the
+     *       minterm, i.e. our {@code HOLD_D}); otherwise slot <b>A</b> with USEA, else idle.
+     *       Slot A NEVER allocates the bus: in line mode BLTAPT is the Bresenham
+     *       accumulator, not a pointer;</li>
+     *   <li><b>stage 1</b> (only with USEB): read of <b>B</b> in <b>every</b> pass, all from
+     *       the same address; only the last adds the modulo ({@link #FETCH_B_NOMOD});</li>
+     *   <li><b>stage 2</b>: {@code lastw} -> write of <b>D</b> with USEC, else idle;
+     *       otherwise read of <b>C</b> with USEC, else idle.</li>
      * </ul>
      *
-     * <p>✅ <b>Misurato</b>, non dedotto, con la sonda {@code WINUAE_BLTLOG} riga {@code BLT LSLOT}
-     * (la sequenza dei {@code c} per CCK), su {@code timing/timing15l} (B+C, w=2 → <b>[A B C]
-     * [libero B D]</b>), {@code timing15l1} (w=1 → <b>[libero B D]</b>), {@code timing15l3}
-     * (w=3 → <b>[A B C][A B C][libero B D]</b>) e {@code timing11l1} (C senza B, w=1 →
-     * <b>[libero D]</b>). Le tre corse escono byte-identiche al riferimento.
-     *
-     * <p>⚠️ Per {@code hblitsize == 2} il generatore riproduce <b>esattamente</b> le vecchie
-     * righe bc=0 e bc=1; corregge invece bc=2 e bc=3, dove la tabella aveva il minterm uno slot
-     * in anticipo e <b>una sola</b> lettura B per pixel invece di due.
-     */
-    /**
-     * Micro-programma LINE, <b>generato per blit</b> da (USEA, USEB, USEC, {@code bltsizeH}).
-     *
-     * <p>La legge è dell'oracolo, ed è misurata (sonda {@code WINUAE_BLTLOG}, riga
-     * {@code BLT LSLOT}, che stampa il canale di {@code get_current_channel()} per ogni CCK).
-     * In {@code blit_bltset()}:
-     *
-     * <pre>
-     *   shifter_skip_b = (bltcon0 &amp; BLTCHB) == 0;
-     *   if (blitline) shifter_skip_y = true;
-     *   blit_cyclecount = 4 - (shifter_skip_b + shifter_skip_y);
-     * </pre>
-     *
-     * ⇒ un <b>passaggio</b> dello shifter dura <b>2 CCK</b> senza B, <b>3</b> con B; e un
-     * <b>pixel di linea dura {@code hblitsize} passaggi</b> ({@code blitter_hcounter} conta
-     * fino a {@code hblitsize}, poi {@code blitter_vcounter++}).
-     *
-     * <p>I ruoli vengono da {@code get_current_channel()}, con
-     * {@code lastw = hcounter + 1 == hblitsize}:
-     * <ul>
-     *   <li><b>stadio 0</b>: {@code lastw} ⇒ slot «libero» {@code c==5} (adat/ovf/sign/nxline
-     *       e il minterm, cioè il nostro {@code HOLD_D}); altrimenti slot <b>A</b> se USEA, se
-     *       no idle. ⚠️ Lo slot A non alloca MAI il bus: in line mode BLTAPT è l'accumulatore
-     *       Bresenham, non un puntatore;</li>
-     *   <li><b>stadio 1</b> (solo con USEB): lettura <b>B</b> in <b>ogni</b> passaggio, tutte
-     *       dallo stesso indirizzo — solo l'ultima somma il modulo ({@link #FETCH_B_NOMOD});</li>
-     *   <li><b>stadio 2</b>: {@code lastw} ⇒ scrittura <b>D</b> se USEC ({@code c==4}), se no
-     *       idle ({@code c==6}); altrimenti lettura <b>C</b> se USEC, se no idle.</li>
-     * </ul>
-     *
-     * <p>✅ Sequenze misurate: {@code timing15l} (B+C, w=2) → <b>[A B C][libero B D]</b>;
-     * {@code timing15l1} (w=1) → <b>[libero B D]</b>; {@code timing15l3} (w=3) →
-     * <b>[A B C][A B C][libero B D]</b>; {@code timing11l1} (C senza B, w=1) →
-     * <b>[libero D]</b>. Tutte da corse byte-identiche al riferimento.
+     * <p>Measured sequences: {@code timing15l} (B+C, w=2) -> <b>[A B C][free B D]</b>;
+     * {@code timing15l1} (w=1) -> <b>[free B D]</b>; {@code timing15l3} (w=3) ->
+     * <b>[A B C][A B C][free B D]</b>; {@code timing11l1} (C without B, w=1) ->
+     * <b>[free D]</b>. All from runs byte-identical to the reference.
      */
     private int[] lineProg = null;
 
@@ -318,96 +256,75 @@ public final class Blitter {
             if (first && !lastw && useA) stage0 |= LINE_PROC_APT;
             prog[i++] = stage0;
             if (useB) prog[i++] = lastw ? FETCH_B : FETCH_B_NOMOD;
-            // ⚠️ La D porta anche BUSIDLE: quando il pixel non si scrive (`lineWrite`
-            // falso) lo slot resta comunque un ciclo che ATTENDE il bus, come il `c==6`
-            // dell'oracolo. Senza, sarebbe l'unico slot del programma ad avanzare anche
-            // sotto contesa, e il pixel accorcerebbe (misurato su bbusy7l).
+            // D also carries BUSIDLE: when the pixel is not written (`lineWrite` false) the
+            // slot is still a cycle that WAITS for the bus. Without it, it would be the only
+            // slot of the program to advance under contention, and the pixel would get
+            // shorter (measured on bbusy7l).
             int stage2 = lastw ? (useC ? (WRITE_D | BUSIDLE) : BUSIDLE)
                                : (useC ? FETCH_C : BUSIDLE);
-            // ⛔ Solo con USEC: senza, `get_current_channel()` non restituisce mai lo slot
-            // C (`nreg` resta `0x1fe` e il ramo D esce con `c == 0`, idle), quindi i due
-            // passi non girano affatto — e infatti senza USEC la linea non si disegna.
+            // Only with USEC: without it there is no C slot at all, so the two steps do not
+            // run, and indeed without USEC the line is not drawn.
             if (!lastw && useC) stage2 |= first ? LINE_PROC_CPT_X : LINE_PROC_CPT_Y;
             prog[i++] = stage2;
         }
 
-        // LINE_LAST_BUS marca l'ULTIMO ciclo di bus del pixel: sull'ultimo pixel arma il
-        // clear di BBUSY (differito di un CCK). Con USEC e' lo slot D, altrimenti la lettura
-        // B dell'ultimo passaggio; senza ne' B ne' C non c'e' nessun ciclo di bus e la marca
-        // cade sullo slot di REPEAT (clear sincrono). E' la regola gia' validata dai poll
-        // DMACONR di bbusy7l/9l/13l, riespressa sul programma generato.
-        // ⛔ Misurando `BLT DONE` si direbbe il PENULTIMO slot (l'oracolo chiama
-        // blitter_done_all() allo shifter-out dell'ultimo passaggio, un CCK prima della D):
-        // provato, e sbagliato di un CCK — rende rossi timing11l/15l e irqtim11l/15l, che
-        // con questa regola sono verdi. Il CCK di scarto e' la stessa convenzione del
-        // copy mode (il nostro fronte cade un CCK dopo finishcycle_dmacon).
+        // LINE_LAST_BUS marks the LAST bus cycle of the pixel: on the last pixel it arms the
+        // BBUSY clear (deferred by one CCK). With USEC it is the D slot, otherwise the B read
+        // of the last pass; with neither B nor C there is no bus cycle and the mark falls on
+        // the REPEAT slot (synchronous clear). The rule is the one measured by the DMACONR
+        // polls of bbusy7l/9l/13l. Marking the second-to-last slot instead is one CCK early:
+        // it turns timing11l/15l and irqtim11l/15l red.
         prog[(!useC && useB) ? prog.length - 2 : prog.length - 1] |= LINE_LAST_BUS;
         prog[prog.length - 1] |= REPEAT;
         return prog;
     }
 
     // =========================================================================
-    // Stato
+    // State
     // =========================================================================
 
-    // Stati usati dal SOLO line-mode (il copy-mode è guidato da bltpc + COPY_PROG).
+    // States used by line mode ONLY (copy mode is driven by bltpc + COPY_PROG).
     public enum State { IDLE, FETCH_A, FETCH_B, FETCH_C, WRITE_D, INTERNAL }
     private State state = State.IDLE;
 
-    // running: il blit è in corso (guida il ticking da Agnus). Resta true fino a
-    //          endBlit(), cioè anche durante la coda di drain della pipeline D.
-    // bbusy:   flag BBUSY di DMACON. vAmiga lo azzera qualche ciclo PRIMA della fine
-    //          effettiva (clearBusyFlag nell'ultimo REPEAT). Serve a svegliare il
-    //          Copper in attesa BFD al momento giusto.
+    // running: the blit is in progress (drives the ticking from Agnus). It stays true until
+    //          endBlit(), i.e. also during the drain of the D pipeline.
+    // bbusy:   the BBUSY flag of DMACON. It clears a few cycles BEFORE the actual end, in
+    //          the last REPEAT; it wakes a Copper waiting with BFD at the right moment.
     private boolean running = false;
     private boolean bbusy   = false;
 
     /**
-     * CCK in cui {@link #bbusy} e' passato da acceso a spento — cioe' il
-     * {@code blt_info.finishcycle_dmacon} dell'oracolo. {@code Long.MIN_VALUE} = mai.
+     * CCK at which {@link #bbusy} went from on to off. {@code Long.MIN_VALUE} = never.
      *
-     * <p>⛔ Serve alla vista del <b>COPPER</b>, che NON e' quella della CPU. WinUAE le
-     * scrive una accanto all'altra (blitter.cpp, {@code blitter_done_all}):
+     * <p>Used by the view of the <b>COPPER</b>, which is NOT that of the CPU: <b>the Blitter
+     * reads busy to the Copper for one CCK longer than to the CPU</b>, and that is where a
+     * WAIT with BFD is woken.
      *
-     * <pre>
-     *   blt_info.finishcycle_dmacon = get_cycles();
-     *   blt_info.finishcycle_copper = get_cycles() + 1 * CYCLE_UNIT;
-     * </pre>
-     *
-     * e {@code blit_busy(bool dmaconr)} sceglie la soglia col parametro, restituendo
-     * {@code true} finche' {@code get_cycles() <= } quella giusta. ⇒ <b>Il Blitter risulta
-     * ancora occupato per un CCK in piu' al Copper che alla CPU</b>, ed e' li' che
-     * {@code generate_blitter()} chiama {@code blitter_done_notify()} per svegliare una WAIT
-     * con BFD.
-     *
-     * <p>⚠️ La vista della CPU ({@link #isBusy}) NON va toccata: e' quella tarata sui poll di
-     * {@code bbusy0} e congelata da {@code BbusyTest} (17/17).
+     * <p>The CPU's view ({@link #isBusy}) must not be touched: it is calibrated on the polls
+     * of {@code bbusy0} and frozen by {@code BbusyTest} (17/17).
      */
     private long busyClearedCck = Long.MIN_VALUE;
 
     /**
-     * Ritardo fra la <b>fine del blit</b> e l'accensione del bit 6 di INTREQ.
+     * Delay between the <b>end of the blit</b> and bit 6 of INTREQ.
      *
-     * <p>L'oracolo lo scrive in {@code blitter_done_all()} — lo stesso istante in cui fissa
-     * {@code finishcycle_dmacon} — come {@code INTREQ_INT(6, 3)}, e {@code INTREQ_INT} somma
-     * un CYCLE_UNIT al ritardo: sono <b>4 CCK</b>, misurati tre volte su {@code irqtim0}
-     * ({@code BLT DONE} → {@code CHIPIRQLOG bits=0040}).
+     * <p>Measured at <b>4 CCKs</b> from the end of the blit, three times on {@code irqtim0}.
      *
-     * <p>⛔ <b>Qui vale 3, e il CCK di differenza NON è una taratura</b>: è l'istante da cui
-     * si conta. Il nostro fronte di BBUSY cade <b>un CCK dopo</b> {@code finishcycle_dmacon}
-     * — l'oracolo resta occupato <i>fino a tutto</i> quel CCK, il nostro flag è già giù
-     * quando la CPU guarda — ed è quell'offset che rende giusta la lettura di DMACONR
-     * (congelata da {@code BbusyTest} 17/17). Contato dal nostro fronte, il +4 dell'oracolo
-     * è un +3. Vedi docs/vamigats-import-order.md §24.
+     * <p><b>It is 3 here, and the CCK of difference is NOT a calibration</b>: it is the
+     * instant the count starts from. Our BBUSY edge falls <b>one CCK after</b> the end of the
+     * blit (the flag is already down when the CPU looks), and that offset is what makes the
+     * DMACONR read right (frozen by {@code BbusyTest} 17/17). Counted from our edge, the +4 is
+     * a +3. See docs/vamigats-import-order.md section 24.
      */
     private static final int BLT_IRQ_DELAY_CCK = 3;
 
-    /** CCK mancanti all'accensione di INTREQ bit 6; 0 = nessun interrupt in volo. */
+    /** CCKs left before INTREQ bit 6 is raised; 0 = no interrupt in flight. */
     private int irqCountdown = 0;
 
     /**
-     * Arma l'interrupt del Blitter all'istante in cui il blit finisce (lo stesso in cui
-     * BBUSY cade). Una volta sola per blit: {@link #birq} è la guardia.
+     * Arms the Blitter interrupt at the instant the blit ends (the same one at which BBUSY
+     * falls). Once per blit: {@link #birq} is the guard.
      */
     private void armBlitInterrupt() {
         if (birq) return;
@@ -415,7 +332,7 @@ public final class Blitter {
         irqCountdown = BLT_IRQ_DELAY_CCK;
     }
 
-    /** Unico punto in cui BBUSY si spegne: registra il CCK del fronte. */
+    /** The only place where BBUSY goes off: records the CCK of the edge. */
     private void clearBbusy() {
         if (bbusy && agnus != null) {
             busyClearedCck = agnus.getMasterClock() >> 1;
@@ -424,29 +341,27 @@ public final class Blitter {
     }
 
     /**
-     * Il Blitter <b>come lo vede il Copper</b>: {@code blit_busy(false)} dell'oracolo,
-     * cioe' occupato fino a {@code finishcycle_copper = finishcycle_dmacon + 1 CCK}.
+     * The Blitter <b>as the Copper sees it</b>: busy until one CCK after the BBUSY edge.
      *
-     * <p>⛔ <b>Il {@code + 1} e' la soglia, non un margine.</b> Senza, questo metodo
-     * riproduce {@code finishcycle_dmacon} — la soglia della CPU — e per giunta in modo
-     * <b>inerte</b>: dentro il CCK il Copper e' tickato PRIMA del Blitter (AbstractAgnus:
-     * arbitraggio Copper, poi {@code blitter.stepCck}), quindi il Copper vede gia'
-     * {@code bbusy == true} per tutto il CCK in cui BBUSY cade, e il termine non aggiunge
-     * niente. Misurato con la sonda WinUAE {@code WINUAE_BLTLOG} su {@code sblit/sblit0};
-     * il {@code +1} vale +58 test sul banco Agnus/Blitter (91/144 → 149/86), +2 su
-     * Agnus/Registers e +1 su Agnus/Copper. Vedi docs/vamigats-import-order.md §24.
+     * <p><b>The {@code + 1} is the threshold, not a margin.</b> Without it this method gives
+     * the CPU's threshold, and inertly so: within a CCK the Copper is ticked BEFORE the
+     * Blitter (AbstractAgnus: Copper arbitration, then {@code blitter.stepCck}), so the
+     * Copper already sees {@code bbusy == true} for the whole CCK in which BBUSY falls.
+     * Measured on {@code sblit/sblit0}; the {@code +1} is worth +58 tests on the
+     * Agnus/Blitter bank (91/144 to 149/86), +2 on Agnus/Registers and +1 on Agnus/Copper.
+     * See docs/vamigats-import-order.md section 24.
      */
     public boolean isBusyForCopper() {
         return bbusy
             || (agnus != null && (agnus.getMasterClock() >> 1) <= busyClearedCck + 1);
     }
 
-    // Modalità "immediate blit": esegue l'intero blit in un colpo alla scrittura di
-    // BLTSIZE (zero cicli di bus emulati). Non cycle-exact; solo da amiga.properties.
+    // "Immediate blit" mode: runs the whole blit at once at the BLTSIZE write (no bus
+    // cycles emulated). Not cycle-exact; set only from amiga.properties.
     private boolean immediateMode = false;
 
-    // Latenza di avvio BBUSY (vAmiga BLT_STRT1/STRT2): BBUSY si attiva 2 CCK dopo la
-    // scrittura di BLTSIZE. Countdown avanzato una volta per CCK da Agnus.
+    // BBUSY start latency: BBUSY goes on 2 CCKs after the BLTSIZE write. Countdown advanced
+    // once per CCK by Agnus.
     private static final int BLT_START_LATENCY_CCK = 2;
     private int     startCountdown = 0;
     private boolean startPending   = false;
@@ -455,25 +370,25 @@ public final class Blitter {
     private int fillCarry = 0;
     private boolean bzero = true;
     private boolean firstDot = true;   // line mode
-    private int linePc = 0;            // step corrente nel micro-programma LINE_PROG
-    private boolean lineWrite = false; // `blitlinepixel2`: latchato allo slot libero
-    /** `blitlinepixel`: deciso da lineProcStatus(), consumato allo slot libero. */
+    private int linePc = 0;            // current step in the LINE_PROG micro-program
+    private boolean lineWrite = false; // `blitlinepixel2`: latched at the free slot
+    /** `blitlinepixel`: decided by lineProcStatus(), consumed at the free slot. */
     private boolean linePixelPending = false;
-    /** `blit_ovf`: il passo X in attesa che lineOvfApply() lo faccia assorbire all'ASH. */
+    /** Pending X step, waiting for lineOvfApply() to fold it into ASH. */
     private int lineOvf = 0;
-    /** `blitlineloop`: il passo Y di questo pixel non è ancora stato applicato. */
+    /** The Y step of this pixel has not been applied yet. */
     private boolean lineLoop = true;
-    private int lineWarmup = 0;        // slot idle post-BLTSIZE prima del primo pixel
-    private int copyWarmup = 0;        // slot idle post-BLTSIZE prima della prima micro-op copy
+    private int lineWarmup = 0;        // idle slots after BLTSIZE before the first pixel
+    private int copyWarmup = 0;        // idle slots after BLTSIZE before the first copy micro-op
 
-    // --- Stato micro-programma copy ---
-    private int     bltpc    = 0;      // indice della micro-op corrente (0..5)
-    private int     xCounter = 0;      // down-counter word nella riga (bltsizeH..1)
-    private int     yCounter = 0;      // down-counter righe (bltsizeV..1)
-    private int     cntA, cntB, cntC, cntD; // down-counter DMA per canale (modulo)
-    private int     mask     = 0xFFFF; // maschera canale A per la word corrente
-    private boolean lockD    = true;   // se true la WRITE_D non scrive (D pipelinata)
-    private boolean birq     = false;  // interrupt BLIT già schedulato
+    // --- Copy micro-program state ---
+    private int     bltpc    = 0;      // index of the current micro-op (0..5)
+    private int     xCounter = 0;      // down-counter of the words in the row (bltsizeH..1)
+    private int     yCounter = 0;      // down-counter of the rows (bltsizeV..1)
+    private int     cntA, cntB, cntC, cntD; // per-channel DMA down-counter (modulo)
+    private int     mask     = 0xFFFF; // channel A mask for the current word
+    private boolean lockD    = true;   // if true WRITE_D does not write (pipelined D)
+    private boolean birq     = false;  // BLIT interrupt already scheduled
 
     // Contatori line-mode
     private int hCount = 0;
@@ -522,7 +437,7 @@ public final class Blitter {
     }
 
     // =========================================================================
-    // Scrittura registri
+    // Register writes
     // =========================================================================
 
     public void writeRegister(int address, int value) {
@@ -539,7 +454,7 @@ public final class Blitter {
             case 0x04E: bltbpt = (bltbpt & 0xFFFF0000) | (value & 0xFFFF);         break;
             case 0x050: bltapt = (bltapt & 0x0000FFFF) | ((value << 16) & ptrHiMask()); break;
 
-            // In Line Mode BLTAPTL è l'errore Bresenham (con segno, 16 bit), non forziamo pari!
+            // In line mode BLTAPTL is the Bresenham error (signed, 16 bits): not forced even.
             case 0x052: bltapt = (bltapt & 0xFFFF0000) | (value & 0xFFFF);         break;
 
             case 0x054: bltdpt = (bltdpt & 0x0000FFFF) | ((value << 16) & ptrHiMask()); break;
@@ -553,17 +468,17 @@ public final class Blitter {
                 armBlit();
                 break;
 
-            // Registri ECS BLTCON0L ($05A) / BLTSIZV ($05C) / BLTSIZH ($05E):
-            // permettono blit fino a 32768x2048 e la scrittura del solo byte basso di
-            // BLTCON0. ECS-only (gate agnus.isECS()). Mappa HW: $05A=BLTCON0L,
-            // $05C=BLTSIZV (solo V, NON avvia), $05E=BLTSIZH (imposta H, default e AVVIA).
-            case 0x05A: // BLTCON0L — solo il byte basso (minterm LF) di BLTCON0
+            // ECS registers BLTCON0L ($05A) / BLTSIZV ($05C) / BLTSIZH ($05E): blits up to
+            // 32768x2048 and a write of the low byte of BLTCON0 alone. ECS only (gate
+            // agnus.isECS()). $05A = BLTCON0L, $05C = BLTSIZV (V only, does NOT start),
+            // $05E = BLTSIZH (sets H and STARTS).
+            case 0x05A: // BLTCON0L: only the low byte (minterm LF) of BLTCON0
                 if (agnus.isECS()) {
                     bltcon0 = (bltcon0 & 0xFF00) | (value & 0x00FF);
                     recacheAreaBlitFields();
                 }
                 break;
-            case 0x05C: // BLTSIZV (15 bit) — imposta solo V, NON avvia
+            case 0x05C: // BLTSIZV (15 bits): sets V only, does NOT start
                 if (agnus.isECS()) bltsizeV = value & 0x7FFF;
                 break;
             case 0x05E: // BLTSIZH (11 bit) + start
@@ -582,20 +497,18 @@ public final class Blitter {
 
             case 0x070: chold = value & 0xFFFF; break;
             case 0x072:
-                // ⛔ «Channel B feature» (Toni Wilen, README di undocumented1): scrivere
-                // BLTBDAT fa girare SUBITO il barrel shifter di B, e il risultato resta in
-                // B-HOLD come dato statico per i blit successivi a canale B disabilitato.
-                // ⚠️ E lo shift e' quello VERO, a 32 bit su B-OLD, non uno shift della sola
-                // word scritta — ed e' `blitter_loadbdat()` dell'oracolo, la STESSA funzione
-                // che usa il caricamento da DMA (`blitter_dodma_new`, canale B):
+                // "Channel B feature": writing BLTBDAT runs B's barrel shifter AT ONCE, and
+                // the result stays in B-HOLD as static data for later blits with channel B
+                // disabled. The shift is the REAL one, 32 bits over B-OLD, the same function
+                // the DMA load of channel B uses:
                 //
                 //     bltbhold = desc ? ((v << 16) | bltbold) >> (16 - shift)
                 //                     : ((bltbold << 16) | v) >> shift;
                 //     bltbold  = v;
                 //
-                // ⇒ «After shift B Old equals B New»: una SECONDA scrittura a BLTBDAT cambia
-                // ancora BHOLD, perche' trova B-OLD gia' aggiornato. E' esattamente quel che
-                // misurano misc/barrel1 e undocumented1.
+                // So "after shift B Old equals B New": a SECOND write to BLTBDAT changes
+                // BHOLD again, because it finds B-OLD already updated. That is what
+                // misc/barrel1 and undocumented1 measure.
                 bnew  = value & 0xFFFF;
                 bhold = barrelShifter(bnew, bold, (bltcon1 & BLTCON1_BSH) >>> 12,
                                       (bltcon1 & BLTCON1_DESC) != 0);
@@ -608,7 +521,7 @@ public final class Blitter {
     }
 
     // =========================================================================
-    // Invarianti area-blit cachati (ri-estratti ad ogni scrittura di BLTCON0/1)
+    // Cached area-blit invariants (re-extracted at every BLTCON0/1 write)
     // =========================================================================
 
     private boolean cachedDesc;
@@ -628,13 +541,13 @@ public final class Blitter {
     // =========================================================================
 
     /**
-     * Armamento del blit alla scrittura di BLTSIZE: NON avvia subito (BBUSY a write+0),
-     * ma programma l'avvio dopo {@link #BLT_START_LATENCY_CCK} CCK (latenza vAmiga
-     * BLT_STRT1/STRT2). Il countdown è fatto avanzare da Agnus via {@link #tickStartCountdown()}.
+     * Arms the blit at the BLTSIZE write: it does NOT start at once (BBUSY at write+0), the
+     * start is scheduled {@link #BLT_START_LATENCY_CCK} CCKs later. Agnus advances the
+     * countdown through {@link #tickStartCountdown()}.
      */
     private void armBlit() {
-        // Guard SpeedBall II: senza DMA blitter abilitato il blit non parte e BBUSY non
-        // si attiva (vedi startBlit()); annulla un eventuale arm pendente.
+        // Without Blitter DMA enabled the blit does not start and BBUSY does not go on (see
+        // startBlit()); cancels any pending arm.
         if (!dmaEnabled) {
             running = false; clearBbusy(); startPending = false; startCountdown = 0; clearBusyCountdown = 0;
             return;
@@ -650,8 +563,8 @@ public final class Blitter {
     }
 
     /**
-     * Chiamato da Agnus una volta per CCK. Gestisce la latenza di avvio BBUSY: quando il
-     * countdown scade avvia effettivamente il blit.
+     * Called by Agnus once per CCK. Handles the BBUSY start latency: when the countdown
+     * expires, the blit actually starts.
      */
     public void tickStartCountdown() {
         if (!startPending) return;
@@ -661,13 +574,13 @@ public final class Blitter {
         }
     }
 
-    /** True tra la scrittura di BLTSIZE e l'attivazione di BBUSY (latenza vAmiga). */
+    /** True between the BLTSIZE write and BBUSY going on. */
     public boolean isStarting() { return startPending; }
 
     private void startBlit() {
-        // Senza DMA blitter abilitato il blitter non può svolgere cicli di memoria: non
-        // parte e BBUSY non si attiva (loader che scrivono BLTSIZE con DMA off e poi
-        // attendono BBUSY — es. cracktro Speedball II — si bloccherebbero altrimenti).
+        // Without Blitter DMA enabled the Blitter cannot do memory cycles: it does not start
+        // and BBUSY does not go on (loaders that write BLTSIZE with DMA off and then wait
+        // for BBUSY, e.g. the Speedball II cracktro, would hang otherwise).
         if (!dmaEnabled) { running = false; clearBbusy(); clearBusyCountdown = 0; return; }
 
         recacheAreaBlitFields();
@@ -682,7 +595,7 @@ public final class Blitter {
         aold = 0; bold = 0;
 
         if ((bltcon1 & BLTCON1_LINE) != 0) {
-            // Line mode: percorso-dati esistente (Bresenham). Nessuna pipeline word.
+            // Line mode: existing data path (Bresenham). No word pipeline.
             fillCarry = 0;
             firstDot  = true;
             hCount    = bltsizeV;
@@ -691,14 +604,11 @@ public final class Blitter {
             linePc    = 0;
             lineWrite = false;
             linePixelPending = false;
-            // `blit_ovf = (bltcon1 & BLTOVF) != 0` dell'oracolo: il passo X pendente
-            // all'avvio viene dal bit 5 di BLTCON1, non da zero.
+            // The X step pending at the start comes from bit 5 of BLTCON1, not from zero.
             lineOvf   = (bltcon1 & BLTCON1_OVF) != 0 ? 1 : 0;
             lineLoop  = true;
-            // Warmup idle post-BLTSIZE: DUE slot, sempre. Misurato con BLT LSLOT su
-            // timing15l (B+C): fra `BLT START` e il primo slot del pixel ci sono due
-            // ingressi idle. Il 3 che valeva per B+C compensava la vecchia forma del
-            // programma, che apriva con la lettura B invece che con lo slot di stadio 0.
+            // Idle warm-up after BLTSIZE: TWO slots, always. Measured on timing15l (B+C):
+            // between the start and the first slot of the pixel there are two idle entries.
             lineWarmup = 2;
             lineProg   = buildLineProg();
         } else {
@@ -709,19 +619,18 @@ public final class Blitter {
             fillCarry = (bltcon1 & BLTCON1_FCI) != 0 ? 1 : 0;
             lockD = true;
             computeMask();
-            // Warmup post-BLTSIZE (oracolo WinUAE, [WRGA] bbusy3 v66: BLTSIZE a h=84,
-            // slot idle a 86-87, prima micro-op a 88): la pipe RGA del blitter emette
-            // 2 slot idle ARBITRATI prima del primo passo del programma. È questo che
-            // sposta di +2 CCK il footprint bus rispetto al modello vAmiga; su questo
-            // asse il clear di BBUSY torna sincrono all'ultimo REPEAT (vedi lì).
+            // Warm-up after BLTSIZE (bbusy3 v66: BLTSIZE at h=84, idle slots at 86-87,
+            // first micro-op at 88): the Blitter's RGA pipe issues 2 ARBITRATED idle slots
+            // before the first step of the program. On this axis the BBUSY clear is
+            // synchronous to the last REPEAT (see there).
             copyWarmup = 2;
         }
     }
 
     /**
-     * Esecuzione "immediate" del blit: completa l'intera operazione in modo sincrono
-     * riusando lo STESSO motore cycle-exact ({@link #stepCck(boolean)} con bus sempre
-     * libero). Usato solo quando {@link #immediateMode} è attivo.
+     * "Immediate" execution of the blit: completes the whole operation synchronously,
+     * reusing the SAME cycle-exact engine ({@link #stepCck(boolean)} with the bus always
+     * free). Used only when {@link #immediateMode} is on.
      */
     private void runImmediate() {
         long guard = 0;
@@ -730,23 +639,23 @@ public final class Blitter {
             tickBusyClear();
             stepCck(true);
         }
-        if (running) endBlit(); // guard scaduto: non lasciare BBUSY incollato
-        clearBusyCountdown = 0; clearBbusy(); // niente tick successivi in immediate
-        // Immediate: nessun tick successivo, quindi l'interrupt armato va consegnato qui.
+        if (running) endBlit(); // guard expired: do not leave BBUSY stuck
+        clearBusyCountdown = 0; clearBbusy(); // no further ticks in immediate mode
+        // Immediate: no later tick, so the armed interrupt is delivered here.
         if (irqCountdown > 0) { irqCountdown = 0; agnus.blitterFinished(); }
     }
 
     // =========================================================================
-    // Esecuzione per-CCK (single-phase)
+    // Per-CCK execution (single-phase)
     // =========================================================================
 
     /**
-     * Esegue una micro-op del blitter per il CCK corrente.
+     * Executes one Blitter micro-op for the current CCK.
      *
-     * @param busFree true se il bus è concedibile al blitter in questo CCK
-     *                (= nessun DMA a priorità superiore e nessuna precedenza CPU).
-     * @return true se il blitter ha ALLOCATO il bus (accesso a memoria eseguito),
-     *         così Agnus può marcare il CCK come BLITTER e bloccare la CPU.
+     * @param busFree true if the bus can be granted to the Blitter in this CCK
+     *                (no higher-priority DMA and no CPU precedence).
+     * @return true if the Blitter ALLOCATED the bus (memory access performed), so Agnus
+     *         can mark the CCK as BLITTER and block the CPU.
      */
     public boolean stepCck(boolean busFree) {
         if (!running) return false;
@@ -758,16 +667,15 @@ public final class Blitter {
         return execMicroOp(busFree);
     }
 
-    /** Clear BBUSY differito, usato dal SOLO line mode (LINE_LAST_BUS). 0 = inattivo. */
+    /** Deferred BBUSY clear, used by line mode ONLY (LINE_LAST_BUS). 0 = inactive. */
     private int clearBusyCountdown = 0;
 
     /**
-     * Clear BBUSY differito del line mode: armato a 1 all'ultimo ciclo di bus
-     * dell'ultimo pixel (LINE_LAST_BUS), visibile alla CPU dal CCK successivo.
-     * Chiamato da Agnus UNA volta per CCK, PRIMA dello step del blitter e
-     * INDIPENDENTEMENTE da {@link #isRunning()} (endBlit non lo scavalca).
-     * Il copy mode non passa più di qui: sull'asse +2 del warmup WinUAE il suo
-     * clear è sincrono all'ultimo REPEAT (vedi execMicroOp).
+     * Deferred BBUSY clear of line mode: armed to 1 at the last bus cycle of the last pixel
+     * (LINE_LAST_BUS), visible to the CPU from the next CCK. Called by Agnus ONCE per CCK,
+     * BEFORE the Blitter step and REGARDLESS of {@link #isRunning()} (endBlit does not
+     * override it). Copy mode does not come through here: its clear is synchronous to the
+     * last REPEAT (see execMicroOp).
      */
     public void tickBusyClear() {
         if (irqCountdown > 0 && --irqCountdown == 0) {
@@ -780,10 +688,10 @@ public final class Blitter {
         }
     }
 
-    /** Esegue la micro-op copy corrente. Ritorna true se ha allocato il bus. */
+    /** Executes the current copy micro-op. Returns true if it allocated the bus. */
     private boolean execMicroOp(boolean busFree) {
-        // Warmup post-BLTSIZE (vedi startBlit): 2 slot idle soggetti ad arbitraggio
-        // (in WinUAE sono richieste RGA regolari: sotto contesa slittano), senza bus.
+        // Warm-up after BLTSIZE (see startBlit): 2 idle slots subject to arbitration (they
+        // are regular RGA requests, so under contention they slip), with no bus access.
         if (copyWarmup > 0) {
             if (!busFree) return false;
             copyWarmup--;
@@ -801,8 +709,8 @@ public final class Blitter {
             needIdle = (op & BUSIDLE) != 0;
         }
 
-        // Arbitraggio bus: BUS e BUSIDLE richiedono il bus libero per procedere; le
-        // micro-op NOTHING avanzano SEMPRE (anche sotto DMA a priorità superiore).
+        // Bus arbitration: BUS and BUSIDLE need the bus free to proceed; NOTHING micro-ops
+        // ALWAYS advance (even under higher-priority DMA).
         if (needBus && !busFree)  return false; // stallo (bltpc invariato, retry)
         if (needIdle && !busFree) return false; // stallo
 
@@ -876,16 +784,13 @@ public final class Blitter {
                 yCounter--;
                 computeMask();
             } else {
-                // Ultima word: BBUSY si abbassa QUI, sincrono all'ultimo REPEAT
-                // (modello vAmiga clearBusyFlag), ed è visibile alla CPU già in
-                // questo CCK (la sezione DMA precede il ciclo CPU). Con l'asse del
-                // motore spostato di +2 CCK dal warmup (WinUAE, vedi startBlit)
-                // questo riproduce ESATTAMENTE la timeline validata dai poll di
-                // bbusy0 (regola WinUAE: clear dopo il (2WH+1)-esimo slot allocato
-                // CONTANDO i warmup, visibile il cck dopo — per il null W2H2:
-                // 9° slot = b+10, visibile b+11 = il nostro ultimo REPEAT a b+11).
-                // Il vecchio countdown a 2 stadi compensava l'asse 2 CCK presto,
-                // non un difetto del clear vAmiga. Il blit continua (drain D).
+                // Last word: BBUSY falls HERE, synchronous to the last REPEAT, and the CPU
+                // sees it already in this CCK (the DMA section precedes the CPU cycle). With
+                // the engine's axis moved +2 CCKs by the warm-up (see startBlit) this
+                // reproduces the timeline measured by the polls of bbusy0: the clear follows
+                // the (2WH+1)-th allocated slot COUNTING the warm-up and is visible one CCK
+                // later; for the null W2H2 blit, 9th slot = b+10, visible at b+11 = our last
+                // REPEAT at b+11. The blit goes on (D drain).
                 clearBbusy();
                 armBlitInterrupt();
             }
@@ -920,8 +825,8 @@ public final class Blitter {
 
     private void computeMask() {
         mask = 0xFFFF;
-        if (xCounter == bltsizeH) mask &= bltafwm; // prima word della riga
-        if (xCounter == 1)        mask &= bltalwm; // ultima word della riga
+        if (xCounter == bltsizeH) mask &= bltafwm; // first word of the row
+        if (xCounter == 1)        mask &= bltalwm; // last word of the row
     }
 
     private void doFillD() {
@@ -937,36 +842,35 @@ public final class Blitter {
 
     private void endBlit() {
         running = false;
-        // BBUSY: se il countdown del clear è in corso NON scavalcarlo — le micro-op
-        // NOTHING/BLTDONE avanzano anche su cck rubati, quindi sotto contesa il
-        // BLTDONE arriva PRIMA dello slot d'uscita che spegne BBUSY (misurato su
-        // bbusy0 v202, BPU=4). Il countdown viene completato da tickBusyClear.
-        // I path senza countdown (line mode, guardie) azzerano subito come prima.
+        // BBUSY: if the clear countdown is running, do NOT override it. NOTHING/BLTDONE
+        // micro-ops advance even on stolen CCKs, so under contention BLTDONE arrives BEFORE
+        // the exit slot that turns BBUSY off (measured on bbusy0 v202, BPU=4). The countdown
+        // is completed by tickBusyClear. Paths with no countdown (line mode, guards) clear
+        // at once.
         if (clearBusyCountdown == 0) clearBbusy();
         state   = State.IDLE;
-        // L'interrupt è già armato al fronte di BBUSY (armBlitInterrupt). Se un percorso
-        // ci arriva senza averlo armato — line mode con clear differito già consumato, o
-        // una guardia — lo si arma qui, dallo stesso istante.
+        // The interrupt is already armed at the BBUSY edge (armBlitInterrupt). A path that
+        // gets here without arming it (line mode with the deferred clear already consumed,
+        // or a guard) arms it here, from the same instant.
         armBlitInterrupt();
     }
 
     // =========================================================================
-    // Line Mode (percorso-dati validato, guidato single-phase)
+    // Line mode (validated data path, driven single-phase)
     // =========================================================================
 
     /**
-     * Esecuzione LINE per-CCK guidata dal micro-programma {@link #buildLineProg}.
+     * Per-CCK LINE execution driven by the micro-program {@link #buildLineProg}.
      *
-     * <p>Lo stepping Bresenham è <b>distribuito sugli slot</b>, come nell'oracolo, e non
-     * eseguito tutto insieme in coda al pixel: lo stato e l'accumulatore allo slot A del
-     * primo passaggio, il passo X allo slot C del primo passaggio (dopo la lettura), il
-     * passo Y allo slot C di un passaggio di mezzo (prima della lettura) o allo slot
-     * libero, l'ASH allo slot libero. È quel che cambia <i>quale indirizzo C viene letto</i>
-     * dentro un pixel largo più di due, e per larghezza ≤ 2 coincide con lo stepping unico.
+     * <p>The Bresenham stepping is <b>distributed over the slots</b>, not run all at once
+     * at the end of the pixel: state and accumulator at slot A of the first pass, the X step
+     * at slot C of the first pass (after the read), the Y step at slot C of a middle pass
+     * (before the read) or at the free slot, ASH at the free slot. That changes <i>which C
+     * address is read</i> within a pixel wider than two; for widths up to 2 it is the same as
+     * a single step.
      */
     private boolean lineStepCck(boolean busFree) {
-        // Warmup post-BLTSIZE (oracolo WinUAE): slot idle prima del primo ciclo
-        // reale del primo pixel (3 con B+C, 2 negli altri casi misurati).
+        // Warm-up after BLTSIZE: idle slots before the first real cycle of the first pixel.
         if (lineWarmup > 0) {
             if (!busFree) return false;
             lineWarmup--;
@@ -975,14 +879,11 @@ public final class Blitter {
         int[] prog = lineProg;
         int op = prog[linePc];
 
-        // WRITE_D prende il bus solo se scrive davvero (single-pixel/SING → salta);
-        // FETCH_B/FETCH_C/BUS lo prendono sempre; BUSIDLE richiede solo bus libero.
-        // Lo slot A (074) NON prende MAI il bus, con qualunque USE: in line mode
-        // BLTAPT è l'accumulatore Bresenham, non un puntatore — è un ciclo di pipe
-        // senza trasferimento. Misurato sui [WRGA]/[WACC] timestampati (stesso
-        // cy = stesso cck) di bbusy9l v66 (bc0, USE=A+D): accesso CPU nello STESSO
-        // cck dello slot 074. La vecchia regola per-USE (bc0 bloccante, bc2
-        // permeabile) era un artefatto del tagging non timestampato.
+        // WRITE_D takes the bus only if it really writes (single pixel/SING skips it);
+        // FETCH_B/FETCH_C/BUS always take it; BUSIDLE only needs a free bus. Slot A (074)
+        // NEVER takes the bus, whatever USE: in line mode BLTAPT is the Bresenham
+        // accumulator, not a pointer, so it is a pipe cycle with no transfer. Measured on
+        // bbusy9l v66 (bc0, USE=A+D): a CPU access in the SAME CCK as slot 074.
         boolean needBus  = (op & (FETCH_B | FETCH_B_NOMOD | FETCH_C | BUS)) != 0
                         || ((op & WRITE_D) != 0 && lineWrite);
         boolean needIdle = !needBus && (op & (BUSIDLE | LINE_BUS_A)) != 0;
@@ -991,23 +892,22 @@ public final class Blitter {
         boolean tookBus = false;
         linePc++;
 
-        // Ultimo ciclo di bus dell'ULTIMO pixel: BBUSY si spegne dal cck successivo
-        // (misurato sui poll DMACONR di bbusy7l/13l: il poll nel cck dopo lo
-        // slot legge già clear). Il countdown è completato da tickBusyClear anche
-        // dopo endBlit. ECCEZIONE bc0 (LINE_LAST_BUS sul REPEAT, nessun ciclo di
-        // bus nel pixel): clear SINCRONO, visibile già nel cck del REPEAT — il
-        // poll di bbusy9l v98 h=94 (stesso cck del REPEAT, con slot rubato dal
-        // bitplane a 91) legge già clear.
+        // Last bus cycle of the LAST pixel: BBUSY goes off from the next CCK (measured on
+        // the DMACONR polls of bbusy7l/13l: the poll in the CCK after the slot already reads
+        // clear). The countdown is completed by tickBusyClear even after endBlit. With bc0
+        // (LINE_LAST_BUS on the REPEAT, no bus cycle in the pixel) the clear is SYNCHRONOUS,
+        // visible already in the CCK of the REPEAT: the poll of bbusy9l v98 h=94 (same CCK as
+        // the REPEAT, with a slot stolen by the bitplanes at 91) already reads clear.
         if ((op & LINE_LAST_BUS) != 0 && hCount == 1) {
             if ((op & REPEAT) != 0) { clearBbusy(); armBlitInterrupt(); }
             else clearBusyCountdown = 1;
         }
 
-        // Slot A del primo passaggio: lo stato del pixel e l'accumulatore Bresenham.
+        // Slot A of the first pass: the state of the pixel and the Bresenham accumulator.
         if ((op & LINE_PROC_APT) != 0) { lineProcStatus(); lineProcApt(); }
 
-        // Slot C di un passaggio di mezzo: il passo Y cade PRIMA della lettura, quindi
-        // quel passaggio legge C dall'indirizzo gia' mosso di BLTCMOD.
+        // Slot C of a middle pass: the Y step falls BEFORE the read, so that pass reads C
+        // from the address already moved by BLTCMOD.
         if ((op & LINE_PROC_CPT_Y) != 0 && lineLoop && (bltcon1 & BLTCON1_SUD) == 0) {
             lineProcCptY();
             lineLoop = false;
@@ -1022,21 +922,21 @@ public final class Blitter {
             chold = agnus.blitterImmediateRead(getCpt()) & 0xFFFF;
             tookBus = true;
         }
-        if ((op & BUS) != 0) tookBus = true; // ciclo di bus fittizio (vAmiga)
+        if ((op & BUS) != 0) tookBus = true; // dummy bus cycle
 
-        // Slot C del primo passaggio: il passo X cade DOPO la lettura.
+        // Slot C of the first pass: the X step falls AFTER the read.
         if ((op & LINE_PROC_CPT_X) != 0) lineProcCptX();
 
         if ((op & HOLD_D) != 0) {
-            // Slot libero dell'ultimo passaggio. L'ordine e' quello del `c == 5`
-            // dell'oracolo: `adat` usa l'ASH VECCHIO (ed e' dentro calculateLineWord),
-            // poi `ovf` lo aggiorna, poi lo stato/il passo Y residuo, poi il segno.
+            // Free slot of the last pass. Order: `adat` uses the OLD ASH (inside
+            // calculateLineWord), then `ovf` updates it, then the state / remaining Y step,
+            // then the sign.
             dhold = calculateLineWord();
             if (dhold != 0) bzero = false;
             lineOvfApply();
             if (bltsizeH <= 1) {
-                // w == 1: lo slot libero E' l'unico slot, e li' l'oracolo chiama
-                // proc_status() al posto del passo Y — che con w == 1 non esiste.
+                // w == 1: the free slot IS the only slot, and there the state is decided in
+                // place of the Y step, which with w == 1 does not exist.
                 lineProcStatus();
             } else if (lineLoop) {
                 lineProcCptY();
@@ -1072,12 +972,11 @@ public final class Blitter {
     }
 
     /**
-     * ⛔ Il passo X <b>non tocca l'ASH</b>: muove BLTCPT quando il contatore sta per
-     * traboccare e lascia il resto a {@link #lineOvfApply()}, che gira allo slot libero
-     * dell'ultimo passaggio ({@code blitter_line_ovf()}). È la separazione che rende
-     * portabile la distribuzione dello stepping: se l'ASH si scrivesse qui, spostare il
-     * passo X sposterebbe anche l'istante in cui il barrel shifter di A cambia, e il
-     * minterm di ogni pixel ne risentirebbe.
+     * The X step <b>does not touch ASH</b>: it moves BLTCPT when the counter is about to
+     * overflow and leaves the rest to {@link #lineOvfApply()}, which runs at the free slot of
+     * the last pass. That separation is what lets the stepping be distributed: if ASH were
+     * written here, moving the X step would also move the instant at which A's barrel
+     * shifter changes, and the minterm of every pixel would be affected.
      */
     private void stepIncX() {
         if (((bltcon0 & BLTCON0_ASH) >>> 12) == 0xF) setCpt(getCpt() + 2);
@@ -1087,7 +986,7 @@ public final class Blitter {
         if (((bltcon0 & BLTCON0_ASH) >>> 12) == 0) setCpt(getCpt() - 2);
         lineOvf = -1;
     }
-    /** {@code blitter_line_ovf()}: l'ASH assorbe il passo X, allo slot libero. */
+    /** {@code blitter_line_ovf()}: ASH absorbs the X step, at the free slot. */
     private void lineOvfApply() {
         int ash = (((bltcon0 & BLTCON0_ASH) >>> 12) + lineOvf) & 0xF;
         bltcon0 = (bltcon0 & ~BLTCON0_ASH) | (ash << 12);
@@ -1097,9 +996,9 @@ public final class Blitter {
     private void stepDecY() { setCpt(getCpt() - bltcmod); fillCarry = 1; firstDot = true; }
 
     /**
-     * {@code blitter_line_proc_status()} — decide se il pixel si disegna e marca il punto
-     * come «già toccato». Gira allo slot A del primo passaggio, cioè <b>solo con USEA</b>;
-     * con {@code hblitsize == 1} lo chiama invece lo slot libero.
+     * Decides whether the pixel is drawn and marks the point as "already touched". Runs at
+     * slot A of the first pass, i.e. <b>only with USEA</b>; with {@code hblitsize == 1} the
+     * free slot calls it instead.
      */
     private void lineProcStatus() {
         boolean sing = (bltcon1 & BLTCON1_SING) != 0;
@@ -1107,7 +1006,7 @@ public final class Blitter {
         firstDot = false;
     }
 
-    /** {@code blitter_line_proc_apt()} — l'accumulatore Bresenham, allo slot A. */
+    /** The Bresenham accumulator, at slot A. */
     private void lineProcApt() {
         if (!isUsed(BLTCON0_USEA)) return;
         int errDelta = (bltcon1 & BLTCON1_SIGN) != 0 ? bltbmod : bltamod;
@@ -1116,7 +1015,7 @@ public final class Blitter {
         bltapt = (bltapt & 0xFFFF0000) | (currentApt & 0xFFFF);
     }
 
-    /** {@code blitter_line_proc_cpt_x()} — slot C del primo passaggio, dopo la lettura. */
+    /** X step: slot C of the first pass, after the read. */
     private void lineProcCptX() {
         boolean sign = (bltcon1 & BLTCON1_SIGN) != 0;
         if (!sign && (bltcon1 & BLTCON1_SUD) == 0) {
@@ -1127,7 +1026,7 @@ public final class Blitter {
         }
     }
 
-    /** {@code blitter_line_proc_cpt_y()} — slot C di un passaggio di mezzo, o slot libero. */
+    /** Y step: slot C of a middle pass, or the free slot. */
     private void lineProcCptY() {
         boolean sign = (bltcon1 & BLTCON1_SIGN) != 0;
         fillCarry = 0;
@@ -1139,21 +1038,18 @@ public final class Blitter {
         }
     }
 
-    /** {@code blitter_line_sign()} — allo slot libero, dopo che l'accumulatore è avanzato. */
+    /** Sign of the accumulator: at the free slot, after the accumulator has advanced. */
     private void lineSign() {
         if ((short) (bltapt & 0xFFFF) < 0) bltcon1 |= BLTCON1_SIGN;
         else                               bltcon1 &= ~BLTCON1_SIGN;
     }
 
     /**
-     * Coda del pixel: il passo del barrel shifter di B ({@code blitter_nxline()}) e il
-     * puntatore D che insegue C.
+     * End of the pixel: the step of B's barrel shifter and the D pointer following C.
      *
-     * <p>⚠️ {@code setDpt(getCpt())} resta <b>qui</b> e non allo slot libero, ed è
-     * equivalente: l'oracolo allo slot libero <i>latcha</i> il vecchio {@code bltdpt} in
-     * {@code bltdptl} (che è quel che la scrittura D usa) e <i>solo dopo</i> fa
-     * {@code bltdpt = bltcpt}. Da noi la scrittura D sta dentro il pixel e legge
-     * {@code dpt} come lo ha lasciato il pixel precedente: stessa cosa, senza il latch.
+     * <p>{@code setDpt(getCpt())} stays <b>here</b> and not at the free slot, and it is
+     * equivalent: the D write sits inside the pixel and reads {@code dpt} as the previous
+     * pixel left it, which is what a latch of the old D pointer at the free slot would give.
      */
     private void executeLineStepping() {
         int bsh = ((bltcon1 & BLTCON1_BSH) >>> 12);
@@ -1164,7 +1060,7 @@ public final class Blitter {
     }
 
     // =========================================================================
-    // Utilities Matematiche e Logiche
+    // Arithmetic and logic utilities
     // =========================================================================
 
     private int barrelShifter(int anew_val, int aold_val, int shift, boolean desc) {
@@ -1200,22 +1096,20 @@ public final class Blitter {
     // =========================================================================
 
     /**
-     * Maschera dei puntatori DMA del blitter: word-allineata e larga quanto la Chip RAM
-     * installata, esattamente come gli altri canali di Agnus (bitplane/sprite/disco via
-     * {@code dmaPtrHiMask}, Copper via le stesse chiamate, audio a 21 bit).
+     * Mask of the Blitter's DMA pointers: word-aligned and as wide as the installed Chip
+     * RAM, like the other Agnus channels (bitplanes/sprites/disk through
+     * {@code dmaPtrHiMask}, the Copper through the same calls, audio at 21 bits).
      *
-     * <p>Era cablata a 20 bit (1 MB): con 2 MB di Chip RAM ogni indirizzo sopra
-     * {@code $0FFFFF} rientrava dal basso, e un blit diretto oltre il megabyte scriveva
-     * sui vettori di eccezione. È il caso di WHDLoad, che usa il profilo a 2 MB: il blit
-     * azzerava ExecBase in {@code $000004} e la macchina moriva subito dopo.
+     * <p>A fixed 20-bit (1 MB) mask would wrap every address above {@code $0FFFFF} with 2 MB
+     * of Chip RAM, and a blit aimed past the first megabyte would write over the exception
+     * vectors. That is WHDLoad's case, which uses the 2 MB profile: the blit cleared
+     * ExecBase at {@code $000004} and the machine died right after.
      *
-     * <p>Oracolo WinUAE: i registri BLT?PT sono tenuti interi e mascherati all'accesso da
-     * {@code chipmem_full_mask} = dimensione della Chip RAM − 1 ({@code memory.cpp},
-     * {@code chipmem_agnus_wget}); qui il mascheramento è sul puntatore, equivalente
-     * perché la maschera è una potenza di due e gli incrementi sono additivi.
+     * <p>Masking the pointer is equivalent to masking every access with the Chip RAM size
+     * minus one, because the mask is a power of two and the increments are additive.
      */
     private int ptrMask()   { return agnus.getDmaPtrMask() & ~1; }
-    /** Parte alta (bit 16-20) di {@link #ptrMask()}, per le scritture BLT?PTH. */
+    /** High part (bits 16-20) of {@link #ptrMask()}, for the BLT?PTH writes. */
     private int ptrHiMask() { return agnus.getDmaPtrHiMask(); }
 
     private int getApt() { return bltapt & ptrMask(); }
@@ -1232,33 +1126,31 @@ public final class Blitter {
     // Accessori pubblici
     // =========================================================================
 
-    /** Flag BBUSY di DMACON (si abbassa qualche ciclo prima della fine effettiva). */
+    /** BBUSY flag of DMACON (it falls a few cycles before the actual end). */
     public boolean isBusy() { return bbusy; }
-    /** Il blit è ancora in esecuzione (guida il ticking da Agnus; include la coda di drain). */
+    /** The blit is still running (drives the ticking from Agnus; includes the drain). */
     public boolean isRunning() { return running; }
     public void setBusy(boolean b) { this.bbusy = b; this.running = b; }
 
-    /** Attiva/disattiva la modalità immediate blit (vedi {@link #immediateMode}). */
+    /** Switches the immediate blit mode on or off (see {@link #immediateMode}). */
     public void setImmediateMode(boolean enabled) { this.immediateMode = enabled; }
-    /** {@code true} se la modalità immediate blit è attiva. */
+    /** {@code true} if the immediate blit mode is on. */
     public boolean isImmediateMode() { return immediateMode; }
 
     /**
-     * BLTEN di DMACON. ⛔ <b>Spegnerlo METTE IN PAUSA un blit in corso, non lo annulla.</b>
-     * Nell'oracolo il gestore di DMACON non tocca lo stato del Blitter: l'unico effetto e'
-     * {@code blitter_cant_access()}, che entra nella decisione per-CCK come
-     * {@code ena = blitter_cant_access() == 0} e fa saltare il ciclo
-     * ({@code blit_misscyclecounter++; goto end;}). Il blit riprende da dove era quando il
-     * DMA torna, e BBUSY resta acceso per tutto il tempo.
+     * BLTEN of DMACON. <b>Switching it off PAUSES a blit in progress, it does not cancel
+     * it.</b> The Blitter's state is left alone; each CCK without BLTEN is a cycle the blit
+     * skips. The blit resumes where it was when the DMA comes back, and BBUSY stays on
+     * throughout.
      *
-     * <p>Da noi la pausa e' gia' implicita: Agnus stepp a il Blitter solo dentro
-     * {@code if (isBlitterEnabled() && blitter.isRunning())}. Bastava smettere di
-     * distruggere lo stato. Misurato su {@code dmacon/dmacon9}, che spegne BLTEN in mezzo a
-     * un blit 60x120 e lo riaccende tre attese dopo.
+     * <p>The pause is implicit: Agnus steps the Blitter only inside
+     * {@code if (isBlitterEnabled() && blitter.isRunning())}. Measured on
+     * {@code dmacon/dmacon9}, which switches BLTEN off in the middle of a 60x120 blit and
+     * back on three waits later.
      *
-     * <p>⚠️ Resta annullato il solo <b>arm pendente</b>: un BLTSIZE scritto con il DMA gia'
-     * spento non parte e non accende BBUSY — e' la guardia di {@code armBlit()}/
-     * {@code startBlit()}, tarata sul cracktro di SpeedBall II.
+     * <p>Only a <b>pending arm</b> is cancelled: a BLTSIZE written with the DMA already off
+     * does not start and does not set BBUSY; that is the guard of {@code armBlit()}/
+     * {@code startBlit()}, set by the SpeedBall II cracktro.
      */
     public void setDmaEnabled(boolean enabled) {
         this.dmaEnabled = enabled;

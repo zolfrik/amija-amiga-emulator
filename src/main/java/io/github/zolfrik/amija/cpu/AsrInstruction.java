@@ -157,19 +157,16 @@ public class AsrInstruction extends AbstractM68kInstruction {
             res &= mask;
         }
 
-        // C = X = ULTIMO bit uscito, anche quando count supera la dimensione
-        // dell'operando. Il 68000 non ha barrel shifter: shifta un bit alla volta
-        // (di qui il costo 2*count cicli), quindi con un operando negativo continua
-        // a far uscire bit di segno e C resta 1. Cfr. WinUAE op_e020_14_ff (cpuemu_13.cpp, 68000 cycle-exact;
-        // la variante _11 citata prima e' il 68010, stesso codice ma chip diverso)
-        // ("if (cnt >= 8) { SET_CFLG(sign); COPY_CARRY(); }") e Moira
-        // MoiraALU_cpp.h Instr::ASR (ciclo puro, nessun clamp).
+        // C = X = the LAST bit shifted out, even when count exceeds the operand size. The 68000
+        // has no barrel shifter: it shifts one bit at a time (hence the 2*count cycles), so with
+        // a negative operand it keeps shifting out sign bits and C stays 1
+        // ("if (cnt >= 8) { SET_CFLG(sign); COPY_CARRY(); }", a pure loop, no clamp).
         //
-        // NB: i vettori JSON di SingleStepTests modellano invece un barrel shifter
-        // (C = bit count-1 dell'operando originale, quindi 0 oltre la dimensione):
-        // per quei casi vedi la nota in ASR{b,w,l}TestSuite. Senza questo comportamento
-        // la protezione Rob Northen Copylock (Castle Master) decifra codice errato,
-        // perché usa l'SR di ogni istruzione tracciata come chiave.
+        // The SingleStepTests JSON vectors model a barrel shifter instead (C = bit count-1 of
+        // the original operand, so 0 beyond the size): for those cases see the note in
+        // ASR{b,w,l}TestSuite. Without this behaviour the Rob Northen Copylock protection
+        // (Castle Master) decrypts wrong code, because it uses the SR of every traced
+        // instruction as the key.
         cpu.x = lastBitOut;
         cpu.c = lastBitOut;
         cpu.v = false;

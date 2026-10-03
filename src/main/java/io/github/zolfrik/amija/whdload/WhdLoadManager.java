@@ -37,26 +37,25 @@ import java.util.Map;
 import java.util.zip.CRC32;
 
 /**
- * Gestione automatica dei pacchetti WHDLoad (file {@code .lha}/{@code .lzh}),
- * analoga al supporto WHDLoad di RetroArch/PUAE.
+ * Automatic handling of WHDLoad packages ({@code .lha}/{@code .lzh} files).
  *
- * <p>Dato un archivio di gioco WHDLoad, costruisce "al volo" un hard disk
- * {@code .hdf} avviabile che contiene:
+ * <p>Given a WHDLoad game archive, it builds on the fly a bootable {@code .hdf} hard disk
+ * containing:
  * <ul>
- *   <li>il sistema WHDLoad (i file in {@code whdload/WHDLoad_files}: {@code C/},
- *       {@code Devs/}, {@code Libs/}, {@code S/}) — <b>forniti dall'utente</b>, vedi
+ *   <li>the WHDLoad system (the files in {@code whdload/WHDLoad_files}: {@code C/},
+ *       {@code Devs/}, {@code Libs/}, {@code S/}), <b>supplied by the user</b>, see
  *       {@code DEFAULT_RESOURCE_DIR};</li>
- *   <li>il contenuto del gioco estratto dall'archivio;</li>
- *   <li>una {@code S/Startup-Sequence} generata che entra nella cartella del gioco
- *       e lancia {@code WHDLoad <gioco>.slave} con gli argomenti che l'installazione
- *       dichiara nelle tooltype della propria icona (vedi {@link #findLaunch});</li>
- *   <li>una {@code S/WHDLoad.prefs} <b>generata</b> dai parametri di configurazione
- *       (sezione {@code whdload.prefs.*} di {@code amiga.properties}, iniettati con
- *       {@link #withPrefs(String)}); in assenza, un set di ripiego per l'avvio immediato.</li>
+ *   <li>the game content extracted from the archive;</li>
+ *   <li>a generated {@code S/Startup-Sequence} that enters the game's folder and runs
+ *       {@code WHDLoad <game>.slave} with the arguments the installation declares in the
+ *       tooltypes of its icon (see {@link #findLaunch});</li>
+ *   <li>an {@code S/WHDLoad.prefs} <b>generated</b> from the configuration parameters
+ *       (section {@code whdload.prefs.*} of {@code amiga.properties}, injected with
+ *       {@link #withPrefs(String)}); without them, a fallback set for an immediate start.</li>
  * </ul>
  *
- * <p>L'immagine viene messa in cache e ricostruita solo se l'archivio è più recente.
- * Il chiamante monta poi l'{@code .hdf} come normale hard disk (boot da DH0).
+ * <p>The image is cached and rebuilt only if the archive is newer. The caller then mounts
+ * the {@code .hdf} as a normal hard disk (boot from DH0).
  *
  * @see FfsBuilder
  * @see LhaExtractor
@@ -64,64 +63,63 @@ import java.util.zip.CRC32;
 public final class WhdLoadManager {
 
     /**
-     * Cartella delle risorse WHDLoad, relativa alla home dell'applicazione (la stessa
-     * in cui si trova {@code amiga.properties}); dentro ci va la sottocartella
-     * {@code WHDLoad_files}. Il contenuto NON è nel jar e non è ridistribuibile
-     * (WHDLoad è freeware di Bert Jahn, le librerie sono AmigaOS: vedi
-     * THIRD-PARTY-NOTICES.md), quindi va installato dall'utente. Se manca,
-     * {@link #isAvailable()} restituisce {@code false} e la funzione resta spenta.
+     * Folder of the WHDLoad resources, relative to the application home (where
+     * {@code amiga.properties} is); the {@code WHDLoad_files} subfolder goes inside it. Its
+     * content is NOT in the jar and is not redistributable (WHDLoad is Bert Jahn's freeware,
+     * the libraries are AmigaOS: see THIRD-PARTY-NOTICES.md), so the user must install it.
+     * If it is missing, {@link #isAvailable()} returns {@code false} and the feature stays
+     * off.
      */
     private static final String DEFAULT_RESOURCE_DIR = "whdload";
-    /** Cartella di cache degli .hdf generati (cancellata all'uscita). */
+    /** Cache folder of the generated .hdf files (deleted on exit). */
     private static final String DEFAULT_CACHE_DIR = "whdload-cache";
-    /** Cartella PERSISTENTE del volume dei salvataggi WHDLoad (NON cancellata). */
+    /** PERSISTENT folder of the WHDLoad saves volume (NOT deleted). */
     private static final String DEFAULT_SAVES_DIR = "whdload-saves";
     /**
-     * Nome del volume dei salvataggi. Coincide con il riferimento {@code WHDSaves:}
-     * usato da {@code SavePath}, così AmigaDOS lo risolve <b>come nome di volume</b>
-     * e non serve alcun {@code Assign}: è ciò che permette a WHDLoad di salvare anche
-     * su un'installazione priva dei comandi AmigaOS, che non sono ridistribuibili e
-     * che l'assistente di download non può procurare (THIRD-PARTY-NOTICES.md §5).
+     * Name of the saves volume. It matches the reference {@code WHDSaves:} used by
+     * {@code SavePath}, so AmigaDOS resolves it <b>as a volume name</b> and no
+     * {@code Assign} is needed: that lets WHDLoad save even on an installation without the
+     * AmigaOS commands, which are not redistributable and which the download assistant
+     * cannot provide (THIRD-PARTY-NOTICES.md section 5).
      */
     private static final String SAVES_VOLUME = "WHDSaves";
     /**
-     * Nome usato dalle versioni precedenti, quando il volume veniva assegnato a
-     * {@code WHDSaves:} dalla Startup-Sequence. I volumi già creati sul disco
-     * dell'utente si chiamano così e vanno ancora assegnati, altrimenti i loro
-     * salvataggi diventerebbero irraggiungibili.
+     * Name used by earlier versions, when the volume was assigned to {@code WHDSaves:} by
+     * the Startup-Sequence. Volumes already created on the user's disk have this name and
+     * must still be assigned, or their saves would become unreachable.
      */
     private static final String SAVES_VOLUME_LEGACY = "Saves";
-    /** Marcatore che registra con quale nome è stato creato il volume dei salvataggi. */
+    /** Marker recording the name the saves volume was created with. */
     private static final String SAVES_VOLUME_MARKER = "WHDSaves.hdf.volume";
 
-    /** Blocchi liberi extra nell'immagine FFS per le scritture runtime (salvataggi). */
+    /** Extra free blocks in the FFS image for runtime writes (saves). */
     private static final int SLACK_BLOCKS = 4096;   // ~2 MB
-    /** Dimensione (in blocchi) del volume persistente dei salvataggi. */
+    /** Size (in blocks) of the persistent save volume. */
     private static final int SAVES_BLOCKS = 8192;   // ~4 MB
 
-    /** Versione del costruttore: cambiandola si invalida la cache degli .hdf. */
+    /** Builder version: changing it invalidates the .hdf cache. */
     private static final int BUILD_VERSION = 10;
 
-    /** Profondità massima esplorata cercando le dump dei kickstart. */
+    /** Maximum depth explored when looking for Kickstart dumps. */
     private static final int KICKSTART_SCAN_DEPTH = 3;
 
-    /** Lunghezza massima dei nomi file/cartella su AmigaDOS FFS. */
+    /** Maximum length of file/folder names on AmigaDOS FFS. */
     private static final int FFS_MAX_NAME = 30;
 
-    /** Registra una sola volta l'hook che cancella la cache all'uscita della JVM. */
+    /** Registers the hook that deletes the cache at JVM exit only once. */
     private static volatile boolean cleanupHookRegistered = false;
 
     /**
-     * Memoria delle risposte di {@link #declaredVideoMode}, per archivio+data di
-     * modifica. L'array di un elemento distingue "letto, non dice nulla" da "mai letto".
+     * Memory of the answers of {@link #declaredVideoMode}, per archive + modification date.
+     * The one-element array tells "read, says nothing" from "never read".
      */
     private static final Map<String, VideoMode[]> declaredVideoModeCache =
             new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
-     * Mappa CRC32 → nome del file kickstart atteso da WHDLoad in {@code DEVS:Kickstarts}.
-     * I {@code .RTB} di accompagnamento sono già nei file di sistema WHDLoad; serve la
-     * dump grezza del ROM. (Come RetroArch, i ROM dell'utente sono associati per CRC.)
+     * Map CRC32 -> name of the Kickstart file WHDLoad expects in {@code DEVS:Kickstarts}.
+     * The accompanying {@code .RTB} files are already among the WHDLoad system files; what
+     * is needed is the raw ROM dump. The user's ROMs are matched by CRC.
      */
     private static final Map<Long, String> KICKSTART_BY_CRC = new HashMap<>();
     static {
@@ -130,18 +128,18 @@ public final class WhdLoadManager {
         KICKSTART_BY_CRC.put(0xFC24AE0DL, "kick40063.A600");   // KS 3.1 40.63 (512 KB)
         KICKSTART_BY_CRC.put(0x1483A091L, "kick40068.A1200");  // KS 3.1 40.68 A1200 (512 KB)
         KICKSTART_BY_CRC.put(0xD6BAE334L, "kick40068.A4000");  // KS 3.1 40.68 A4000 (512 KB)
-        // Sono esattamente i cinque per cui i file di sistema WHDLoad portano la
-        // tabella di rilocazione .RTB (SoftKick 3.46, vedi AssetCatalog). Un install
-        // che ne chieda un altro — p.es. kick31034.A1000 — non diventa avviabile
-        // fornendogli il ROM: senza il .RTB corrispondente WHDLoad si ferma comunque,
-        // e con un'immagine che non riconosce risponde "invalid kickstart image".
+        // Exactly the five for which the WHDLoad system files bring the .RTB relocation
+        // table (SoftKick 3.46, see AssetCatalog). An install that asks for another (e.g.
+        // kick31034.A1000) does not become bootable by supplying the ROM: without the
+        // matching .RTB WHDLoad stops anyway, and with an image it does not recognise it
+        // answers "invalid kickstart image".
     }
 
     private final Path resourceDir;
     private final Path cacheDir;
     private final Path savesDir;
     private final List<Path> kickstartDirs = new ArrayList<>();
-    /** Contenuto del file {@code S:WHDLoad.prefs} da scrivere; se {@code null} usa il fallback. */
+    /** Content of the {@code S:WHDLoad.prefs} file to write; if {@code null} the fallback is used. */
     private String prefsContent;
 
     public WhdLoadManager() {
@@ -160,9 +158,9 @@ public final class WhdLoadManager {
     }
 
     /**
-     * Aggiunge una cartella in cui cercare le dump dei ROM Kickstart da fornire a
-     * WHDLoad (i giochi che richiedono un kickstart diverso da quello in macchina,
-     * es. KS 1.3 per molti titoli OCS). I file vengono associati per CRC32.
+     * Adds a folder in which to look for the Kickstart ROM dumps to give WHDLoad (games
+     * that need a Kickstart other than the machine's, e.g. KS 1.3 for many OCS titles). The
+     * files are matched by CRC32.
      */
     public WhdLoadManager addKickstartDirectory(Path dir) {
         if (dir != null) kickstartDirs.add(dir);
@@ -170,10 +168,10 @@ public final class WhdLoadManager {
     }
 
     /**
-     * Imposta il contenuto del file {@code S:WHDLoad.prefs} da scrivere nell'hard disk
-     * generato. Tipicamente prodotto da {@code AmigaConfig.whdloadPrefsContent()} a
-     * partire dalla sezione {@code whdload.prefs.*} di {@code amiga.properties}. Se non
-     * impostato (o {@code null}) viene usato un set di preferenze di ripiego.
+     * Sets the content of the {@code S:WHDLoad.prefs} file to write into the generated hard
+     * disk. Usually produced by {@code AmigaConfig.whdloadPrefsContent()} from the
+     * {@code whdload.prefs.*} section of {@code amiga.properties}. If not set (or
+     * {@code null}) a fallback set of preferences is used.
      */
     public WhdLoadManager withPrefs(String content) {
         this.prefsContent = content;
@@ -181,26 +179,25 @@ public final class WhdLoadManager {
     }
 
     /**
-     * Standard video che l'archivio WHDLoad {@code lhaPath} dichiara nelle tooltype
-     * della propria icona: {@link VideoMode#NTSC} per {@code NTSC},
-     * {@link VideoMode#PAL} per {@code PAL}, {@code null} se non dice nulla.
+     * Video standard the WHDLoad archive {@code lhaPath} declares in the tooltypes of its
+     * icon: {@link VideoMode#NTSC} for {@code NTSC}, {@link VideoMode#PAL} for {@code PAL},
+     * {@code null} if it says nothing.
      *
-     * <p>È una dichiarazione, non un indizio: su una macchina vera quella tooltype fa
-     * aprire a WHDLoad uno schermo di quello standard, e senza il monitor
-     * corrispondente in {@code DEVS:Monitors} il gioco non parte affatto. In un
-     * emulatore l'equivalente è accendere la macchina in quello standard, perché è la
-     * macchina stessa a fare da monitor. Vale più della convenzione sul <i>nome</i> del
-     * file, che resta il ripiego quando l'icona tace.
+     * <p>A declaration, not a hint: on a real machine that tooltype makes WHDLoad open a
+     * screen of that standard, and without the matching monitor in {@code DEVS:Monitors} the
+     * game does not start at all. In an emulator the equivalent is switching the machine on
+     * in that standard, because the machine itself is the monitor. It counts more than the
+     * convention on the file <i>name</i>, which remains the fallback when the icon is silent.
      *
-     * <p>Legge le sole icone dell'archivio (pochi KB): non estrae il gioco e non
-     * costruisce alcun disco. Se l'archivio non è leggibile restituisce {@code null} —
-     * qui non sapere è un esito normale, non un errore.
+     * <p>Reads only the archive's icons (a few KB): it extracts no game and builds no disk.
+     * If the archive cannot be read it returns {@code null}: here not knowing is a normal
+     * outcome, not an error.
      */
     public static VideoMode declaredVideoMode(String lhaPath) {
         if (lhaPath == null || lhaPath.isEmpty()) return null;
-        // La modalità Auto interroga il profilo a ogni ridisegno: senza memoria
-        // rileggeremmo l'archivio da disco ogni volta. La chiave include la data di
-        // modifica, così sostituire il file invalida la risposta.
+        // Auto mode queries the profile at every redraw: without a memory the archive would
+        // be read from disk every time. The key includes the modification date, so replacing
+        // the file invalidates the answer.
         String key = lhaPath + '\0' + new java.io.File(lhaPath).lastModified();
         VideoMode[] cached = declaredVideoModeCache.get(key);
         if (cached != null) return cached[0];
@@ -219,23 +216,23 @@ public final class WhdLoadManager {
                 }
             }
         } catch (IOException | RuntimeException e) {
-            return null;   // archivio illeggibile: non sapere è un esito normale
+            return null;   // unreadable archive: not knowing is a normal outcome
         }
         declaredVideoModeCache.put(key, new VideoMode[] { found });
         return found;
     }
 
-    /** {@code true} se le risorse di sistema WHDLoad sono presenti. */
+    /** {@code true} if the WHDLoad system resources are present. */
     public boolean isAvailable() {
         return Files.isDirectory(resourceDir.resolve("WHDLoad_files"));
     }
 
     /**
-     * Prepara (estraendo + costruendo l'HDF, con cache) il disco avviabile per
-     * l'archivio {@code lhaPath} e ne restituisce il percorso.
+     * Prepares (extracting and building the HDF, with a cache) the bootable disk for the
+     * archive {@code lhaPath} and returns its path.
      *
-     * @throws IOException se le risorse mancano, l'archivio non è valido o non si
-     *                     trova alcun file {@code .slave}
+     * @throws IOException if the resources are missing, the archive is invalid or no
+     *                     {@code .slave} file is found
      */
     public Path prepare(String lhaPath) throws IOException {
         if (!isAvailable()) {
@@ -269,35 +266,35 @@ public final class WhdLoadManager {
         // 1. Sistema WHDLoad.
         copyTree(resourceDir.resolve("WHDLoad_files"), work);
 
-        // 1b. Dump dei ROM Kickstart richiesti da molti slave (associati per CRC32).
+        // 1b. Dump of the Kickstart ROMs many slaves require (matched by CRC32).
         copyKickstarts(work.resolve("Devs/Kickstarts"));
 
         // 2. Gioco estratto dall'archivio.
         List<LhaExtractor.Entry> entries = LhaExtractor.extract(lhaPath, work);
 
-        // 3. Individua come va lanciato il gioco.
+        // 3. Work out how the game is to be launched.
         Launch launch = findLaunch(entries, work);
         if (launch == null) {
             throw new IOException("Nessun file .slave trovato nell'archivio " + lhaPath);
         }
-        // AmigaDOS FFS limita i nomi di file/cartella a 30 caratteri e FfsBuilder
-        // (writeName) li tronca di conseguenza. La Startup-Sequence DEVE riferirsi
-        // agli stessi nomi troncati, altrimenti WHDLoad non trova lo slave
-        // (es. "...AdvIt.slave" = 31 char -> su disco "...AdvIt.slav" -> DOS-Error
-        // #205, object not found). Tronchiamo qui ogni componente come l'FFS.
+        // AmigaDOS FFS limits file/folder names to 30 characters and FfsBuilder (writeName)
+        // truncates them accordingly. The Startup-Sequence MUST refer to the same truncated
+        // names, or WHDLoad does not find the slave (e.g. "...AdvIt.slave" = 31 chars, on
+        // disk "...AdvIt.slav", DOS-Error #205, object not found). Every component is
+        // truncated here as FFS does.
         String gameDir = ffsTruncatePath(launch.gameDir);
         String slaveName = ffsTruncatePath(launch.slaveName);
 
-        // 4. WHDLoad.prefs GENERATA dai parametri di configurazione (sezione
-        //    whdload.prefs.* di amiga.properties, via withPrefs()) + Startup-Sequence
-        //    generata. I salvataggi vanno sul volume persistente "Saves:" (montato a
-        //    parte), non su questo disco transitorio.
+        // 4. WHDLoad.prefs GENERATED from the configuration parameters (section
+        //    whdload.prefs.* of amiga.properties, through withPrefs()) + generated
+        //    Startup-Sequence. The saves go to the persistent "Saves:" volume (mounted
+        //    separately), not to this transient disk.
         writeText(work.resolve("S/WHDLoad.prefs"),
                 prefsContent != null ? prefsContent : buildPrefs());
         writeText(work.resolve("S/Startup-Sequence"),
                 buildStartupSequence(gameDir, slaveName, launch.options, savesVolumeName()));
 
-        // 5. Costruzione dell'immagine FFS avviabile.
+        // 5. Build the bootable FFS image.
         Path tmpHdf = cacheDir.resolve(baseName + ".hdf.tmp");
         FfsBuilder.build(work, "WHDLoad", tmpHdf, SLACK_BLOCKS);
         Files.deleteIfExists(hdf);
@@ -309,22 +306,21 @@ public final class WhdLoadManager {
     }
 
     /**
-     * Restituisce l'hard disk PERSISTENTE dei salvataggi WHDLoad (volume
-     * {@link #SAVES_VOLUME}, che è già il riferimento {@code WHDSaves:} usato da
-     * {@code SavePath}). Viene creato vuoto la prima volta e poi riusato così com'è:
-     * NON sta nella cache cancellata all'uscita, quindi i salvataggi sopravvivono tra
-     * le sessioni. Va montato come unità di servizio NON avviabile accanto al disco
-     * WHDLoad del gioco.
+     * Returns the PERSISTENT hard disk of the WHDLoad saves (volume {@link #SAVES_VOLUME},
+     * which is already the {@code WHDSaves:} reference used by {@code SavePath}). It is
+     * created empty the first time and then reused as it is: it is NOT in the cache deleted
+     * at exit, so the saves survive between sessions. It must be mounted as a NON-bootable
+     * service unit next to the game's WHDLoad disk.
      *
-     * <p>Alla creazione viene scritto un marcatore col nome del volume, così
-     * {@link #savesVolumeName()} sa distinguere i volumi nuovi da quelli creati dalle
-     * versioni precedenti — che si chiamano "Saves" e continuano a richiedere l'assign.
+     * <p>At creation a marker with the volume name is written, so {@link #savesVolumeName()}
+     * can tell new volumes from those created by earlier versions, which are called "Saves"
+     * and still need the assign.
      */
     public Path prepareSaves() throws IOException {
         Files.createDirectories(savesDir);
         Path savesHdf = savesDir.resolve("WHDSaves.hdf");
         if (Files.isRegularFile(savesHdf)) {
-            return savesHdf;   // esistente: preserva i salvataggi
+            return savesHdf;   // existing: keeps the saves
         }
         Path empty = Files.createTempDirectory("whdsaves-empty");
         try {
@@ -341,18 +337,18 @@ public final class WhdLoadManager {
     }
 
     /**
-     * Copia in {@code destKickstarts} i ROM Kickstart trovati nelle cartelle
-     * configurate il cui CRC32 corrisponde a un kickstart noto a WHDLoad, usando il
-     * nome atteso (es. {@code kick34005.A500}). I {@code .RTB} di WHDLoad sono già
-     * presenti; serve la dump grezza accanto a essi.
+     * Copies into {@code destKickstarts} the Kickstart ROMs found in the configured folders
+     * whose CRC32 matches a Kickstart known to WHDLoad, under the expected name (e.g.
+     * {@code kick34005.A500}). WHDLoad's {@code .RTB} files are already there; the raw dump
+     * is needed next to them.
      */
     private void copyKickstarts(Path destKickstarts) throws IOException {
         for (Path dir : kickstartDirs) {
             if (!Files.isDirectory(dir)) continue;
-            // Ricerca ricorsiva: le collezioni di ROM tengono le versioni meno comuni
-            // in sottocartelle, ed è lì che stanno i kickstart che i pochi install
-            // esigenti chiedono (A1200, A4000, 1.2). Il limite di profondità evita di
-            // percorrere un albero enorme se la cartella indicata è una radice.
+            // Recursive search: ROM collections keep the less common versions in subfolders,
+            // and that is where the Kickstarts the few demanding installs ask for are (A1200,
+            // A4000, 1.2). The depth limit avoids walking a huge tree if the folder given is
+            // a root.
             try (var s = Files.walk(dir, KICKSTART_SCAN_DEPTH)) {
                 for (Path rom : (Iterable<Path>) s::iterator) {
                     if (!Files.isRegularFile(rom)) continue;
@@ -361,7 +357,7 @@ public final class WhdLoadManager {
                     String name = KICKSTART_BY_CRC.get(crc32(rom));
                     if (name == null) continue;
                     Path target = destKickstarts.resolve(name);
-                    if (Files.exists(target)) continue;                // già copiato
+                    if (Files.exists(target)) continue;                // already copied
                     Files.createDirectories(destKickstarts);
                     Files.copy(rom, target);
                     System.out.println("[WHDLOAD] Kickstart fornito: " + rom.getFileName() + " -> Devs/Kickstarts/" + name);
@@ -377,18 +373,18 @@ public final class WhdLoadManager {
     }
 
     // =========================================================================
-    // Generazione dei file di avvio
+    // Generation of the startup files
     // =========================================================================
 
     /**
-     * Tronca un nome di file/cartella al limite AmigaDOS FFS (30 caratteri),
-     * esattamente come {@link FfsBuilder} quando scrive il nome sul disco.
+     * Truncates a file/folder name to the AmigaDOS FFS limit (30 characters), exactly as
+     * {@link FfsBuilder} does when it writes the name on the disk.
      */
     private static String ffsName(String name) {
         return name.length() > FFS_MAX_NAME ? name.substring(0, FFS_MAX_NAME) : name;
     }
 
-    /** Applica {@link #ffsName} a ogni componente di un percorso separato da '/'. */
+    /** Applies {@link #ffsName} to each component of a '/'-separated path. */
     private static String ffsTruncatePath(String path) {
         if (path.isEmpty()) return path;
         String[] parts = path.split("/");
@@ -396,29 +392,29 @@ public final class WhdLoadManager {
         return String.join("/", parts);
     }
 
-    /** Come lanciare il gioco: cartella, nome dello slave e argomenti per WHDLoad. */
+    /** How to launch the game: folder, slave name and WHDLoad arguments. */
     private record Launch(String gameDir, String slaveName, List<String> options) { }
 
     /**
-     * Ricava dall'archivio estratto il comando WHDLoad da mettere nella
+     * Derives from the extracted archive the WHDLoad command to put in the
      * Startup-Sequence.
      *
-     * <p>La fonte autorevole è l'<b>icona del pacchetto</b>: quella il cui tool di
-     * default è {@code WHDLoad} porta nelle tooltype gli argomenti con cui
-     * l'installazione va lanciata. Non sono facoltativi — un pacchetto che tiene le
-     * immagini dei dischi in una sottocartella dichiara {@code DATA=data}, e senza
-     * quell'argomento WHDLoad le cerca accanto allo slave e fallisce con DOS-Error
-     * #205 appena il gioco chiede il primo file.
+     * <p>The authoritative source is the <b>package's icon</b>: the one whose default tool is
+     * {@code WHDLoad} carries in its tooltypes the arguments the installation must be
+     * launched with. They are not optional: a package that keeps the disk images in a
+     * subfolder declares {@code DATA=data}, and without that argument WHDLoad looks for them
+     * next to the slave and fails with DOS-Error #205 as soon as the game asks for the first
+     * file.
      *
-     * <p>Se nessuna icona lo dice (pacchetti vecchi, o icone assenti) si ripiega sul
-     * solo file {@code .slave} meno profondo, senza argomenti: è il comportamento
-     * storico ed è giusto per i pacchetti che tengono tutto in una cartella sola.
+     * <p>If no icon says so (old packages, or missing icons) the shallowest {@code .slave}
+     * file alone is used, with no arguments: right for packages that keep everything in a
+     * single folder.
      */
     private Launch findLaunch(List<LhaExtractor.Entry> entries, Path work) {
         Launch fromIcon = launchFromIcons(entries, work);
         if (fromIcon != null) return fromIcon;
 
-        // Preferisci lo slave meno profondo (percorso più corto).
+        // Prefer the shallowest slave (shortest path).
         String slaveRel = entries.stream()
                 .filter(e -> !e.directory && e.path.toLowerCase(Locale.ROOT).endsWith(".slave"))
                 .map(e -> e.path)
@@ -431,8 +427,8 @@ public final class WhdLoadManager {
     }
 
     /**
-     * Cerca fra le icone estratte quella che lancia WHDLoad e ne traduce le tooltype
-     * in un {@link Launch}. Restituisce {@code null} se non ce n'è nessuna utilizzabile.
+     * Looks among the extracted icons for the one that launches WHDLoad and turns its
+     * tooltypes into a {@link Launch}. Returns {@code null} if none is usable.
      */
     private Launch launchFromIcons(List<LhaExtractor.Entry> entries, Path work) {
         Launch best = null;
@@ -459,21 +455,21 @@ public final class WhdLoadManager {
                 }
             }
             if (slave == null || slave.isEmpty()) continue;
-            // Lo SLAVE= può contenere un percorso relativo alla cartella dell'icona.
-            // La verifica va fatta sul percorso COME STA SU DISCO (diskPath), che per
-            // i nomi che Windows non sa scrivere differisce da quello Amiga.
+            // SLAVE= may hold a path relative to the icon's folder. The check is made on the
+            // path AS IT IS ON DISK (diskPath), which for names Windows cannot write differs
+            // from the Amiga one.
             String diskDir = e.diskPath.contains("/")
                     ? e.diskPath.substring(0, e.diskPath.lastIndexOf('/')) : "";
             String slaveOnDisk = diskDir.isEmpty() ? slave : diskDir + "/" + slave;
             if (!Files.isRegularFile(work.resolve(slaveOnDisk.replace('/', java.io.File.separatorChar)))) continue;
             Launch candidate = new Launch(dir, slave, options);
-            // A parità di validità vince l'icona meno profonda.
+            // Among equally valid icons the shallowest wins.
             if (best == null || candidate.gameDir().length() < best.gameDir().length()) best = candidate;
         }
         return best;
     }
 
-    /** {@code true} se il tool di default dell'icona è WHDLoad (con o senza percorso). */
+    /** {@code true} if the icon's default tool is WHDLoad (with or without a path). */
     private static boolean isWhdLoadTool(String tool) {
         if (tool == null) return false;
         String leaf = tool;
@@ -483,10 +479,9 @@ public final class WhdLoadManager {
     }
 
     /**
-     * {@code true} se la tooltype è un argomento vero. Vanno scartate le voci
-     * disattivate (che il Workbench conserva fra parentesi), i separatori e i dati
-     * delle icone NewIcon, che vivono nello stesso elenco ({@code IM1=}/{@code IM2=}
-     * e la riga di intestazione che li precede).
+     * {@code true} if the tooltype is a real argument. Disabled entries (which the Workbench
+     * keeps in parentheses), separators and NewIcon data, which live in the same list
+     * ({@code IM1=}/{@code IM2=} and the header line before them), are discarded.
      */
     private static boolean isRealToolType(String tt) {
         if (tt == null) return false;
@@ -497,19 +492,18 @@ public final class WhdLoadManager {
     }
 
     /**
-     * Startup-Sequence generata per l'hard disk WHDLoad.
+     * Startup-Sequence generated for the WHDLoad hard disk.
      *
-     * <p>Le righe che invocano comandi AmigaOS sono <b>condizionate alla loro
-     * presenza</b>. Quei binari sono copyright Cloanto/Hyperion: non sono
-     * ridistribuibili e nemmeno l'assistente di download può procurarli, quindi
-     * un'installazione fatta solo con ciò che è scaricabile legittimamente ne è
-     * priva. Emetterle comunque non impedirebbe l'avvio — AmigaDOS stampa
-     * "Unknown command" e prosegue, e WHDLoad parte lo stesso — ma sporcherebbe lo
-     * schermo con errori che non indicano alcun problema reale. Servono solo a
-     * preparare {@code T:} e {@code ENV:}, di cui WHDLoad non ha bisogno.
+     * <p>The lines that call AmigaOS commands are <b>conditional on their presence</b>.
+     * Those binaries are Cloanto/Hyperion copyright: not redistributable, and not even the
+     * download assistant can provide them, so an installation made only with what can be
+     * downloaded legitimately lacks them. Emitting them anyway would not prevent the boot
+     * (AmigaDOS prints "Unknown command" and carries on, and WHDLoad starts anyway) but
+     * would litter the screen with errors that point to no real problem. They only prepare
+     * {@code T:} and {@code ENV:}, which WHDLoad does not need.
      *
-     * @param options     argomenti WHDLoad dell'icona del pacchetto, vedi {@link #findLaunch}
-     * @param savesVolume nome del volume dei salvataggi, da {@link #savesVolumeName()}
+     * @param options     WHDLoad arguments from the package's icon, see {@link #findLaunch}
+     * @param savesVolume name of the saves volume, from {@link #savesVolumeName()}
      */
     private String buildStartupSequence(String gameDir, String slaveName,
                                         List<String> options, String savesVolume) {
@@ -527,9 +521,9 @@ public final class WhdLoadManager {
             sb.append("C:Assign >NIL: T: RAM:T\n");
             sb.append("C:Assign >NIL: ENV: RAM:ENV\n");
         }
-        // Salvataggi sul volume persistente dedicato. Se il volume si chiama già
-        // WHDSaves, "WHDSaves:" si risolve da sé e non serve alcun assign; i volumi
-        // creati dalle versioni precedenti si chiamano "Saves" e vanno assegnati.
+        // Saves on the dedicated persistent volume. If the volume is already called
+        // WHDSaves, "WHDSaves:" resolves by itself and no assign is needed; the volumes
+        // created by earlier versions are called "Saves" and must be assigned.
         if (!SAVES_VOLUME.equals(savesVolume) && hasCommand("Assign")) {
             sb.append("C:Assign >NIL: WHDSaves: \"").append(savesVolume).append(":\"\n");
         }
@@ -540,31 +534,31 @@ public final class WhdLoadManager {
             if (opt.equalsIgnoreCase("PRELOAD")) preload = true;
             sb.append(' ').append(quoteArg(opt));
         }
-        // PRELOAD carica tutto in memoria una volta sola: evita gli accessi al disco
-        // durante il gioco. Lo aggiungiamo solo se l'icona non lo chiede già.
+        // PRELOAD loads everything into memory once: it avoids disk accesses during the
+        // game. Added only if the icon does not ask for it already.
         if (!preload) sb.append(" PRELOAD");
         sb.append('\n');
         return sb.toString();
     }
 
     /**
-     * Racchiude fra virgolette un argomento che contiene spazi, come vuole ReadArgs
-     * di AmigaDOS; gli altri restano nudi.
+     * Quotes an argument containing spaces, as AmigaDOS ReadArgs wants; the others stay
+     * bare.
      */
     private static String quoteArg(String arg) {
         return arg.indexOf(' ') >= 0 ? "\"" + arg + "\"" : arg;
     }
 
-    /** {@code true} se il comando AmigaOS {@code name} è tra i file di sistema forniti. */
+    /** {@code true} if the AmigaOS command {@code name} is among the system files supplied. */
     private boolean hasCommand(String name) {
         return Files.isRegularFile(resourceDir.resolve("WHDLoad_files").resolve("C").resolve(name));
     }
 
     /**
-     * Nome del volume su cui vive {@code WHDSaves.hdf}: {@link #SAVES_VOLUME} per i
-     * volumi creati da questa versione (il marcatore lo registra alla creazione),
-     * {@link #SAVES_VOLUME_LEGACY} per un HDF già presente ma senza marcatore, cioè
-     * creato da una versione precedente.
+     * Name of the volume {@code WHDSaves.hdf} lives on: {@link #SAVES_VOLUME} for volumes
+     * created by this version (the marker records it at creation),
+     * {@link #SAVES_VOLUME_LEGACY} for an HDF already present but without the marker, i.e.
+     * created by an earlier version.
      */
     private String savesVolumeName() throws IOException {
         Path marker = savesDir.resolve(SAVES_VOLUME_MARKER);
@@ -577,8 +571,8 @@ public final class WhdLoadManager {
     }
 
     /**
-     * Preferenze WHDLoad di ripiego, usate solo se manca il file di risorsa
-     * {@code WHDLoad.prefs}: avvio non presidiato, splash ~5 s, niente attesa pulsante.
+     * Fallback WHDLoad preferences, used only if the {@code WHDLoad.prefs} resource file is
+     * missing: unattended start, ~5 s splash, no wait for a button.
      */
     private static String buildPrefs() {
         return ";; WHDLoad.prefs generata automaticamente (fallback).\n"
@@ -587,13 +581,13 @@ public final class WhdLoadManager {
              + "NoNetwork\n"
              + "NoWriteCache\n"
              + "ConfigDelay=0\n"
-             + "SplashDelay=250\n"     // ~5s leggibili, poi prosegue da solo (niente attesa pulsante)
+             + "SplashDelay=250\n"     // ~5s readable, then continues on its own (no wait for a button)
              + "ReadDelay=0\n"
              + "WriteDelay=0\n";
     }
 
     // =========================================================================
-    // Utilità filesystem
+    // File system utilities
     // =========================================================================
 
     private static void copyTree(Path src, Path dest) throws IOException {
@@ -612,10 +606,10 @@ public final class WhdLoadManager {
     }
 
     /**
-     * Registra (una sola volta) uno shutdown hook che rimuove l'intera cartella di
-     * cache all'uscita della JVM, così gli {@code .hdf} generati non restano sul disco.
-     * Non scatta sul restart in-process (lì la macchina viene solo ricostruita), solo
-     * alla chiusura effettiva dell'applicazione.
+     * Registers (once) a shutdown hook that removes the whole cache folder at JVM exit, so
+     * the generated {@code .hdf} files do not stay on disk. It does not fire on an
+     * in-process restart (there the machine is only rebuilt), only when the application
+     * really closes.
      */
     private void registerCacheCleanup() {
         if (cleanupHookRegistered) return;

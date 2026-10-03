@@ -20,7 +20,7 @@
 
 package io.github.zolfrik.amija.input;
 
-/** Tipo di periferica collegata a una game port. */
+/** Type of device connected to a game port. */
 public enum GamePortDevice {
     NONE,
     MOUSE,

@@ -26,61 +26,59 @@ import javax.crypto.spec.SecretKeySpec;
 import java.security.GeneralSecurityException;
 
 /**
- * Sigillo per pacchetto sul canale media ({@code docs/remote-play-plan.md} §8).
+ * Per-packet seal on the media channel ({@code docs/remote-play-plan.md} section 8).
  *
- * <h2>Il beneficio principale non e' la riservatezza dei pixel</h2>
- * E' che il <b>tag autentica ogni pacchetto</b>: senza, chiunque conosca indirizzo e porta
- * potrebbe iniettare input falsi in una sessione in corso — cioe' pilotare la macchina di
- * qualcun altro conoscendo due numeri che si vedono passare in rete. Con il tag, un
- * pacchetto che non e' stato prodotto da chi conosce il join code non viene nemmeno
- * analizzato.
+ * <h2>The main benefit is not the confidentiality of the pixels</h2>
+ * It is that the <b>tag authenticates every packet</b>: without it, anyone knowing address and
+ * port could inject fake inputs into a running session, i.e. drive someone else's machine
+ * knowing two numbers seen passing on the network. With the tag, a packet not produced by
+ * whoever knows the join code is not even parsed.
  *
- * <h2>Il nonce, che e' l'unica cosa che si puo' sbagliare davvero</h2>
- * AES-GCM perde ogni garanzia se un nonce si ripete sotto la stessa chiave. Qui il nonce e'
- * <b>costruito, non scelto</b>: {@code prefisso(4, derivato) | direzione(1) | seq(4) |
- * 000}. La direzione separa i due versi, {@code seq} e' monotono per verso, e la chiave e'
- * nuova a ogni sessione. Resta un solo modo di romperlo — far girare {@code seq} — e per
- * questo {@link #seal} <b>rifiuta di continuare</b> invece di avvolgersi: 2^32 pacchetti
- * sono ~10 giorni di gioco ininterrotto, quindi la sessione muore con un messaggio chiaro
- * in un caso che nessuno vedra' mai, invece di degradare in silenzio in un caso che
- * comprometterebbe tutto.
+ * <h2>The nonce, the only thing that can really go wrong</h2>
+ * AES-GCM loses every guarantee if a nonce repeats under the same key. Here the nonce is
+ * <b>built, not chosen</b>: {@code prefix(4, derived) | direction(1) | seq(4) | 000}. The
+ * direction separates the two ways, {@code seq} is monotonic per way, and the key is new at
+ * every session. Only one way to break it remains (wrapping {@code seq}), and that is why
+ * {@link #seal} <b>refuses to continue</b> instead of wrapping: 2^32 packets are ~10 days of
+ * uninterrupted play, so the session dies with a clear message in a case nobody will ever
+ * see, instead of degrading silently in a case that would compromise everything.
  *
- * <p>Esiste anche l'implementazione {@link #plaintext()}: serve a <b>misurare</b> quanto
- * costa la cifratura (§15.2, decisione ancora aperta), non a essere usata.
+ * <p>There is also the {@link #plaintext()} implementation: it is for <b>measuring</b> what the
+ * encryption costs (section 15.2), not for use.
  *
- * <p>Ogni istanza tiene due {@link Cipher} distinti, uno per {@link #seal} e uno per
- * {@link #open}: sono oggetti non thread-safe, e le due direzioni vivono su thread diversi.
+ * <p>Each instance holds two distinct {@link Cipher}s, one for {@link #seal} and one for
+ * {@link #open}: they are not thread-safe, and the two directions live on different threads.
  */
 public interface MediaCipher {
 
-    /** Byte che il sigillo aggiunge al payload in chiaro. */
+    /** Bytes the seal adds to the plaintext payload. */
     int overhead();
 
-    /** Nome per i log e per la diagnostica. */
+    /** Name for the logs and diagnostics. */
     String name();
 
     /**
-     * Scrive intestazione + payload sigillato in {@code dst}.
+     * Writes header + sealed payload into {@code dst}.
      *
-     * @return la lunghezza totale del datagramma
+     * @return the total length of the datagram
      */
     int seal(int type, int seq, byte[] plain, int off, int len, byte[] dst)
             throws ProtocolException;
 
     /**
-     * Verifica e apre un datagramma ricevuto, scrivendo il chiaro in {@code dst}.
+     * Checks and opens a received datagram, writing the plaintext into {@code dst}.
      *
-     * @return la lunghezza del chiaro
-     * @throws ProtocolException se l'intestazione non e' valida o il tag non torna
+     * @return the length of the plaintext
+     * @throws ProtocolException if the header is not valid or the tag does not match
      */
     int open(byte[] src, int length, byte[] dst) throws ProtocolException;
 
-    /** Sigillo AES-GCM. {@code direction} distingue i due versi nel nonce: 0 host, 1 ospite. */
+    /** AES-GCM seal. {@code direction} tells the two directions apart in the nonce: 0 host, 1 guest. */
     static MediaCipher aesGcm(byte[] key, byte[] noncePrefix, int direction) {
         return new AesGcm(key, noncePrefix, direction);
     }
 
-    /** Nessun sigillo: solo per misurare il costo di quello vero. */
+    /** No seal: only for measuring the cost of the real one. */
     static MediaCipher plaintext() {
         return new Plain();
     }
@@ -134,8 +132,8 @@ public interface MediaCipher {
                 throw new ProtocolException("sequenza esaurita: la sessione va rinegoziata");
             }
             if (seq == -1) {
-                // 0xFFFFFFFF e' l'ultimo valore rappresentabile: oltre si riavvolgerebbe, e
-                // un nonce riusato vale piu' di una sessione persa.
+                // 0xFFFFFFFF is the last representable value: beyond it would wrap, and
+                // a reused nonce is worth more than a lost session.
                 exhausted = true;
             }
             RemotePlayProtocol.writeHeader(dst, type, 0, seq);
@@ -166,8 +164,8 @@ public interface MediaCipher {
                 openCipher.updateAAD(src, 0, RemotePlayProtocol.DATAGRAM_HEADER);
                 return openCipher.doFinal(src, RemotePlayProtocol.DATAGRAM_HEADER, sealed, dst, 0);
             } catch (GeneralSecurityException e) {
-                // Non si distingue "tag sbagliato" da "chiave sbagliata": il messaggio deve
-                // dire cosa fare (scartare), non aiutare chi sta provando a indovinare.
+                // "Wrong tag" is not told apart from "wrong key": the message must say what to
+                // do (discard), not help whoever is trying to guess.
                 throw new ProtocolException("pacchetto non autentico: scartato");
             }
         }

@@ -24,10 +24,10 @@ public class StopInstruction extends AbstractM68kInstruction {
     public static final StopInstruction INSTANCE = new StopInstruction();
     private StopInstruction() {}
     private static final int IMM = 0;
-    // Moira `execStop`: SUPERVISOR_MODE_ONLY, poi `readI` (= un `readExt`, UNA prefetch
-    // dell'immediato), poi setSR + STOPPED + CYCLES_IP(word)=4. Inibiamo la prefetch di
-    // refill di `prepareInstruction` così la singola readExt resta in `fetchExtension`
-    // (come Moira readI) — elimina un +CCK di fase su stop3/stop4 (frontiera 2).
+    // STOP: supervisor mode only, then one extension read (ONE prefetch of the immediate),
+    // then set SR + STOPPED + 4 internal cycles. The refill prefetch of
+    // `prepareInstruction` is inhibited so the single extension read stays in
+    // `fetchExtension`: that removes a CCK of phase on stop3/stop4.
     @Override public boolean shouldInhibitPrefetch() { return true; }
     // The STOP round grid opens at the start of the instruction, with its first IPL fetch,
     // not once the immediate is in: rounds of 4 clocks run from this instant.
@@ -36,44 +36,43 @@ public class StopInstruction extends AbstractM68kInstruction {
         cpu.beginStopRounds();
     }
     @Override public boolean executeStep(Motorola68000 cpu) {
-        // SUPERVISOR_MODE_ONLY: STOP in user mode → privilege violation immediata (Moira
-        // controlla PRIMA di readI). Copre il ri-esecuzione dello `stop` in USER del
-        // priv-loop stop3/stop4 (rte-in-user → priv diretta, senza entrare in STOPPED).
+        // Supervisor mode only: STOP in user mode -> immediate privilege violation (checked
+        // BEFORE the extension read). It covers re-executing `stop` in USER mode in the
+        // stop3/stop4 privilege loop (rte to user -> direct violation, without entering STOPPED).
         if (getStep(cpu) == 0 && !cpu.isSupervisor()) {
             cpu.triggerPrivilegeViolation();
             return finalizeInstruction(cpu);
         }
         switch (getStep(cpu)) {
-            // Moira execStop fa `readI` SUBITO (nessun preambolo): la readExt dell'immediato
-            // è il primo passo. (Storicamente qui c'era un no-op step0 che sprecava 1 CCK e
-            // sfasava l'entry stop→trace del priv-loop di stop4 — rimosso.)
+            // The extension read of the immediate is the very first step, with no preamble: a
+            // no-op step before it would waste 1 CCK and shift the stop->trace entry of the
+            // stop4 privilege loop.
             case 0 -> { if (!fetchExtension(cpu, IMM)) return false; nextStep(cpu); return false; }
             case 1 -> {
                 cpu.writeSR(getTemp(cpu, IMM), true);
-                // Moira slow-path: se il trace era già pending PRIMA dello STOP (T=1, es.
-                // `ori #$8000,SR; stop #$0000`), il TRACE_EXC viene latchato NELLO STESSO giro
-                // di execStop (Moira.cpp line 288, prima che STOPPED fermi la CPU) e scatta al
-                // giro successivo SENZA sync extra e SENZA passare dal ramo STOPPED. Lo
-                // riproduciamo facendo scattare il trace DIRETTAMENTE qui: elimina la
-                // STOPPED-latency (1 CCK del round-trip finalize→ramo STOPPED) e l'idle
-                // artificiale che prima serviva a mascherarla. stop2/stop4 → verdi.
+                // If the trace was already pending BEFORE the STOP (T=1, e.g.
+                // `ori #$8000,SR; stop #$0000`), the trace is latched IN THE SAME round as the
+                // STOP (before STOPPED halts the CPU) and fires at the next round WITHOUT an
+                // extra sync and WITHOUT going through the STOPPED branch. It is reproduced by
+                // firing the trace DIRECTLY here: no STOPPED latency (the 1 CCK of the
+                // finalize -> STOPPED branch round trip) and no artificial idle. stop2/stop4 green.
                 if (cpu.isTracePending()) {
                     cpu.fireStopTrace();
                     return finalizeInstruction(cpu);
                 }
-                // STOP che AZZERA il bit S (es. `stop #$0000`): privilege violation immediata,
-                // senza mai entrare in STOPPED. WinUAE (op_4e72_13): il loop ri-dispatcha lo
-                // stesso opcode al giro dopo e il check `if (!regs.s) Exception(8)` scatta
-                // subito, senza sync aggiuntivi — il re-dispatch è gratis, quindi l'eccezione
-                // parte appena l'istruzione STOP è conclusa. Il roundtrip per il ramo STOPPED
-                // di risingEdge costava +1 CCK (oracolo WinUAE, stop3).
+                // A STOP that CLEARS the S bit (e.g. `stop #$0000`): immediate privilege
+                // violation, without ever entering STOPPED. The same opcode is re-dispatched at
+                // the next round and its `!S` check fires at once, with no extra sync: the
+                // re-dispatch is free, so the exception starts as soon as the STOP instruction
+                // is done. A round trip through the STOPPED branch of risingEdge would cost
+                // +1 CCK (stop3).
                 if (!cpu.isSupervisor()) {
                     cpu.triggerPrivilegeViolation();
                     return finalizeInstruction(cpu);
                 }
-                // STOP senza trace pending (T=0, o STOP che CARICA T=1 come `stop #$A000`):
-                // entra in STOPPED e attende un interrupt / privilege. Il CYCLES_IP(4) di
-                // Moira è speso dalla macchina a step (readExt + questo step + finalize).
+                // STOP with no pending trace (T=0, or a STOP that LOADS T=1 like `stop #$A000`):
+                // enters STOPPED and waits for an interrupt / privilege. The 4 internal cycles
+                // are spent by the step machine (extension read + this step + finalize).
                 cpu.cpuState = Motorola68000.CpuState.STOPPED;
                 return finalizeInstruction(cpu);
             }

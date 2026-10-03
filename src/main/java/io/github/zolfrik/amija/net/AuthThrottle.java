@@ -26,50 +26,49 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Quanto in fretta si puo' sbagliare il join code, per indirizzo
- * ({@code docs/remote-play-plan.md} §8).
+ * How fast the join code may be got wrong, per address ({@code docs/remote-play-plan.md}
+ * section 8).
  *
- * <h2>Il codice ha ~40 bit, ma i tentativi erano illimitati</h2>
- * L'handshake era gia' costoso da indovinare — PBKDF2 a {@value SessionCrypto#PBKDF2_ROUNDS}
- * giri — ma non c'era <b>niente</b> che limitasse quante volte lo si potesse ritentare, e
- * quella lentezza da sola non basta a chiudere due cose diverse:
+ * <h2>The code has ~40 bits, but attempts would otherwise be unlimited</h2>
+ * The handshake is already expensive to guess (PBKDF2 with {@value SessionCrypto#PBKDF2_ROUNDS}
+ * rounds), but that slowness alone does not close two different things:
  * <ul>
- *   <li><b>indovinare</b>. Un codice di 8 simboli e' comodo da leggere al telefono proprio
- *       perche' e' corto, e la stessa sessione lo tiene per tutto il tempo in cui ospita.
- *       Senza un freno, chi ci prova ha a disposizione tutte le ore in cui si gioca;</li>
- *   <li><b>far lavorare la vittima</b>. La derivazione costa ~60 ms di CPU <i>all'host</i>,
- *       e la paga <b>prima</b> di sapere se il codice e' giusto: e' l'attaccante a scegliere
- *       quanto lavoro far fare, gratis. Un ciclo di connessioni tiene occupato il thread che
- *       accoglie e ruba tempo all'emulazione, che gira sulla stessa macchina.</li>
+ *   <li><b>guessing</b>. An 8-symbol code is handy to read over the phone precisely because it
+ *       is short, and the same session keeps it for as long as it hosts. Without a brake,
+ *       whoever tries has all the hours of play available;</li>
+ *   <li><b>making the victim work</b>. The derivation costs ~60 ms of CPU <i>on the host</i>,
+ *       paid <b>before</b> knowing whether the code is right: the attacker chooses how much work
+ *       to cause, for free. A loop of connections keeps the accepting thread busy and steals
+ *       time from the emulation, which runs on the same machine.</li>
  * </ul>
  *
- * <h2>Il freno cresce, e non tocca chi sbaglia a digitare</h2>
- * I primi {@value #FREE_ATTEMPTS} errori non costano niente: un codice letto male al
- * telefono e' il caso normale, e punirlo trasformerebbe una difesa in un guasto. Dopo, ogni
- * errore raddoppia l'attesa — {@value #FIRST_BACKOFF_MS} ms, poi il doppio, fino a
- * {@value #MAX_BACKOFF_MS} — e in quell'attesa il rifiuto arriva <b>prima</b> della
- * derivazione, quindi non costa piu' niente a chi lo subisce. Un handshake riuscito azzera
- * tutto: chi il codice ce l'ha non porta con se' gli errori di prima.
+ * <h2>The brake grows, and does not touch whoever mistypes</h2>
+ * The first {@value #FREE_ATTEMPTS} errors cost nothing: a code misread over the phone is the
+ * normal case, and punishing it would turn a defence into a failure. After that, every error
+ * doubles the wait ({@value #FIRST_BACKOFF_MS} ms, then double, up to {@value #MAX_BACKOFF_MS}),
+ * and during that wait the refusal comes <b>before</b> the derivation, so it no longer costs
+ * anything to whoever suffers it. A successful handshake resets everything: whoever has the
+ * code does not carry the earlier errors along.
  *
- * <p>Il conto e' <b>per indirizzo</b>. Non e' una barriera contro chi ne ha molti — quella
- * la fa la lunghezza del codice — ma contro l'unico attaccante che si presenta sempre dallo
- * stesso posto, che e' la forma in cui il problema esiste davvero su una rete di casa.
+ * <p>The count is <b>per address</b>. It is not a barrier against someone with many (the code's
+ * length is that) but against the only attacker who always shows up from the same place, the
+ * form in which the problem really exists on a home network.
  *
- * <p>La tabella ha un tetto di {@value #MAX_TRACKED} indirizzi, ripulita dalle voci scadute
- * prima di crescere: senza, sarebbe lei la memoria che un attaccante puo' far allocare.
+ * <p>The table is capped at {@value #MAX_TRACKED} addresses, cleared of expired entries before
+ * growing: without that, it would be the memory an attacker can make it allocate.
  */
 final class AuthThrottle {
 
-    /** Errori che non costano niente: un codice letto male al telefono ci sta. */
+    /** Errors that cost nothing: a code misread over the phone is fine. */
     static final int FREE_ATTEMPTS = 5;
 
-    /** Attesa dopo il primo errore oltre la soglia. Raddoppia a ogni errore successivo. */
+    /** Wait after the first error past the threshold. Doubles at every further error. */
     static final long FIRST_BACKOFF_MS = 2_000;
 
-    /** Tetto dell'attesa: oltre, si punirebbe l'utente distratto quanto l'attaccante. */
+    /** Ceiling of the wait: beyond it, the distracted user would be punished as much as the attacker. */
     static final long MAX_BACKOFF_MS = 5 * 60_000;
 
-    /** Dopo tanto silenzio, un indirizzo torna pulito: gli errori di ieri non contano. */
+    /** After this much silence an address is clean again: yesterday's errors do not count. */
     static final long FORGET_MS = 30 * 60_000;
 
     /** Indirizzi seguiti contemporaneamente. */
@@ -83,7 +82,7 @@ final class AuthThrottle {
 
     private final Map<InetAddress, Entry> entries = new ConcurrentHashMap<>();
 
-    /** Sorgente del tempo, sostituibile nei test: {@link System#nanoTime} in produzione. */
+    /** Time source, replaceable in tests: {@link System#nanoTime} in production. */
     private final java.util.function.LongSupplier clock;
 
     AuthThrottle() {
@@ -95,10 +94,10 @@ final class AuthThrottle {
     }
 
     /**
-     * Millisecondi che mancano prima che questo indirizzo possa riprovare, o 0 se puo' subito.
+     * Milliseconds left before this address may retry, or 0 if it may at once.
      *
-     * <p>Va chiamata <b>prima</b> della derivazione della chiave: e' li' che sta il costo che
-     * si vuole non far pagare all'host.
+     * <p>Must be called <b>before</b> the key derivation: that is where the cost lies that the
+     * host must be spared.
      */
     long retryAfterMillis(InetAddress peer) {
         if (peer == null) {
@@ -114,7 +113,7 @@ final class AuthThrottle {
         }
     }
 
-    /** Un handshake non arrivato in fondo: il prossimo tentativo puo' costare un'attesa. */
+    /** A handshake that did not complete: the next attempt may cost a wait. */
     void recordFailure(InetAddress peer) {
         if (peer == null) {
             return;
@@ -122,9 +121,9 @@ final class AuthThrottle {
         long now = clock.getAsLong();
         Entry e = entries.get(peer);
         if (e == null) {
-            // La voce nuova si aggiunge solo se c'e' posto, e il posto si cerca prima
-            // buttando via quelle dimenticabili. Se non ce n'e', questo indirizzo non viene
-            // seguito: vedi evictIfCrowded per il perche' non se ne sfratta una viva.
+            // The new entry is added only if there is room, and room is sought first by
+            // throwing away the forgettable ones. If there is none, this address is not
+            // tracked: see evictIfCrowded for why a live one is not evicted.
             evictIfCrowded(now);
             if (entries.size() >= MAX_TRACKED) {
                 return;
@@ -136,7 +135,7 @@ final class AuthThrottle {
             e.failures++;
             if (e.failures > FREE_ATTEMPTS) {
                 int over = e.failures - FREE_ATTEMPTS;
-                // 2s, 4s, 8s... e poi il tetto. Lo shift si ferma a 30 per non avvolgersi.
+                // 2s, 4s, 8s... and then the cap. The shift stops at 30 so it does not wrap.
                 long backoff = FIRST_BACKOFF_MS << Math.min(over - 1, 30);
                 if (backoff <= 0 || backoff > MAX_BACKOFF_MS) {
                     backoff = MAX_BACKOFF_MS;
@@ -146,29 +145,29 @@ final class AuthThrottle {
         }
     }
 
-    /** Handshake riuscito: chi conosce il codice non si porta dietro gli errori di prima. */
+    /** Successful handshake: whoever knows the code does not carry the earlier errors. */
     void recordSuccess(InetAddress peer) {
         if (peer != null) {
             entries.remove(peer);
         }
     }
 
-    /** Quanti indirizzi si stanno seguendo. Diagnostica. */
+    /** How many addresses are being tracked. Diagnostics. */
     int tracked() {
         return entries.size();
     }
 
     /**
-     * Butta via le voci dimenticabili, e solo se la tabella e' piena.
+     * Throws away the forgettable entries, and only if the table is full.
      *
-     * <p>Se dopo la pulizia e' ancora piena, la voce nuova <b>non</b> viene aggiunta a spese
-     * di una vecchia, ed e' la scelta che conta: sfrattare per fare posto vorrebbe dire che
-     * chi sta provando a tappeto puo' <b>farsi dimenticare</b> riempiendo la tabella da
-     * altri indirizzi, cioe' che il freno si disinnesca proprio sotto l'attacco per cui
-     * esiste. Meglio smettere di seguire i nuovi arrivati: il tetto e' abbastanza alto che
-     * si arrivi qui solo sotto attacco, e li' l'unica cosa che deve reggere e' che chi e'
-     * gia' bloccato resti bloccato. Chi non viene seguito non e' comunque libero di
-     * indovinare: davanti ha ancora i ~40 bit del codice e i ~60 ms di PBKDF2 per tentativo.
+     * <p>If after the cleanup it is still full, the new entry is <b>not</b> added at the expense
+     * of an old one, and that is the choice that counts: evicting to make room would mean that
+     * whoever is trying exhaustively can <b>get itself forgotten</b> by filling the table from
+     * other addresses, i.e. the brake would disarm exactly under the attack it exists for.
+     * Better to stop tracking newcomers: the cap is high enough that this happens only under
+     * attack, and there the only thing that must hold is that whoever is already blocked stays
+     * blocked. Whoever is not tracked is still not free to guess: ahead lie the ~40 bits of the
+     * code and the ~60 ms of PBKDF2 per attempt.
      */
     private void evictIfCrowded(long now) {
         if (entries.size() < MAX_TRACKED) {

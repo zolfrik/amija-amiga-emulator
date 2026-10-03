@@ -21,42 +21,39 @@
 package io.github.zolfrik.amija.net;
 
 /**
- * Avvio del gioco a distanza da riga di comando ({@code docs/remote-play-plan.md} §12,
- * Fase 2: <i>avvio via {@code -D}, nessun popup</i>).
+ * Starting remote play from the command line ({@code docs/remote-play-plan.md} section 12).
  *
  * <pre>
- *   -Damija.remoteplay.host=7788             ospita sulla porta indicata
- *   -Damija.remoteplay.join=192.168.1.20:7788   si unisce all'host indicato
- *   -Damija.remoteplay.joincode=K7M2-Q4XZ    obbligatorio per unirsi, facoltativo per
- *                                            ospitare (se manca se ne genera uno)
- *   -Damija.remoteplay.bind=192.168.1.20     interfaccia su cui ascoltare (vuoto = tutte)
- *   -Damija.remoteplay.log=true              traccia handshake, sessione e statistiche
- *   -Damija.remoteplay.guestport=1           game port pilotata dall'ospite (0 o 1)
- *   -Damija.remoteplay.guestkeyboard=true    l'ospite condivide la tastiera
- *   -Damija.remoteplay.guestreset=false      l'ospite puo' resettare con CTRL+Amiga+Amiga
+ *   -Damija.remoteplay.host=7788             hosts on the given port
+ *   -Damija.remoteplay.join=192.168.1.20:7788   joins the given host
+ *   -Damija.remoteplay.joincode=K7M2-Q4XZ    required to join, optional to host
+ *                                            (one is generated if missing)
+ *   -Damija.remoteplay.bind=192.168.1.20     interface to listen on (empty = all)
+ *   -Damija.remoteplay.log=true              traces handshake, session and statistics
+ *   -Damija.remoteplay.guestport=1           game port driven by the guest (0 or 1)
+ *   -Damija.remoteplay.guestkeyboard=true    the guest shares the keyboard
+ *   -Damija.remoteplay.guestreset=false      the guest may reset with CTRL+Amiga+Amiga
  *   -Damija.remoteplay.audio=adpcm           adpcm (default) | pcm16 | off
  * </pre>
  *
- * <p>Le ultime tre le decide l'<b>host</b>: sono la sua macchina. Le comunica all'ospite nel
- * WELCOME, ma l'ospite non ha voce in capitolo, e i divieti sono <b>applicati</b> sull'host
- * (vedi {@code input.RemoteInputApplier}) — un filtro che vivesse sull'ospite sarebbe
- * aggirabile da chiunque scriva il proprio client.
+ * <p>The last three are decided by the <b>host</b>: it is its machine. It tells the guest in
+ * the WELCOME, but the guest has no say, and the bans are <b>enforced</b> on the host (see
+ * {@code input.RemoteInputApplier}): a filter living on the guest could be bypassed by anyone
+ * writing their own client.
  *
- * <p><b>{@code guestport} dice quale porta, non cosa c'e' dentro.</b> Assegnare la porta e'
- * dell'host — deve poter tenere per se' quella su cui gioca — ma riempirla e' dell'ospite:
- * mouse, joystick, o joystick da tastiera <b>coi propri tasti</b>, scelti nel popup della
- * <i>sua</i> macchina e cambiabili a partita in corso. Quella scelta non passa di qui: viaggia
- * nel pacchetto di feedback ({@code FeedbackPacket.portDevice}), perche' e' stato che cambia,
- * non un parametro di sessione.
+ * <p><b>{@code guestport} says which port, not what is in it.</b> Assigning the port belongs
+ * to the host (it must be able to keep the one it plays on), but filling it belongs to the
+ * guest: mouse, joystick, or keyboard joystick <b>with its own keys</b>, chosen in the popup of
+ * <i>its</i> machine and changeable mid-game. That choice does not go through here: it travels
+ * in the feedback packet ({@code FeedbackPacket.portDevice}), because it is changing state, not
+ * a session parameter.
  *
- * <p>Sono <b>property diagnostiche</b>, nel senso della convenzione del progetto: servono
- * finche' non c'e' la sezione nel popup F12 (Fase 5), e restano dopo per collaudare senza
- * passare dalla UI. Le chiavi definitive dell'utente saranno {@code remoteplay.*} in
+ * <p>These are <b>diagnostic properties</b>, in the sense of the project convention: they
+ * allow testing without going through the UI. The user's keys are {@code remoteplay.*} in
  * {@code amiga.properties}.
  *
- * <p>Il join code <b>non</b> si mette sulla riga di comando in una partita vera: la riga di
- * comando di un processo e' leggibile da chiunque sulla macchina. Va bene per collaudare, ed
- * e' un'altra ragione per cui questa e' una scorciatoia di fase e non l'interfaccia finale.
+ * <p>The join code is <b>not</b> put on the command line in a real game: a process's command
+ * line is readable by anyone on the machine. It is fine for testing.
  */
 public record RemotePlaySettings(Mode mode, String address, int port, String joinCode,
                                  String bindAddress, int guestGamePort,
@@ -65,38 +62,38 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
 
     public enum Mode { OFF, HOST, GUEST }
 
-    /** Porta di default, la stessa che il popup proporra' (§10). */
+    /** Default port, the same the popup offers (section 10). */
     public static final int DEFAULT_PORT = 7788;
 
     /**
-     * Game port assegnata all'ospite. La 1 e' quella joystick: l'host tiene la 0, dove sta
-     * il mouse, e i due non si pestano i piedi nel caso piu' comune (§4.3).
+     * Game port assigned to the guest. 1 is the joystick one: the host keeps 0, where the mouse
+     * is, and the two do not tread on each other in the most common case (section 4.3).
      */
     public static final int DEFAULT_GUEST_GAME_PORT = 1;
 
-    /** ADPCM di default: col video a 1–3 Mbit/s il PCM sarebbe meta' dello stream (§6). */
+    /** ADPCM by default: with the video at 1-3 Mbit/s PCM would be half the stream (section 6). */
     public static final int DEFAULT_AUDIO_FORMAT = AudioBlockHeader.FORMAT_ADPCM;
 
     /** Traccia dettagliata: {@code -Damija.remoteplay.log=true}. */
     public static final boolean LOG = Boolean.getBoolean("amija.remoteplay.log");
 
-    /** Una riga di log, con il prefisso di questo sottosistema. */
+    /** A log line, with this subsystem's prefix. */
     public static void log(String format, Object... args) {
         if (LOG) {
             System.out.printf("[NET] " + format + "%n", args);
         }
     }
 
-    /** Una riga che si stampa sempre: eventi di sessione che l'utente deve poter vedere. */
+    /** A line always printed: session events the user must be able to see. */
     public static void say(String format, Object... args) {
         System.out.printf("[NET] " + format + "%n", args);
     }
 
     /**
-     * Legge la configurazione dalle property {@code -D}.
+     * Reads the configuration from the {@code -D} properties.
      *
-     * @return {@link Mode#OFF} se non e' stato chiesto niente — il caso normale, in cui
-     *         nulla del gioco a distanza viene nemmeno costruito
+     * @return {@link Mode#OFF} if nothing was asked (the normal case, in which nothing of
+     *         remote play is even built)
      */
     public static RemotePlaySettings fromSystemProperties() {
         String host = trimmed("amija.remoteplay.host");
@@ -133,7 +130,7 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
         return off();
     }
 
-    /** Gioco a distanza spento: il caso normale. */
+    /** Remote play off: the normal case. */
     public static RemotePlaySettings off() {
         return new RemotePlaySettings(Mode.OFF, null, 0, null, null,
                 DEFAULT_GUEST_GAME_PORT, true, false, DEFAULT_AUDIO_FORMAT);
@@ -153,12 +150,12 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
     }
 
     /**
-     * Formato audio verso l'ospite: {@code adpcm} (default), {@code pcm16}, {@code off}.
+     * Audio format toward the guest: {@code adpcm} (default), {@code pcm16}, {@code off}.
      *
-     * <p>Il default e' ADPCM per la ragione del §6: col video sceso a 1–3 Mbit/s, il PCM S16
-     * (1,41 Mbit/s) sarebbe il 30–50% dello stream, mentre ADPCM lo porta a 355 kbit/s.
-     * Resta {@code pcm16} per chi vuole il bit-esatto su LAN — vedi §15.5, che si chiude
-     * <b>ascoltando</b>, non con questo commento.
+     * <p>The default is ADPCM for the reason of section 6: with the video down to 1-3 Mbit/s,
+     * PCM S16 (1.41 Mbit/s) would be 30-50% of the stream, while ADPCM brings it to
+     * 355 kbit/s. {@code pcm16} remains for whoever wants bit-exact audio on a LAN (see
+     * section 15.5).
      */
     private static int audioFormatProperty() {
         String v = trimmed("amija.remoteplay.audio");
@@ -210,7 +207,7 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("porta non numerica: " + text, e);
         }
-        // 0 e' legittimo e utile: "scegline una libera", che e' cio' che fanno i test.
+        // 0 is legitimate and useful: "pick a free one", which is what the tests do.
         if (port < 0 || port > 65535) {
             throw new IllegalArgumentException("porta fuori range: " + port);
         }

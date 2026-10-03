@@ -27,32 +27,30 @@ import io.github.zolfrik.amija.net.codec.FrameDecoder;
 import java.nio.ByteBuffer;
 
 /**
- * Lato ospite del video: rimette insieme i frammenti, decodifica e consegna il raster
- * ({@code docs/remote-play-plan.md} §4.1). E' il gemello di {@link VideoSender}.
+ * Guest side of the video: puts the fragments back together, decodes and delivers the raster
+ * ({@code docs/remote-play-plan.md} section 4.1). The twin of {@link VideoSender}.
  *
- * <h2>Perche' e' questo l'oggetto che "sostituisce VirtualCRT"</h2>
- * Il §2 del piano osserva che {@code AmigaDisplay.renderFrame(int[], w, h, FrameInfo)} prende
- * il <b>raster grezzo</b> e fa tutto il resto da se': crop, scaling intero, overscan, shader,
- * LED, fullscreen. Questa classe produce esattamente quegli argomenti, quindi da qui in poi
- * l'ospite riusa la catena di presentazione che gia' esiste, senza saperne nulla, e tutte
- * quelle scelte restano <b>locali</b>.
+ * <h2>Why this is the object that "replaces VirtualCRT"</h2>
+ * {@code AmigaDisplay.renderFrame(int[], w, h, FrameInfo)} takes the <b>raw raster</b> and does
+ * everything else by itself: crop, integer scaling, overscan, shaders, LEDs, fullscreen. This
+ * class produces exactly those arguments, so from here on the guest reuses the existing
+ * presentation chain without knowing anything, and all those choices stay <b>local</b>.
  *
- * <h2>I frame vecchi si buttano, non si decodificano</h2>
- * Un frame che arriva dopo uno piu' recente non serve a niente — nessuno vuole vedere
- * indietro — ma soprattutto <b>non va scritto nell'anello</b>: {@code frameId} e
- * {@code frameId+4} condividono lo slot, quindi decodificare un ritardatario sfratterebbe un
- * riferimento piu' nuovo, cioe' farebbe danno per consegnare qualcosa di inutile. La regola
- * e' percio' secca: si accetta solo cio' che avanza.
+ * <h2>Old frames are thrown away, not decoded</h2>
+ * A frame arriving after a newer one is useless (nobody wants to see backwards) but above all
+ * <b>must not be written into the ring</b>: {@code frameId} and {@code frameId+4} share the slot,
+ * so decoding a latecomer would evict a newer reference, doing harm to deliver something
+ * useless. The rule is therefore strict: only what advances is accepted.
  *
- * <h2>Un frame o si ricostruisce del tutto o non e' mai esistito</h2>
- * Non si ACKa niente che non sia stato decodificato con successo. E' il perno di tutto lo
- * schema: l'host comprime contro l'ultimo ACK, quindi un frame perso, incompleto, ostile o
- * semplicemente non decodificabile fa solo allargare il delta successivo. Non c'e' nessuna
- * strada per cui un errore qui diventi un riferimento sbagliato che si trascina.
+ * <h2>A frame is either rebuilt entirely or never existed</h2>
+ * Nothing is ACKed that was not decoded successfully. It is the pivot of the whole scheme: the
+ * host compresses against the last ACK, so a frame that is lost, incomplete, hostile or simply
+ * undecodable only widens the next delta. There is no path by which an error here becomes a
+ * wrong reference that drags on.
  */
 public final class VideoReceiver implements AutoCloseable {
 
-    /** Riceve un frame ricostruito. Il raster e' valido solo per la durata della chiamata. */
+    /** Receives a rebuilt frame. The raster is valid only for the duration of the call. */
     public interface FrameSink {
         void onFrame(int[] pixels, int width, int height, FrameInfo info, long frameId);
     }
@@ -64,7 +62,7 @@ public final class VideoReceiver implements AutoCloseable {
     private final ReferenceRing ring;
     private final FrameInfo info = new FrameInfo();
 
-    /** Letto dal thread che spedisce il feedback: e' il numero che l'ACK porta all'host. */
+    /** Read by the thread sending the feedback: the number the ACK carries to the host. */
     private volatile long lastGoodFrameId = -1;
 
     private long framesDelivered;
@@ -82,10 +80,10 @@ public final class VideoReceiver implements AutoCloseable {
     }
 
     /**
-     * Accoglie il payload in chiaro di un datagramma video.
+     * Takes the plaintext payload of a video datagram.
      *
-     * @return {@code true} se il frame e' stato completato, decodificato e consegnato
-     * @throws ProtocolException se il frammento e' malformato: il chiamante scarta e continua
+     * @return {@code true} if the frame was completed, decoded and delivered
+     * @throws ProtocolException if the fragment is malformed: the caller discards and goes on
      */
     public boolean accept(byte[] plain, int length, FrameSink sink) throws ProtocolException {
         FragmentReassembler.Slot slot = reassembler.accept(plain, length);
@@ -113,9 +111,9 @@ public final class VideoReceiver implements AutoCloseable {
         } else {
             reference = ring.get(header.refFrameId());
             if (reference == null) {
-                // L'host ha compresso contro un frame che qui non c'e' piu'. Succede solo se
-                // gli ACK si perdono a lungo; non e' un errore, e la cura arriva da se': non
-                // ACKando, l'host finisce per non avere piu' riferimenti e manda un keyframe.
+                // The host compressed against a frame no longer here. It happens only if ACKs
+                // are lost for long; not an error, and the cure comes by itself: without ACKs
+                // the host ends up with no references and sends a keyframe.
                 framesNoReference++;
                 return false;
             }
@@ -127,8 +125,8 @@ public final class VideoReceiver implements AutoCloseable {
             decoder.decode(slot.data(), VideoFrameHeader.SIZE, header.payloadLength(),
                     reference, dst);
         } catch (CodecException e) {
-            // decode() e' tutto-o-niente: 'dst' non e' stato toccato, quindi lo slot resta
-            // quello che era e nessun riferimento e' stato sporcato.
+            // decode() is all-or-nothing: 'dst' was not touched, so the slot stays what it was
+            // and no reference was dirtied.
             framesRejected++;
             throw new ProtocolException("frame " + frameId + " non decodificabile", e);
         }
@@ -144,12 +142,12 @@ public final class VideoReceiver implements AutoCloseable {
         return true;
     }
 
-    /** Il numero che l'ospite mette nell'ACK: l'ultimo frame ricevuto <b>per intero</b>. */
+    /** The number the guest puts in the ACK: the last frame received <b>in full</b>. */
     public long ackFrameId() {
         return lastGoodFrameId;
     }
 
-    /** Riparte da zero: nuova generazione di sessione, nessun riferimento condiviso. */
+    /** Starts from scratch: new session generation, no shared reference. */
     public void reset() {
         reassembler.reset();
         ring.clear();
@@ -160,17 +158,17 @@ public final class VideoReceiver implements AutoCloseable {
         return framesDelivered;
     }
 
-    /** Frame arrivati dopo uno piu' recente: scartati per non sfrattare un riferimento buono. */
+    /** Frames arriving after a newer one: discarded so as not to evict a good reference. */
     public long framesLate() {
         return framesLate;
     }
 
-    /** Frame il cui riferimento era gia' uscito dall'anello: si aspetta il keyframe. */
+    /** Frames whose reference had already left the ring: wait for the keyframe. */
     public long framesNoReference() {
         return framesNoReference;
     }
 
-    /** Frame completi ma non decodificabili: payload corrotto o ostile. */
+    /** Complete frames that could not be decoded: corrupt or hostile payload. */
     public long framesRejected() {
         return framesRejected;
     }

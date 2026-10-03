@@ -32,16 +32,14 @@ public class IllegalInstruction extends AbstractM68kInstruction {
     public boolean executeStep(Motorola68000 cpu) {
         switch (getStep(cpu)) {
             case 0 -> {
-                // ⛔ NIENTE idle qui. L'ingresso in eccezione di gruppo 1 paga gia' i suoi
-                // 4 clock in processExceptionGroup1_2 case 0 (idleCycles(4)), che e' lo
-                // `start = 4` di WinUAE Exception_ce000. Un addInternalCycles(4) qui li
-                // contava DUE volte: 38 clock invece dei 34 del manuale e dell'oracolo,
-                // cioe' 2 CCK di ritardo su OGNI ILLEGAL.
-                // Misurato su vAmigaTS CPU/IPL/ILLEGAL1: il marker di illex partiva 8 px
-                // (= 2 CCK) a destra del riferimento, con tutte le larghezze dei marker
-                // gia' esatte -- l'errore era tutto e solo nell'ingresso. BKPT non ha voce
-                // nella decode table e passa dal ramo currentInstruction==null, che triggera
-                // senza il doppione: per questo era gia' verde.
+                // NO idle here. Group 1 exception entry already pays its 4 clocks in
+                // processExceptionGroup1_2 case 0 (idleCycles(4)). An addInternalCycles(4) here
+                // would count them TWICE: 38 clocks instead of the manual's 34, i.e. 2 CCK late
+                // on EVERY ILLEGAL. Measured on vAmigaTS CPU/IPL/ILLEGAL1: the illex marker
+                // started 8 px (= 2 CCK) to the right of the reference, with every marker width
+                // already exact: the error was all in the entry. BKPT has no entry in the decode
+                // table and goes through the currentInstruction==null branch, which triggers
+                // without the double count.
                 cpu.triggerException(4, cpu.getOpcodeAddress());
                 nextStep(cpu);
                 return false;

@@ -27,64 +27,63 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 /**
- * L'handshake del canale di controllo ({@code docs/remote-play-plan.md} §3, §8).
+ * The control channel handshake ({@code docs/remote-play-plan.md} sections 3, 8).
  *
  * <pre>
  *   GUEST -> HOST   HELLO      proto, appVersion, nonce
  *   HOST  -> GUEST  CHALLENGE  salt, nonce2
  *   GUEST -> HOST   AUTH       guestTag = HMAC(master, "AJ-guest" | nonce | nonce2 | proto)
- *   HOST  -> GUEST  WELCOME    parametri di sessione, hostTag
- *                   ─ oppure ─ REJECT  motivo
+ *   HOST  -> GUEST  WELCOME    session parameters, hostTag
+ *                   -- or --   REJECT  reason
  * </pre>
  *
- * <h2>Prima l'autenticazione, poi tutto il resto</h2>
- * E' il minimo non negoziabile del §8: finche' l'AUTH non e' verificato, il socket non
- * ottiene niente — nessun parametro, nessuna porta media, nessuna chiave. E l'ordine conta
- * anche al contrario: il <b>WELCOME contiene il tag dell'host</b>, quindi e' l'ospite a
- * potersi accorgere di stare parlando con qualcun altro <i>prima</i> di mandargli i propri
- * input. Il §3 faceva provare solo all'ospite di conoscere il codice; l'autenticazione
- * mutua costa un secondo HMAC e chiude quel buco.
+ * <h2>Authentication first, everything else after</h2>
+ * The non-negotiable minimum of section 8: until the AUTH is verified, the socket gets
+ * nothing (no parameters, no media port, no key). The order matters the other way round too:
+ * the <b>WELCOME contains the host's tag</b>, so the guest can notice it is talking to
+ * someone else <i>before</i> sending it its inputs. Mutual authentication costs a second
+ * HMAC and closes the hole of only the guest proving it knows the code.
  *
- * <h2>Cio' che non viaggia</h2>
- * Ne' il join code ne' la chiave del media attraversano la rete: la prima e' provata con un
- * HMAC, la seconda e' <b>derivata</b> dalle stesse due nonce sui due lati. Il §3 metteva la
- * chiave dentro il WELCOME, che su un TCP in chiaro sarebbe stato regalarla a chiunque
- * ascolti — annullando il motivo stesso per cui si cifra il media.
+ * <h2>What does not travel</h2>
+ * Neither the join code nor the media key crosses the network: the first is proved with an
+ * HMAC, the second is <b>derived</b> from the same two nonces on both sides. Putting the key
+ * inside the WELCOME, on a plain TCP, would give it away to anyone listening, defeating the
+ * very reason the media is encrypted.
  *
- * <h2>Il tempo</h2>
- * Un peer che apre il socket e non parla piu' tiene occupata l'unica sessione disponibile.
- * Ogni lettura dell'handshake ha percio' un timeout ({@value #HANDSHAKE_TIMEOUT_MS} ms), che
- * e' larghissimo per una LAN e sufficiente per la derivazione PBKDF2 del peer.
+ * <h2>Time</h2>
+ * A peer that opens the socket and then stops talking holds the only session available. So
+ * every read of the handshake has a timeout ({@value #HANDSHAKE_TIMEOUT_MS} ms), very wide for
+ * a LAN and enough for the peer's PBKDF2 derivation.
  */
 public final class Handshake {
 
-    /** Generoso per una rete vera, stretto abbastanza da non lasciare la porta bloccata. */
+    /** Generous for a real network, tight enough not to leave the port blocked. */
     public static final int HANDSHAKE_TIMEOUT_MS = 10_000;
 
-    /** Direzione nel nonce AES-GCM: l'host cifra con 0, l'ospite con 1. */
+    /** Direction in the AES-GCM nonce: the host encrypts with 0, the guest with 1. */
     public static final int DIRECTION_HOST = 0;
     public static final int DIRECTION_GUEST = 1;
 
     private static final int MAX_APP_VERSION = 64;
 
     /**
-     * Tetto sulla geometria che l'host puo' dichiarare nel WELCOME.
+     * Cap on the geometry the host may declare in the WELCOME.
      *
-     * <p>L'ospite dimensiona su quei due numeri i propri buffer — il raster, l'anello dei
-     * riferimenti, il corpo inflato del codec — e sono buffer grandi: a 65535x65535, che il
-     * formato del WELCOME permette di scrivere, sarebbero gigabyte chiesti in un colpo solo.
-     * L'host e' <b>autenticato</b> quando lo dice, quindi non e' un buco aperto a chiunque;
-     * ma il tetto costa un confronto ed e' proprio il caso in cui vale la regola del §8.2 —
-     * una lunghezza che arriva dalla rete non dimensiona niente prima di essere confrontata.
-     * Un raster Amiga non supera 912x628 nemmeno in interlace con tutto l'overscan: qui c'e'
-     * un ordine di grandezza di margine, e chi lo sfora non e' un host che gioca.
+     * <p>The guest sizes its buffers on those two numbers (the raster, the ring of references,
+     * the codec's inflated body), and they are large buffers: at 65535x65535, which the
+     * WELCOME's format allows, they would be gigabytes asked for at once. The host is
+     * <b>authenticated</b> when it says so, so it is not a hole open to anyone; but the cap
+     * costs one comparison and it is exactly the case of the rule of section 8.2: a length
+     * that comes from the network sizes nothing before being checked. An Amiga raster does not
+     * exceed 912x628 even in interlace with all the overscan: there is an order of magnitude
+     * of margin here, and whoever exceeds it is not a host playing.
      */
     public static final int MAX_RASTER_SIDE = 4096;
 
-    /** Pixel totali ammessi: limita l'allocazione anche per una geometria molto sbilenca. */
+    /** Total pixels allowed: limits the allocation even for a very lopsided geometry. */
     public static final int MAX_RASTER_PIXELS = 4_000_000;
 
-    /** Quel che l'host decide e comunica, piu' il materiale crittografico derivato. */
+    /** What the host decides and communicates, plus the derived cryptographic material. */
     public record Session(
             int sessionId,
             int sessionGen,
@@ -100,13 +99,13 @@ public final class Handshake {
             byte[] mediaKey,
             byte[] noncePrefix) {
 
-        /** Il sigillo del media per il verso indicato. */
+        /** The media seal for the given direction. */
         public MediaCipher cipher(int direction) {
             return MediaCipher.aesGcm(mediaKey, noncePrefix, direction);
         }
     }
 
-    /** Parametri che l'host mette nel WELCOME. */
+    /** Parameters the host puts in the WELCOME. */
     public record HostOffer(
             int sessionId,
             int sessionGen,
@@ -120,7 +119,7 @@ public final class Handshake {
             boolean keyboardShared) {
     }
 
-    /** REJECT ricevuto: e' un esito previsto, non un guasto, e porta con se' il motivo. */
+    /** REJECT received: an expected outcome, not a failure, and it carries the reason. */
     public static final class RejectedException extends ProtocolException {
         private static final long serialVersionUID = 1L;
         private final int reason;
@@ -136,18 +135,17 @@ public final class Handshake {
     }
 
     /**
-     * L'host rifiuta, e il REJECT <b>non è ancora partito</b>: lo manda il chiamante.
+     * The host refuses, and the REJECT <b>has not left yet</b>: the caller sends it.
      *
-     * <p>⛔ La differenza con {@link RejectedException} è il verso — quella la riceve
-     * l'ospite, questa la solleva l'host — ma il motivo per cui esiste è un altro, ed è di
-     * <b>ordine</b>. Prima {@link #accept} mandava il REJECT da sé e poi sollevava:
-     * l'ospite veniva quindi informato mentre il chiamante era ancora nel mezzo del
-     * proprio {@code finally}, cioè prima che avesse restituito il posto dell'ospite. Chi
-     * ritentava più in fretta di così — il caso normale: uno sbaglia il codice e riprova —
-     * si sentiva rispondere «c'è già un ospite» invece di «codice errato».
+     * <p>The difference from {@link RejectedException} is the direction (the guest receives
+     * that one, the host throws this one), but the reason it exists is <b>order</b>. If
+     * {@link #accept} sent the REJECT itself and then threw, the guest would be told while the
+     * caller was still in the middle of its own {@code finally}, i.e. before it had returned
+     * the guest's place. Whoever retried faster than that (the normal case: one gets the code
+     * wrong and tries again) would be told "there is already a guest" instead of "wrong code".
      *
-     * <p>Dire <i>perché</i> resta di chi conduce l'handshake; dire <i>quando</i> torna a
-     * chi possiede lo stato da rimettere a posto prima di parlare.
+     * <p>Saying <i>why</i> stays with whoever runs the handshake; saying <i>when</i> belongs to
+     * whoever owns the state to put back in order before speaking.
      */
     public static final class RejectingException extends ProtocolException {
         private static final long serialVersionUID = 1L;
@@ -167,18 +165,18 @@ public final class Handshake {
     }
 
     // =====================================================================
-    // Lato host
+    // Host side
     // =====================================================================
 
     /**
-     * Esegue il lato host dell'handshake su un socket appena accettato.
+     * Runs the host side of the handshake on a socket just accepted.
      *
-     * @return i parametri di sessione, chiavi comprese
-     * @throws RejectingException se il peer non si autentica o non parla il protocollo. ⛔ Il
-     *                            REJECT <b>non</b> e' stato mandato: lo manda il chiamante,
-     *                            dopo aver rimesso a posto quel che deve. Vedi
+     * @return the session parameters, keys included
+     * @throws RejectingException if the peer does not authenticate or does not speak the
+     *                            protocol. The REJECT has <b>not</b> been sent: the caller sends
+     *                            it, after putting back in order what it must. See
      *                            {@link RejectingException}
-     * @throws IOException        se il socket cade o il peer tace oltre il timeout
+     * @throws IOException        if the socket drops or the peer stays silent past the timeout
      */
     public static Session accept(ControlChannel ch, String joinCode, HostOffer offer)
             throws IOException {
@@ -204,8 +202,8 @@ public final class Handshake {
             throw new ProtocolException("HELLO troncato", e);
         }
         if (proto != RemotePlayProtocol.VERSION) {
-            // Il motivo si dice: "non funziona" manda l'utente a controllare il router per un
-            // problema che si risolve aggiornando l'emulatore.
+            // The reason is stated: "it does not work" sends the user to check the router for a
+            // problem solved by updating the emulator.
             throw new RejectingException(RemotePlayProtocol.REJECT_PROTOCOL,
                     "protocollo " + proto + ", questo host parla il "
                     + RemotePlayProtocol.VERSION);
@@ -247,7 +245,7 @@ public final class Handshake {
         wb.put((byte) offer.audioChannels());
         wb.put((byte) offer.guestGamePort());
         wb.put((byte) (offer.keyboardShared() ? 1 : 0));
-        wb.put((byte) offer.audioFormat());      // 0 = nessun audio
+        wb.put((byte) offer.audioFormat());      // 0 = no audio
         wb.put(hostTag);
         ch.send(RemotePlayProtocol.CTRL_WELCOME, wb.array(), WELCOME_SIZE);
 
@@ -259,23 +257,23 @@ public final class Handshake {
         return session;
     }
 
-    /** Rifiuta senza handshake: la sessione e' gia' occupata, o l'host sta chiudendo. */
+    /** Refuses without a handshake: the session is already taken, or the host is closing. */
     public static void reject(ControlChannel ch, int reason) {
         try {
             ch.send(RemotePlayProtocol.CTRL_REJECT, new byte[] { (byte) reason }, 1);
         } catch (IOException ignored) {
-            // Il REJECT e' una cortesia: se il socket e' gia' andato non cambia niente.
+            // The REJECT is a courtesy: if the socket is already gone nothing changes.
         }
     }
 
     // =====================================================================
-    // Lato ospite
+    // Guest side
     // =====================================================================
 
     /**
-     * Esegue il lato ospite dell'handshake.
+     * Runs the guest side of the handshake.
      *
-     * @throws RejectedException se l'host ha risposto REJECT, col motivo da mostrare
+     * @throws RejectedException if the host answered REJECT, with the reason to show
      */
     public static Session connect(ControlChannel ch, String joinCode) throws IOException {
         ch.setTimeout(HANDSHAKE_TIMEOUT_MS);
@@ -326,7 +324,7 @@ public final class Handshake {
         byte[] expected = crypto.hostTag(nonce, nonce2, RemotePlayProtocol.VERSION);
         if (!SessionCrypto.tagsMatch(expected, hostTag)) {
             crypto.destroy();
-            // Chi sta dall'altra parte non conosce il join code: non gli si manda un input.
+            // Whoever is on the other side does not know the join code: no input is sent to it.
             throw new ProtocolException("l'host non ha dimostrato di conoscere il codice");
         }
         if (audioFormat != 0 && audioFormat != AudioBlockHeader.FORMAT_PCM16

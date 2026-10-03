@@ -28,56 +28,54 @@ import javax.swing.BorderFactory;
 import javax.swing.border.Border;
 
 /**
- * Le misure scritte a mano nei dialoghi, moltiplicate per la scala dell'interfaccia.
+ * The sizes written by hand in the dialogs, multiplied by the interface scale.
  *
- * <p><b>Perché serve.</b> Lo <em>user scaling</em> di FlatLaf ({@code ui.scale} →
- * {@code flatlaf.uiScale}) arriva ai font e ai valori di {@code UIDefaults}: bordi,
- * spaziature, icone dei componenti standard. Non arriva — non può — alle dimensioni che
- * il nostro codice scrive di suo pugno, tipo {@code new Dimension(580, 460)}. Senza
- * questa mediazione, a {@code ui.scale=2} si ottiene testo grande dentro caselle rimaste
- * piccole: misurato prima di questa classe, il popup F12 risultava 1,86 volte più largo
- * ma solo 1,09 volte più alto, col contenuto raddoppiato compresso in un riquadro
- * scorrevole rimasto uguale.
+ * <p><b>Why it is needed.</b> FlatLaf's <em>user scaling</em> ({@code ui.scale} ->
+ * {@code flatlaf.uiScale}) reaches the fonts and the {@code UIDefaults} values: borders,
+ * spacing, icons of the standard components. It does not (cannot) reach the sizes our code
+ * writes by itself, like {@code new Dimension(580, 460)}. Without this mediation,
+ * {@code ui.scale=2} gives large text inside boxes that stayed small: measured before this
+ * class, the F12 popup came out 1.86 times wider but only 1.09 times taller, with the doubled
+ * content squeezed into a scrolling pane that stayed the same.
  *
- * <p><b>Regola per il codice nuovo:</b> ogni misura in pixel di un componente
- * dell'interfaccia passa di qui. Le uniche misure che <em>non</em> devono passarci sono
- * quelle disegnate dentro la finestra emulata — LED, contatore FPS, overlay di drag in
- * {@code AmigaDisplay} — che appartengono al frame Amiga e scalano con
- * {@code video.integerScaling}, non con la scala dell'interfaccia.
+ * <p><b>Rule for new code:</b> every pixel size of an interface component goes through here.
+ * The only sizes that must <em>not</em> are those drawn inside the emulated window (LEDs, FPS
+ * counter, drag overlay in {@code AmigaDisplay}), which belong to the Amiga frame and scale
+ * with {@code video.integerScaling}, not with the interface scale.
  *
- * <p>Pensata per l'import statico:
+ * <p>Meant for static import:
  * {@code import static io.github.zolfrik.amija.display.UiScaling.*;}
  */
 final class UiScaling {
 
     private UiScaling() {}
 
-    /** Una misura in pixel, scalata. */
+    /** A pixel measure, scaled. */
     static int px(int value) {
         return UIScale.scale(value);
     }
 
-    /** Un corpo del carattere, scalato. */
+    /** A font size, scaled. */
     static float px(float value) {
         return UIScale.scale(value);
     }
 
-    /** Una dimensione di componente, scalata su entrambi gli assi. */
+    /** A component size, scaled on both axes. */
     static Dimension dim(int width, int height) {
         return new Dimension(px(width), px(height));
     }
 
-    /** Un margine vuoto, scalato su tutti e quattro i lati. */
+    /** An empty margin, scaled on all four sides. */
     static Border pad(int top, int left, int bottom, int right) {
         return BorderFactory.createEmptyBorder(px(top), px(left), px(bottom), px(right));
     }
 
     /**
-     * Deriva un font cambiandone stile e corpo, con il corpo scalato.
+     * Derives a font changing its style and size, with the size scaled.
      *
-     * <p>Va usata al posto di {@code font.deriveFont(stile, corpo)}: quella imposta un
-     * corpo <em>assoluto</em>, e quindi butta via lo scaling che FlatLaf aveva già
-     * applicato al font di partenza.
+     * <p>To be used instead of {@code font.deriveFont(style, size)}: that one sets an
+     * <em>absolute</em> size, throwing away the scaling FlatLaf had already applied to the
+     * starting font.
      */
     static Font derive(Font base, int style, float size) {
         return base.deriveFont(style, px(size));

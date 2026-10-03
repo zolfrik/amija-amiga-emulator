@@ -36,46 +36,47 @@ import java.nio.file.Path;
 import static org.lwjgl.opengl.GL30.*;
 
 /**
- * Superficie di rendering OpenGL (LWJGL) ospitata dentro la finestra Swing esistente
- * tramite {@code AWTGLCanvas} (lwjgl3-awt). Sostituisce, in modalità
- * {@code renderer=opengl}, il pannello Swing di {@code AmigaDisplay}: riceve il
- * framebuffer RAW 912×312 prodotto da {@code VirtualCRT} e lo presenta sulla GPU.
+ * OpenGL (LWJGL) rendering surface hosted inside the existing Swing window through
+ * {@code AWTGLCanvas} (lwjgl3-awt). With {@code renderer=opengl} it replaces the Swing panel
+ * of {@code AmigaDisplay}: it receives the RAW 912x312 framebuffer produced by
+ * {@code VirtualCRT} and presents it on the GPU.
  *
- * <p><b>Confinamento.</b> È l'unico punto del progetto che dipende da LWJGL: il core
- * di emulazione non ne sa nulla e continua a chiamare {@code AmigaDisplay.renderFrame}.
+ * <p><b>Confinement.</b> It is the only place in the project that depends on LWJGL: the
+ * emulation core knows nothing about it and keeps calling {@code AmigaDisplay.renderFrame}.
  *
- * <p><b>Prepass (sempre attivo).</b> Il RAW viene caricato in una texture e ritagliato
- * nella texture sorgente <b>ORIG</b> (ad altezza nativa) con inquadratura identica al
- * path software (ancoraggio alla riga 26, centratura orizzontale sul centro della
- * finestra DIW — vedi {@code AmigaDisplay.composeLogicalFrameCanvas}); i pixel lores
- * hanno la colonna dispari duplicata dalla pari (come {@code AmigaDisplay.copyRow}).
+ * <p><b>Prepass (always on).</b> The RAW is uploaded to a texture and cropped into the
+ * source texture <b>ORIG</b> (at native height) with the same framing as the software path
+ * (anchored on line 26, centred horizontally on the centre of the DIW window; see
+ * {@code AmigaDisplay.composeLogicalFrameCanvas}); lores pixels have the odd column
+ * duplicated from the even one (as {@code AmigaDisplay.copyRow}).
  *
- * <p><b>Presentazione.</b>
+ * <p><b>Presentation.</b>
  * <ul>
- *   <li><b>Nessuno shader</b>: la ORIG è disegnata sul backbuffer con aspect-fit (barre
- *       nere); il line-doubling è implicito nello scaling GPU.</li>
- *   <li><b>Shader</b>: la ORIG entra in una {@link ShaderChain} RetroArch
- *       ({@code .glslp}); l'ultimo pass disegna sul backbuffer col viewport aspect-fit.
- *       {@link #setShaderPreset(Path)} seleziona il preset a caldo (rebuild sul thread GL).</li>
+ *   <li><b>No shader</b>: ORIG is drawn on the back buffer with aspect fit (black bars);
+ *       line doubling is implicit in the GPU scaling.</li>
+ *   <li><b>Shader</b>: ORIG enters a RetroArch {@link ShaderChain} ({@code .glslp}); the
+ *       last pass draws on the back buffer with the aspect-fit viewport.
+ *       {@link #setShaderPreset(Path)} selects the preset live (rebuilt on the GL
+ *       thread).</li>
  * </ul>
  *
- * <p><b>Threading.</b> Tutte le chiamate GL avvengono su un thread dedicato
- * ("amiga-gl-render") che invoca {@link AWTGLCanvas#render()}. Il thread di emulazione
- * consegna i frame via {@link #present} in una mailbox (ultimo frame vince): non si
- * blocca mai, non condivide stato logico con l'emulazione.
+ * <p><b>Threading.</b> Every GL call happens on a dedicated thread ("amiga-gl-render")
+ * that calls {@link AWTGLCanvas#render()}. The emulation thread hands over frames through
+ * {@link #present} into a mailbox (last frame wins): it never blocks and shares no logical
+ * state with the emulation.
  */
 public final class GlDisplaySurface {
 
-    /** Larghezza del framebuffer RAW (912). */
+    /** Width of the RAW framebuffer (912). */
     public static final int RAW_W = 912;
-    /** Altezza del framebuffer RAW (312). */
+    /** Height of the RAW framebuffer (312). */
     public static final int RAW_H = 312;
 
-    /** Prima riga raster visibile (fine VBlank), come {@code AmigaDisplay.DISPLAY_TOP_LINE}. */
+    /** First visible raster line (end of VBlank), as {@code AmigaDisplay.DISPLAY_TOP_LINE}. */
     private static final int DISPLAY_TOP_LINE = 26;
 
-    // Dimensioni logiche del crop (es. 724×576 PAL overscan): definiscono il rettangolo
-    // sorgente ritagliato dal RAW e l'aspect ratio target del viewport.
+    // Logical size of the crop (e.g. 724x576 PAL overscan): defines the source rectangle cut
+    // from the RAW and the target aspect ratio of the viewport.
     private final int frameWidth;
     private final int frameHeight;
 
@@ -83,60 +84,60 @@ public final class GlDisplaySurface {
     private volatile boolean running;
     private Thread renderThread;
     private volatile boolean renderErrorLogged;
-    // disposeCanvas() di lwjgl3-awt NON è idempotente: alla seconda chiamata la
-    // JAWTDrawingSurface è già null e lancia NPE. Il contesto va liberato sul thread GL
-    // (nel finally del loop), ma poi il removeNotify del peer (EDT) richiama disposeCanvas:
-    // questo flag rende la seconda chiamata un no-op.
+    // lwjgl3-awt's disposeCanvas() is NOT idempotent: on the second call the
+    // JAWTDrawingSurface is already null and it throws an NPE. The context must be released
+    // on the GL thread (in the loop's finally), but then the peer's removeNotify (EDT) calls
+    // disposeCanvas again: this flag makes the second call a no-op.
     private volatile boolean glContextDisposed;
 
-    // ---- Mailbox (thread di emulazione -> thread GL) ----------------------------------
+    // ---- Mailbox (emulation thread -> GL thread) ---------------------------------------
     private final Object lock = new Object();
     private int[] mailboxPixels = new int[RAW_W * RAW_H];
-    private long submittedId;   // incrementato a ogni present()
-    private long uploadedId;    // ultimo id caricato in texture dal thread GL
-    // Geometria del crop del frame in mailbox (aggiornata in present()).
+    private long submittedId;   // incremented at every present()
+    private long uploadedId;    // last id uploaded to the texture by the GL thread
+    // Crop geometry of the frame in the mailbox (updated in present()).
     private int pendingSrcX0, pendingSrcY0, pendingSrcW, pendingSrcH;
     private boolean pendingLores;
 
-    // Dimensioni della texture sorgente ORIG (crop ad altezza NATIVA, non raddoppiata):
-    // larghezza = frameWidth, altezza = frameHeight/2. È l'"InputSize" visto dagli shader.
+    // Size of the ORIG source texture (crop at NATIVE height, not doubled): width =
+    // frameWidth, height = frameHeight/2. It is the "InputSize" the shaders see.
     private final int origW;
     private final int origH;
 
-    // ---- Stato del solo thread GL -----------------------------------------------------
-    private int texId;              // texture RAW 912×312
+    // ---- State of the GL thread only --------------------------------------------------
+    private int texId;              // RAW 912x312 texture
     private int origFbo, origTex;   // FBO+texture ORIG (prepass)
     private final int[] scratch = new int[RAW_W * RAW_H];
     private final IntBuffer uploadBuf = BufferUtils.createIntBuffer(RAW_W * RAW_H);
     private boolean newUpload;
     private int gSrcX0, gSrcY0, gSrcW, gSrcH;
-    private long frameCounter;      // frame presentati (uniform FrameCount degli shader)
+    private long frameCounter;      // frames presented (FrameCount uniform of the shaders)
 
     // ---- Shader chain -----------------------------------------------------------------
-    private volatile Path requestedShader;   // null = nessuno (passthrough)
+    private volatile Path requestedShader;   // null = none (passthrough)
     private volatile boolean shaderDirty;
-    private volatile RenderChain chain;      // costruito/usato dal thread GL; setParam dall'EDT
+    private volatile RenderChain chain;      // built/used by the GL thread; setParam from the EDT
 
-    // ---- Overlay (LED, FPS, contatore) ------------------------------------------------
-    // Immagine ARGB (frameWidth×frameHeight) composta con Java2D da AmigaDisplay e
-    // consegnata con present(): il thread GL la carica in una texture e la fonde in
-    // alpha-blend sopra l'immagine, allineata al viewport.
+    // ---- Overlay (LEDs, FPS, counter) -----------------------------------------------------
+    // ARGB image (frameWidth x frameHeight) composed with Java2D by AmigaDisplay and handed
+    // over with present(): the GL thread uploads it to a texture and alpha-blends it over
+    // the image, aligned with the viewport.
     private final int[] overlayMailbox;
     private final int[] overlayScratch;
     private final IntBuffer overlayBuf;
-    private boolean overlayPresent;          // c'è un overlay da mostrare
+    private boolean overlayPresent;          // there is an overlay to show
     private long overlaySubmittedId, overlayUploadedId;
     private int overlayTex;
 
-    // ---- Snapshot (glReadPixels, per screenshot F12) ----------------------------------
+    // ---- Snapshot (glReadPixels, for F12 screenshots)---------------------------------
     private SnapshotReq pendingSnapshot;
 
-    // ---- Overlay statico del drag&drop (copre l'intera finestra durante il drag) -------
-    // Immagine ARGB opaca (sfondo grigio congelato + quadranti DFx) composta da
-    // AmigaDisplay: mentre è presente, il thread GL la disegna a tutta finestra al posto
-    // del frame live (come il "freeze" del label nel path software).
+    // ---- Static drag-and-drop overlay (covers the whole window during the drag) -----------
+    // Opaque ARGB image (frozen grey background + DFx quadrants) composed by AmigaDisplay:
+    // while it is present, the GL thread draws it over the whole window instead of the live
+    // frame (like the label "freeze" in the software path).
     private volatile boolean dragPresent;
-    private int[] dragMailbox;               // dimensione dw*dh (allocato su richiesta)
+    private int[] dragMailbox;               // size dw*dh (allocated on demand)
     private int[] dragScratch;
     private IntBuffer dragBuf;
     private int dragW, dragH;
@@ -153,9 +154,9 @@ public final class GlDisplaySurface {
         this.overlayBuf = BufferUtils.createIntBuffer(frameWidth * frameHeight);
 
         GLData data = new GLData();
-        // Profilo compatibility (default sui driver Windows): consente fixed-function per
-        // il passthrough e la futura compilazione degli shader GLSL "classici" RetroArch.
-        data.swapInterval = 0; // la cadenza la detta l'emulazione (50/60 Hz)
+        // Compatibility profile (default on Windows drivers): allows fixed-function for the
+        // passthrough and the compilation of "classic" RetroArch GLSL shaders.
+        data.swapInterval = 0; // the cadence is set by the emulation (50/60 Hz)
         this.canvas = new AWTGLCanvas(data) {
             @Override
             public void initGL() {
@@ -171,8 +172,8 @@ public final class GlDisplaySurface {
 
             @Override
             public void disposeCanvas() {
-                // Idempotente: il thread GL la chiama nel finally del loop, poi il
-                // removeNotify del peer (EDT) la richiamerebbe su una surface già liberata.
+                // Idempotent: the GL thread calls it in the loop's finally, then the peer's
+                // removeNotify (EDT) would call it again on a surface already released.
                 if (glContextDisposed) return;
                 glContextDisposed = true;
                 super.disposeCanvas();
@@ -181,12 +182,12 @@ public final class GlDisplaySurface {
         this.canvas.setFocusable(true);
     }
 
-    /** Il componente AWT (heavyweight) da inserire nella finestra e a cui agganciare l'input. */
+    /** The AWT (heavyweight) component to put in the window and to attach the input to. */
     public Component getComponent() {
         return canvas;
     }
 
-    /** Avvia il thread di rendering GL (idempotente). Chiamare dopo che la finestra è visibile. */
+    /** Starts the GL rendering thread (idempotent). Call after the window is visible. */
     public void start() {
         if (renderThread != null) return;
         running = true;
@@ -195,7 +196,7 @@ public final class GlDisplaySurface {
         renderThread.start();
     }
 
-    /** Ferma il thread GL e rilascia la superficie. */
+    /** Stops the GL thread and releases the surface. */
     public void dispose() {
         running = false;
         Thread t = renderThread;
@@ -213,19 +214,18 @@ public final class GlDisplaySurface {
     }
 
     /**
-     * Consegna un frame RAW da presentare (chiamato dal thread di emulazione). Copia il
-     * buffer nella mailbox e calcola la geometria del crop; ritorna subito. Se il thread
-     * GL è indietro, il frame precedente non ancora caricato viene semplicemente
-     * sovrascritto (latest-frame-wins).
+     * Hands over a RAW frame to present (called by the emulation thread). Copies the buffer
+     * into the mailbox and computes the crop geometry; returns at once. If the GL thread is
+     * behind, the previous frame not yet uploaded is simply overwritten (latest frame wins).
      */
     public void present(int[] raw, int rawW, int rawH, FrameInfo info) {
         present(raw, rawW, rawH, info, null);
     }
 
     /**
-     * Come {@link #present(int[], int, int, FrameInfo)} ma con un {@code overlayArgb}
-     * (immagine ARGB {@code frameWidth×frameHeight}, {@code null} = nessun overlay) da
-     * fondere in alpha-blend sopra l'immagine (LED/FPS/contatore).
+     * Like {@link #present(int[], int, int, FrameInfo)} but with an {@code overlayArgb}
+     * (ARGB image {@code frameWidth x frameHeight}, {@code null} = no overlay) to alpha-blend
+     * over the image (LEDs/FPS/counter).
      */
     public void present(int[] raw, int rawW, int rawH, FrameInfo info, int[] overlayArgb) {
         if (raw == null || raw.length != RAW_W * RAW_H) return;
@@ -235,8 +235,8 @@ public final class GlDisplaySurface {
             int visCenterX = (info != null && info.visibleWidth() > 0)
                     ? info.visibleX() + info.visibleWidth() / 2
                     : RAW_W / 2;
-            // Stessa aritmetica di AmigaDisplay.composeLogicalFrameCanvas:
-            // finestra larga frameWidth centrata sul centro DIW, ancorata alla riga 26.
+            // Same arithmetic as AmigaDisplay.composeLogicalFrameCanvas:
+            // a frameWidth-wide window centred on the DIW centre, anchored at line 26.
             pendingSrcX0 = visCenterX - frameWidth / 2;
             pendingSrcY0 = DISPLAY_TOP_LINE;
             pendingSrcW = frameWidth;
@@ -255,9 +255,9 @@ public final class GlDisplaySurface {
     }
 
     /**
-     * Cattura il contenuto corrente del backbuffer (per screenshot F12). Chiamabile da
-     * qualsiasi thread: la lettura {@code glReadPixels} è eseguita dal thread GL al frame
-     * successivo. Ritorna {@code null} se non arriva nulla entro il timeout.
+     * Captures the current content of the back buffer (for the F12 screenshot). Callable from
+     * any thread: the {@code glReadPixels} read is done by the GL thread at the next frame.
+     * Returns {@code null} if nothing arrives within the timeout.
      */
     public BufferedImage snapshot() {
         SnapshotReq req = new SnapshotReq();
@@ -266,9 +266,9 @@ public final class GlDisplaySurface {
             lock.notifyAll();
         }
         synchronized (req) {
-            // Timeout ampio: la prima compilazione di uno shader pesante (es. crt-royale,
-            // 12 pass + LUT) occupa il thread GL per qualche secondo; uno screenshot
-            // chiesto in quel momento deve attendere, non ripiegare subito sul nero.
+            // Generous timeout: the first compilation of a heavy shader (e.g. crt-royale, 12
+            // passes + LUTs) keeps the GL thread busy for a few seconds; a screenshot asked
+            // for at that moment must wait, not fall back on black at once.
             long deadline = System.currentTimeMillis() + Long.getLong("amiga.gl.snaptimeout", 5000);
             while (!req.done) {
                 long wait = deadline - System.currentTimeMillis();
@@ -284,16 +284,16 @@ public final class GlDisplaySurface {
         return req.image;
     }
 
-    /** Richiesta di snapshot: il thread GL riempie {@code image} e segnala {@code done}. */
+    /** Snapshot request: the GL thread fills {@code image} and signals {@code done}. */
     private static final class SnapshotReq {
         volatile BufferedImage image;
         volatile boolean done;
     }
 
     /**
-     * Imposta (o rimuove, con {@code argb == null}) l'overlay statico del drag&drop: una
-     * immagine ARGB opaca {@code w×h} disegnata a tutta finestra al posto del frame live.
-     * Chiamabile dall'EDT; l'upload avviene sul thread GL.
+     * Sets (or removes, with {@code argb == null}) the static drag-and-drop overlay: an
+     * opaque ARGB image {@code w x h} drawn over the whole window instead of the live frame.
+     * Callable from the EDT; the upload happens on the GL thread.
      */
     public void setDragOverlay(int[] argb, int w, int h) {
         synchronized (lock) {
@@ -316,11 +316,11 @@ public final class GlDisplaySurface {
     }
 
     /**
-     * Seleziona (a caldo) il preset shader RetroArch. La (ri)compilazione avviene sul
-     * thread GL al frame successivo; un errore ripiega sul passthrough senza crashare.
+     * Selects (live) the RetroArch shader preset. The (re)compilation happens on the GL
+     * thread at the next frame; an error falls back on passthrough without crashing.
      *
-     * @param preset percorso del {@code .glslp} o del {@code .slangp}, o {@code null}
-     *               per "nessuno".
+     * @param preset path of the {@code .glslp} or {@code .slangp}, or {@code null} for
+     *               "none".
      */
     public void setShaderPreset(Path preset) {
         synchronized (lock) {
@@ -331,9 +331,9 @@ public final class GlDisplaySurface {
     }
 
     /**
-     * Aggiorna a caldo un parametro dello shader attivo (dal popup dei parametri).
-     * No-op se nessuno shader è attivo o il parametro non esiste. Applicato al frame
-     * successivo dal thread GL.
+     * Updates a parameter of the active shader live (from the parameters popup). No-op if no
+     * shader is active or the parameter does not exist. Applied at the next frame by the GL
+     * thread.
      */
     public void setShaderParam(String name, float value) {
         RenderChain c = chain;
@@ -359,7 +359,7 @@ public final class GlDisplaySurface {
                         System.err.println("[GL] Errore di rendering: " + t);
                     }
                 }
-                // Attende un nuovo frame (o un breve timeout per i resize del canvas).
+                // Waits for a new frame (or a short timeout, for canvas resizes).
                 synchronized (lock) {
                     try {
                         lock.wait(8);
@@ -370,7 +370,7 @@ public final class GlDisplaySurface {
                 }
             }
         } finally {
-            // La catena shader va liberata qui, col contesto ancora vivo su questo thread.
+            // The shader chain must be released here, with the context still alive on this thread.
             if (chain != null) {
                 try {
                     chain.dispose();
@@ -379,36 +379,35 @@ public final class GlDisplaySurface {
                 }
                 chain = null;
             }
-            // Rilascia il contesto GL sullo STESSO thread che lo possiede (initGL/render
-            // sono avvenuti qui). Se lo si delega all'EDT — o lo si lascia a removeNotify
-            // del peer al dispose della finestra — il teardown nativo JAWT accede a un
-            // contesto non gestibile da quel thread e provoca un crash (access violation
-            // in awt.dll). Fatto qui, il successivo removeNotify trova il contesto già
-            // rilasciato (idempotente).
+            // Release the GL context on the SAME thread that owns it (initGL/render happened
+            // here). Delegating it to the EDT, or leaving it to the peer's removeNotify when
+            // the window is disposed, makes the native JAWT teardown access a context that
+            // thread cannot handle, with a crash (access violation in awt.dll). Done here,
+            // the later removeNotify finds the context already released (idempotent).
             try {
                 canvas.disposeCanvas();
             } catch (Throwable ignore) {
-                // best-effort: contesto mai creato o già distrutto
+                // best effort: context never created or already destroyed
             }
         }
     }
 
-    /** Crea texture e stato GL (una volta, sul thread GL con contesto attivo). */
+    /** Creates textures and GL state (once, on the GL thread with the context current). */
     private void createGlObjects() {
-        // Texture RAW 912×312, aggiornata con glTexSubImage2D a ogni frame nuovo.
+        // RAW 912x312 texture, updated with glTexSubImage2D at every new frame.
         texId = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, texId);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, RAW_W, RAW_H, 0,
                 GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, 0L);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        // CLAMP_TO_BORDER + bordo nero: le colonne/righe fuori dal RAW (DIW estreme,
-        // aspect-fit) restano nere invece di spalmare il bordo.
+        // CLAMP_TO_BORDER + black border: columns/rows outside the RAW (extreme DIW, aspect
+        // fit) stay black instead of smearing the edge.
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
         glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, new float[]{0f, 0f, 0f, 1f});
 
-        // Texture + FBO ORIG (crop ad altezza nativa): sorgente del passthrough e degli shader.
+        // ORIG texture + FBO (crop at native height): source of the passthrough and the shaders.
         origTex = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, origTex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, origW, origH, 0,
@@ -423,7 +422,7 @@ public final class GlDisplaySurface {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, origTex, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // Texture overlay (LED/FPS/contatore), ARGB frameWidth×frameHeight.
+        // Overlay texture (LEDs/FPS/counter), ARGB frameWidth x frameHeight.
         overlayTex = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, overlayTex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frameWidth, frameHeight, 0,
@@ -433,15 +432,15 @@ public final class GlDisplaySurface {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-        // Texture per l'overlay statico del drag&drop (dimensione impostata al 1° upload).
+        // Texture for the static drag-and-drop overlay (size set at the first upload).
         dragTex = glGenTextures();
 
         glDisable(GL_BLEND);
         glDisable(GL_DEPTH_TEST);
         glClearColor(0f, 0f, 0f, 1f);
 
-        // La versione del contesto decide che cosa si può caricare: i preset .slangp
-        // complessi vogliono la 4.3 (vedi SlangChain.build). Vale la riga di log.
+        // The context version decides what can be loaded: complex .slangp presets want 4.3
+        // (see SlangChain.build). Worth the log line.
         System.out.println("[GL] OpenGL " + glGetString(GL_VERSION)
                 + " — " + glGetString(GL_RENDERER));
     }
@@ -454,8 +453,8 @@ public final class GlDisplaySurface {
         int cw = Math.max(1, canvas.getWidth());
         int ch = Math.max(1, canvas.getHeight());
 
-        // Durante il drag&drop: disegna l'overlay statico a tutta finestra e ignora il
-        // frame live (come il "freeze" del label nel path software).
+        // During drag-and-drop: draw the static overlay over the whole window and ignore the
+        // live frame (like the label "freeze" in the software path).
         if (dragPresent) {
             drawDragOverlay(cw, ch);
             return;
@@ -478,7 +477,7 @@ public final class GlDisplaySurface {
         glViewport(0, 0, cw, ch);
         glClear(GL_COLOR_BUFFER_BIT);
         if (!haveFrame) {
-            return; // niente ancora da mostrare; swapBuffers dal chiamante
+            return; // nothing to show yet; swapBuffers by the caller
         }
 
         if (newUpload) {
@@ -492,10 +491,10 @@ public final class GlDisplaySurface {
             frameCounter++;
         }
 
-        // Prepass: crop del RAW nella texture ORIG (altezza nativa).
+        // Prepass: crop of the RAW into the ORIG texture (native height).
         renderOrig();
 
-        // Viewport aspect-fit (aspect target = frameWidth:frameHeight) con barre nere.
+        // Aspect-fit viewport (target aspect = frameWidth:frameHeight) with black bars.
         float targetAspect = frameWidth / (float) frameHeight;
         float canvasAspect = cw / (float) ch;
         int vw, vh;
@@ -528,7 +527,7 @@ public final class GlDisplaySurface {
         handleSnapshot(cw, ch);
     }
 
-    /** Fonde l'overlay ARGB (LED/FPS/contatore) in alpha-blend sopra il viewport. */
+    /** Alpha-blends the ARGB overlay (LEDs/FPS/counter) over the viewport. */
     private void drawOverlay(int vx, int vy, int vw, int vh) {
         boolean present;
         boolean upload = false;
@@ -563,7 +562,7 @@ public final class GlDisplaySurface {
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_TEXTURE_2D);
         glColor4f(1f, 1f, 1f, 1f);
-        // Overlay caricato con la riga 0 in alto (t=0=top): NDC +1 campiona t=0.
+        // Overlay uploaded with row 0 at the top (t=0=top): NDC +1 samples t=0.
         glBegin(GL_QUADS);
         glTexCoord2f(0f, 0f); glVertex2f(-1f, 1f);
         glTexCoord2f(1f, 0f); glVertex2f(1f, 1f);
@@ -574,7 +573,7 @@ public final class GlDisplaySurface {
         glDisable(GL_BLEND);
     }
 
-    /** Disegna l'overlay statico del drag&drop a tutta finestra (immagine opaca). */
+    /** Draws the static drag-and-drop overlay over the whole window (opaque image). */
     private void drawDragOverlay(int cw, int ch) {
         int dw = 0, dh = 0;
         boolean up = false;
@@ -620,12 +619,12 @@ public final class GlDisplaySurface {
                         GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, dragBuf);
             }
         }
-        if (dragTexW == 0) return; // niente ancora caricato
+        if (dragTexW == 0) return; // nothing uploaded yet
 
         glDisable(GL_BLEND);
         glEnable(GL_TEXTURE_2D);
         glColor3f(1f, 1f, 1f);
-        // ARGB da BufferedImage (riga 0 in alto → t=0=top): NDC +1 campiona t=0.
+        // ARGB from a BufferedImage (row 0 at the top -> t=0=top): NDC +1 samples t=0.
         glBegin(GL_QUADS);
         glTexCoord2f(0f, 0f); glVertex2f(-1f, 1f);
         glTexCoord2f(1f, 0f); glVertex2f(1f, 1f);
@@ -635,7 +634,7 @@ public final class GlDisplaySurface {
         glDisable(GL_TEXTURE_2D);
     }
 
-    /** Se richiesto, legge il backbuffer (prima dello swap) in una BufferedImage. */
+    /** If requested, reads the back buffer (before the swap) into a BufferedImage. */
     private void handleSnapshot(int cw, int ch) {
         SnapshotReq req;
         synchronized (lock) {
@@ -650,7 +649,7 @@ public final class GlDisplaySurface {
         glReadPixels(0, 0, cw, ch, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, buf);
         BufferedImage img = new BufferedImage(cw, ch, BufferedImage.TYPE_INT_RGB);
         int[] dst = ((DataBufferInt) img.getRaster().getDataBuffer()).getData();
-        // glReadPixels è bottom-up: capovolgi le righe.
+        // glReadPixels is bottom-up: flip the rows.
         for (int y = 0; y < ch; y++) {
             buf.position((ch - 1 - y) * cw);
             buf.get(dst, y * cw, cw);
@@ -663,9 +662,9 @@ public final class GlDisplaySurface {
     }
 
     /**
-     * Prepass: disegna il crop del RAW nella texture ORIG (fixed-function). La ORIG è
-     * memorizzata "diritta" (t=1 = alto dell'immagine), così l'ultimo pass della catena
-     * (o il passthrough) risulta verticalmente corretto sul backbuffer.
+     * Prepass: draws the crop of the RAW into the ORIG texture (fixed-function). ORIG is
+     * stored "upright" (t=1 = top of the image), so the last pass of the chain (or the
+     * passthrough) comes out vertically right on the back buffer.
      */
     private void renderOrig() {
         glBindFramebuffer(GL_FRAMEBUFFER, origFbo);
@@ -684,9 +683,9 @@ public final class GlDisplaySurface {
 
         float u0 = gSrcX0 / (float) RAW_W;
         float u1 = (gSrcX0 + gSrcW) / (float) RAW_W;
-        float v0 = gSrcY0 / (float) RAW_H;              // top dell'immagine (riga 26)
+        float v0 = gSrcY0 / (float) RAW_H;              // top of the image (line 26)
         float v1 = (gSrcY0 + gSrcH) / (float) RAW_H;    // bottom dell'immagine
-        // FBO bottom (NDC -1) -> v1 (bottom immagine); FBO top (NDC +1) -> v0 (top).
+        // FBO bottom (NDC -1) -> v1 (image bottom); FBO top (NDC +1) -> v0 (top).
         glBegin(GL_QUADS);
         glTexCoord2f(u0, v1); glVertex2f(-1f, -1f);
         glTexCoord2f(u1, v1); glVertex2f(1f, -1f);
@@ -698,7 +697,7 @@ public final class GlDisplaySurface {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
-    /** Presentazione senza shader: ORIG -> backbuffer (aspect-fit), NEAREST. */
+    /** Presentation without a shader: ORIG -> backbuffer (aspect-fit), NEAREST. */
     private void drawPassthrough(int vx, int vy, int vw, int vh) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(vx, vy, vw, vh);
@@ -710,7 +709,7 @@ public final class GlDisplaySurface {
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, origTex);
         glColor3f(1f, 1f, 1f);
-        // ORIG diritta (t=1 = top): il vertice in alto (NDC +1) campiona t=1.
+        // ORIG upright (t=1 = top): the top vertex (NDC +1) samples t=1.
         glBegin(GL_QUADS);
         glTexCoord2f(0f, 1f); glVertex2f(-1f, 1f);
         glTexCoord2f(1f, 1f); glVertex2f(1f, 1f);
@@ -720,7 +719,7 @@ public final class GlDisplaySurface {
         glDisable(GL_TEXTURE_2D);
     }
 
-    /** (Ri)costruisce la catena shader sul thread GL. Errore -> passthrough (nessun crash). */
+    /** (Re)builds the shader chain on the GL thread. Error -> passthrough (no crash). */
     private void rebuildChain() {
         Path p;
         synchronized (lock) {
@@ -744,7 +743,7 @@ public final class GlDisplaySurface {
         }
     }
 
-    /** Copia la mailbox in {@link #scratch}, duplicando la colonna pari in lores. */
+    /** Copies the mailbox into {@link #scratch}, duplicating the even column in lores. */
     private void fillScratchLocked() {
         if (pendingLores) {
             for (int y = 0; y < RAW_H; y++) {

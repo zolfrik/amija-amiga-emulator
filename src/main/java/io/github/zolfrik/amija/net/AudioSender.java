@@ -26,23 +26,23 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
- * Lato host dell'audio: prende il chunk PCM gia' pronto e lo spedisce
- * ({@code docs/remote-play-plan.md} §4.2).
+ * Host side of the audio: takes the PCM chunk already prepared and sends it
+ * ({@code docs/remote-play-plan.md} section 4.2).
  *
- * <h2>Dove si prende, e perche' proprio li'</h2>
- * In {@code JavaSoundAudioOutput} il chunk e' gia' convertito a S16LE e ha gia' passato il
- * filtro RC e, se acceso, quello del LED. Prenderlo un istante prima di {@code line.write()}
- * costa niente, sta <b>fuori dal thread di emulazione</b>, e fa sentire all'ospite
- * <b>esattamente</b> quel che sente l'host — non una ricostruzione che gli somiglia.
+ * <h2>Where it is taken, and why there</h2>
+ * In {@code JavaSoundAudioOutput} the chunk is already converted to S16LE and has already been
+ * through the RC filter and, if on, the LED filter. Taking it an instant before
+ * {@code line.write()} costs nothing, is <b>off the emulation thread</b>, and lets the guest
+ * hear <b>exactly</b> what the host hears, not a reconstruction resembling it.
  *
- * <p>Il rovescio della medaglia va detto e sta nel {@code .tip} del popup: sull'ospite la
- * spunta «filtro LED» non ha effetto, perche' quel filtro e' gia' dentro i campioni che
- * riceve. Lo decide chi ospita.
+ * <p>The flip side must be stated, and the popup's {@code .tip} says it: on the guest the "LED
+ * filter" option has no effect, because that filter is already inside the samples it
+ * receives. The host decides it.
  *
- * <h2>Mai accodare</h2>
- * Come per il video: se il socket non e' pronto il blocco si salta. Un blocco audio in
- * ritardo non serve a nessuno — l'ospite lo scarterebbe comunque, perche' il suo indice
- * sarebbe gia' passato.
+ * <h2>Never queue</h2>
+ * As for the video: if the socket is not ready the block is skipped. A late audio block is of no
+ * use to anyone: the guest would discard it anyway, because its index would already have
+ * passed.
  */
 public final class AudioSender {
 
@@ -71,10 +71,10 @@ public final class AudioSender {
     }
 
     /**
-     * Codifica e spedisce un chunk.
+     * Encodes and sends a chunk.
      *
-     * @param pcm    S16LE stereo interlacciato, {@code frames*4} byte
-     * @param frames campioni per canale
+     * @param pcm    interleaved stereo S16LE, {@code frames*4} bytes
+     * @param frames samples per channel
      */
     public void sendBlock(byte[] pcm, int frames, VideoSender.FragmentSink sink)
             throws IOException {
@@ -117,15 +117,15 @@ public final class AudioSender {
             sink.send(fragment, RemotePlayProtocol.FRAGMENT_HEADER + n);
         }
 
-        // L'indice avanza SEMPRE, anche se il blocco non e' partito: e' un orologio, non un
-        // conteggio di cio' che e' arrivato. Se avanzasse solo sui blocchi spediti, l'ospite
-        // non avrebbe modo di accorgersi di un buco.
+        // The index ALWAYS advances, even if the block did not leave: it is a clock, not a
+        // count of what arrived. If it advanced only on the blocks sent, the guest would have no
+        // way to notice a gap.
         sampleIndex += frames;
         blocksSent++;
         bytesSent += blobLength;
     }
 
-    /** Riparte da zero: nuova sessione, nuovo orologio dei campioni. */
+    /** Starts from scratch: new session, new sample clock. */
     public void reset() {
         sampleIndex = 0;
         blockId = 0;
@@ -143,7 +143,7 @@ public final class AudioSender {
         return blocksDropped;
     }
 
-    /** Bitrate medio del solo audio, in kbit/s, sul rate di uscita indicato. */
+    /** Average bit rate of the audio alone, in kbit/s, at the given output rate. */
     public double bitrateKbps(int sampleRate) {
         if (blocksSent == 0) {
             return 0;

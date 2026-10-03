@@ -27,20 +27,20 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 /**
- * Lato host del video: codifica un frame contro l'ultimo riferimento confermato dall'ospite
- * e lo taglia in frammenti da spedire ({@code docs/remote-play-plan.md} §4.1).
+ * Host side of the video: encodes a frame against the last reference the guest confirmed and
+ * cuts it into fragments to send ({@code docs/remote-play-plan.md} section 4.1).
  *
- * <p>Non conosce i socket. Emette payload <b>in chiaro</b> a un {@link FragmentSink}, che li
- * sigilla e li spedisce. E' cio' che rende collaudabile senza rete tutta la parte che puo'
- * davvero sbagliare: scelta del riferimento, frammentazione, contabilita' degli ACK.
+ * <p>It does not know the sockets. It emits <b>plaintext</b> payloads to a {@link FragmentSink},
+ * which seals and sends them. That makes testable without a network the whole part that can
+ * really go wrong: choice of the reference, fragmentation, ACK accounting.
  *
- * <p>Non e' thread-safe: vive sul thread di codifica, che e' l'unico a chiamarlo. L'unico
- * campo condiviso e' l'ACK, che arriva dal thread di rete ed e' {@code volatile} — una
- * lettura leggermente vecchia costa al massimo un delta piu' grosso, mai un frame sbagliato.
+ * <p>Not thread-safe: it lives on the encoding thread, the only one that calls it. The only
+ * shared field is the ACK, which arrives from the network thread and is {@code volatile}: a
+ * slightly stale read costs at most a bigger delta, never a wrong frame.
  */
 public final class VideoSender implements AutoCloseable {
 
-    /** Riceve il payload in chiaro di un datagramma. Chi lo implementa lo sigilla e lo manda. */
+    /** Receives the plaintext payload of a datagram. Its implementation seals and sends it. */
     public interface FragmentSink {
         void send(byte[] plain, int length) throws IOException;
     }
@@ -72,14 +72,14 @@ public final class VideoSender implements AutoCloseable {
     }
 
     /**
-     * Codifica e spedisce un frame.
+     * Encodes and sends a frame.
      *
-     * <p>Il riferimento e' <b>l'ultimo frame che l'ospite ha confermato</b>, se l'anello lo
-     * tiene ancora; altrimenti si manda un keyframe. Non c'e' nessun altro caso: niente
-     * keyframe periodici, niente NACK, niente ritrasmissioni (§4.1).
+     * <p>The reference is <b>the last frame the guest confirmed</b>, if the ring still holds it;
+     * otherwise a keyframe is sent. There is no other case: no periodic keyframes, no NACK, no
+     * retransmissions (section 4.1).
      *
-     * @return {@code true} se il frame e' partito, {@code false} se e' stato saltato perche'
-     *         troppo grande per la frammentazione
+     * @return {@code true} if the frame left, {@code false} if it was skipped because too large
+     *         for the fragmentation
      */
     public boolean sendFrame(int[] pixels, FrameInfo info, FragmentSink sink) throws IOException {
         long acked = ackedFrameId;
@@ -92,10 +92,10 @@ public final class VideoSender implements AutoCloseable {
 
         int blobLength = VideoFrameHeader.SIZE + payloadLength;
         if (blobLength > BLOB_CAPACITY) {
-            // Non e' mai accaduto sulle scene misurate — il keyframe piu' caro e' 22 KB
-            // contro i 74 disponibili — ma un frame che non entra nella frammentazione va
-            // saltato, non troncato: meglio un frame in meno che uno corrotto. Il frame
-            // successivo ritenta, e non essendo stato ACKato nulla si perde.
+            // Never happened on the scenes measured (the most expensive keyframe is 22 KB against
+            // the 74 available), but a frame that does not fit the fragmentation must be
+            // skipped, not truncated: better one frame less than a corrupt one. The next frame
+            // retries, and since nothing was ACKed nothing is lost.
             framesTooBig++;
             nextFrameId++;
             return false;
@@ -133,12 +133,12 @@ public final class VideoSender implements AutoCloseable {
     }
 
     /**
-     * Registra l'ACK arrivato dall'ospite.
+     * Records the ACK arrived from the guest.
      *
-     * <p>Gli ACK sono dati di rete come tutti gli altri: si accettano solo se avanzano e
-     * solo se parlano di un frame che l'host ha davvero spedito. Un ACK "dal futuro" non
-     * romperebbe niente — l'anello non lo terrebbe e si finirebbe su un keyframe — ma
-     * scartarlo qui evita di doverci ragionare piu' in la'.
+     * <p>ACKs are network data like any other: they are accepted only if they advance and only if
+     * they refer to a frame the host really sent. An ACK "from the future" would break nothing
+     * (the ring would not hold it and a keyframe would follow) but discarding it here avoids
+     * having to reason about it further on.
      */
     public void noteAck(long frameId) {
         if (frameId > ackedFrameId && frameId < nextFrameId) {
@@ -146,7 +146,7 @@ public final class VideoSender implements AutoCloseable {
         }
     }
 
-    /** Riparte da zero: nuova generazione di sessione, nessun riferimento condiviso. */
+    /** Starts from scratch: new session generation, no shared reference. */
     public void reset() {
         ring.clear();
         ackedFrameId = -1;

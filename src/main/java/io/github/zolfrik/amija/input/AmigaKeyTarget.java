@@ -21,54 +21,51 @@
 package io.github.zolfrik.amija.input;
 
 /**
- * Dove finiscono i tasti tradotti in codici grezzi Amiga.
+ * Where the keys translated into Amiga raw codes end up.
  *
- * <p>Esiste per una ragione sola, ed e' il gioco a distanza: {@code AmigaKeyAdapter}
- * contiene la traduzione da {@code KeyEvent} AWT ai 128 codici grezzi, ed e' 500 righe di
- * mappe piu' tre trappole risolte a caro prezzo — il keyup mancante del primo shift su
- * Windows, il Ctrl sintetico che AltGr si porta dietro, le accentate italiane. Sull'ospite
- * quei tasti non devono andare a una {@code Keyboard} (che li' non esiste: l'ospite non
- * emula niente) ma dentro un pacchetto di rete.
+ * <p>It exists for one reason, remote play: {@code AmigaKeyAdapter} contains the translation
+ * from AWT {@code KeyEvent}s to the 128 raw codes, 500 lines of maps plus three traps solved at
+ * great cost (the missing key-up of the first shift on Windows, the synthetic Ctrl AltGr
+ * brings along, the Italian accented letters). On the guest those keys must go not to a
+ * {@code Keyboard} (which does not exist there: the guest emulates nothing) but into a network
+ * packet.
  *
- * <p>Con questa interfaccia cambia solo <b>dove</b> vanno: la traduzione resta una, e resta
- * quella collaudata. Duplicarla per l'ospite avrebbe voluto dire mantenerne due copie e
- * scoprire le stesse trappole una seconda volta.
+ * <p>With this interface only <b>where</b> they go changes: the translation stays one, the
+ * tested one. Duplicating it for the guest would mean maintaining two copies and discovering
+ * the same traps a second time.
  */
 public interface AmigaKeyTarget {
 
-    /** @param rawKeyNum codice grezzo Amiga a 7 bit (vedi le costanti {@code KEY_*}) */
+    /** @param rawKeyNum 7-bit Amiga raw code (see the {@code KEY_*} constants) */
     void pressKey(int rawKeyNum);
 
     void releaseKey(int rawKeyNum);
 
     /**
-     * Vero mentre CTRL+Amiga+Amiga risulta premuto e la macchina e' tenuta in reset dalla
-     * tastiera.
+     * True while CTRL+Amiga+Amiga reads as held and the keyboard keeps the machine in reset.
      *
-     * <p>Serve al poller di {@code AmigaKeyAdapter}, che mentre la combinazione e' premuta
-     * sorveglia lo stato <i>fisico</i> dei tre tasti: se Windows perde uno dei keyup — e coi
-     * due Alt lo perde — la macchina resterebbe ferma in reset per sempre.
+     * <p>Used by the poller of {@code AmigaKeyAdapter}, which while the combination is held
+     * watches the <i>physical</i> state of the three keys: if Windows loses one of the key-ups
+     * (and with the two Alts it does), the machine would stay in reset forever.
      *
-     * <p>Il default e' {@code false} ed e' la risposta giusta per l'ospite del gioco a
-     * distanza: li' non c'e' nessuna macchina da tenere in reset, e la decisione se il
-     * reset debba avvenire o no appartiene comunque all'host (piano §4.3), non a chi
-     * preme i tasti.
+     * <p>The default is {@code false}, the right answer for the remote play guest: there is no
+     * machine there to keep in reset, and whether the reset should happen belongs to the host
+     * anyway (plan section 4.3), not to whoever presses the keys.
      */
     default boolean isResetComboHeld() {
         return false;
     }
 
     /**
-     * Vero se premere {@code rawKeyNum} <b>completerebbe adesso</b> CTRL+Amiga+Amiga, cioe'
-     * se gli altri due tasti della terna risultano gia' premuti sulla macchina.
+     * True if pressing {@code rawKeyNum} <b>would complete</b> CTRL+Amiga+Amiga <b>now</b>, i.e.
+     * if the other two keys of the triple already read as held on the machine.
      *
-     * <p>La usa il filtro dell'ospite ({@code input.RemoteInputApplier}) per il caso che il
-     * suo solo pacchetto non puo' vedere: la terna formata <b>a cavallo delle due
-     * tastiere</b>, con l'host che ne tiene due e l'ospite che porta la terza.
+     * <p>Used by the guest filter ({@code input.RemoteInputApplier}) for the case its packet alone
+     * cannot see: the triple formed <b>across the two keyboards</b>, with the host holding two
+     * and the guest bringing the third.
      *
-     * <p>Il default e' {@code false} ed e' la risposta giusta dove non c'e' una macchina
-     * dietro — l'ospite del gioco a distanza, i doppi di collaudo — perche' li' non c'e'
-     * nessuna terna da completare.
+     * <p>The default is {@code false}, the right answer where there is no machine behind (the
+     * remote play guest, the test doubles), because there is no triple to complete there.
      */
     default boolean resetComboPendingOn(int rawKeyNum) {
         return false;

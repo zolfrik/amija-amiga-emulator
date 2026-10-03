@@ -25,13 +25,13 @@ import java.io.InputStream;
 import java.util.Properties;
 
 /**
- * Versione e data di build dell'emulatore, lette da {@code /version.properties}.
+ * Version and build date of the emulator, read from {@code /version.properties}.
  *
- * <p>Il file è un template in {@code src/main/resources}: Maven lo filtra durante la
- * build sostituendo {@code ${project.version}} e {@code ${maven.build.timestamp}}, così
- * la versione mostrata a runtime è sempre quella del pom con cui il jar è stato prodotto.
- * Se il file manca o non è stato filtrato (p.es. classi eseguite senza passare da Maven)
- * i valori ricadono su {@code "dev"} / stringa vuota.
+ * <p>The file is a template in {@code src/main/resources}: Maven filters it during the build,
+ * replacing {@code ${project.version}} and {@code ${maven.build.timestamp}}, so the version
+ * shown at run time is always that of the pom the jar was produced with. If the file is
+ * missing or was not filtered (e.g. classes run without going through Maven) the values fall
+ * back on {@code "dev"} / an empty string.
  */
 public final class Version {
 
@@ -47,7 +47,7 @@ public final class Version {
                 p.load(in);
             }
         } catch (IOException e) {
-            // risorsa illeggibile: si resta sui default
+            // unreadable resource: keep the defaults
         }
         VERSION = clean(p.getProperty("version"), UNKNOWN_VERSION);
         BUILD_DATE = clean(p.getProperty("build.date"), "");
@@ -55,17 +55,17 @@ public final class Version {
 
     private Version() {}
 
-    /** Versione dell'emulatore (p.es. {@code "1.0.0"}), o {@code "dev"} se ignota. */
+    /** Emulator version (e.g. {@code "1.0.0"}), or {@code "dev"} if unknown. */
     public static String version() {
         return VERSION;
     }
 
-    /** Data/ora di build (formato {@code yyyy-MM-dd HH:mm}), o stringa vuota se ignota. */
+    /** Build date/time (format {@code yyyy-MM-dd HH:mm}), or an empty string if unknown. */
     public static String buildDate() {
         return BUILD_DATE;
     }
 
-    /** Un placeholder non sostituito (build fuori da Maven) vale quanto un valore assente. */
+    /** An unreplaced placeholder (build outside Maven) is as good as a missing value. */
     private static String clean(String value, String fallback) {
         if (value == null) return fallback;
         String v = value.trim();

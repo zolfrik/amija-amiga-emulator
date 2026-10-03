@@ -29,99 +29,96 @@ import java.nio.file.Path;
 import java.util.Arrays;
 
 /**
- * Normalizza il file di una ROM Kickstart nell'immagine che il socket ROM
- * dell'Amiga 500 vedrebbe davvero, e ne dice l'identità.
+ * Normalises the file of a Kickstart ROM into the image the Amiga 500 ROM socket would
+ * really see, and tells its identity.
  *
- * <p>I dump in circolazione non sono immagini "pulite": la stessa ROM gira in file
- * con header aggiuntivi, code appese, metà duplicate o cifrate. Caricarli così
- * com'erano significava o un rifiuto secco (dimensione non ammessa da
- * {@link io.github.zolfrik.amija.custom.Gary#setRomSize(int)}) o uno schermo nero
- * senza spiegazione. Questa classe riconosce le varianti, riporta l'immagine alla
- * forma canonica — una potenza di due, che è ciò che il mirroring hardware richiede —
- * e dice a chi la usa se ha senso metterla nel socket di un A500.
+ * <p>The dumps around are not "clean" images: the same ROM circulates in files with extra
+ * headers, appended tails, duplicated or encrypted halves. Loading them as they were meant
+ * either a flat refusal (size not allowed by
+ * {@link io.github.zolfrik.amija.custom.Gary#setRomSize(int)}) or a black screen with no
+ * explanation. This class recognises the variants, brings the image back to the canonical
+ * form (a power of two, which the hardware mirroring requires) and tells the user whether
+ * it makes sense in an A500 socket.
  *
- * <h2>Varianti riconosciute</h2>
+ * <h2>Variants recognised</h2>
  * <ul>
- *   <li><b>Cifrate Cloanto</b> — il file comincia con {@code AMIROMTYPE1} seguito dai
- *       dati in XOR con {@code rom.key}. Servono la chiave dell'utente: viene cercata
- *       accanto al file ROM e poi nella app home. Senza chiave l'immagine è
- *       inutilizzabile e viene segnalata come tale.</li>
- *   <li><b>Header di loader</b> — le immagini "for use with KickIt" antepongono 8 byte
- *       di intestazione. L'inizio vero si trova cercando la firma della ROM.</li>
- *   <li><b>Code appese</b> — dump "[with bonus]" o "[o][b]" con qualche kB di dati
- *       extra in fondo: si tronca alla potenza di due.</li>
- *   <li><b>Overdump</b> — dump "[o]" da 512 KB che sono due copie identiche della
- *       stessa ROM da 256 KB. Sul bus il risultato sarebbe identico (il mirroring
- *       hardware fa la stessa cosa), ma collassarli rende onesta la dimensione
- *       riportata e l'indirizzo base.</li>
+ *   <li><b>Cloanto encrypted</b>: the file starts with {@code AMIROMTYPE1} followed by the
+ *       data XORed with {@code rom.key}. The user's key is needed: it is looked for next to
+ *       the ROM file and then in the app home. Without the key the image is unusable and
+ *       reported as such.</li>
+ *   <li><b>Loader header</b>: images "for use with KickIt" prepend an 8-byte header. The
+ *       real start is found by looking for the ROM signature.</li>
+ *   <li><b>Appended tails</b>: "[with bonus]" or "[o][b]" dumps with a few kB of extra data
+ *       at the end: truncated to the power of two.</li>
+ *   <li><b>Overdump</b>: 512 KB "[o]" dumps that are two identical copies of the same
+ *       256 KB ROM. On the bus the result would be identical (the hardware mirroring does
+ *       the same), but collapsing them makes the reported size and base address honest.</li>
  * </ul>
  *
- * <h2>Compatibilità con l'A500</h2>
- * Le prime due longword di ogni ROM Amiga sono i due vettori che il 68000 legge al reset:
- * lo stack pointer iniziale e il PC. È il <b>secondo</b> — il PC — a dire a quale
- * indirizzo la ROM si aspetta di essere mappata, ed è il criterio con cui si distingue un
- * Kickstart da socket da tutto il resto:
+ * <h2>A500 compatibility</h2>
+ * The first two longwords of every Amiga ROM are the two vectors the 68000 reads at reset:
+ * the initial stack pointer and the PC. The <b>second</b>, the PC, tells at which address
+ * the ROM expects to be mapped, and it is the criterion that separates a socket Kickstart
+ * from everything else:
  * <ul>
- *   <li>{@code $F80000–$FFFFFF} → Kickstart da socket: è quello che l'A500 può usare;</li>
- *   <li>{@code $F00000–$F7FFFF} → extended ROM (CDTV/CD32): è la ROM <i>aggiuntiva</i>
- *       di quelle macchine, non un Kickstart;</li>
- *   <li>qualunque altro indirizzo (tipicamente {@code $200000}) → immagine rilocata per
- *       ReKick/KickIt, che va caricata in Fast RAM da un programma, non messa in ROM.</li>
+ *   <li>{@code $F80000-$FFFFFF} -> socket Kickstart: what the A500 can use;</li>
+ *   <li>{@code $F00000-$F7FFFF} -> extended ROM (CDTV/CD32): the <i>additional</i> ROM of
+ *       those machines, not a Kickstart;</li>
+ *   <li>any other address (typically {@code $200000}) -> image relocated for
+ *       ReKick/KickIt, to be loaded into Fast RAM by a program, not put in ROM.</li>
  * </ul>
  *
- * <p>Attenzione a non leggere la <em>prima</em> longword come codice: nei Kickstart
- * Commodore vale {@code $11114EF9} / {@code $11144EF9} e quel {@code $4EF9} <i>sembra</i>
- * un {@code JMP}, ma il 68000 quella longword la carica in A7. La DiagROM, che non è
- * Commodore, ci mette {@code $11144447} ("DG") e funziona benissimo lo stesso.
+ * <p>Do not read the <em>first</em> longword as code: in Commodore Kickstarts it is
+ * {@code $11114EF9} / {@code $11144EF9} and that {@code $4EF9} <i>looks like</i> a
+ * {@code JMP}, but the 68000 loads that longword into A7. DiagROM, which is not Commodore,
+ * puts {@code $11144447} ("DG") there and works just as well.
  *
  * @author alessio.carotenuto
  */
 public final class KickstartImage {
 
-    /** Firma dei file cifrati Cloanto (seguita dai dati in XOR con {@code rom.key}). */
+    /** Signature of the Cloanto encrypted files (followed by the data XORed with {@code rom.key}). */
     private static final String CLOANTO_MAGIC = "AMIROMTYPE1";
 
-    /** Nome del file con la chiave di decifratura, se l'utente la possiede. */
+    /** Name of the file with the decryption key, if the user has it. */
     public static final String ROM_KEY_FILE = "rom.key";
 
     /**
-     * Dimensione minima accettata. Sotto gli 8 KB non c'è alcuna ROM Amiga sensata
-     * (la più piccola è il bootstrap dell'A1000, appunto 8 KB).
+     * Minimum size accepted. Below 8 KB there is no sensible Amiga ROM (the smallest is the
+     * A1000 bootstrap, exactly 8 KB).
      */
     private static final int MIN_SIZE = 8 * 1024;
 
     /**
-     * Dimensione massima: la finestra che Gary decodifica per il socket ROM
-     * ({@code $F80000–$FFFFFF}). Un'immagine più grande non sarebbe indirizzabile.
+     * Maximum size: the window Gary decodes for the ROM socket ({@code $F80000-$FFFFFF}). A
+     * larger image would not be addressable.
      */
     private static final int MAX_SIZE = 512 * 1024;
 
     /**
-     * Byte di identificazione con cui si apre ogni ROM Amiga (Kickstart, extended ROM,
-     * DiagROM). Le prime due longword dell'immagine sono i due vettori che il 68000
-     * legge al reset — SSP e PC — e Commodore usa lo SSP anche come marcatore:
-     * {@code $11} seguito da un codice di dimensione ({@code $11} = 256 KB,
-     * {@code $14} = 512 KB).
+     * Identification byte every Amiga ROM opens with (Kickstart, extended ROM, DiagROM). The
+     * first two longwords of the image are the two vectors the 68000 reads at reset, SSP and
+     * PC, and Commodore also uses the SSP as a marker: {@code $11} followed by a size code
+     * ({@code $11} = 256 KB, {@code $14} = 512 KB).
      */
     private static final int ROM_ID = 0x11;
 
     /**
-     * {@code JMP <abs.l>}: nei Kickstart Commodore lo SSP iniziale vale
-     * {@code $11114EF9} / {@code $11144EF9}, e quel {@code $4EF9} è solo parte del
-     * marcatore, non un'istruzione (il 68000 quella longword la carica in A7). Serve
-     * comunque a distinguere le immagini Commodore da altre ROM: la DiagROM, per dire,
-     * usa {@code $11144447} ("DG").
+     * {@code JMP <abs.l>}: in Commodore Kickstarts the initial SSP is {@code $11114EF9} /
+     * {@code $11144EF9}, and that {@code $4EF9} is only part of the marker, not an
+     * instruction (the 68000 loads that longword into A7). It still tells Commodore images
+     * from other ROMs: DiagROM, for instance, uses {@code $11144447} ("DG").
      */
     private static final int JMP_ABS_L = 0x4EF9;
 
-    /** Inizio della finestra che l'A500 decodifica per il socket ROM. */
+    /** Start of the window the A500 decodes for the ROM socket. */
     public static final int SOCKET_WINDOW_START = 0xF80000;
 
-    /** Word di riconoscimento di una {@code struct Resident}. */
+    /** Match word of a {@code struct Resident}. */
     private static final int RTC_MATCHWORD = 0x4AFC;
 
     // =========================================================================
-    // Stato
+    // State
     // =========================================================================
 
     private final Path    source;
@@ -144,23 +141,23 @@ public final class KickstartImage {
     }
 
     // =========================================================================
-    // Caricamento
+    // Loading
     // =========================================================================
 
     /**
-     * Legge e normalizza il file indicato.
+     * Reads and normalises the given file.
      *
-     * @throws IOException                se il file non è leggibile
-     * @throws UnsupportedRomException    se il contenuto non è un'immagine ROM Amiga
-     *                                    utilizzabile (cifrata senza chiave, dimensione
-     *                                    impossibile, firma assente)
+     * @throws IOException                if the file cannot be read
+     * @throws UnsupportedRomException    if the content is not a usable Amiga ROM image
+     *                                    (encrypted without a key, impossible size,
+     *                                    signature missing)
      */
     public static KickstartImage load(Path file) throws IOException {
         byte[] raw = Files.readAllBytes(file);
         return of(raw, file);
     }
 
-    /** Variante che lavora su byte già in memoria. {@code source} può essere null. */
+    /** Variant working on bytes already in memory. {@code source} may be null. */
     public static KickstartImage of(byte[] raw, Path source) throws IOException {
         if (raw == null || raw.length == 0) {
             throw new UnsupportedRomException("il file è vuoto");
@@ -169,7 +166,7 @@ public final class KickstartImage {
         StringBuilder note = new StringBuilder();
         byte[] work = raw;
 
-        // 1. Immagini cifrate Cloanto: senza rom.key non c'è niente da fare.
+        // 1. Cloanto encrypted images: without rom.key there is nothing to do.
         if (startsWith(work, CLOANTO_MAGIC)) {
             byte[] key = findRomKey(source);
             if (key == null) {
@@ -181,15 +178,15 @@ public final class KickstartImage {
             note.append("decifrata con ").append(ROM_KEY_FILE).append("; ");
         }
 
-        // 2. Header di loader anteposti all'immagine vera.
+        // 2. Loader headers prepended to the real image.
         int start = findImageStart(work);
         if (start > 0) {
             note.append("scartati ").append(start).append(" byte di header; ");
         }
         int available = work.length - start;
 
-        // 3. Il mirroring hardware ragiona per maschere: la dimensione dev'essere una
-        //    potenza di due. Le code appese ai dump si perdono qui.
+        // 3. The hardware mirroring works with masks: the size must be a power of two. The
+        //    tails appended to dumps are lost here.
         int size = Math.min(largestPowerOfTwoAtMost(available), MAX_SIZE);
         if (size < MIN_SIZE) {
             throw new UnsupportedRomException(
@@ -201,7 +198,7 @@ public final class KickstartImage {
         }
         byte[] image = Arrays.copyOfRange(work, start, start + size);
 
-        // 4. Overdump: metà identiche significano una ROM più piccola scritta due volte.
+        // 4. Overdump: identical halves mean a smaller ROM written twice.
         int collapsed = 0;
         while (image.length >= 2 * MIN_SIZE && halvesIdentical(image)) {
             image = Arrays.copyOf(image, image.length / 2);
@@ -212,17 +209,17 @@ public final class KickstartImage {
                 .append(" byte; ");
         }
 
-        // 5. Firma. Senza il byte di identificazione non è una ROM Amiga: le cartucce
-        //    freezer e le metà di un dump interlacciato finiscono qui.
+        // 5. Signature. Without the identification byte it is not an Amiga ROM: freezer
+        //    cartridges and the halves of an interleaved dump end up here.
         if ((image[0] & 0xFF) != ROM_ID) {
             throw new UnsupportedRomException(String.format(
                     "non è una ROM Amiga: l'immagine dovrebbe iniziare con $11, trovato $%08X",
                     readLong(image, 0)));
         }
 
-        // Il PC di reset è la seconda longword: è il 68000 a leggerlo da lì. Un valore
-        // dispari significa che quella longword non è un vettore — l'immagine non è
-        // avviabile (tipicamente è metà di un dump a byte alternati).
+        // The reset PC is the second longword: the 68000 reads it from there. An odd value
+        // means that longword is not a vector: the image is not bootable (typically half of
+        // a byte-interleaved dump).
         int resetPc = readLong(image, 4) & 0xFFFFFF;
         if ((resetPc & 1) != 0) {
             throw new UnsupportedRomException(String.format(
@@ -241,72 +238,72 @@ public final class KickstartImage {
     // Interrogazione
     // =========================================================================
 
-    /** L'immagine normalizzata, pronta per {@link ROM#ROM(byte[])}. */
+    /** The normalised image, ready for {@link ROM#ROM(byte[])}. */
     public byte[] data() { return data; }
 
-    /** Dimensione dell'immagine normalizzata: sempre una potenza di due. */
+    /** Size of the normalised image: always a power of two. */
     public int size() { return data.length; }
 
     /**
-     * Indirizzo a cui la ROM si aspetta di essere mappata, dedotto dall'indirizzo
-     * base che Gary userebbe per questa dimensione ({@code $1000000 - size}).
+     * Address at which the ROM expects to be mapped, from the base address Gary would use
+     * for this size ({@code $1000000 - size}).
      */
     public int mapBase() { return 0x1000000 - data.length; }
 
-    /** Destinazione del {@code JMP} del vettore di reset. */
+    /** Destination of the {@code JMP} of the reset vector. */
     public int resetPc() { return resetPc; }
 
     /**
-     * Identificazione ricavata dal resident tag di {@code exec.library}
-     * (p.es. {@code "exec 34.2 (28 Oct 1987)"}), oppure null se non trovato.
+     * Identification taken from the resident tag of {@code exec.library} (e.g.
+     * {@code "exec 34.2 (28 Oct 1987)"}), or null if not found.
      */
     public String identifier() { return identifier; }
 
-    /** true se il checksum a 32 bit con riporto vale {@code $FFFFFFFF} (ROM integra). */
+    /** True if the 32-bit checksum with carry is {@code $FFFFFFFF} (intact ROM). */
     public boolean isChecksumValid() { return checksumValid; }
 
-    /** Descrizione delle trasformazioni applicate al file, vuota se nessuna. */
+    /** Description of the transformations applied to the file, empty if none. */
     public String normalizationNote() { return normalizationNote; }
 
-    /** File di provenienza, se noto. */
+    /** Source file, if known. */
     public Path source() { return source; }
 
-    /** Esito della classificazione: dove la ROM si aspetta di vivere. */
+    /** Outcome of the classification: where the ROM expects to live. */
     public enum Compatibility {
-        /** Kickstart da socket: mappabile in {@code $F80000–$FFFFFF}, va bene sull'A500. */
+        /** Socket Kickstart: mappable at {@code $F80000-$FFFFFF}, fine on the A500. */
         SOCKET_ROM,
-        /** Extended ROM CDTV/CD32: si mappa a {@code $F00000}, non è un Kickstart. */
+        /** CDTV/CD32 extended ROM: mapped at {@code $F00000}, not a Kickstart. */
         EXTENDED_ROM,
-        /** Immagine rilocata (ReKick/KickIt): il reset punta in RAM, serve un loader. */
+        /** Relocated image (ReKick/KickIt): the reset points into RAM, a loader is needed. */
         RELOCATED,
-        /** Ha il byte di identificazione ma il vettore di reset non porta da nessuna parte. */
+        /** Has the identification byte but the reset vector leads nowhere. */
         NOT_A_KICKSTART
     }
 
-    /** Dove la ROM si aspetta di essere mappata, dedotto dal vettore di reset. */
+    /** Where the ROM expects to be mapped, from the reset vector. */
     public Compatibility compatibility() {
-        // Nel socket dell'A500 ci sta una EPROM da 256 o 512 KB, e non esistono
-        // Kickstart più piccoli. Un'immagine sotto i 256 KB che pure resetta nella
-        // finestra del socket è qualcos'altro — tipicamente il bootstrap dell'A1000,
-        // che carica il Kickstart da disco nella WCS (RAM scrivibile che l'A500 non ha).
+        // The A500 socket holds a 256 or 512 KB EPROM, and there are no smaller Kickstarts.
+        // An image below 256 KB that still resets into the socket window is something else:
+        // typically the A1000 bootstrap, which loads the Kickstart from disk into the WCS
+        // (writable RAM the A500 does not have).
         if (data.length < 256 * 1024)               return Compatibility.NOT_A_KICKSTART;
         if (resetPc >= SOCKET_WINDOW_START)         return Compatibility.SOCKET_ROM;
         if (resetPc >= 0xF00000)                    return Compatibility.EXTENDED_ROM;
-        // Le immagini per ReKick/KickIt sono Kickstart Commodore veri, solo rilocati in
-        // Fast RAM: il marcatore $4EF9 le distingue da un dump che è finito qui per caso.
+        // ReKick/KickIt images are real Commodore Kickstarts, only relocated into Fast RAM:
+        // the $4EF9 marker tells them from a dump that ended up here by chance.
         if (commodoreMarker && resetPc >= 0x200000) return Compatibility.RELOCATED;
         return Compatibility.NOT_A_KICKSTART;
     }
 
     /**
-     * true se la ROM può essere messa nel socket di un A500: il suo vettore di reset
-     * punta dentro la finestra {@code $F80000–$FFFFFF} che Gary decodifica.
+     * True if the ROM can go in an A500 socket: its reset vector points inside the window
+     * {@code $F80000-$FFFFFF} that Gary decodes.
      */
     public boolean isSocketRom() {
         return compatibility() == Compatibility.SOCKET_ROM;
     }
 
-    /** Motivo tecnico dell'incompatibilità per log e diagnostica, o null se compatibile. */
+    /** Technical reason for the incompatibility for logs and diagnostics, or null if compatible. */
     public String incompatibilityReason() {
         switch (compatibility()) {
             case EXTENDED_ROM:
@@ -324,7 +321,7 @@ public final class KickstartImage {
         }
     }
 
-    /** Riga di riepilogo per i log e per il popup di configurazione. */
+    /** Summary line for the logs and the configuration popup. */
     public String describe() {
         StringBuilder sb = new StringBuilder();
         sb.append(size() / 1024).append(" KB @ $").append(String.format("%06X", mapBase()));
@@ -334,7 +331,7 @@ public final class KickstartImage {
         return sb.toString();
     }
 
-    /** Sollevata quando il file non è un'immagine ROM Amiga utilizzabile. */
+    /** Thrown when the file is not a usable Amiga ROM image. */
     public static final class UnsupportedRomException extends IOException {
         public UnsupportedRomException(String message) { super(message); }
     }
@@ -344,9 +341,9 @@ public final class KickstartImage {
     // =========================================================================
 
     /**
-     * Offset a cui comincia l'immagine vera. Gli header dei loader hanno lunghezza
-     * fissa e nota, quindi basta provare le posizioni candidate e prendere la prima
-     * che espone la firma della ROM.
+     * Offset at which the real image starts. Loader headers have a fixed, known length, so
+     * trying the candidate positions and taking the first that shows the ROM signature is
+     * enough.
      */
     private static int findImageStart(byte[] b) {
         for (int off : new int[]{0, 8, 512}) {
@@ -374,8 +371,8 @@ public final class KickstartImage {
     }
 
     /**
-     * Cerca {@code rom.key}: prima accanto al file ROM (dove Cloanto lo distribuisce),
-     * poi nella app home.
+     * Looks for {@code rom.key}: first next to the ROM file (where Cloanto distributes it),
+     * then in the app home.
      */
     private static byte[] findRomKey(Path romFile) throws IOException {
         if (romFile != null) {
@@ -394,7 +391,7 @@ public final class KickstartImage {
         return (key == null || key.length == 0) ? null : key;
     }
 
-    /** XOR ciclico con la chiave: la cifratura Cloanto è tutta qui. */
+    /** Cyclic XOR with the key: that is all of the Cloanto encryption. */
     private static byte[] decrypt(byte[] src, int off, byte[] key) {
         byte[] out = new byte[src.length - off];
         for (int i = 0; i < out.length; i++) {
@@ -404,9 +401,9 @@ public final class KickstartImage {
     }
 
     /**
-     * Checksum del Kickstart: somma a 32 bit di tutte le longword <em>con riporto</em>
-     * (il riporto perso rientra come +1), che su una ROM integra dà {@code $FFFFFFFF}.
-     * È l'algoritmo che il Kickstart stesso esegue all'avvio.
+     * Kickstart checksum: 32-bit sum of all the longwords <em>with carry</em> (the lost carry
+     * comes back as +1), which on an intact ROM gives {@code $FFFFFFFF}. It is the algorithm
+     * the Kickstart itself runs at start-up.
      */
     private static boolean isChecksumValid(byte[] b) {
         long sum = 0;
@@ -419,13 +416,12 @@ public final class KickstartImage {
     }
 
     /**
-     * Estrae {@code rt_IdString} del resident tag di {@code exec.library}.
+     * Extracts {@code rt_IdString} from the resident tag of {@code exec.library}.
      *
-     * <p>Una {@code struct Resident} si riconosce perché comincia con {@code $4AFC} ed
-     * è autoreferenziale: {@code rt_MatchTag} contiene il proprio indirizzo. Quel
-     * confronto elimina i falsi positivi (la word $4AFC compare anche nel codice) e in
-     * più dice a che indirizzo la ROM crede di stare, il che rende la scansione
-     * indipendente dalla dimensione.
+     * <p>A {@code struct Resident} is recognised because it starts with {@code $4AFC} and is
+     * self-referencing: {@code rt_MatchTag} holds its own address. That comparison removes
+     * the false positives (the word $4AFC also appears in code) and also tells at which
+     * address the ROM thinks it lives, which makes the scan independent of the size.
      */
     private static String readIdentifier(byte[] b) {
         int base = 0x1000000 - b.length;
@@ -441,7 +437,7 @@ public final class KickstartImage {
         return null;
     }
 
-    /** Legge una stringa NUL-terminata da un puntatore ROM, o null se fuori immagine. */
+    /** Reads a NUL-terminated string from a ROM pointer, or null if outside the image. */
     private static String readString(byte[] b, int base, int ptr) {
         int off = ptr - base;
         if (off < 0 || off >= b.length) return null;

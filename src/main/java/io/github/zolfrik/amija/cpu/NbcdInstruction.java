@@ -104,8 +104,8 @@ public class NbcdInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     calculateNbcd(cpu, cpu.getD(eaReg, 1));
                     cpu.setD(eaReg, getTemp(cpu, RESULT), 1);
-                    // NOTE (Phase 4): terminal internal-idle cycle — finalizing here breaks the
-                    // JSON 'n' count; +1 seam left as a documented residual (plan doc).
+                    // NOTE (Phase 4): terminal internal-idle cycle; finalizing here breaks the
+                    // JSON 'n' count, so the +1 seam is left as a documented residual.
                     cpu.idleCycles(2);
                     nextStep(cpu);
                     return false;

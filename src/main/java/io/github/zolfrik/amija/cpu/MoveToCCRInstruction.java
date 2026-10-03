@@ -114,19 +114,18 @@ public class MoveToCCRInstruction extends AbstractM68kInstruction {
                 }
                 case 7 -> { // refill 2 + finalize
                     if (!cpu.isBusCycleIdle()) return false;
-                    // WinUAE op_44d0_14_ff (MV2SR.B, cioe' MOVE to CCR): `ipl_fetch_next()` sta FRA le due
-                    // prefetch di refill, non sulla lettura dell'operando.
+                    // MOVE to CCR ($44D0): the `next` sample sits BETWEEN the two refill
+                    // prefetches, not on the operand read.
                     cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     cpu.startPrefetchCycle(); // np 2
-                    // Finalizza SUBITO dopo aver avviato np2 (come AndiToCCRInstruction),
-                    // senza un ulteriore step che attende `isBusCycleIdle`. Quello step
-                    // terminale inseriva un ciclo IDLE-bubble tra l'ultimo prefetch e il
-                    // dispatch dell'istruzione successiva → le istruzioni inhibit-prefetch
-                    // costavano +1 CCK di troppo (misurato su MOVECCR1: la write COLOR00
-                    // seguente slittava di 1 CCK). np2 resta in
-                    // volo e si sovrappone al dispatch successivo (prefetch overlapped),
-                    // esattamente come per le istruzioni normali. Cycle-count invariato
-                    // (np2 viene comunque eseguito): i vettori JSON restano verdi.
+                    // Finalize RIGHT after starting np2 (like AndiToCCRInstruction), without a
+                    // further step waiting for `isBusCycleIdle`. Such a terminal step would insert
+                    // an IDLE bubble between the last prefetch and the dispatch of the next
+                    // instruction, making the inhibit-prefetch instructions cost +1 CCK too many
+                    // (measured on MOVECCR1: the following COLOR00 write slipped by 1 CCK). np2
+                    // stays in flight and overlaps the next dispatch (overlapped prefetch),
+                    // exactly as for normal instructions. Cycle count unchanged (np2 still runs):
+                    // the JSON vectors stay green.
                     return finalizeInstructionSafe(cpu);
                 }
                 default -> { return finalizeInstruction(cpu); }

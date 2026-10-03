@@ -21,24 +21,22 @@
 package io.github.zolfrik.amija.common;
 
 /**
- * Risposta del bus per un singolo ciclo del 68000.
+ * Bus response for a single 68000 cycle.
  *
- * Convenzioni: - Il dispositivo alza {@code ack} (DTACK) quando il ciclo
- * corrente può completare. - {@code dataIn} è una WORD (16 bit). Per cicli
- * byte, la CPU userà UDS/LDS. - {@code ipl} (0..7) è il livello interrupt visto
- * sulla CPU; la CPU lo campiona tra istruzioni. - {@code berr} segnala Bus
- * Error durante il ciclo (vector 2 sul 68000).
+ * Conventions: the device raises {@code ack} (DTACK) when the current cycle can complete;
+ * {@code dataIn} is a WORD (16 bits), for byte cycles the CPU uses UDS/LDS; {@code ipl}
+ * (0..7) is the interrupt level seen by the CPU, which samples it between instructions;
+ * {@code berr} signals a Bus Error during the cycle (vector 2 on the 68000).
  *
- * IACK (Interrupt Acknowledge): - {@code iackVectorProvided=true} +
- * {@code iackVectorNumber} => il device fornisce un vettore esplicito. -
- * {@code iackAutovector=true} => autovector (AVEC), la CPU calcolerà
- * 24+livello. - Se nessuno dei due è true e {@code berr==true} durante IACK =>
- * Spurious (vector 24).
+ * IACK (Interrupt Acknowledge): {@code iackVectorProvided=true} + {@code iackVectorNumber}
+ * means the device supplies an explicit vector; {@code iackAutovector=true} means autovector
+ * (AVEC), the CPU computes 24+level. If neither is true and {@code berr==true} during IACK:
+ * spurious (vector 24).
  */
 public final class BusResponse {
 
     /**
-     * DTACK/ACK: true quando il ciclo può completare.
+     * DTACK/ACK: true when the cycle can complete.
      */
     public boolean ack;
 
@@ -48,29 +46,28 @@ public final class BusResponse {
     public int dataIn;
 
     /**
-     * Livello di interrupt sulle linee IPL (0..7), campionato a boundary.
+     * Interrupt level on the IPL lines (0..7), sampled at the boundary.
      */
     public int ipl;
 
     /**
-     * Bus Error (BERR) sul ciclo.
+     * Bus Error (BERR) on the cycle.
      */
     public boolean berr;
 
-    // ======== Nuovi campi per IACK esplicito vs AVEC ========
+    // ======== Fields for explicit IACK vs AVEC ========
     /**
-     * True se durante IACK un device ha fornito un vettore esplicito.
+     * True if a device supplied an explicit vector during IACK.
      */
     public boolean iackVectorProvided;
 
     /**
-     * Numero di vettore fornito (8 bit utili) quando
-     * {@code iackVectorProvided==true}.
+     * Vector number supplied (8 useful bits) when {@code iackVectorProvided==true}.
      */
     public int iackVectorNumber;
 
     /**
-     * True se l’IACK è di tipo autovector (AVEC).
+     * True if the IACK is of the autovector type (AVEC).
      */
     public boolean iackAutovector;
 
@@ -80,7 +77,7 @@ public final class BusResponse {
     public boolean br;
 
     /**
-     * Valid Peripheral Address (VPA) per cicli sincroni.
+     * Valid Peripheral Address (VPA) for synchronous cycles.
      */
     public boolean vpa;
 
@@ -101,14 +98,13 @@ public final class BusResponse {
     }
 
     /**
-     * Resetta le linee di handshake legate al ciclo (DTACK e dato) e i flag
-     * IACK.
+     * Resets the handshake lines tied to the cycle (DTACK and data) and the IACK flags.
      */
     public void clearHandshake() {
         ack = false;
         dataIn = 0;
 
-        // IACK flags: di default sono falsi ad ogni nuovo ciclo
+        // IACK flags: false by default at every new cycle
         iackVectorProvided = false;
         iackVectorNumber = 0;
         iackAutovector = false;

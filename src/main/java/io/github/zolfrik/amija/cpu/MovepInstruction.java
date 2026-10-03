@@ -65,9 +65,9 @@ public class MovepInstruction extends AbstractM68kInstruction {
                         int data = cpu.getD(dataReg, 4);
                         cpu.scheduleWrite(base, (data >> (isLong ? 24 : 8)) & 0xFF, 1);
                     } else {
-                        // Verso il registro l'ancora sta prima della coppia di byte
-                        // dell'ULTIMA word: per la .W è questa (WinUAE op_0108_14_ff,
-                        // `ipl_fetch_now()` a 12 clock dalla fine), per la .L è al passo 3.
+                        // Toward the register the anchor is before the byte pair of the LAST
+                        // word: for .W it is this one ($0108, `now` 12 clocks from the end), for
+                        // .L it is at step 3.
                         if (!isLong) {
                             cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                         }
@@ -105,8 +105,8 @@ public class MovepInstruction extends AbstractM68kInstruction {
                     } else {
                         int b = cpu.getLatchedByte() & 0xFF;
                         setTemp(cpu, DATA, getTemp(cpu, DATA) | (b << 16));
-                        // .L verso il registro: la coppia dell'ultima word comincia qui
-                        // (WinUAE op_0148_14_ff, di nuovo 12 clock dalla fine).
+                        // .L toward the register: the pair of the last word starts here ($0148,
+                        // again 12 clocks from the end).
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                         cpu.scheduleRead(base + 4, 1);
                     }
@@ -136,12 +136,12 @@ public class MovepInstruction extends AbstractM68kInstruction {
                 }
                 case 6 -> {
                     if (regToMem) {
-                        // Verso la memoria l'ancora è la prefetch finale, ramo `next`
-                        // (WinUAE op_0188/op_01c8 _14_ff: `ipl_fetch_next()` DOPO tutte le
-                        // scritture), non l'ultima scrittura come vorrebbe il default.
+                        // Toward memory the anchor is the final prefetch, `next` branch
+                        // ($0188/$01C8: the sample comes AFTER all the writes), not the last
+                        // write as the default would have it.
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     }
-                    cpu.startPrefetchCycle(); // Final np — last bus cycle → finalize with it (seam 0)
+                    cpu.startPrefetchCycle(); // Final np: last bus cycle, finalize with it (seam 0)
                     return finalizeInstructionSafe(cpu);
                 }
                 default -> {

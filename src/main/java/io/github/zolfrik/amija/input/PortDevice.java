@@ -21,18 +21,18 @@
 package io.github.zolfrik.amija.input;
 
 /**
- * Periferica host collegata a una game port dell'Amiga, come scelto dall'utente
- * (property {@code input.port0.device} / {@code input.port1.device} e tendine
- * "Port 0" / "Port 1" del popup F12).
+ * Host device plugged into an Amiga game port, as chosen by the user (properties
+ * {@code input.port0.device} / {@code input.port1.device} and the "Port 0" / "Port 1"
+ * drop-downs of the F12 popup).
  *
- * <p>A differenza di {@link GamePortDevice} (che descrive cosa la porta
- * <i>riporta</i> a livello hardware: mouse, joystick o niente), questo enum
- * descrive quale <i>sorgente di input host</i> pilota la porta:
+ * <p>Unlike {@link GamePortDevice} (which describes what the port <i>reports</i> at hardware
+ * level: mouse, joystick or nothing), this enum describes which <i>host input source</i> drives
+ * the port:
  * <ul>
- *   <li>{@link #MOUSE} – il mouse host (via {@code AmigaMouseAdapter});</li>
- *   <li>{@link #JOYSTICK_REAL} – un joystick/gamepad fisico letto via GLFW;</li>
- *   <li>{@link #JOYSTICK_KEYBOARD} – joystick emulato su frecce + Ctrl sinistro;</li>
- *   <li>{@link #NONE} – nessuna periferica (porta vuota).</li>
+ *   <li>{@link #MOUSE}: the host mouse (through {@code AmigaMouseAdapter});</li>
+ *   <li>{@link #JOYSTICK_REAL}: a physical joystick/gamepad read through GLFW;</li>
+ *   <li>{@link #JOYSTICK_KEYBOARD}: joystick emulated on the keyboard;</li>
+ *   <li>{@link #NONE}: no device (empty port).</li>
  * </ul>
  */
 public enum PortDevice {
@@ -50,15 +50,15 @@ public enum PortDevice {
         this.messageKey  = messageKey;
     }
 
-    /** Valore usato in {@code amiga.properties}. */
+    /** Value used in {@code amiga.properties}. */
     public String configValue() { return configValue; }
 
-    /** Chiave i18n dell'etichetta mostrata nella tendina del popup F12. */
+    /** i18n key of the label shown in the F12 popup's drop-down. */
     public String messageKey() { return messageKey; }
 
     /**
-     * Converte il valore di {@code amiga.properties} nel corrispondente enum.
-     * Valori non riconosciuti (o {@code null}) ripiegano su {@code def}.
+     * Converts the value of {@code amiga.properties} into the matching enum. Unrecognised
+     * values (or {@code null}) fall back on {@code def}.
      */
     public static PortDevice fromConfigValue(String value, PortDevice def) {
         if (value != null) {
@@ -70,7 +70,7 @@ public enum PortDevice {
         return def;
     }
 
-    /** Corrispondente periferica hardware riportata dalla porta. */
+    /** Matching hardware device reported by the port. */
     public GamePortDevice hardwareDevice() {
         return switch (this) {
             case MOUSE -> GamePortDevice.MOUSE;

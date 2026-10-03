@@ -21,20 +21,18 @@
 package io.github.zolfrik.amija.input;
 
 /**
- * Stato del mouse collegato a una game port Amiga: <b>i soli pulsanti</b>.
+ * State of the mouse plugged into an Amiga game port: <b>the buttons only</b>.
  *
- * <p>⛔ I contatori di quadratura <b>non stanno qui</b>. Sono registri di Denise, una
- * coppia per <i>porta</i>, e li tiene {@link GamePort}: esistono anche quando la porta è
- * vuota, e JOYTEST li scrive comunque. Il mouse non li possiede, li muove — ogni
- * {@code GamePort.moveMouse} ci somma il proprio spostamento, come
- * {@code inputdevice_read} dell'oracolo somma i delta dell'host in
- * {@code mouse_x[]}/{@code mouse_y[]}.
+ * <p>The quadrature counters are <b>not here</b>. They are Denise registers, one pair per
+ * <i>port</i>, and {@link GamePort} holds them: they exist even when the port is empty, and
+ * JOYTEST writes them anyway. The mouse does not own them, it moves them: every
+ * {@code GamePort.moveMouse} adds its own movement to them.
  *
- * Convenzione: dx > 0 = destra, dy > 0 = giù (coordinate schermo).
+ * Convention: dx > 0 = right, dy > 0 = down (screen coordinates).
  */
 public class AmigaMouse {
 
-    // Stato pulsanti
+    // Button state
     private volatile boolean leftButton   = false;
     private volatile boolean rightButton  = false;
     private volatile boolean middleButton = false;

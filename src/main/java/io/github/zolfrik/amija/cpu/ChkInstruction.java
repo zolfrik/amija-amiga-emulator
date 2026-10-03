@@ -118,15 +118,14 @@ public class ChkInstruction extends AbstractM68kInstruction {
 
                     if (lowerTrap || upperTrap) {
                         if (cpu.seamOverlapEnabled) {
-                            // Moira execChk trap (run path): NO next-instruction prefetch.
-                            // The pre-frame internal timing is SYNC_68000(6) + SYNC(2 upper /
-                            // 4 lower) = 8/10 cycles, then execException (whose frame writes
-                            // start with NO leading nn on the 68000). Our Group1/2 exception
-                            // frame already contributes its own nn (idleCycles(4)), so emit
-                            // (8-4)=4 (upper) / (10-4)=6 (lower) idle cycles here and let the
-                            // frame add the rest. Cycle-neutral vs the old np-first path, but
-                            // the np bus access is replaced by idle → the frame's stack writes
-                            // land at the vAmiga CCK, fixing the exception-entry marker parity.
+                            // Trap path: NO next-instruction prefetch. The pre-frame internal
+                            // timing is 6 + 2 (upper bound) / 4 (lower bound) = 8/10 cycles, then
+                            // the exception (whose frame writes start with NO leading nn on the
+                            // 68000). Our Group1/2 exception frame already contributes its own nn
+                            // (idleCycles(4)), so emit (8-4)=4 (upper) / (10-4)=6 (lower) idle
+                            // cycles here and let the frame add the rest. The np bus access is
+                            // replaced by idle, so the frame's stack writes land at the right
+                            // CCK (exception-entry marker parity).
                             cpu.idleCycles((lowerTrap && !upperTrap) ? 6 : 4);
                             setStep(cpu, 10);
                             return false;
@@ -137,24 +136,23 @@ public class ChkInstruction extends AbstractM68kInstruction {
                         setStep(cpu, 8);
                         return false;
                     } else if (cpu.seamOverlapEnabled) {
-                        // Success timing (Moira execChk order): the six internal cycles
-                        // (SYNC_68000(6)) run BEFORE the terminating prefetch. This lands
-                        // the np at the vAmiga-correct CCK on contended bitplane bands,
-                        // fixing the marker parity. Total cycle count is identical to the
-                        // old np-then-idle order (verified: uncontended bands unchanged).
+                        // Success timing: the six internal cycles run BEFORE the terminating
+                        // prefetch. This lands the np at the right CCK on contended bitplane
+                        // bands (marker parity). The total cycle count is identical to the
+                        // np-then-idle order (uncontended bands unchanged).
                         cpu.idleCycles(6); // nn n
                         setStep(cpu, 6);
                         return false;
                     } else {
-                        // Single-instruction JSON harness (seamOverlapEnabled=false): keep
-                        // the historical np-then-idle order so the captured transactions
-                        // match the Tom Harte serialization convention (trailing idle after
-                        // the terminating prefetch). Behaviour is bit-identical to the old
-                        // path; the physical reorder above only applies to the real machine.
-                        // L'ancora e' la stessa dell'altro ordine (case 6): la prefetch
-                        // terminale, non la lettura dell'operando. Va dichiarata anche qui, o
-                        // i due ordini della stessa istruzione campionerebbero il pin in due
-                        // punti diversi (WinUAE op_4190_14_ff).
+                        // Single-instruction JSON harness (seamOverlapEnabled=false): keep the
+                        // np-then-idle order so the captured transactions match the Tom Harte
+                        // serialization convention (trailing idle after the terminating
+                        // prefetch). The physical reorder above applies only to the real
+                        // machine.
+                        // The anchor is the same as in the other order (case 6): the terminating
+                        // prefetch, not the operand read. It must be declared here too, or the
+                        // two orders of the same instruction would sample the pin at two
+                        // different points.
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         cpu.startPrefetchCycle(); // np
                         setStep(cpu, 9);
@@ -164,9 +162,9 @@ public class ChkInstruction extends AbstractM68kInstruction {
                 case 6 -> {
                     // Success path (run): terminating prefetch, AFTER the internal cycles.
                     if (!cpu.isBusCycleIdle()) return false;
-                    // WinUAE op_4190_14_ff: fra la lettura dell'operando e la prefetch finale
-                    // corrono i cicli interni, e `ipl_fetch_next()` sta subito prima della
-                    // prefetch — l'ancora e' lei, non la lettura.
+                    // Between the operand read and the final prefetch run the internal cycles,
+                    // and the IPL sample (`ipl_fetch_next`) sits right before the prefetch: the
+                    // anchor is the prefetch, not the read.
                     cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     cpu.startPrefetchCycle(); // np
                     setStep(cpu, 7);
@@ -180,9 +178,9 @@ public class ChkInstruction extends AbstractM68kInstruction {
                     return false;
                 }
                 case 7 -> {
-                    // Wait for the terminating prefetch to drain, so the instruction
-                    // finalizes with the bus IDLE and IRD refilled — this preserves the
-                    // Phase 7/8 overlapped-finalize seam (no dead boundary mc).
+                    // Wait for the terminating prefetch to drain, so the instruction finalizes
+                    // with the bus IDLE and IRD refilled: this preserves the Phase 7/8
+                    // overlapped-finalize seam (no dead boundary mc).
                     if (!cpu.isBusCycleIdle()) return false;
                     return finalizeInstructionSafe(cpu);
                 }
@@ -206,8 +204,8 @@ public class ChkInstruction extends AbstractM68kInstruction {
                     return false;
                 }
                 case 10 -> {
-                    // Trap path (run): after the SYNC internal cycles, raise the CHK
-                    // exception directly (no next-instruction prefetch — Moira execChk).
+                    // Trap path (run): after the internal cycles, raise the CHK exception
+                    // directly (no next-instruction prefetch).
                     if (!cpu.isBusCycleIdle()) return false;
                     int extensions = (hasExt1(eaMode, eaReg) ? 1 : 0) + (hasExt2(eaMode, eaReg, 2) ? 1 : 0);
                     int nextPC = cpu.getOpcodeAddress() + 2 + (extensions * 2);

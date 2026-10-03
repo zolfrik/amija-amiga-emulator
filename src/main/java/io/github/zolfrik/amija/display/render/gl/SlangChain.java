@@ -40,44 +40,44 @@ import java.util.regex.Pattern;
 import static org.lwjgl.opengl.GL33.*;
 
 /**
- * Catena shader RetroArch in formato <b>slang</b> ({@code .slangp}) eseguita in OpenGL.
+ * RetroArch shader chain in <b>slang</b> format ({@code .slangp}) run in OpenGL.
  *
- * <p>Fa per i {@code .slangp} quello che {@link ShaderChain} fa per i {@code .glslp}, ma
- * il modello slang è molto più ricco e quasi tutto il codice qui serve a coprirlo:
+ * <p>It does for {@code .slangp} what {@link ShaderChain} does for {@code .glslp}, but the slang
+ * model is much richer and almost all the code here exists to cover it:
  *
  * <ul>
- *   <li><b>Uniform per blocco.</b> Gli slang non hanno uniform sciolte: dichiarano un
- *       {@code UBO} e un blocco {@code push_constant}, i cui membri sono legati <i>per
- *       nome</i> a una semantica. {@link SlangSource} ne calcola gli offset std140; qui si
- *       precompila al build la lista di scritture da rifare a ogni frame ({@code Setter})
- *       e si carica il tutto con un UBO per blocco. Il resto del buffer resta a zero per
- *       sempre, che è esattamente il destino dei membri senza semantica.</li>
- *   <li><b>Semantica delle texture.</b> {@code Source}, {@code Original},
- *       {@code OriginalHistoryN} (l'anello dei frame precedenti), {@code PassOutputN},
- *       {@code PassFeedbackN} (l'uscita di un pass al frame <i>precedente</i>), gli alias
- *       dichiarati con {@code aliasN} / {@code #pragma name} e le LUT del preset.</li>
- *   <li><b>Feedback.</b> Un pass la cui uscita è letta come feedback ha due texture in
- *       ping-pong: si scrive su quella del frame corrente e si legge l'altra.</li>
- *   <li><b>Formati.</b> {@code #pragma format} dello shader, sovrascritto — come in
- *       RetroArch — da {@code float_framebufferN} / {@code srgb_framebufferN} del preset.</li>
- *   <li><b>Mipmap.</b> {@code mipmap_inputK} rende mipmappata l'uscita del pass e fa
- *       campionare con i mipmap il suo ingresso.</li>
+ *   <li><b>Per-block uniforms.</b> Slang shaders have no loose uniforms: they declare a
+ *       {@code UBO} and a {@code push_constant} block, whose members are bound <i>by name</i>
+ *       to a semantic. {@link SlangSource} computes their std140 offsets; here the list of
+ *       writes to redo every frame ({@code Setter}) is precompiled at build time and the whole
+ *       is uploaded with one UBO per block. The rest of the buffer stays zero forever, which
+ *       is exactly the fate of the members without a semantic.</li>
+ *   <li><b>Texture semantics.</b> {@code Source}, {@code Original}, {@code OriginalHistoryN}
+ *       (the ring of previous frames), {@code PassOutputN}, {@code PassFeedbackN} (a pass's
+ *       output at the <i>previous</i> frame), the aliases declared with {@code aliasN} /
+ *       {@code #pragma name} and the preset's LUTs.</li>
+ *   <li><b>Feedback.</b> A pass whose output is read as feedback has two textures in
+ *       ping-pong: the current frame's is written and the other is read.</li>
+ *   <li><b>Formats.</b> The shader's {@code #pragma format}, overridden by the preset's
+ *       {@code float_framebufferN} / {@code srgb_framebufferN}.</li>
+ *   <li><b>Mipmaps.</b> {@code mipmap_inputK} makes the pass's output mipmapped and samples
+ *       its input with mipmaps.</li>
  * </ul>
  *
- * <p>Il filtro e il wrap non si applicano alla texture ma a <b>sampler object</b>
- * (GL 3.3): la stessa texture può comparire in due sampler dello stesso pass con
- * impostazioni diverse — succede appena un pass legge sia {@code Source} sia l'alias del
- * pass che gliela produce — e con i parametri per-texture vincerebbe l'ultimo scritto.
+ * <p>Filter and wrap are applied not to the texture but to <b>sampler objects</b> (GL 3.3):
+ * the same texture can appear in two samplers of the same pass with different settings (it
+ * happens as soon as a pass reads both {@code Source} and the alias of the pass producing
+ * it), and with per-texture parameters the last one written would win.
  *
- * <p>Come per {@link ShaderChain}: {@link #build} lancia in caso di errore e il chiamante
- * ripiega sul passthrough; a regime nessuna chiamata deve poter crashare.
+ * <p>As for {@link ShaderChain}: {@link #build} throws on error and the caller falls back on
+ * the passthrough; in steady state no call must be able to crash.
  */
 public final class SlangChain implements RenderChain {
 
     private static final int ATTR_POSITION = 0;
     private static final int ATTR_TEXCOORD = 1;
 
-    /** MVP ortho [0,1] -> [-1,1], column-major: identica a quella del percorso .glslp. */
+    /** Ortho MVP [0,1] -> [-1,1], column-major: the same as on the .glslp path. */
     private static final float[] MVP = {
             2f, 0f, 0f, 0f,
             0f, 2f, 0f, 0f,
@@ -93,24 +93,24 @@ public final class SlangChain implements RenderChain {
     // Modello
     // =====================================================================================
 
-    /** Che cosa scrivere in un membro di uniform block. */
+    /** What to write into a uniform block member. */
     private enum Op { MVP, SIZE, FRAME_COUNT, FRAME_DIRECTION, ROTATION,
                       SUBFRAME_TOTAL, SUBFRAME_CURRENT, FRAME_TIME_DELTA, ORIGINAL_FPS, PARAM }
 
-    /** Di quale superficie prendere la dimensione per una semantica {@code …Size}. */
+    /** Which surface to take the size of for a {@code ...Size} semantic. */
     private enum SizeOf { SOURCE, ORIGINAL, OUTPUT, FINAL_VIEWPORT, PASS, LUT }
 
-    /** Da dove viene la texture legata a un sampler. */
+    /** Where the texture bound to a sampler comes from. */
     private enum TexOf { SOURCE, ORIGINAL, HISTORY, PASS, FEEDBACK, LUT, NONE }
 
     private record Setter(Op op, int offset, String type, SizeOf sizeOf, int index, String param) { }
 
-    /** Un sampler dello shader, con la sua sorgente e il sampler object già pronto. */
+    /** A sampler of the shader, with its source and its sampler object ready. */
     private static final class TexBind {
         final String name;
         final TexOf of;
         final int index;
-        int location = -1;   // -1 = eliminato dal compilatore: non consuma texture unit
+        int location = -1;   // -1 = removed by the compiler: it uses no texture unit
         int samplerObj;
 
         TexBind(String name, TexOf of, int index) {
@@ -141,11 +141,11 @@ public final class SlangChain implements RenderChain {
         int program;
         final List<BlockBind> blocks = new ArrayList<>();
         final List<TexBind> texBinds = new ArrayList<>();
-        /** L'uscita di questo pass è letta come feedback: serve il ping-pong. */
+        /** This pass's output is read as feedback: ping-pong is needed. */
         boolean feedback;
-        /** L'uscita va corredata di mipmap. */
+        /** The output needs mipmaps. */
         boolean mipmapOutput;
-        /** Il pass disegna su un FBO (l'ultimo va sul backbuffer, se nessuno lo rilegge). */
+        /** The pass draws on an FBO (the last goes to the back buffer, if nobody reads it again). */
         boolean offscreen = true;
         int internalFormat = GL_RGBA8;
         boolean srgb;
@@ -161,23 +161,23 @@ public final class SlangChain implements RenderChain {
     private final List<int[]> luts = new ArrayList<>();   // [texId, w, h]
     private final Map<String, Float> params = new LinkedHashMap<>();
     private final Object paramLock = new Object();
-    /** Alias -> indice del pass che lo produce ({@code aliasN} o {@code #pragma name}). */
+    /** Alias -> index of the pass producing it ({@code aliasN} or {@code #pragma name}). */
     private final Map<String, Integer> aliases = new LinkedHashMap<>();
-    /** Sampler object per combinazione (filtro, wrap, mipmap). */
+    /** Sampler object per combination (filter, wrap, mipmap). */
     private final Map<String, Integer> samplerObjects = new LinkedHashMap<>();
 
     private int quadVbo;
     private int blackTex;
     private int maxTexUnits = 16;
 
-    // Anello della storia di Original: historyTexture(k) = frame di k fa (k >= 1).
+    // History ring of Original: historyTexture(k) = the frame k frames ago (k >= 1).
     private int historyDepth;
     private int[] historyTex = new int[0];
     private int[] historyFbo = new int[0];
     private int historyReadFbo;
     private int historyHead;
 
-    // Ping-pong dei feedback + geometria con cui sono stati allocati gli FBO.
+    // Feedback ping-pong + the geometry the FBOs were allocated with.
     private int parity;
     private int builtOrigW = -1, builtOrigH = -1, builtVpW = -1, builtVpH = -1;
     private int origW, origH, vpW, vpH;
@@ -195,7 +195,7 @@ public final class SlangChain implements RenderChain {
     // Build
     // =====================================================================================
 
-    /** Compila un preset {@code .slangp}. Da chiamare sul thread GL, con contesto attivo. */
+    /** Compiles a {@code .slangp} preset. To be called on the GL thread, with the context current. */
     public static SlangChain build(Path slangp) throws IOException {
         int major = glGetInteger(GL_MAJOR_VERSION);
         int minor = glGetInteger(GL_MINOR_VERSION);
@@ -205,10 +205,10 @@ public final class SlangChain implements RenderChain {
         }
         boolean gl43 = major > 4 || (major == 4 && minor >= 3);
         if (!gl43) {
-            // Non è un limite della traduzione ma degli shader: buona parte di quelli in
-            // circolazione — Mega Bezel compreso — usa lo swizzle sugli scalari
-            // (`float f; f.x`), che è un cascame Cg che i driver accettano solo da GLSL
-            // 4.x in su. Sotto, i preset semplici passano e i grossi no.
+            // Not a limit of the translation but of the shaders: many of those around (the
+            // Mega Bezel included) use swizzles on scalars (`float f; f.x`), a Cg leftover the
+            // drivers accept only from GLSL 4.x up. Below that, simple presets pass and large
+            // ones do not.
             System.err.println("[GL] OpenGL " + major + "." + minor + ": i preset .slangp"
                     + " complessi vogliono la 4.3, qui alcuni non compileranno.");
         }
@@ -221,7 +221,7 @@ public final class SlangChain implements RenderChain {
         SlangChain chain = new SlangChain(slangp, preset, passes, preset.textures());
         chain.maxTexUnits = Math.max(8, glGetInteger(GL_MAX_TEXTURE_IMAGE_UNITS));
 
-        // 1) Traduzione dei sorgenti + raccolta di alias e parametri.
+        // 1) Translation of the sources + collection of aliases and parameters.
         for (int i = 0; i < n; i++) {
             Pass p = new Pass();
             p.spec = specs.get(i);
@@ -236,11 +236,11 @@ public final class SlangChain implements RenderChain {
                 chain.params.putIfAbsent(prm.name(), prm.def());
             }
         }
-        // Override: prima il preset (con tutta la sua catena di #reference), poi l'utente.
+        // Overrides: first the preset (with its whole chain of #reference), then the user.
         applyOverrides(chain.params, preset.paramOverrides());
         applyOverrides(chain.params, ShaderParams.loadOverrides(slangp));
 
-        // 2) Semantica dei sampler. Serve conoscere tutti gli alias: secondo giro.
+        // 2) Sampler semantics. All the aliases must be known: second round.
         for (Pass p : passes) {
             for (String sampler : p.src.samplers()) {
                 TexBind b = chain.textureSemantic(sampler);
@@ -253,7 +253,7 @@ public final class SlangChain implements RenderChain {
             }
         }
 
-        // 3) Chi ha bisogno di feedback, di mipmap, di un FBO in uscita.
+        // 3) Who needs feedback, mipmaps, an output FBO.
         boolean lastIsRead = false;
         for (Pass p : passes) {
             for (TexBind t : p.texBinds) {
@@ -264,26 +264,26 @@ public final class SlangChain implements RenderChain {
                 }
             }
         }
-        // L'ultimo pass disegna direttamente sul backbuffer, salvo che qualcuno ne rilegga
-        // l'uscita (alias o feedback): in quel caso passa da un FBO e poi si copia.
+        // The last pass draws straight onto the backbuffer, unless someone reads its output
+        // back (alias or feedback): in that case it goes through an FBO and is then copied.
         passes[n - 1].offscreen = lastIsRead;
         for (int i = 0; i < n; i++) {
-            // mipmap_inputK: mipmap sull'uscita del pass K e campionamento con mipmap del
-            // suo ingresso, che è l'uscita di K-1.
+            // mipmap_inputK: mipmaps on the output of pass K and mipmapped sampling of its
+            // input, which is the output of K-1.
             if (passes[i].spec.mipmapInput) {
                 passes[i].mipmapOutput = true;
                 if (i > 0) passes[i - 1].mipmapOutput = true;
             }
         }
 
-        // 4) Formati dei framebuffer.
+        // 4) Framebuffer formats.
         for (Pass p : passes) {
             int[] fmt = internalFormat(p);
             p.internalFormat = fmt[0];
             p.srgb = fmt[1] != 0;
         }
 
-        // 5) Compilazione + risoluzione delle locazioni e dei sampler object.
+        // 5) Compilation + resolution of the locations and of the sampler objects.
         for (Pass p : passes) {
             p.program = buildProgram(p.src);
             for (SlangSource.Block b : p.src.blocks()) {
@@ -312,7 +312,7 @@ public final class SlangChain implements RenderChain {
         }
     }
 
-    /** {@code [internalFormat, srgb]} del framebuffer del pass. Il preset vince sul pragma. */
+    /** {@code [internalFormat, srgb]} of the pass's framebuffer. The preset wins over the pragma. */
     private static int[] internalFormat(Pass p) {
         int fmt = GL_RGBA8;
         boolean srgb = false;
@@ -341,7 +341,7 @@ public final class SlangChain implements RenderChain {
     // Semantiche
     // =====================================================================================
 
-    /** Risolve il nome di un sampler nella texture che lo alimenta, o {@code null}. */
+    /** Resolves a sampler's name into the texture that feeds it, or {@code null}. */
     private TexBind textureSemantic(String name) {
         if (name.equals("Source")) return new TexBind(name, TexOf.SOURCE, 0);
         if (name.equals("Original")) return new TexBind(name, TexOf.ORIGINAL, 0);
@@ -375,7 +375,7 @@ public final class SlangChain implements RenderChain {
         return null;
     }
 
-    /** Precompila la lista di scritture nel buffer di un uniform block. */
+    /** Precompiles the list of writes into the buffer of a uniform block. */
     private List<Setter> settersFor(SlangSource.Block block) {
         List<Setter> out = new ArrayList<>();
         for (SlangSource.Member mem : block.members) {
@@ -402,8 +402,8 @@ public final class SlangChain implements RenderChain {
             if (params.containsKey(n)) {
                 out.add(new Setter(Op.PARAM, mem.offset(), mem.type(), null, 0, n));
             }
-            // Membro senza semantica né parametro: in RetroArch glslang lo eliminerebbe
-            // perché inutilizzato. Qui resta a zero, che è lo stesso risultato.
+            // Member with neither semantic nor parameter: a shader compiler would remove it
+            // as unused. Here it stays zero, which is the same result.
         }
         return out;
     }
@@ -421,7 +421,7 @@ public final class SlangChain implements RenderChain {
         } else if (base.equals("FinalViewport")) {
             of = SizeOf.FINAL_VIEWPORT;
         } else if (HISTORY.matcher(base).matches()) {
-            of = SizeOf.ORIGINAL;   // la storia ha la stessa geometria di Original
+            of = SizeOf.ORIGINAL;   // the history has the same geometry as Original
         } else if ((m = PASS_OUTPUT.matcher(base)).matches()) {
             idx = Integer.parseInt(m.group(1));
             if (idx >= passes.length) return null;
@@ -447,7 +447,7 @@ public final class SlangChain implements RenderChain {
     }
 
     // =====================================================================================
-    // Esecuzione
+    // Execution
     // =====================================================================================
 
     @Override
@@ -479,9 +479,9 @@ public final class SlangChain implements RenderChain {
                 glBindFramebuffer(GL_FRAMEBUFFER, p.fbo[p.feedback ? parity : 0]);
                 glViewport(0, 0, p.outW, p.outH);
             }
-            // La conversione sRGB vale per gli FBO che l'hanno chiesta, non per il
-            // backbuffer: quello non è detto che sia sRGB, e convertirci sopra
-            // schiarirebbe l'immagine finale.
+            // The sRGB conversion applies to the FBOs that asked for it, not to the back
+            // buffer: that one is not necessarily sRGB, and converting on it would lighten the
+            // final image.
             boolean srgbNow = p.srgb && !toScreen;
             if (srgbNow) glEnable(GL_FRAMEBUFFER_SRGB);
 
@@ -499,8 +499,8 @@ public final class SlangChain implements RenderChain {
             }
         }
 
-        // Se l'ultimo pass è finito su un FBO (perché qualcuno ne rilegge l'uscita), il
-        // risultato va copiato sul backbuffer. L'FBO ha già la misura del viewport.
+        // If the last pass ended on an FBO (because someone reads its output again), the
+        // result must be copied to the back buffer. The FBO already has the viewport's size.
         Pass lastPass = passes[n - 1];
         if (lastPass.offscreen) {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, lastPass.fbo[lastPass.feedback ? parity : 0]);
@@ -517,7 +517,7 @@ public final class SlangChain implements RenderChain {
         glDisableVertexAttribArray(ATTR_TEXCOORD);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        // Ripulisce lo stato per il passthrough/overlay fixed-function che segue.
+        // Clean up the state for the fixed-function passthrough/overlay that follows.
         for (int u = 0; u < usedUnits; u++) {
             glActiveTexture(GL_TEXTURE0 + u);
             glBindSampler(u, 0);
@@ -598,11 +598,11 @@ public final class SlangChain implements RenderChain {
         };
     }
 
-    /** Lega i sampler del pass; restituisce quante texture unit ha usato. */
+    /** Binds the samplers of the pass; returns how many texture units it used. */
     private int bindTextures(Pass p, int inputTex, int origTex) {
         int unit = 0;
         for (TexBind b : p.texBinds) {
-            if (b.location < 0) continue;   // sampler eliminato: nessuna unit sprecata
+            if (b.location < 0) continue;   // sampler optimised away: no unit wasted
             if (unit >= maxTexUnits) {
                 if (!unitOverflowLogged) {
                     unitOverflowLogged = true;
@@ -646,7 +646,7 @@ public final class SlangChain implements RenderChain {
         return historyTex[idx];
     }
 
-    /** Copia Original nell'anello della storia, per gli {@code OriginalHistoryN} del prossimo frame. */
+    /** Copies Original into the history ring, for the next frame's {@code OriginalHistoryN}. */
     private void pushHistory(int origTex) {
         if (historyDepth <= 0) return;
         glBindFramebuffer(GL_READ_FRAMEBUFFER, historyReadFbo);
@@ -663,9 +663,9 @@ public final class SlangChain implements RenderChain {
     // =====================================================================================
 
     /**
-     * Il sampler object da usare per un binding. Filtro e wrap vengono dal pass che
-     * <i>produce</i> la texture (o dalla LUT); per {@code Source} e {@code Original}
-     * valgono invece le impostazioni del pass che la consuma, come in RetroArch.
+     * The sampler object to use for a binding. Filter and wrap come from the pass that
+     * <i>produces</i> the texture (or from the LUT); for {@code Source} and {@code Original}
+     * the settings of the pass consuming it apply instead.
      */
     private int samplerFor(Pass consumer, TexBind b) {
         boolean linear = consumer.spec.filterLinear;
@@ -728,7 +728,7 @@ public final class SlangChain implements RenderChain {
     }
 
     // =====================================================================================
-    // Allocazione delle risorse GL
+    // GL resource allocation
     // =====================================================================================
 
     private void ensureFramebuffers() {
@@ -791,8 +791,8 @@ public final class SlangChain implements RenderChain {
                 mipmap ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         if (mipmap) {
-            // I livelli devono esistere prima del primo campionamento, altrimenti la
-            // texture è incompleta e restituisce nero.
+            // The levels must exist before the first sampling, otherwise the texture is
+            // incomplete and returns black.
             glGenerateMipmap(GL_TEXTURE_2D);
         }
         return tex;
@@ -829,7 +829,7 @@ public final class SlangChain implements RenderChain {
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
-    /** Texture 1×1 nera per i sampler senza semantica: campionarli deve restare definito. */
+    /** 1x1 black texture for samplers without a semantic: sampling them must stay defined. */
     private void createBlackTexture() {
         blackTex = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, blackTex);
@@ -844,8 +844,8 @@ public final class SlangChain implements RenderChain {
     private void createUniformBuffers() {
         for (Pass p : passes) {
             for (BlockBind b : p.blocks) {
-                // Direct + zero-inizializzato: i membri senza semantica non vengono mai
-                // toccati e restano a zero per tutta la vita della catena.
+                // Direct + zero-initialised: the members without a semantic are never touched
+                // and stay zero for the whole life of the chain.
                 b.data = ByteBuffer.allocateDirect(b.size).order(ByteOrder.nativeOrder());
                 b.buffer = glGenBuffers();
                 glBindBuffer(GL_UNIFORM_BUFFER, b.buffer);
@@ -882,7 +882,7 @@ public final class SlangChain implements RenderChain {
     private int uploadLut(BufferedImage img, SlangPreset.TextureSpec ts) {
         int w = img.getWidth(), h = img.getHeight();
         int[] argb = img.getRGB(0, 0, w, h, null, 0, w);
-        // Flip verticale: BufferedImage ha origine in alto, GL in basso.
+        // Vertical flip: BufferedImage has its origin at the top, GL at the bottom.
         IntBuffer buf = BufferUtils.createIntBuffer(w * h);
         for (int y = h - 1; y >= 0; y--) {
             buf.put(argb, y * w, w);
@@ -991,7 +991,7 @@ public final class SlangChain implements RenderChain {
         builtOrigW = builtOrigH = builtVpW = builtVpH = -1;
     }
 
-    /** Il preset caricato: usato dai test e dalla diagnostica. */
+    /** The preset loaded: used by the tests and diagnostics. */
     public SlangPreset preset() {
         return preset;
     }

@@ -73,9 +73,9 @@ public abstract class AbstractM68kInstruction {
         return false;
     }
 
-    // DOVE SI CAMPIONA IL PIN IPL: se questa istruzione ha un punto suo, lo dichiara
-    // chiamando cpu.markIplAnchor(...) NEL PASSO GIUSTO; altrimenti vale il default.
-    // Il modello e' scritto una volta sola, in Motorola68000.markIplAnchor/pollIpl.
+    // WHERE THE IPL PIN IS SAMPLED: if this instruction has a point of its own, it declares
+    // it by calling cpu.markIplAnchor(...) IN THE RIGHT STEP; otherwise the default applies.
+    // The model is written once, in Motorola68000.markIplAnchor/pollIpl.
 
     public void prepareInstruction(Motorola68000 cpu) {
         cpu.consumeIRC();
@@ -134,10 +134,10 @@ public abstract class AbstractM68kInstruction {
     }
 
     protected int calculateEA(Motorola68000 cpu, int mode, int reg, int size, int basePC, int ext1, int ext2, boolean updateAn, boolean includeGap) {
-        // Questo e' il nostro genamode: l'EA appena calcolata e' quella su cui l'eventuale
-        // address error scattera', e il suo modo decide l'offset del PC nel frame di
-        // gruppo 0 (Motorola68000.group0DataFaultPcOffset). Le istruzioni che invece
-        // falliscono sullo STACK e non sull'EA (PEA, JSR, LINK, BSR) dichiarano da se'.
+        // The EA just computed is the one on which a possible address error will fire, and its
+        // mode decides the PC offset in the group 0 frame
+        // (Motorola68000.group0DataFaultPcOffset). The instructions that fail on the STACK
+        // instead of the EA (PEA, JSR, LINK, BSR) declare it themselves.
         cpu.noteGroup0Ea(mode, reg, size);
         int inc = (reg == 7 && size == 1) ? 2 : size;
         return switch (mode) {

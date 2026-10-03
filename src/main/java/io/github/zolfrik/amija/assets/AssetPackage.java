@@ -28,38 +28,37 @@ import java.util.List;
 import java.util.function.UnaryOperator;
 
 /**
- * Descrizione di un pacchetto di terze parti che l'assistente di download può
- * prelevare <b>per conto dell'utente</b>.
+ * Description of a third-party package the download assistant can fetch <b>on the user's
+ * behalf</b>.
  *
- * <p>AmiJa non ridistribuisce nulla: il file viaggia dal server del titolare dei
- * diritti al disco dell'utente, esattamente come se questi cliccasse il link in un
- * browser. Ogni pacchetto resta soggetto alla propria licenza; provenienza e
- * titolare sono registrati in {@code THIRD-PARTY-NOTICES.md} §5, che fissa anche
- * le sei regole a cui ogni nuova voce del manifest deve attenersi (fonte ufficiale,
- * nessun aggiramento di registrazioni o paywall, mai ROM o immagini disco).
+ * <p>AmiJa redistributes nothing: the file travels from the rights holder's server to the
+ * user's disk, exactly as if the user clicked the link in a browser. Every package stays
+ * subject to its own licence; origin and holder are recorded in
+ * {@code THIRD-PARTY-NOTICES.md} section 5, which also sets the six rules every new manifest
+ * entry must follow (official source, no circumvention of registrations or paywalls, never
+ * ROMs or disk images).
  *
- * @param id             identificatore stabile; da esso derivano le chiavi i18n
- *                       {@code assets.<id>.name} e {@code assets.<id>.desc}
- * @param url            URL di download presso la fonte ufficiale
- * @param sha256         impronta del file verificata a mano, in esadecimale minuscolo.
- *                       È <b>indicativa</b>: gli URL non sono versionati, quindi un
- *                       rilascio a monte la cambierà legittimamente. Una difformità
- *                       va segnalata, non trattata come errore fatale.
- * @param approxBytes    dimensione attesa, usata per la barra di avanzamento quando
- *                       il server non manda {@code Content-Length}
- * @param rightsHolder   titolare dei diritti, mostrato all'utente prima del download
- * @param preselected    se la casella parte spuntata quando il pacchetto non è ancora
- *                       installato. Vale per ciò che serve a far girare i giochi; i
- *                       pacchetti grossi e facoltativi — gli shader — partono spenti,
- *                       perché "Scarica" non deve mai avviare centinaia di MB che
- *                       l'utente non ha chiesto
- * @param format         formato dell'archivio
- * @param destDir        cartella di destinazione, relativa alla working dir
- * @param probe          file la cui presenza indica che il pacchetto è già installato
- * @param requiredEntries voci che l'archivio deve contenere; se mancano, il file
- *                       scaricato non è quello atteso e l'installazione si ferma
- * @param mapper         mappa una voce dell'archivio sul percorso di destinazione
- *                       (relativo a {@code destDir}), oppure {@code null} per ignorarla
+ * @param id             stable identifier; the i18n keys {@code assets.<id>.name} and
+ *                       {@code assets.<id>.desc} derive from it
+ * @param url            download URL at the official source
+ * @param sha256         fingerprint of the file checked by hand, in lower-case hex. It is
+ *                       <b>indicative</b>: the URLs are not versioned, so an upstream release
+ *                       will legitimately change it. A mismatch is to be reported, not
+ *                       treated as a fatal error.
+ * @param approxBytes    expected size, used for the progress bar when the server sends no
+ *                       {@code Content-Length}
+ * @param rightsHolder   rights holder, shown to the user before the download
+ * @param preselected    whether the box starts ticked when the package is not installed yet.
+ *                       It holds for what is needed to run games; the large, optional packages
+ *                       (the shaders) start off, because "Download" must never start hundreds
+ *                       of MB the user did not ask for
+ * @param format         archive format
+ * @param destDir        destination folder, relative to the working dir
+ * @param probe          file whose presence means the package is already installed
+ * @param requiredEntries entries the archive must contain; if they are missing, the downloaded
+ *                       file is not the expected one and the installation stops
+ * @param mapper         maps an archive entry to the destination path (relative to
+ *                       {@code destDir}), or {@code null} to ignore it
  */
 public record AssetPackage(
         String id,
@@ -81,24 +80,24 @@ public record AssetPackage(
         requiredEntries = List.copyOf(requiredEntries);
     }
 
-    /** Nome leggibile e localizzato del pacchetto. */
+    /** Readable, localised name of the package. */
     public String displayName() {
         return Messages.t("assets." + id + ".name");
     }
 
-    /** Descrizione localizzata: a cosa serve il pacchetto. */
+    /** Localised description: what the package is for. */
     public String description() {
         return Messages.t("assets." + id + ".desc");
     }
 
-    /** {@code true} se il pacchetto risulta già installato nella working dir. */
+    /** {@code true} if the package is already installed in the working dir. */
     public boolean installed() {
         return Files.isRegularFile(probe);
     }
 
     /**
-     * Percorso di destinazione (relativo a {@link #destDir()}) per una voce
-     * dell'archivio, oppure {@code null} se la voce va ignorata.
+     * Destination path (relative to {@link #destDir()}) for an archive entry, or {@code null}
+     * if the entry is to be ignored.
      */
     public String map(String entry) {
         return mapper.apply(entry);

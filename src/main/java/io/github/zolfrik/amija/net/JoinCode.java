@@ -23,18 +23,17 @@ package io.github.zolfrik.amija.net;
 import java.security.SecureRandom;
 
 /**
- * Il <i>join code</i>: 8 caratteri, ~40 bit, generati a ogni avvio del server e mostrati
- * nel popup ({@code docs/remote-play-plan.md} §8.1, §9).
+ * The <i>join code</i>: 8 characters, ~40 bits, generated at every server start and shown in
+ * the popup ({@code docs/remote-play-plan.md} sections 8.1, 9).
  *
- * <p>L'alfabeto e' quello di Crockford base32 — 32 simboli da cui sono state <b>tolte</b>
- * le lettere che si confondono con le cifre. Il codice va letto ad alta voce al telefono o
- * incollato in una chat: I/L/O/U sono fuori perche' 1/1/0/V sono gia' dentro, e
- * {@link #normalise} le riporta comunque sulla cifra giusta invece di rifiutarle. Un codice
- * che fallisce perche' l'utente ha scritto O invece di 0 e' un bug di progettazione, non un
- * errore dell'utente.
+ * <p>The alphabet is Crockford's base32: 32 symbols from which the letters that can be confused
+ * with digits have been <b>removed</b>. The code is read aloud over the phone or pasted into a
+ * chat: I/L/O/U are out because 1/1/0/V are already in, and {@link #normalise} maps them back to
+ * the right digit instead of refusing them. A code failing because the user typed O instead of
+ * 0 is a design bug, not a user error.
  *
- * <p>Il trattino al centro (`K7M2-Q4XZ`) e' solo presentazione: {@link #normalise} lo
- * ignora, come ignora spazi e maiuscole/minuscole.
+ * <p>The dash in the middle (`K7M2-Q4XZ`) is only presentation: {@link #normalise} ignores it, as
+ * it ignores spaces and case.
  */
 public final class JoinCode {
 
@@ -44,7 +43,7 @@ public final class JoinCode {
     private JoinCode() {
     }
 
-    /** Nuovo codice casuale, gia' formattato con il trattino. */
+    /** New random code, already formatted with the dash. */
     public static String generate() {
         SecureRandom rnd = new SecureRandom();
         StringBuilder sb = new StringBuilder(LENGTH + 1);
@@ -58,12 +57,12 @@ public final class JoinCode {
     }
 
     /**
-     * Riduce un codice scritto a mano alla sua forma canonica: maiuscolo, senza separatori,
-     * con le confusioni tipografiche ricondotte alla cifra ({@code I,L -> 1}, {@code O -> 0}).
+     * Reduces a hand-written code to its canonical form: upper case, no separators, with the
+     * typographic confusions mapped back to the digit ({@code I,L -> 1}, {@code O -> 0}).
      *
-     * <p>E' la funzione che l'intera derivazione di chiave usa come password, quindi
-     * <b>deve</b> essere la stessa sui due lati: normalizzare da una parte sola significa
-     * fallire l'autenticazione senza capire perche'.
+     * <p>It is the function the whole key derivation uses as the password, so it <b>must</b> be
+     * the same on both sides: normalising on one side only means failing authentication
+     * without understanding why.
      */
     public static String normalise(String code) {
         if (code == null) {
@@ -83,7 +82,7 @@ public final class JoinCode {
         return sb.toString();
     }
 
-    /** Vero se il codice, normalizzato, ha la forma giusta. Non dice se e' quello buono. */
+    /** True if the code, normalised, has the right form. It does not say whether it is the right one. */
     public static boolean isWellFormed(String code) {
         String n = normalise(code);
         if (n.length() != LENGTH) {

@@ -91,7 +91,7 @@ public class MoveFromSRInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                     return false;
                 }
-                case 5 -> { // nw (Memory) + finalize — the write is the LAST bus cycle (seam 0)
+                case 5 -> { // nw (Memory) + finalize: the write is the LAST bus cycle (seam 0)
                     if (!cpu.isBusCycleIdle()) return false;
                     cpu.scheduleWrite(getTemp(cpu, ADDR), cpu.getSR(), 2); // nw
                     return finalizeInstructionSafe(cpu);

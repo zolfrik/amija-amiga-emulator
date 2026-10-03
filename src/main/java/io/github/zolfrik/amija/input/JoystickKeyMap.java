@@ -24,18 +24,17 @@ import java.awt.event.KeyEvent;
 import java.util.EnumMap;
 
 /**
- * Associazione tasto host &rarr; funzione del joystick emulato via tastiera, per una
- * singola game port. Ogni porta ha la propria mappa, così i due joystick da tastiera
- * possono convivere sulla stessa tastiera.
+ * Mapping host key -&gt; function of the keyboard-emulated joystick, for a single game port.
+ * Each port has its own map, so the two keyboard joysticks can coexist on the same keyboard.
  *
- * <p>Default dell'emulatore:
+ * <p>Emulator defaults:
  * <ul>
- *   <li><b>Port 0</b>: W / S / D / A + Ctrl destro;</li>
- *   <li><b>Port 1</b>: frecce direzionali + Ctrl sinistro.</li>
+ *   <li><b>Port 0</b>: W / S / D / A + right Ctrl;</li>
+ *   <li><b>Port 1</b>: arrow keys + left Ctrl.</li>
  * </ul>
  *
- * <p>I valori sono configurabili da {@code amiga.properties}
- * ({@code input.portN.joystick.up|down|right|left|fire}) e dal popup F12.
+ * <p>The values can be configured from {@code amiga.properties}
+ * ({@code input.portN.joystick.up|down|right|left|fire}) and from the F12 popup.
  */
 public final class JoystickKeyMap {
 
@@ -44,7 +43,7 @@ public final class JoystickKeyMap {
 
     private JoystickKeyMap() { }
 
-    /** Mappa di default dell'emulatore per la porta indicata (0 o 1). */
+    /** The emulator's default map for the given port (0 or 1). */
     public static JoystickKeyMap defaults(int port) {
         JoystickKeyMap m = new JoystickKeyMap();
         int std = KeyEvent.KEY_LOCATION_STANDARD;
@@ -66,18 +65,18 @@ public final class JoystickKeyMap {
         return m;
     }
 
-    /** Tasto associato alla funzione (mai {@code null}: le mappe sono sempre complete). */
+    /** Key assigned to the function (never {@code null}: the maps are always complete). */
     public KeyBinding get(JoystickAction action) {
         return bindings.get(action);
     }
 
-    /** Associa un tasto alla funzione, sostituendo il precedente. */
+    /** Assigns a key to the function, replacing the previous one. */
     public void set(JoystickAction action, KeyBinding binding) {
         if (action == null || binding == null) return;
         bindings.put(action, binding);
     }
 
-    /** Funzione pilotata dall'evento di tastiera, o {@code null} se il tasto non è mappato. */
+    /** Function driven by the keyboard event, or {@code null} if the key is not mapped. */
     public JoystickAction actionFor(KeyEvent e) {
         for (var entry : bindings.entrySet()) {
             if (entry.getValue().matches(e)) return entry.getKey();
@@ -85,7 +84,7 @@ public final class JoystickKeyMap {
         return null;
     }
 
-    /** Funzione a cui è già associato il tasto, o {@code null} se libero. */
+    /** Function the key is already assigned to, or {@code null} if free. */
     public JoystickAction actionFor(KeyBinding binding) {
         if (binding == null) return null;
         for (var entry : bindings.entrySet()) {
@@ -94,14 +93,14 @@ public final class JoystickKeyMap {
         return null;
     }
 
-    /** Copia indipendente (le mappe si passano per valore fra config, popup e adapter). */
+    /** Independent copy (maps are passed by value between config, popup and adapter). */
     public JoystickKeyMap copy() {
         JoystickKeyMap m = new JoystickKeyMap();
         m.bindings.putAll(bindings);
         return m;
     }
 
-    /** Sostituisce tutte le associazioni con quelle di {@code other}. */
+    /** Replaces every assignment with those of {@code other}. */
     public void copyFrom(JoystickKeyMap other) {
         if (other == null) return;
         bindings.clear();

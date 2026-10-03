@@ -21,61 +21,58 @@
 package io.github.zolfrik.amija.common;
 
 /**
- * Insieme dei pin del MOS 8520.
+ * The pins of the MOS 8520.
  *
- * Gestisce le due porte I/O a 8 bit (PA0-PA7, PB0-PB7) e i pin speciali:
- *   - FLAG  : fronte di discesa genera interrupt (bit 4 dell'ICR)
- *   - TOD   : fronte di salita incrementa il contatore Time-of-Day
- *   - CNT   : clock per la porta seriale (input o output a seconda di CRA bit 6)
- *   - SP    : dati seriali (input o output a seconda di CRA bit 6)
- *   - IRQ   : linea di interrupt verso la CPU (open-drain, active-LOW)
+ * Handles the two 8-bit I/O ports (PA0-PA7, PB0-PB7) and the special pins:
+ *   - FLAG : a falling edge raises an interrupt (bit 4 of the ICR)
+ *   - TOD  : a rising edge increments the Time-of-Day counter
+ *   - CNT  : clock of the serial port (input or output depending on CRA bit 6)
+ *   - SP   : serial data (input or output depending on CRA bit 6)
+ *   - IRQ  : interrupt line to the CPU (open drain, active LOW)
  *
- * <h2>Modello delle porte (PERF)</h2>
- * Le 16 linee delle porte A/B non hanno bisogno né di rilevamento dei fronti né
- * di logica open-drain: servono solo a leggere/scrivere PRA/PRB. Per questo NON
- * sono modellate come oggetti pin (che imponevano ~16 chiamate virtuali + loop a
- * ogni accesso), ma come tre maschere di bit per porta:
- *   - {@code drive} : valore che il chip emette (registro PR), bit i = pin i
- *   - {@code ddr}   : direzione (1 = output, 0 = input)
- *   - {@code ext}   : livello imposto dall'hardware esterno
- * Lo stato fisico di un pin è quindi {@code (drive & ddr) | (ext & ~ddr)} su tutti
- * gli 8 bit in una singola espressione, senza loop. Il comportamento osservabile
- * (lettura registri, override timer su PB6/PB7) è identico al vecchio modello.
+ * <h2>Port model (PERF)</h2>
+ * The 16 lines of ports A/B need neither edge detection nor open-drain logic: they only
+ * serve to read/write PRA/PRB. So they are NOT modelled as pin objects (which would cost
+ * ~16 virtual calls + a loop at every access) but as three bit masks per port:
+ *   - {@code drive} : value the chip emits (PR register), bit i = pin i
+ *   - {@code ddr}   : direction (1 = output, 0 = input)
+ *   - {@code ext}   : level imposed by the external hardware
+ * The physical state of a pin is therefore {@code (drive & ddr) | (ext & ~ddr)} on all 8
+ * bits in a single expression, with no loop.
  *
- * I 5 pin speciali restano oggetti {@link CIAPin} perché richiedono il
- * rilevamento dei fronti (FLAG/CNT/TOD) e la logica open-drain (IRQ/SP/CNT).
+ * The 5 special pins stay {@link CIAPin} objects because they need edge detection
+ * (FLAG/CNT/TOD) and open-drain logic (IRQ/SP/CNT).
  *
- * Nota sull'override dei timer su PB6/PB7:
- *   Quando PBON è attivo, il timer controlla il pin. Nell'emulazione corrente
- *   ciò è gestito da MOS8520.updatePB(), che ripiega il livello del timer nel
- *   valore scritto con writePortData; il flag di override per-pin
- *   ({@code bTimerOvr}) viene usato solo dal reset (sempre disattivo a regime).
+ * Timer override on PB6/PB7:
+ *   When PBON is on, the timer drives the pin. This is handled by MOS8520.updatePB(), which
+ *   folds the timer level into the value written with writePortData; the per-pin override
+ *   flag ({@code bTimerOvr}) is used only by the reset (always off in steady state).
  *
  * @author alessio.carotenuto
  */
 public class CIAPinSet {
 
     /**
-     * Modella un singolo pin fisico del MOS 8520 (usato per i 5 pin speciali).
+     * A single physical pin of the MOS 8520 (used for the 5 special pins).
      */
     public static class CIAPin {
 
-        // Stato logico corrente e stato al ciclo precedente (per rilevamento fronti)
+        // Current logic state and state at the previous cycle (for edge detection)
         private boolean currentLevel = true;
         private boolean lastLevel    = true;
 
-        // Sorgenti di segnale
-        private boolean internalDrive = true; // Valore che il CIA tenta di emettere (se output)
-        private boolean externalInput = true; // Valore imposto dall'hardware esterno
+        // Signal sources
+        private boolean internalDrive = true; // Value the CIA tries to emit (if output)
+        private boolean externalInput = true; // Value imposed by the external hardware
 
         // Configurazione
-        private boolean isOutput      = false; // Definito dal DDR
-        private boolean timerOverride = false; // Se true, il timer controlla il pin (PB6/PB7)
+        private boolean isOutput      = false; // Set by the DDR
+        private boolean timerOverride = false; // If true, the timer drives the pin (PB6/PB7)
         private boolean isOpenDrain   = false; // IRQ, SP, CNT
         private boolean dirty         = true;
 
         /**
-         * Aggiorna lo stato del pin per il ciclo corrente.
+         * Updates the pin's state for the current cycle.
          */
         public void update() {
             lastLevel = currentLevel;
@@ -92,18 +89,18 @@ public class CIAPinSet {
             dirty = false;
         }
 
-        /** Fronte di discesa: HIGH -> LOW. */
+        /** Falling edge: HIGH -> LOW. */
         public boolean isFallingEdge() {
             return lastLevel && !currentLevel;
         }
 
-        /** Fronte di salita: LOW -> HIGH. */
+        /** Rising edge: LOW -> HIGH. */
         public boolean isRisingEdge() {
             return !lastLevel && currentLevel;
         }
 
         /**
-         * Stato fisico reale del pin, usato per la lettura dei registri PRA/PRB.
+         * Real physical state of the pin, used for reading the PRA/PRB registers.
          */
         public boolean getPinState() {
             if (isOutput || timerOverride) {
@@ -117,21 +114,21 @@ public class CIAPinSet {
             }
         }
 
-        /** Imposta il valore che il chip tenta di emettere sul pin. */
+        /** Sets the value the chip tries to emit on the pin. */
         public void setInternalDrive(boolean value) {
             if (this.internalDrive == value) return;
             this.internalDrive = value;
             dirty = true;
         }
 
-        /** Imposta il segnale proveniente dall'hardware esterno connesso al pin. */
+        /** Sets the signal coming from the external hardware connected to the pin. */
         public void setExternalInput(boolean value) {
             if (this.externalInput == value) return;
             this.externalInput = value;
             dirty = true;
         }
 
-        /** Configura la direzione del pin: true = output, false = input. */
+        /** Configures the pin's direction: true = output, false = input. */
         public void setDirection(boolean output) {
             if (this.isOutput == output) return;
             this.isOutput = output;
@@ -139,7 +136,7 @@ public class CIAPinSet {
         }
 
         /**
-         * Attiva o disattiva l'override del timer sul pin.
+         * Switches the timer override on the pin on or off.
          */
         public void setTimerOverride(boolean active) {
             if (this.timerOverride == active) return;
@@ -148,7 +145,7 @@ public class CIAPinSet {
         }
 
         /**
-         * Configura il pin come open-drain.
+         * Configures the pin as open drain.
          */
         public void setOpenDrain(boolean openDrain) {
             if (this.isOpenDrain == openDrain) return;
@@ -156,12 +153,12 @@ public class CIAPinSet {
             dirty = true;
         }
 
-        /** Restituisce il valore che il chip sta tentando di emettere. */
+        /** Returns the value the chip is trying to emit. */
         public boolean getInternalDrive() {
             return internalDrive;
         }
 
-        /** Indica se il pin e configurato come output. */
+        /** Whether the pin is configured as an output. */
         public boolean isOutputMode() {
             return isOutput || timerOverride;
         }
@@ -171,15 +168,14 @@ public class CIAPinSet {
         }
     }
 
-    // ── Porte I/O da 8 bit, rappresentate come maschere di bit ────────────────
-    // Default coerenti col vecchio modello a oggetti: internalDrive=true (drive=0xFF),
-    // externalInput=true (ext=0xFF), isOutput=false (ddr=0). Il reset del MOS8520
-    // sovrascrive comunque drive/ddr a 0.
+    // -- 8-bit I/O ports, represented as bit masks ------------------------------------------
+    // Defaults: internalDrive=true (drive=0xFF), externalInput=true (ext=0xFF),
+    // isOutput=false (ddr=0). The MOS8520 reset overwrites drive/ddr to 0 anyway.
     private int aDrive = 0xFF, aDdr = 0x00, aExt = 0xFF;
     private int bDrive = 0xFF, bDdr = 0x00, bExt = 0xFF;
-    private int bTimerOvr = 0x00; // override timer su PB6/PB7 (bit 6/7); a regime resta 0
+    private int bTimerOvr = 0x00; // timer override on PB6/PB7 (bits 6/7); 0 in steady state
 
-    // Pin speciali (richiedono fronti / open-drain)
+    // Special pins (need edges / open-drain)
     private final CIAPin flagPin = new CIAPin();
     private final CIAPin todPin  = new CIAPin();
     private final CIAPin cntPin  = new CIAPin();
@@ -187,20 +183,20 @@ public class CIAPinSet {
     private final CIAPin irqPin  = new CIAPin();
 
     /**
-     * Valore corrente del registro PRB, necessario per ripristinare il bit di
-     * drive su PB6/PB7 quando l'override del timer viene disattivato.
+     * Current value of the PRB register, needed to restore the drive bit on PB6/PB7 when the
+     * timer override is switched off.
      */
     private int prbValue = 0xFF;
 
     public CIAPinSet() {
-        // IRQ: open-drain, active-LOW.
-        // Il CIA forza LOW per segnalare un interrupt; HIGH a riposo.
+        // IRQ: open drain, active LOW.
+        // The CIA forces LOW to signal an interrupt; HIGH at rest.
         irqPin.setOpenDrain(true);
         irqPin.setDirection(true);
         irqPin.setInternalDrive(true); // Rilasciato (HIGH) a riposo
         irqPin.setExternalInput(true);
 
-        // SP e CNT: open-drain secondo le specifiche del 8520.
+        // SP and CNT: open drain, as the 8520 specifies.
         spPin.setOpenDrain(true);
         cntPin.setOpenDrain(true);
     }
@@ -210,8 +206,8 @@ public class CIAPinSet {
     // -------------------------------------------------------------------------
 
     /**
-     * Aggiorna lo stato fisico dei pin speciali (fronti). Le porte A/B non
-     * richiedono aggiornamento: il loro stato è calcolato on-demand dalle maschere.
+     * Updates the physical state of the special pins (edges). Ports A/B need no update:
+     * their state is computed on demand from the masks.
      */
     public boolean updateAll() {
         if (!hasSpecialPinChanges()) return false;
@@ -229,15 +225,14 @@ public class CIAPinSet {
     }
 
     // -------------------------------------------------------------------------
-    // Interfaccia con i registri del CIA
+    // Interface with the CIA registers
     // -------------------------------------------------------------------------
 
     /**
-     * Scrive nel registro DDR (Data Direction Register).
-     * Bit = 1 → output, bit = 0 → input.
+     * Writes the DDR (Data Direction Register). Bit = 1 -> output, bit = 0 -> input.
      *
-     * @param portIdx 0 = Porta A, 1 = Porta B
-     * @param value   Byte da scrivere nel DDR
+     * @param portIdx 0 = port A, 1 = port B
+     * @param value   byte to write to the DDR
      */
     public void writeDDR(int portIdx, byte value) {
         if (portIdx == 0) aDdr = value & 0xFF;
@@ -245,38 +240,36 @@ public class CIAPinSet {
     }
 
     /**
-     * Scrive nel registro PR (Peripheral Register).
-     * Imposta il valore che il chip tenta di emettere sui pin configurati come output.
+     * Writes the PR (Peripheral Register): sets the value the chip tries to emit on the pins
+     * configured as outputs.
      *
-     * @param portIdx 0 = Porta A, 1 = Porta B
-     * @param value   Byte da scrivere nel PR
+     * @param portIdx 0 = port A, 1 = port B
+     * @param value   byte to write to the PR
      */
     public void writePortData(int portIdx, byte value) {
         if (portIdx == 0) {
             aDrive = value & 0xFF;
         } else {
             bDrive = value & 0xFF;
-            prbValue = value & 0xFF; // copia di PRB per il ripristino dell'override
+            prbValue = value & 0xFF; // copy of PRB to restore the override
         }
     }
 
     /**
-     * Legge il registro PR.
-     * Restituisce lo stato fisico reale dei pin: per i bit configurati come output
-     * il valore emesso dal chip (drive), per i bit input il livello esterno (ext).
-     * Rispecchia il comportamento hardware (si legge ciò che c'è sul piedino).
+     * Reads the PR register: the real physical state of the pins, i.e. for the bits
+     * configured as outputs the value emitted by the chip (drive), for the input bits the
+     * external level (ext). What is on the pin is what is read.
      *
-     * @param portIdx 0 = Porta A, 1 = Porta B
-     * @return Stato corrente degli 8 pin della porta
+     * @param portIdx 0 = port A, 1 = port B
+     * @return current state of the port's 8 pins
      */
     /**
-     * Livello imposto dall'ESTERNO sui pin di una porta, senza alcuna maschera di
-     * direzione: per la porta A di CIA-A sono le quattro linee di stato del drive
-     * (bit 2÷5) e i due pulsanti di fuoco (bit 6÷7).
+     * Level imposed from OUTSIDE on a port's pins, with no direction mask: for CIA-A port A
+     * these are the four drive status lines (bits 2-5) and the two fire buttons (bits 6-7).
      *
-     * <p>Serve alla <b>rilettura del registro</b> ({@code MOS8520.readRegister} reg 0/1),
-     * che sul 8520 liscio <b>non</b> segue la DDR su quei bit — vedi il commento di
-     * {@code MOS8520.computePA}. Il livello del <i>pin</i>, che è un'altra cosa, resta
+     * <p>Used by the <b>register read-back</b> ({@code MOS8520.readRegister} reg 0/1), which
+     * on the plain 8520 does <b>not</b> follow the DDR on those bits; see the comment of
+     * {@code MOS8520.computePA}. The level of the <i>pin</i>, which is another thing, is
      * {@link #readPortData}.
      */
     public int readExternal(int portIdx) {
@@ -290,7 +283,7 @@ public class CIAPinSet {
             drive = aDrive;
             ext = aExt;
         } else {
-            out = bDdr | bTimerOvr; // i pin sotto override timer contano come output
+            out = bDdr | bTimerOvr; // pins under timer override count as outputs
             drive = bDrive;
             ext = bExt;
         }
@@ -298,13 +291,13 @@ public class CIAPinSet {
     }
 
     /**
-     * Gestisce l'override dei pin PB6 e PB7 da parte dei timer (PBON).
-     * A regime non viene usato (l'override è ripiegato in writePortData da
-     * MOS8520.updatePB); il reset lo disattiva.
+     * Handles the override of pins PB6 and PB7 by the timers (PBON). Not used in steady state
+     * (the override is folded into writePortData by MOS8520.updatePB); the reset switches it
+     * off.
      *
-     * @param timerIdx 0 = Timer A / PB6, 1 = Timer B / PB7
-     * @param active   true se il timer deve controllare il pin
-     * @param level    Livello logico emesso dal timer (usato solo se active = true)
+     * @param timerIdx 0 = timer A / PB6, 1 = timer B / PB7
+     * @param active   true if the timer must drive the pin
+     * @param level    logic level emitted by the timer (used only if active = true)
      */
     public void setTimerOutputOverride(int timerIdx, boolean active, boolean level) {
         int mask = (timerIdx == 0) ? 0x40 : 0x80;
@@ -313,22 +306,22 @@ public class CIAPinSet {
             if (level) bDrive |= mask; else bDrive &= ~mask;
         } else {
             bTimerOvr &= ~mask;
-            // Ripristina il bit dal registro PRB
+            // Restore the bit from the PRB register
             if ((prbValue & mask) != 0) bDrive |= mask; else bDrive &= ~mask;
         }
     }
 
     // -------------------------------------------------------------------------
-    // Interfaccia con l'hardware esterno
+    // Interface with the external hardware
     // -------------------------------------------------------------------------
 
     /**
-     * Simula un segnale in ingresso proveniente da una periferica esterna
-     * (es. drive floppy, joystick, tastiera).
+     * Simulates an input signal from an external peripheral (e.g. floppy drive, joystick,
+     * keyboard).
      *
-     * @param portIdx 0 = Porta A, 1 = Porta B
-     * @param bit     Indice del pin (0-7)
-     * @param level   Livello logico del segnale esterno (false = LOW)
+     * @param portIdx 0 = port A, 1 = port B
+     * @param bit     pin index (0-7)
+     * @param level   logic level of the external signal (false = LOW)
      */
     public void setExternalInput(int portIdx, int bit, boolean level) {
         int mask = 1 << bit;
@@ -340,7 +333,7 @@ public class CIAPinSet {
     }
 
     // -------------------------------------------------------------------------
-    // Accessori pin speciali
+    // Special pin accessors
     // -------------------------------------------------------------------------
 
     public CIAPin getFlagPin() { return flagPin; }

@@ -28,18 +28,18 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Tasto host associato a una funzione del joystick da tastiera.
+ * Host key assigned to a function of the keyboard joystick.
  *
- * <p>Un tasto è identificato dalla coppia (<i>key code</i> AWT, <i>posizione</i>): la
- * posizione distingue i tasti "doppi" della tastiera — Ctrl/Shift/Alt sinistro e destro,
- * e il tastierino numerico — che condividono lo stesso key code. Ad esempio il Ctrl
- * sinistro e quello destro sono entrambi {@code VK_CONTROL} e si distinguono solo per
- * {@link KeyEvent#KEY_LOCATION_LEFT} / {@link KeyEvent#KEY_LOCATION_RIGHT}.
+ * <p>A key is identified by the pair (AWT <i>key code</i>, <i>location</i>): the location tells
+ * apart the "double" keys of the keyboard (left and right Ctrl/Shift/Alt, and the numeric
+ * keypad) that share the same key code. For example left and right Ctrl are both
+ * {@code VK_CONTROL} and differ only by {@link KeyEvent#KEY_LOCATION_LEFT} /
+ * {@link KeyEvent#KEY_LOCATION_RIGHT}.
  *
- * <p>In {@code amiga.properties} il tasto è scritto come nome simbolico della costante
- * {@code KeyEvent.VK_*} senza prefisso, con la posizione come suffisso quando non è
- * quella standard: {@code W}, {@code UP}, {@code CONTROL:RIGHT}, {@code SHIFT:LEFT}.
- * È accettato anche il key code numerico puro, per robustezza.
+ * <p>In {@code amiga.properties} the key is written as the symbolic name of the
+ * {@code KeyEvent.VK_*} constant without prefix, with the location as a suffix when it is not
+ * the standard one: {@code W}, {@code UP}, {@code CONTROL:RIGHT}, {@code SHIFT:LEFT}. A plain
+ * numeric key code is accepted too, for robustness.
  */
 public record KeyBinding(int keyCode, int keyLocation) {
 
@@ -47,7 +47,7 @@ public record KeyBinding(int keyCode, int keyLocation) {
     private static final String LOC_RIGHT  = "RIGHT";
     private static final String LOC_NUMPAD = "NUMPAD";
 
-    /** Nome simbolico {@code VK_*} (senza prefisso) &harr; key code AWT. */
+    /** Symbolic name {@code VK_*} (without prefix) to/from AWT key code. */
     private static final Map<String, Integer> NAME_TO_CODE = new HashMap<>();
     private static final Map<Integer, String> CODE_TO_NAME = new HashMap<>();
 
@@ -62,13 +62,13 @@ public record KeyBinding(int keyCode, int keyLocation) {
                 int code = f.getInt(null);
                 String token = name.substring(3);
                 NAME_TO_CODE.put(token, code);
-                // Più costanti possono condividere lo stesso codice: si sceglie sempre il
-                // nome minore in ordine alfabetico, così il file di configurazione resta
-                // stabile fra un avvio e l'altro (l'ordine dei campi non è garantito).
+                // Several constants can share the same code: the alphabetically smallest name
+                // is always chosen, so the configuration file stays stable from one start to
+                // the next (the order of the fields is not guaranteed).
                 String prev = CODE_TO_NAME.get(code);
                 if (prev == null || token.compareTo(prev) < 0) CODE_TO_NAME.put(code, token);
             } catch (IllegalAccessException ignored) {
-                // campo pubblico di una classe pubblica: non può accadere
+                // public field of a public class: cannot happen
             }
         }
     }
@@ -77,17 +77,17 @@ public record KeyBinding(int keyCode, int keyLocation) {
         keyLocation = normalize(keyLocation);
     }
 
-    /** Tasto premuto in un evento AWT, con la sua posizione sulla tastiera. */
+    /** Key pressed in an AWT event, with its location on the keyboard. */
     public static KeyBinding fromEvent(KeyEvent e) {
         return new KeyBinding(e.getKeyCode(), e.getKeyLocation());
     }
 
-    /** {@code true} se l'evento riguarda esattamente questo tasto (codice e posizione). */
+    /** {@code true} if the event concerns exactly this key (code and location). */
     public boolean matches(KeyEvent e) {
         return e.getKeyCode() == keyCode && normalize(e.getKeyLocation()) == keyLocation;
     }
 
-    /** Valore da scrivere in {@code amiga.properties} (vedi documentazione di classe). */
+    /** Value to write in {@code amiga.properties} (see the class documentation). */
     public String configValue() {
         String name = CODE_TO_NAME.get(keyCode);
         String base = (name != null) ? name : Integer.toString(keyCode);
@@ -100,9 +100,9 @@ public record KeyBinding(int keyCode, int keyLocation) {
     }
 
     /**
-     * Converte il valore letto da {@code amiga.properties} nel tasto corrispondente,
-     * oppure {@code null} se la stringa è vuota, non riconosciuta o indica ESC (che non
-     * è associabile: nel popup di configurazione annulla l'operazione).
+     * Converts the value read from {@code amiga.properties} into the matching key, or
+     * {@code null} if the string is empty, not recognised or means ESC (which cannot be
+     * assigned: in the configuration popup it cancels the operation).
      */
     public static KeyBinding parse(String value) {
         if (value == null) return null;
@@ -137,27 +137,27 @@ public record KeyBinding(int keyCode, int keyLocation) {
     }
 
     /**
-     * Nome simbolico della costante {@code KeyEvent.VK_*} (senza prefisso), o
-     * {@code null} se il key code non corrisponde ad alcuna costante nota. Serve a
-     * cercare il nome localizzato del tasto ({@code key.name.<NOME>}).
+     * Symbolic name of the {@code KeyEvent.VK_*} constant (without prefix), or {@code null} if
+     * the key code matches no known constant. Used to look up the key's localised name
+     * ({@code key.name.<NAME>}).
      */
     public String keyName() {
         return CODE_TO_NAME.get(keyCode);
     }
 
     /**
-     * Nome del tasto secondo AWT, senza indicazione della posizione (es. {@code "W"},
-     * {@code "Up"}, {@code "Ctrl"}). È tradotto nella lingua della JVM, non in quella
-     * scelta per l'interfaccia: va usato come ripiego quando manca la voce
-     * {@code key.name.<NOME>} nel bundle dei messaggi.
+     * The key's name according to AWT, with no indication of the location (e.g. {@code "W"},
+     * {@code "Up"}, {@code "Ctrl"}). It is translated into the JVM's language, not the one
+     * chosen for the interface: to be used as a fallback when the {@code key.name.<NAME>} entry
+     * is missing from the message bundle.
      */
     public String keyText() {
         return KeyEvent.getKeyText(keyCode);
     }
 
     /**
-     * Chiave i18n con cui qualificare {@link #keyText()} quando il tasto ha una posizione
-     * specifica (sinistra/destra/tastierino), o {@code null} per la posizione standard.
+     * i18n key with which to qualify {@link #keyText()} when the key has a specific location
+     * (left/right/keypad), or {@code null} for the standard location.
      */
     public String locationMessageKey() {
         return switch (keyLocation) {
@@ -168,7 +168,7 @@ public record KeyBinding(int keyCode, int keyLocation) {
         };
     }
 
-    /** Posizione sconosciuta e standard sono equivalenti: si normalizzano a standard. */
+    /** Unknown and standard locations are equivalent: both are normalised to standard. */
     private static int normalize(int location) {
         return switch (location) {
             case KeyEvent.KEY_LOCATION_LEFT, KeyEvent.KEY_LOCATION_RIGHT,

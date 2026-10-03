@@ -31,44 +31,43 @@ import java.util.Map;
 import javax.swing.Timer;
 
 /**
- * Traduce i KeyEvent AWT nei raw key number Amiga e li passa a
+ * Translates AWT KeyEvents into Amiga raw key numbers and passes them to
  * Keyboard.pressKey() / releaseKey().
  *
- * <p><b>Gestione shift.</b> Windows non consegna ad AWT il {@code keyReleased}
- * del primo shift rilasciato quando entrambi sono premuti (lo emette solo per
- * l'ultimo): la levetta sinistra del flipper resterebbe incantata. Quando è
- * disponibile la lettura dello stato fisico dei tasti ({@link WindowsKeyState}),
- * i due shift NON sono più gestiti dagli eventi AWT ma da un poller che legge
- * direttamente L/R shift e li pilota in modo indipendente. Se la lettura fisica
- * non è disponibile (non-Windows, o senza finestra), si ricade sulla gestione
- * AWT con {@link #reconcileModifiers} come mitigazione.
+ * <p><b>Shift handling.</b> Windows does not deliver to AWT the {@code keyReleased} of the
+ * first shift released when both are held (it emits it only for the last): the left flipper
+ * would stay stuck. When the physical key state can be read ({@link WindowsKeyState}), the
+ * two shifts are NOT handled through AWT events but by a poller that reads L/R shift
+ * directly and drives them independently. If the physical read is not available
+ * (non-Windows, or no window), AWT handling is used with {@link #reconcileModifiers} as a
+ * mitigation.
  *
- * <p><b>Gestione AltGr.</b> Sui layout con AltGr Windows affianca all'Alt destro
- * un Control sinistro sintetico: all'Amiga andrebbe CTRL + Amiga destra, e con
- * l'Alt sinistro premuto la combinazione diventerebbe un reset. Il Ctrl sintetico
- * viene riconosciuto e ignorato — vedi {@link #isSyntheticAltGrCtrl}.
+ * <p><b>AltGr handling.</b> On layouts with AltGr, Windows pairs the right Alt with a
+ * synthetic left Control: the Amiga would get CTRL + right Amiga, and with the left Alt held
+ * the combination would become a reset. The synthetic Ctrl is recognised and ignored; see
+ * {@link #isSyntheticAltGrCtrl}.
  */
 public class AmigaKeyAdapter extends KeyAdapter {
 
     private final AmigaKeyTarget keyboard;
 
-    /** Finestra su cui l'adapter è registrato, per il gating sul focus del poller. */
+    /** Window the adapter is registered on, for the poller's focus gating. */
     private final Window focusWindow;
 
-    /** true se i due shift sono pilotati dal poller fisico invece che da AWT. */
+    /** True if the two shifts are driven by the physical poller instead of AWT. */
     private final boolean shiftPollerActive;
 
-    /** Timer EDT che campiona lo stato fisico dei due shift (~120 Hz). */
+    /** EDT timer sampling the physical state of the two shifts (~120 Hz). */
     private Timer shiftPoller;
 
-    /** Ultimo stato sintetizzato per L/R shift (per emettere solo le transizioni). */
+    /** Last state synthesised for L/R shift (to emit only the transitions). */
     private boolean lShiftDown = false;
     private boolean rShiftDown = false;
 
-    /** true se il Ctrl sinistro corrente è quello sintetico di AltGr (press ignorata). */
+    /** True if the current left Ctrl is AltGr's synthetic one (press ignored). */
     private boolean altGrCtrlSuppressed = false;
 
-    // Mappa VK_ Java → raw key number Amiga (Appendice A HW Ref Manual)
+    // Map Java VK_ -> Amiga raw key number (HRM appendix A)
     private static final Map<Integer, Integer> KEYMAP = new HashMap<>();
     private static final Map<Character, Integer> CHAR_KEYMAP = new HashMap<>();
     private static final Map<Character, Integer> FALLBACK_KEYMAP = new HashMap<>();
@@ -103,7 +102,7 @@ public class AmigaKeyAdapter extends KeyAdapter {
         KEYMAP.put(KeyEvent.VK_Y, 0x15);
         KEYMAP.put(KeyEvent.VK_Z, 0x31);
 
-        // Numeri riga superiore
+        // Digits of the top row
         KEYMAP.put(KeyEvent.VK_1, 0x01);
         KEYMAP.put(KeyEvent.VK_2, 0x02);
         KEYMAP.put(KeyEvent.VK_3, 0x03);
@@ -126,7 +125,7 @@ public class AmigaKeyAdapter extends KeyAdapter {
         KEYMAP.put(KeyEvent.VK_PERIOD, 0x39);
         KEYMAP.put(KeyEvent.VK_SLASH, 0x3A);
 
-        // Tasti speciali — usa le costanti già definite in Keyboard
+        // Special keys: uses the constants already defined in Keyboard
         KEYMAP.put(KeyEvent.VK_ESCAPE, Keyboard.KEY_ESC);
         KEYMAP.put(KeyEvent.VK_BACK_SPACE, Keyboard.KEY_BACKSPACE);
         KEYMAP.put(KeyEvent.VK_TAB, Keyboard.KEY_TAB);
@@ -134,8 +133,8 @@ public class AmigaKeyAdapter extends KeyAdapter {
         KEYMAP.put(KeyEvent.VK_SPACE, Keyboard.KEY_SPACE);
         KEYMAP.put(KeyEvent.VK_DELETE, Keyboard.KEY_DEL);
         KEYMAP.put(KeyEvent.VK_CAPS_LOCK, Keyboard.KEY_CAPS_LOCK);
-        // NB: HELP non sta su F12 — quello apre il popup di configurazione (Amija lo
-        // consuma prima degli adapter di macchina). Vedi il blocco navigazione più sotto.
+        // HELP is not on F12: that one opens the configuration popup (Amija consumes it
+        // before the machine's adapters). See the navigation block further down.
 
         // Frecce
         KEYMAP.put(KeyEvent.VK_UP, Keyboard.KEY_UP);
@@ -143,7 +142,7 @@ public class AmigaKeyAdapter extends KeyAdapter {
         KEYMAP.put(KeyEvent.VK_LEFT, Keyboard.KEY_LEFT);
         KEYMAP.put(KeyEvent.VK_RIGHT, Keyboard.KEY_RIGHT);
 
-        // Tasti funzione
+        // Function keys
         KEYMAP.put(KeyEvent.VK_F1, 0x50);
         KEYMAP.put(KeyEvent.VK_F2, 0x51);
         KEYMAP.put(KeyEvent.VK_F3, 0x52);
@@ -172,7 +171,7 @@ public class AmigaKeyAdapter extends KeyAdapter {
         KEYMAP.put(KeyEvent.VK_MULTIPLY, 0x5D);
         KEYMAP.put(KeyEvent.VK_DIVIDE, 0x5C);
 
-        // Simboli stampabili: keyChar segue il layout reale della tastiera host.
+        // Printable symbols: keyChar follows the real layout of the host keyboard.
         CHAR_KEYMAP.put('`', 0x00);
         CHAR_KEYMAP.put('1', 0x01);
         CHAR_KEYMAP.put('2', 0x02);
@@ -208,27 +207,26 @@ public class AmigaKeyAdapter extends KeyAdapter {
         CHAR_KEYMAP.put('/', 0x3A);
         CHAR_KEYMAP.put('?', 0x3A);
 
-        // Tasti che AWT non sa nominare (keyCode = VK_UNDEFINED) e il cui carattere non
-        // esiste sul layout US: senza questa rete resterebbero MUTI. Sono le cinque
-        // lettere accentate della tastiera italiana, mappate per POSIZIONE sul raw key
-        // number che occupa lo stesso posto sulla tastiera Amiga — quindi il tasto manda
-        // sempre lo stesso codice sia nudo sia con Shift, ed è quello giusto se sull'Amiga
-        // è caricato il keymap italiano (setmap i). Con il keymap US di default escono
-        // invece i simboli che quelle posizioni hanno lì (= [ ; ' #), altrimenti
-        // irraggiungibili da una tastiera italiana.
+        // Keys AWT cannot name (keyCode = VK_UNDEFINED) whose character does not exist on
+        // the US layout: without this net they would stay MUTE. They are the five accented
+        // letters of the Italian keyboard, mapped by POSITION to the raw key number in the
+        // same place on the Amiga keyboard, so the key always sends the same code both bare
+        // and with Shift, which is the right one if the Italian keymap is loaded on the
+        // Amiga (setmap i). With the default US keymap they give the symbols those positions
+        // have there (= [ ; ' #), otherwise unreachable from an Italian keyboard.
         //
-        // Questa mappa è consultata per ULTIMA, quindi non può dirottare i layout in cui
-        // gli stessi caratteri arrivano da un tasto con keyCode noto (es. la é dell'AZERTY
-        // francese, che sta sulla riga dei numeri ed è già gestita da KEYMAP).
-        FALLBACK_KEYMAP.put('ì', 0x0C);   // posizione US '='
+        // This map is consulted LAST, so it cannot hijack the layouts in which the same
+        // characters come from a key with a known keyCode (e.g. the e-acute of the French
+        // AZERTY, which is on the number row and already handled by KEYMAP).
+        FALLBACK_KEYMAP.put('ì', 0x0C);   // US position '='
         FALLBACK_KEYMAP.put('^', 0x0C);   // Shift+ì
-        FALLBACK_KEYMAP.put('è', 0x1A);   // posizione US '['
+        FALLBACK_KEYMAP.put('è', 0x1A);   // US position '['
         FALLBACK_KEYMAP.put('é', 0x1A);   // Shift+è
-        FALLBACK_KEYMAP.put('ò', 0x29);   // posizione US ';'
+        FALLBACK_KEYMAP.put('ò', 0x29);   // US position ';'
         FALLBACK_KEYMAP.put('ç', 0x29);   // Shift+ò
-        FALLBACK_KEYMAP.put('à', 0x2A);   // posizione US '\''
+        FALLBACK_KEYMAP.put('à', 0x2A);   // US position '\''
         FALLBACK_KEYMAP.put('°', 0x2A);   // Shift+à
-        FALLBACK_KEYMAP.put('ù', 0x2B);   // posizione US '#'
+        FALLBACK_KEYMAP.put('ù', 0x2B);   // US position '#'
         FALLBACK_KEYMAP.put('§', 0x2B);   // Shift+ù
     }
 
@@ -237,19 +235,19 @@ public class AmigaKeyAdapter extends KeyAdapter {
     }
 
     /**
-     * @param keyboard    tastiera Amiga di destinazione
-     * @param focusWindow finestra su cui l'adapter è registrato; se non null e la
-     *                    lettura fisica dei tasti è disponibile, i due shift
-     *                    vengono pilotati da un poller invece che dagli eventi AWT
-     *                    (aggira il keyup di shift perso da Windows). Passare null
-     *                    (es. nei test headless) mantiene la sola gestione AWT.
+     * @param keyboard    target Amiga keyboard
+     * @param focusWindow window the adapter is registered on; if not null and the physical
+     *                    key state can be read, the two shifts are driven by a poller
+     *                    instead of AWT events (works around the shift key-up Windows
+     *                    loses). Passing null (e.g. in headless tests) keeps AWT handling
+     *                    only.
      */
     public AmigaKeyAdapter(AmigaKeyTarget keyboard, Window focusWindow) {
         this.keyboard = keyboard;
         this.focusWindow = focusWindow;
         this.shiftPollerActive = focusWindow != null && WindowsKeyState.isAvailable();
         if (shiftPollerActive) {
-            // ~120 Hz: ben oltre la cadenza umana, sotto ogni impatto sensibile.
+            // ~120 Hz: well above human cadence, below any noticeable cost.
             shiftPoller = new Timer(8, e -> { pollShiftState(); pollResetComboState(); });
             shiftPoller.setCoalesce(true);
             shiftPoller.start();
@@ -257,8 +255,8 @@ public class AmigaKeyAdapter extends KeyAdapter {
     }
 
     /**
-     * Ferma il poller degli shift. Da chiamare quando l'adapter viene rimosso
-     * (es. riavvio dell'emulatore) per non lasciare Timer EDT orfani.
+     * Stops the shift poller. To be called when the adapter is removed (e.g. emulator
+     * restart) so no orphan EDT timers are left.
      */
     public void dispose() {
         if (shiftPoller != null) {
@@ -269,17 +267,17 @@ public class AmigaKeyAdapter extends KeyAdapter {
 
     @Override
     public void keyPressed(KeyEvent e) {
-        // Evita key-repeat del sistema operativo: Keyboard.java gestisce già lo stato
+        // Avoid the operating system's key repeat: Keyboard.java already handles the state
         if (e.isConsumed()) {
             return;
         }
-        // Gli shift sono di competenza del poller fisico: consuma e ignora qui.
+        // The shifts belong to the physical poller: consume and ignore here.
         if (shiftPollerActive && e.getKeyCode() == KeyEvent.VK_SHIFT) {
             e.consume();
             return;
         }
-        // AltGr: l'Alt destro va all'Amiga come sola Amiga destra, senza il Ctrl
-        // che Windows gli affianca (vedi isSyntheticAltGrCtrl).
+        // AltGr: the right Alt goes to the Amiga as right Amiga alone, without the Ctrl
+        // Windows pairs with it (see isSyntheticAltGrCtrl).
         if (isSyntheticAltGrCtrl(e)) {
             altGrCtrlSuppressed = true;
             e.consume();
@@ -299,13 +297,13 @@ public class AmigaKeyAdapter extends KeyAdapter {
     @Override
     public void keyReleased(KeyEvent e) {
         if (e.isConsumed()) return;
-        // Gli shift sono di competenza del poller fisico: consuma e ignora qui.
+        // The shifts belong to the physical poller: consume and ignore here.
         if (shiftPollerActive && e.getKeyCode() == KeyEvent.VK_SHIFT) {
             e.consume();
             return;
         }
-        // Contropartita del press ignorato: Windows chiude AltGr con un keyup di
-        // Ctrl sinistro. Ignorarlo evita di rilasciare un Ctrl vero tenuto premuto.
+        // Counterpart of the ignored press: Windows closes AltGr with a left Ctrl key-up.
+        // Ignoring it avoids releasing a real Ctrl held down.
         if (altGrCtrlSuppressed && isLeftCtrl(e)) {
             altGrCtrlSuppressed = false;
             e.consume();
@@ -318,24 +316,24 @@ public class AmigaKeyAdapter extends KeyAdapter {
             keyboard.releaseKey(amigaKey);
             e.consume();
         }
-        // Fallback (poller fisico non disponibile): recupera i keyReleased che
-        // Windows non consegna quando si rilascia uno di due shift tenuti insieme.
+        // Fallback (physical poller not available): recovers the keyReleased events Windows
+        // does not deliver when one of two shifts held together is released.
         if (!shiftPollerActive) {
             reconcileModifiers(e);
         }
     }
 
     /**
-     * Poller dello stato fisico dei due shift (chiamato sull'EDT dal Timer).
+     * Poller of the physical state of the two shifts (called on the EDT by the timer).
      *
-     * Legge L/R shift direttamente dall'OS ({@link WindowsKeyState}) e sintetizza
-     * press/release indipendenti per {@link Keyboard#KEY_L_SHIFT} e
-     * {@link Keyboard#KEY_R_SHIFT}. Aggira il fatto che Windows non consegna ad
-     * AWT il keyup del primo shift rilasciato quando entrambi sono premuti.
+     * Reads L/R shift straight from the OS ({@link WindowsKeyState}) and synthesises
+     * independent press/release for {@link Keyboard#KEY_L_SHIFT} and
+     * {@link Keyboard#KEY_R_SHIFT}. Works around Windows not delivering to AWT the key-up of
+     * the first shift released when both are held.
      *
-     * Il gating sul focus evita di catturare shift destinati ad altre finestre:
-     * se la finestra non ha il focus, entrambi gli shift vengono considerati su
-     * (ed eventuali sintesi pendenti rilasciate), così non restano incantati.
+     * The focus gating avoids catching shifts meant for other windows: if the window does
+     * not have the focus, both shifts are taken as up (and any pending synthesis released),
+     * so they do not stay stuck.
      */
     private void pollShiftState() {
         boolean focused = focusWindow != null && focusWindow.isFocused();
@@ -355,19 +353,18 @@ public class AmigaKeyAdapter extends KeyAdapter {
     }
 
     /**
-     * Rilascio "fisico" dei tasti del reset CTRL+AMIGA+AMIGA (chiamato sull'EDT).
+     * "Physical" release of the CTRL+AMIGA+AMIGA reset keys (called on the EDT).
      *
-     * Finché la combinazione è premuta la macchina è tenuta in reset dalla tastiera,
-     * ed esce dal reset solo quando i tasti vengono rilasciati: se l'OS perde uno dei
-     * keyup, la macchina resterebbe ferma. È lo stesso limite di Windows aggirato per
-     * gli shift in {@link #pollShiftState()} — non consegna il keyReleased del primo
-     * modificatore rilasciato quando ne sono premuti due dello stesso tipo, ed è
-     * proprio il caso dei due Alt (= i due tasti Amiga) — e vale anche per la perdita
-     * di fuoco della finestra.
+     * While the combination is held the machine is kept in reset by the keyboard, and
+     * leaves it only when the keys are released: if the OS loses one of the key-ups, the
+     * machine would stay stopped. It is the same Windows limit worked around for the shifts
+     * in {@link #pollShiftState()} (no keyReleased for the first modifier released when two
+     * of the same kind are held, which is exactly the case of the two Alts = the two Amiga
+     * keys), and it also applies when the window loses focus.
      *
-     * Il poller interviene SOLO mentre la combinazione risulta premuta, quindi non
-     * può interferire con la normale digitazione. Il tetto di sicurezza in
-     * {@code Keyboard} copre le piattaforme senza lettura dello stato fisico.
+     * The poller acts ONLY while the combination reads as held, so it cannot interfere with
+     * normal typing. The safety cap in {@code Keyboard} covers the platforms without a
+     * physical state read.
      */
     private void pollResetComboState() {
         if (!keyboard.isResetComboHeld()) return;
@@ -388,21 +385,20 @@ public class AmigaKeyAdapter extends KeyAdapter {
     }
 
     /**
-     * true se questo keyPressed è il Control <em>sintetico</em> di AltGr.
+     * True if this keyPressed is AltGr's <em>synthetic</em> Control.
      *
-     * <p>Sui layout con AltGr (italiano, tedesco, francese…) Windows non consegna
-     * il solo Alt destro: genera prima un keydown di Control sinistro e poi quello
-     * dell'Alt destro (AltGr <em>è</em> Ctrl+Alt a livello di OS). Tradotti alla
-     * lettera arrivano all'Amiga CTRL + Amiga destra, e basta tenere premuto l'Alt
-     * sinistro perché la combinazione diventi CTRL+AMIGA+AMIGA, cioè un reset.
+     * <p>On layouts with AltGr (Italian, German, French...) Windows does not deliver the right
+     * Alt alone: it generates a left Control key-down first and then the right Alt's (AltGr
+     * <em>is</em> Ctrl+Alt at OS level). Translated literally, the Amiga gets CTRL + right
+     * Amiga, and holding the left Alt is enough to make the combination CTRL+AMIGA+AMIGA, a
+     * reset.
      *
-     * <p>Il riconoscimento non guarda l'ordine degli eventi ma lo stato FISICO
-     * dell'Alt destro ({@link WindowsKeyState}): quando il Ctrl sintetico viene
-     * dispatchato, l'Alt destro che l'ha generato risulta già premuto. Il controllo
-     * sul layout limita la regola alle tastiere che AltGr ce l'hanno davvero, così
-     * sui layout tipo US (Alt destro = Alt normale) "Alt destro + Ctrl" continua a
-     * funzionare. Resta ambiguo — e viene ignorato — solo un Ctrl premuto mentre
-     * AltGr è già giù: lì l'OS ha comunque il Ctrl segnato come premuto.
+     * <p>The recognition does not look at the order of the events but at the PHYSICAL state
+     * of the right Alt ({@link WindowsKeyState}): when the synthetic Ctrl is dispatched, the
+     * right Alt that generated it already reads as held. The layout check limits the rule to
+     * the keyboards that really have AltGr, so on US-like layouts (right Alt = normal Alt)
+     * "right Alt + Ctrl" keeps working. Only a Ctrl pressed while AltGr is already down stays
+     * ambiguous, and is ignored: there the OS has the Ctrl marked as held anyway.
      */
     private boolean isSyntheticAltGrCtrl(KeyEvent e) {
         return isLeftCtrl(e)
@@ -410,21 +406,20 @@ public class AmigaKeyAdapter extends KeyAdapter {
                 && WindowsKeyState.activeLayoutHasAltGr();
     }
 
-    /** true per il Control sinistro, l'unico che Windows sintetizza per AltGr. */
+    /** True for the left Control, the only one Windows synthesises for AltGr. */
     private static boolean isLeftCtrl(KeyEvent e) {
         return e.getKeyCode() == KeyEvent.VK_CONTROL
                 && e.getKeyLocation() != KeyEvent.KEY_LOCATION_RIGHT;
     }
 
     /**
-     * Sincronizza {@link #pressedKeys} con lo stato reale dei modificatori
-     * riportato da {@link KeyEvent#getModifiersEx()}. Se la maschera di un
-     * modificatore è a 0 (tasto fisicamente su) ma un tasto Amiga corrispondente
-     * è ancora tracciato come premuto, ne sintetizza il rilascio.
+     * Syncs {@link #pressedKeys} with the real state of the modifiers reported by
+     * {@link KeyEvent#getModifiersEx()}. If a modifier's mask is 0 (key physically up) but
+     * the matching Amiga key is still tracked as held, it synthesises the release.
      *
-     * Usato solo come fallback quando il poller fisico non è disponibile.
-     * Rilasciamo solo quando l'OS conferma il modificatore su, quindi la
-     * sintesi è sempre corretta e non può generare rilasci spuri.
+     * Used only as a fallback when the physical poller is not available. The release
+     * happens only when the OS confirms the modifier is up, so the synthesis is always
+     * right and cannot produce spurious releases.
      */
     private void reconcileModifiers(KeyEvent e) {
         int ex = e.getModifiersEx();
@@ -435,8 +430,8 @@ public class AmigaKeyAdapter extends KeyAdapter {
     }
 
     /**
-     * Se {@code amigaKey} risulta ancora tracciato come premuto in
-     * {@link #pressedKeys}, lo rimuove e ne notifica il rilascio alla tastiera.
+     * If {@code amigaKey} is still tracked as held in {@link #pressedKeys}, removes it and
+     * notifies the keyboard of the release.
      */
     private void releaseTrackedAmigaKey(int amigaKey) {
         boolean wasTracked = pressedKeys.values().removeIf(v -> v == amigaKey);
@@ -448,34 +443,34 @@ public class AmigaKeyAdapter extends KeyAdapter {
     private int translate(KeyEvent e) {
         int vk = e.getKeyCode();
 
-        // Modificatori: distingui Left/Right con getKeyLocation()
+        // Modifiers: tell Left/Right apart with getKeyLocation()
         if (vk == KeyEvent.VK_SHIFT) {
             return e.getKeyLocation() == KeyEvent.KEY_LOCATION_RIGHT
                     ? Keyboard.KEY_R_SHIFT : Keyboard.KEY_L_SHIFT;
         }
         if (vk == KeyEvent.VK_ALT) {
-            // Left Alt → Left Amiga, Right Alt → Right Amiga
+            // Left Alt -> Left Amiga, Right Alt -> Right Amiga
             return e.getKeyLocation() == KeyEvent.KEY_LOCATION_RIGHT
                     ? Keyboard.KEY_R_AMIGA : Keyboard.KEY_L_AMIGA;
         }
         if (vk == KeyEvent.VK_ALT_GRAPH) {
-            // Alcune piattaforme/layout consegnano l'Alt destro come AltGr.
+            // Some platforms/layouts deliver the right Alt as AltGr.
             return Keyboard.KEY_R_AMIGA;
         }
         if (vk == KeyEvent.VK_CONTROL) {
             return Keyboard.KEY_CTRL;
         }
         if (vk == KeyEvent.VK_META || vk == KeyEvent.VK_WINDOWS) {
-            // Tasto Win/Cmd → Left Amiga (o Right Amiga se a destra)
+            // Win/Cmd key -> Left Amiga (or Right Amiga if on the right)
             return e.getKeyLocation() == KeyEvent.KEY_LOCATION_RIGHT
                     ? Keyboard.KEY_R_AMIGA : Keyboard.KEY_L_AMIGA;
         }
 
-        // Blocco navigazione: tasti che sull'Amiga non esistono, riusati per i tre tasti
-        // Amiga che nessun tasto host raggiungerebbe altrimenti. Gli Alt dell'Amiga sono
-        // quelli che con il keymap italiano (setmap i) danno @ # [ ] { }: gli Alt host
-        // sono già i due tasti Amiga, e F12 apre il popup. Il tastierino è escluso: con
-        // NumLock spento manda gli stessi VK del blocco navigazione.
+        // Navigation block: keys that do not exist on the Amiga, reused for the three Amiga
+        // keys no host key would reach otherwise. The Amiga's Alts are those that with the
+        // Italian keymap (setmap i) give @ # [ ] { }: the host Alts are already the two Amiga
+        // keys, and F12 opens the popup. The numeric keypad is excluded: with NumLock off it
+        // sends the same VKs as the navigation block.
         if (e.getKeyLocation() != KeyEvent.KEY_LOCATION_NUMPAD) {
             switch (vk) {
                 case KeyEvent.VK_PAGE_UP:   return Keyboard.KEY_L_ALT;
@@ -502,13 +497,14 @@ public class AmigaKeyAdapter extends KeyAdapter {
     }
 
     /**
-     * Identità del tasto fisico, con cui {@link #pressedKeys} appaia press e release.
+     * Identity of the physical key, with which {@link #pressedKeys} pairs press and
+     * release.
      *
-     * <p>I tasti serviti da {@link #FALLBACK_KEYMAP} hanno tutti {@code keyCode == 0}
-     * ({@link KeyEvent#VK_UNDEFINED}): l'identità per keyCode li confonderebbe fra loro
-     * (premendo ò e à il secondo non partirebbe nemmeno). Per loro l'identità è il tasto
-     * Amiga di destinazione, che è la stessa per tutti i caratteri prodotti dallo stesso
-     * tasto (ò/ç → $29) e quindi regge anche se lo Shift cambia fra press e release.
+     * <p>The keys served by {@link #FALLBACK_KEYMAP} all have {@code keyCode == 0}
+     * ({@link KeyEvent#VK_UNDEFINED}): an identity by keyCode would confuse them with each
+     * other (pressing two of them, the second would not even start). For them the identity
+     * is the target Amiga key, the same for every character produced by the same key, so it
+     * holds even if Shift changes between press and release.
      */
     private static int keyId(KeyEvent e, int amigaKey) {
         if (e.getKeyCode() == KeyEvent.VK_UNDEFINED) {

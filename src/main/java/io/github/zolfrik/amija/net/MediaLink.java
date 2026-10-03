@@ -27,39 +27,41 @@ import java.net.SocketAddress;
 import java.net.SocketTimeoutException;
 
 /**
- * Il canale media: datagrammi sigillati su UDP ({@code docs/remote-play-plan.md} §4, §8).
+ * The media channel: sealed datagrams over UDP ({@code docs/remote-play-plan.md} sections 4,
+ * 8).
  *
- * <p>Sopra ci passano il video e l'audio verso l'ospite e il feedback verso l'host. Non sa
- * cosa trasporta: mette e toglie il sigillo, conta, e filtra chi non e' il peer.
+ * <p>Video and audio to the guest and feedback to the host travel on it. It does not know what
+ * it carries: it puts on and takes off the seal, counts, and filters out whoever is not the
+ * peer.
  *
- * <h2>L'indirizzo del peer si adotta, non si configura</h2>
- * L'ospite conosce l'host dal canale TCP. L'host <b>no</b>: dietro NAT la porta UDP sorgente
- * dell'ospite non ha alcun rapporto con quella del suo TCP, e nessuno dei due lati puo'
- * saperla in anticipo. Percio' l'host aspetta il primo datagramma che <b>si apre con la
- * chiave di sessione</b> e ne adotta il mittente. E' l'unico modo che funzioni dietro NAT ed
- * e' anche il piu' sicuro: l'indirizzo non e' dichiarato da nessuno, e' <i>dimostrato</i>.
+ * <h2>The peer's address is adopted, not configured</h2>
+ * The guest knows the host from the TCP channel. The host does <b>not</b>: behind NAT the
+ * guest's UDP source port has no relation to that of its TCP, and neither side can know it in
+ * advance. So the host waits for the first datagram that <b>opens with the session key</b> and
+ * adopts its sender. It is the only way that works behind NAT and also the safest: the
+ * address is declared by nobody, it is <i>proved</i>.
  *
- * <h2>Il filtro costa un confronto, non una decifratura</h2>
- * Adottato il peer, i datagrammi che vengono da altrove sono scartati <b>prima</b> di
- * qualunque lavoro crittografico (§8.3). Chi volesse tenere occupata la CPU dell'host con
- * pacchetti finti ottiene un confronto di indirizzi. Prima dell'adozione quel filtro non
- * esiste ancora — li' l'unica difesa e' provare ad aprire — e allora si limita il
- * <i>numero</i> di tentativi: {@value #ADOPTION_ATTEMPTS_PER_SECOND} al secondo, che bastano
- * a chiunque arrivi in buona fede e non bastano a niente altro.
+ * <h2>The filter costs a comparison, not a decryption</h2>
+ * Once the peer is adopted, datagrams coming from elsewhere are discarded <b>before</b> any
+ * cryptographic work (section 8.3). Whoever wants to keep the host's CPU busy with fake packets
+ * gets an address comparison. Before adoption that filter does not exist yet (there the only
+ * defence is trying to open), so the <i>number</i> of attempts is limited:
+ * {@value #ADOPTION_ATTEMPTS_PER_SECOND} per second, enough for anyone arriving in good faith
+ * and not enough for anything else.
  *
- * <h2>Sui replay</h2>
- * Il tag GCM dimostra che un datagramma e' stato prodotto da chi conosce la chiave, non che
- * sia nuovo. Un pacchetto ripetuto e' pero' innocuo per costruzione, ai due usi che esistono:
- * un frammento video gia' visto lo scarta {@link FragmentReassembler}, e un feedback vecchio
- * lo scarta il {@code seq} monotono di {@link FeedbackPacket}. Filtrare qui sarebbe una
- * seconda barriera contro un riordino che su UDP e' normale, e butterebbe via pacchetti buoni.
+ * <h2>On replays</h2>
+ * The GCM tag proves a datagram was produced by someone who knows the key, not that it is
+ * new. A repeated packet is harmless by construction for the two uses that exist, though: a
+ * video fragment already seen is discarded by {@link FragmentReassembler}, and an old feedback
+ * by the monotonic {@code seq} of {@link FeedbackPacket}. Filtering here would be a second
+ * barrier against a reordering that is normal on UDP, and would throw away good packets.
  */
 public final class MediaLink implements AutoCloseable {
 
-    /** Tentativi di adozione al secondo, prima che l'indirizzo del peer sia noto. */
+    /** Adoption attempts per second, before the peer's address is known. */
     public static final int ADOPTION_ATTEMPTS_PER_SECOND = 20;
 
-    /** Esito di una ricezione andata a buon fine. Il chiaro sta nel buffer del chiamante. */
+    /** Outcome of a successful receive. The plaintext is in the caller's buffer. */
     public record Received(int type, int length, int seq) {
     }
 
@@ -86,10 +88,10 @@ public final class MediaLink implements AutoCloseable {
     private long rejectedUnsealed;
 
     /**
-     * @param socket     socket UDP gia' aperto; il link non lo chiude, lo fa chi lo possiede
-     * @param cipher     sigillo di sessione, gia' orientato nel verso giusto
-     * @param peer       destinatario noto (ospite), oppure {@code null} per adottarlo (host)
-     * @param impairment simulazione di link, {@link NetImpairment#NONE} in produzione
+     * @param socket     UDP socket already open; the link does not close it, its owner does
+     * @param cipher     session seal, already oriented in the right direction
+     * @param peer       known recipient (guest), or {@code null} to adopt it (host)
+     * @param impairment link simulation, {@link NetImpairment#NONE} in production
      */
     public MediaLink(DatagramSocket socket, MediaCipher cipher, SocketAddress peer,
                      NetImpairment impairment) {
@@ -107,16 +109,16 @@ public final class MediaLink implements AutoCloseable {
         return peer != null;
     }
 
-    /** Timeout di ricezione: oltre quello {@link #receive} torna {@code null}. */
+    /** Receive timeout: beyond it {@link #receive} returns {@code null}. */
     public void setTimeout(int millis) throws IOException {
         socket.setSoTimeout(millis);
     }
 
     /**
-     * Sigilla e spedisce un payload.
+     * Seals and sends a payload.
      *
-     * @return {@code false} se il peer non e' ancora noto: non e' un errore, e' l'attesa del
-     *         primo datagramma dell'ospite
+     * @return {@code false} if the peer is not known yet: not an error, it is the wait for the
+     *         guest's first datagram
      */
     public synchronized boolean send(int type, byte[] plain, int off, int length)
             throws IOException {
@@ -138,13 +140,13 @@ public final class MediaLink implements AutoCloseable {
     }
 
     /**
-     * Riceve e apre il prossimo datagramma valido.
+     * Receives and opens the next valid datagram.
      *
-     * @param plainOut buffer per il chiaro, almeno {@link RemotePlayProtocol#MAX_PLAINTEXT}
-     * @return l'esito, oppure {@code null} se e' scaduto il timeout o il datagramma e' stato
-     *         scartato. <b>Scartare non e' un'eccezione</b>: su un canale aperto a Internet
-     *         il traffico non nostro e' la normalita', e trattarlo come un guasto porterebbe
-     *         a chiudere la sessione quando basta ignorare un pacchetto.
+     * @param plainOut buffer for the plaintext, at least {@link RemotePlayProtocol#MAX_PLAINTEXT}
+     * @return the outcome, or {@code null} if the timeout expired or the datagram was
+     *         discarded. <b>Discarding is not an exception</b>: on a channel open to the
+     *         Internet foreign traffic is normal, and treating it as a failure would close
+     *         the session when ignoring a packet is enough.
      */
     public Received receive(byte[] plainOut) throws IOException {
         rxPacket.setData(rxBuffer, 0, RemotePlayProtocol.MAX_DATAGRAM);
@@ -176,7 +178,7 @@ public final class MediaLink implements AutoCloseable {
         }
 
         if (known == null) {
-            // Si e' aperto con la chiave di sessione: e' l'ospite, ovunque sia.
+            // It opened with the session key: it is the guest, wherever it is.
             peer = from;
         }
         datagramsReceived++;
@@ -184,12 +186,12 @@ public final class MediaLink implements AutoCloseable {
                 RemotePlayProtocol.headerSeq(rxBuffer));
     }
 
-    /** Datagrammi da un mittente che non e' il peer, o oltre il ritmo di adozione. */
+    /** Datagrams from a sender that is not the peer, or beyond the adoption rate. */
     public long rejectedForeign() {
         return rejectedForeign;
     }
 
-    /** Datagrammi dal peer che non hanno superato il tag: corrotti o falsi. */
+    /** Datagrams from the peer that failed the tag: corrupt or fake. */
     public long rejectedUnsealed() {
         return rejectedUnsealed;
     }
@@ -207,12 +209,12 @@ public final class MediaLink implements AutoCloseable {
     }
 
     /**
-     * Non chiude ne' il socket ne' l'impairment: <b>non li possiede</b>.
+     * Closes neither the socket nor the impairment: <b>it does not own them</b>.
      *
-     * <p>Sull'host il socket UDP e' uno solo per tutta la vita del server e ogni sessione ci
-     * costruisce sopra il proprio link; se il link chiudesse l'impairment, la sessione
-     * successiva ne troverebbe uno gia' spento. La proprieta' sta in chi li ha creati —
-     * {@code RemotePlayHost} e {@code RemotePlayGuest} — e li' resta.
+     * <p>On the host there is a single UDP socket for the whole life of the server and every
+     * session builds its own link on it; if the link closed the impairment, the next session
+     * would find one already switched off. Ownership belongs to whoever created them
+     * ({@code RemotePlayHost} and {@code RemotePlayGuest}) and stays there.
      */
     @Override
     public void close() {

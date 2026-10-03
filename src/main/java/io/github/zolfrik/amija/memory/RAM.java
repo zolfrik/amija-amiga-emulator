@@ -23,37 +23,34 @@ package io.github.zolfrik.amija.memory;
 import java.util.Arrays;
 
 /**
- * Memoria RAM generica.
+ * Generic RAM.
  *
- * Questa classe rappresenta un blocco di memoria lineare.
- * Le logiche di indirizzamento, masking e wrap-around devono essere gestite
- * esternamente dai componenti di sistema.
+ * A linear block of memory. Addressing, masking and wrap-around are handled outside, by the
+ * system components.
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * CARATTERISTICHE
- * ═══════════════════════════════════════════════════════════════════════════
+ * CHARACTERISTICS
  *
  *   - Big-endian
- *   - Accessi word e long NON verificano l'allineamento.
- *   - Bound check rigoroso su ogni accesso.
+ *   - Word and long accesses do NOT check alignment.
+ *   - Strict bounds check on every access.
  *
  * @author alessio.carotenuto
  */
 public final class RAM {
 
     // =========================================================================
-    // Stato interno
+    // Internal state
     // =========================================================================
 
-    /** Array di byte che costituisce la memoria fisica. */
+    /** Byte array that is the physical memory. */
     private final byte[] mem;
 
     /** Dimensione in byte. */
     private final int size;
 
     /**
-     * Etichetta descrittiva per il logging (es. "Chip", "Slow").
-     * Non influisce sul comportamento.
+     * Descriptive label for logging (e.g. "Chip", "Slow"). It does not affect the
+     * behaviour.
      */
     private final String label;
 
@@ -63,19 +60,19 @@ public final class RAM {
     // =========================================================================
 
     /**
-     * Crea una RAM di dimensione {@code sizeBytes} con etichetta di default.
+     * Creates a RAM of {@code sizeBytes} with the default label.
      *
-     * @param sizeBytes Dimensione in byte (deve essere > 0)
+     * @param sizeBytes size in bytes (must be > 0)
      */
     public RAM(int sizeBytes) {
         this(sizeBytes, "RAM");
     }
 
     /**
-     * Crea una RAM di dimensione {@code sizeBytes} con etichetta personalizzata.
+     * Creates a RAM of {@code sizeBytes} with a custom label.
      *
-     * @param sizeBytes Dimensione in byte (deve essere > 0)
-     * @param label     Etichetta per il logging (es. "Chip", "Slow")
+     * @param sizeBytes size in bytes (must be > 0)
+     * @param label     label for logging (e.g. "Chip", "Slow")
      */
     public RAM(int sizeBytes, String label) {
         if (sizeBytes <= 0) {
@@ -87,14 +84,14 @@ public final class RAM {
     }
 
     // =========================================================================
-    // Accesso in lettura
+    // Read access
     // =========================================================================
 
     /**
-     * Legge 1 byte (valore unsigned 0–255).
+     * Reads 1 byte (unsigned value 0-255).
      *
-     * @param address Indirizzo fisico (24 bit effettivi)
-     * @return Valore byte unsigned
+     * @param address physical address (24 effective bits)
+     * @return unsigned byte value
      */
     public int readByte(int address) {
         if (address < 0 || address >= size) throwOob(address);
@@ -102,36 +99,34 @@ public final class RAM {
     }
 
     /**
-     * Legge 1 word a 16 bit in formato big-endian (MC68000).
+     * Reads one 16-bit word, big-endian (MC68000).
      *
-     * L'indirizzo non viene verificato per l'allineamento: questa responsabilità
-     * appartiene al 68000 e a Gary. Accessi non allineati producono i byte
-     * nell'ordine naturale big-endian, che è il comportamento corretto
-     * per le operazioni di byte su bus a 16 bit.
+     * The address is not checked for alignment: that belongs to the 68000 and to Gary.
+     * Unaligned accesses produce the bytes in natural big-endian order, which is the right
+     * behaviour for byte operations on a 16-bit bus.
      *
-     * @param address Indirizzo fisico del byte alto (A0=0 convenzione 68000)
-     * @return Valore word a 16 bit unsigned
+     * @param address physical address of the high byte (A0=0, 68000 convention)
+     * @return unsigned 16-bit word value
      */
     public int readWord(int address) {
-        // STEP 5 (PERFORMANCE_REPORT_FINAL): bounds check singolo equivalente ai
-        // due idx() originali. Valido sse 0 <= address <= size-2, quindi si lancia
-        // sse address < 0 || address >= size-1 (copre sia address che address+1,
-        // senza rischio di overflow e corretto anche per indirizzi dispari).
+        // A single bounds check equivalent to two idx() calls. Valid iff
+        // 0 <= address <= size-2, so it throws iff address < 0 || address >= size-1 (covers
+        // both address and address+1, with no risk of overflow, and right for odd addresses
+        // too).
         if (address < 0 || address >= size - 1) throwOob(address);
         return ((mem[address] & 0xFF) << 8) | (mem[address + 1] & 0xFF);
     }
 
     /**
-     * Legge 1 longword a 32 bit in formato big-endian.
+     * Reads one 32-bit longword, big-endian.
      *
-     * @param address Indirizzo fisico del byte più significativo
-     * @return Valore long a 32 bit (può essere interpretato come unsigned
-     *         tramite Integer.toUnsignedLong())
+     * @param address physical address of the most significant byte
+     * @return 32-bit long value (can be read as unsigned through Integer.toUnsignedLong())
      */
     public int readLong(int address) {
-        // STEP 5: bounds check singolo equivalente ai quattro idx() originali.
-        // Valido sse 0 <= address <= size-4, quindi si lancia sse address < 0 ||
-        // address >= size-3 (copre da address ad address+3).
+        // Single bounds check equivalent to the four per-byte checks.
+        // Valid iff 0 <= address <= size-4, so it throws iff address < 0 ||
+        // address >= size-3 (covers address to address+3).
         if (address < 0 || address >= size - 3) throwOob(address);
         return ((mem[address]     & 0xFF) << 24)
              | ((mem[address + 1] & 0xFF) << 16)
@@ -140,14 +135,14 @@ public final class RAM {
     }
 
     // =========================================================================
-    // Accesso in scrittura
+    // Write access
     // =========================================================================
 
     /**
-     * Scrive 1 byte.
+     * Writes 1 byte.
      *
-     * @param address Indirizzo fisico
-     * @param value   Valore (solo i bit 7-0 vengono scritti)
+     * @param address physical address
+     * @param value   value (only bits 7-0 are written)
      */
     public void writeByte(int address, int value) {
         if (address < 0 || address >= size) throwOob(address);
@@ -155,26 +150,26 @@ public final class RAM {
     }
 
     /**
-     * Scrive 1 word a 16 bit in formato big-endian.
+     * Writes one 16-bit word, big-endian.
      *
-     * @param address Indirizzo fisico del byte alto
-     * @param value   Valore a 16 bit (solo i bit 15-0 vengono scritti)
+     * @param address physical address of the high byte
+     * @param value   16-bit value (only bits 15-0 are written)
      */
     public void writeWord(int address, int value) {
-        // STEP 5: bounds check singolo (vedi readWord).
+        // Single bounds check (see readWord).
         if (address < 0 || address >= size - 1) throwOob(address);
         mem[address]     = (byte)((value >>> 8) & 0xFF);
         mem[address + 1] = (byte)( value        & 0xFF);
     }
 
     /**
-     * Scrive 1 longword a 32 bit in formato big-endian.
+     * Writes one 32-bit longword, big-endian.
      *
-     * @param address Indirizzo fisico del byte più significativo
-     * @param value   Valore a 32 bit
+     * @param address physical address of the most significant byte
+     * @param value   32-bit value
      */
     public void writeLong(int address, int value) {
-        // STEP 5: bounds check singolo (vedi readLong).
+        // Single bounds check (see readLong).
         if (address < 0 || address >= size - 3) throwOob(address);
         mem[address]     = (byte)((value >>> 24) & 0xFF);
         mem[address + 1] = (byte)((value >>> 16) & 0xFF);
@@ -183,23 +178,20 @@ public final class RAM {
     }
 
     // =========================================================================
-    // Operazioni di blocco
+    // Block operations
     // =========================================================================
 
     /**
-     * Copia un blocco di byte nella RAM (es. caricamento dati iniziali).
+     * Copies a block of bytes into the RAM (e.g. loading initial data).
      *
-     * <p><b>Non c'è wrap-around.</b> Il range deve stare per intero dentro la RAM: un
-     * blocco che sborda è un errore, non un blocco da avvolgere. (Il javadoc prometteva
-     * il contrario — «se il range attraversa il boundary la copia avviene byte per byte
-     * con wrap corretto» — ma di quel codice non c'è mai stata traccia: la copia è
-     * sempre stata un solo {@code System.arraycopy}. L'aliasing della Chip RAM lo fa
-     * Gary sull'indirizzo, non questa classe.)
+     * <p><b>There is no wrap-around.</b> The range must lie entirely inside the RAM: a block
+     * that overflows is an error, not a block to wrap. The aliasing of Chip RAM is done by
+     * Gary on the address, not by this class.
      *
-     * @param address Indirizzo di destinazione nella RAM
-     * @param src     Array sorgente
-     * @param off     Offset nell'array sorgente
-     * @param len     Numero di byte da copiare
+     * @param address destination address in the RAM
+     * @param src     source array
+     * @param off     offset in the source array
+     * @param len     number of bytes to copy
      */
     public void load(int address, byte[] src, int off, int len) {
         if (src == null)  throw new NullPointerException("src must not be null");
@@ -211,14 +203,14 @@ public final class RAM {
     }
 
     /**
-     * Copia un blocco di byte dalla RAM in un array esistente ({@code System.arraycopy}).
-     * Variante di {@link #dumpBlock(int, int)} senza allocazione, per i trasferimenti in
-     * blocco del driver hard disk.
+     * Copies a block of bytes from the RAM into an existing array
+     * ({@code System.arraycopy}). Allocation-free variant of {@link #dumpBlock(int, int)},
+     * for the hard disk driver's block transfers.
      *
-     * @param address Indirizzo sorgente nella RAM
-     * @param dst     Array di destinazione
-     * @param dstOff  Offset nell'array di destinazione
-     * @param len     Numero di byte da copiare
+     * @param address source address in the RAM
+     * @param dst     destination array
+     * @param dstOff  offset in the destination array
+     * @param len     number of bytes to copy
      */
     public void copyTo(int address, byte[] dst, int dstOff, int len) {
         checkBlock(address, len);
@@ -226,11 +218,11 @@ public final class RAM {
     }
 
     /**
-     * Legge un blocco di byte dalla RAM in un nuovo array.
+     * Reads a block of bytes from the RAM into a new array.
      *
-     * @param address Indirizzo sorgente nella RAM
-     * @param len     Numero di byte da leggere
-     * @return Nuovo array di byte con i dati letti
+     * @param address source address in the RAM
+     * @param len     number of bytes to read
+     * @return new byte array with the data read
      */
     public byte[] dumpBlock(int address, int len) {
         if (len < 0) throw new IllegalArgumentException("len must be >= 0");
@@ -241,18 +233,16 @@ public final class RAM {
     }
 
     /**
-     * Riempie l'intera RAM con il byte specificato.
-     * Usato per inizializzazione o test di memoria.
+     * Fills the whole RAM with the given byte. Used for initialisation or memory tests.
      *
-     * @param value Byte di riempimento (solo i bit 7-0)
+     * @param value fill byte (only bits 7-0)
      */
     public void fill(int value) {
         Arrays.fill(mem, (byte)(value & 0xFF));
     }
 
     /**
-     * Azzera l'intera RAM (equivalente a {@code fill(0)}).
-     * Chiamato durante il reset del sistema.
+     * Clears the whole RAM (same as {@code fill(0)}). Called during the system reset.
      */
     public void clear() {
         Arrays.fill(mem, (byte)0);
@@ -297,14 +287,14 @@ public final class RAM {
     // =========================================================================
 
     /**
-     * Restituisce una rappresentazione hex dump di una finestra di memoria.
+     * Returns a hex dump of a window of memory.
      *
-     * Formato: {@code XXXXXXXX: YY YY YY ... \n}
+     * Format: {@code XXXXXXXX: YY YY YY ... \n}
      *
-     * @param address      Indirizzo di inizio
-     * @param len          Numero di byte
-     * @param bytesPerLine Byte per riga di output
-     * @return Stringa con il dump esadecimale
+     * @param address      start address
+     * @param len          number of bytes
+     * @param bytesPerLine bytes per output line
+     * @return string with the hex dump
      */
     public String hexDump(int address, int len, int bytesPerLine) {
         if (len < 0 || bytesPerLine <= 0)
@@ -325,10 +315,10 @@ public final class RAM {
     // Accessori
     // =========================================================================
 
-    /** Restituisce la dimensione della RAM in byte. */
+    /** Returns the size of the RAM in bytes. */
     public int size()          { return size; }
 
-    /** Restituisce l'etichetta descrittiva di questa istanza. */
+    /** Returns the descriptive label of this instance. */
     public String getLabel()   { return label; }
 
     // =========================================================================
@@ -336,19 +326,16 @@ public final class RAM {
     // =========================================================================
 
     /**
-     * Calcola l'indice effettivo nell'array {@code mem} per l'indirizzo dato.
+     * Computes the effective index into {@code mem} for the given address.
      *
-     * @param address Offset relativo (0..size-1)
-     * @return Indice valido in {@code mem[0..size-1]}
-     * @throws IndexOutOfBoundsException se l'indirizzo è fuori range
+     * @param address relative offset (0..size-1)
+     * @return valid index in {@code mem[0..size-1]}
+     * @throws IndexOutOfBoundsException if the address is out of range
      */
     /**
-     * Verifica che l'intero blocco {@code [address, address+len)} stia dentro la RAM.
-     *
-     * <p>Prima solo l'indirizzo iniziale passava da {@link #idx}: la coda del range la
-     * controllava di fatto {@code System.arraycopy}, che sì la becca — ma con un
-     * messaggio che non dice né quale RAM né quale indirizzo, al contrario di tutto il
-     * resto della classe.
+     * Checks that the whole block {@code [address, address+len)} lies inside the RAM, with a
+     * message that names the RAM and the address (unlike the one System.arraycopy would
+     * give for the tail of the range).
      */
     private void checkBlock(int address, int len) {
         if (address < 0 || len < 0 || address > size - len) throwOob(address);
@@ -362,12 +349,12 @@ public final class RAM {
     }
 
     /**
-     * STEP 5 (PERFORMANCE_REPORT_FINAL): path d'errore isolato (cold).
+     * Isolated (cold) error path.
      *
-     * Spostando la costruzione del messaggio (String.format) fuori dai metodi di
-     * accesso (readByte/Word/Long, writeByte/Word/Long), il bytecode del path
-     * veloce resta compatto e inlinabile dal JIT; questo metodo viene compilato
-     * come "cold" e non penalizza l'accesso valido.
+     * Keeping the message construction (String.format) out of the access methods
+     * (readByte/Word/Long, writeByte/Word/Long) keeps the fast path's bytecode compact and
+     * inlinable by the JIT; this method is compiled as "cold" and does not slow down valid
+     * accesses.
      */
     private void throwOob(int address) {
         throw new IndexOutOfBoundsException(

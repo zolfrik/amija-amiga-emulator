@@ -40,82 +40,81 @@ import javax.swing.filechooser.FileSystemView;
 import javax.swing.filechooser.FileView;
 
 /**
- * Il {@link JFileChooser} usato dai pulsanti «...» del popup F12, reso utilizzabile
- * anche sulle cartelle enormi — quelle da migliaia di ADF, che sono la norma quando si
- * tiene una collezione.
+ * The {@link JFileChooser} used by the "..." buttons of the F12 popup, made usable on huge
+ * folders too: those with thousands of ADFs, the norm when keeping a collection.
  *
- * <p><b>Il problema.</b> Il chooser di Swing paga una <em>chiamata di sistema per
- * file</em>, e la paga più di una volta: dentro {@code FileSystemView.getFiles()}, poi
- * in {@code accept()} — {@code FileNameExtensionFilter} interroga {@code isDirectory()}
- * <em>prima</em> di guardare l'estensione — e infine in {@code isTraversable()}.
- * Misurato su 20.000 file: elencare i soli nomi costa 45 ms, ma una {@code isDirectory()}
- * per file ne costa 950, e il totale di apertura arriva a 2,0-2,8 s.
+ * <p><b>The problem.</b> Swing's chooser pays a <em>system call per file</em>, and pays it
+ * more than once: inside {@code FileSystemView.getFiles()}, then in {@code accept()}
+ * ({@code FileNameExtensionFilter} asks {@code isDirectory()} <em>before</em> looking at the
+ * extension) and finally in {@code isTraversable()}. Measured on 20,000 files: listing the
+ * names alone costs 45 ms, but one {@code isDirectory()} per file costs 950, and the total
+ * opening time reaches 2.0-2.8 s.
  *
- * <p><b>La cura.</b> {@link Scanner#getFiles} elenca la cartella con
- * {@link Files#walkFileTree} a profondità 1: gli attributi arrivano <em>insieme</em> alla
- * voce di directory (è quello che restituisce già FindFirstFile/FindNextFile), quindi
- * costano zero. Ogni voce diventa uno {@link ScannedFile} che quegli attributi se li
- * ricorda, così nessuno strato più in alto torna a interrogare il disco. Stessa cartella
- * da 20.000 file: elenco 50 ms invece di 950, apertura totale <b>0,32 s invece di 2,5</b>.
+ * <p><b>The cure.</b> {@link Scanner#getFiles} lists the folder with
+ * {@link Files#walkFileTree} at depth 1: the attributes arrive <em>together</em> with the
+ * directory entry (it is what FindFirstFile/FindNextFile already return), so they cost
+ * nothing. Each entry becomes a {@link ScannedFile} that remembers those attributes, so no
+ * higher layer goes back to the disk. Same 20,000-file folder: listing 50 ms instead of 950,
+ * total opening <b>0.32 s instead of 2.5</b>.
  *
- * <p>L'istanza è unica e viene riusata ({@link #acquire()}): costruire un
- * {@code JFileChooser} col Look and Feel Windows costa da solo ~300 ms, perché popola la
- * tendina «Cerca in» interrogando la shell.
+ * <p>The instance is single and reused ({@link #acquire()}): building a {@code JFileChooser}
+ * with the Windows Look and Feel alone costs ~300 ms, because it fills the "Look in"
+ * drop-down by querying the shell.
  *
- * <p><b>Cosa cambia rispetto al chooser di serie.</b> Le icone per tipo di file
- * diventano generiche (quelle del Look and Feel) e l'ordinamento è alfabetico puro
- * anziché numerico: «Game 10» viene prima di «Game 9». Quest'ultimo non è aggirabile —
- * {@code ShellFolder.sort} usa {@code compareToIgnoreCase} cablato per i file che non
- * sono ShellFolder, e il sort del modello non è sovrascrivibile senza rimpiazzare la UI
- * del chooser. Su una collezione ordinata per titolo la differenza non si vede. La barra
- * dei collegamenti (Desktop, Documenti, Questo PC, Rete) resta — vedi la nota su
- * {@code FileChooser.useShellFolder} in {@link #acquire()}.
+ * <p><b>What changes compared with the stock chooser.</b> The per-type file icons become
+ * generic (the Look and Feel's) and the sorting is purely alphabetical instead of numeric:
+ * "Game 10" comes before "Game 9". The latter cannot be avoided: {@code ShellFolder.sort}
+ * uses {@code compareToIgnoreCase} hard-wired for files that are not ShellFolders, and the
+ * model's sort cannot be overridden without replacing the chooser's UI. On a collection
+ * sorted by title the difference does not show. The shortcut bar (Desktop, Documents, This
+ * PC, Network) stays; see the note on {@code FileChooser.useShellFolder} in
+ * {@link #acquire()}.
  *
- * <p><b>Sotto FlatLaf.</b> Il guadagno non dipende dal Look and Feel: sta nel
- * {@code walkFileTree} dello {@link Scanner}, non nella UI. Misurato il 2026-08-06 sulla
- * stessa cartella da 28.416 file — apertura <b>364 ms col LAF di Windows, 402 ms con
- * FlatLaf</b>, contro i 2,5 s di prima del fix. La costruzione del chooser è anzi più
- * rapida sotto FlatLaf (621 ms contro 795), perché non interroga la shell.
+ * <p><b>Under FlatLaf.</b> The gain does not depend on the Look and Feel: it is in the
+ * {@code walkFileTree} of the {@link Scanner}, not in the UI. Measured on 2026-08-06 on the
+ * same 28,416-file folder: opening in <b>364 ms with the Windows LAF, 402 ms with
+ * FlatLaf</b>, against 2.5 s before the fix. Building the chooser is even faster under
+ * FlatLaf (621 ms against 795), because it does not query the shell.
  */
 final class FastFileChooser {
 
-    /** Istanza unica: ricostruirla a ogni «...» costerebbe ~300 ms. */
+    /** Single instance: rebuilding it at every "..." would cost ~300 ms. */
     private static JFileChooser instance;
 
     private FastFileChooser() {}
 
     /**
-     * Il chooser condiviso, riportato allo stato di uno appena costruito. Il chiamante
-     * imposta titolo, filtro, cartella e selezione, e poi invoca
-     * {@link JFileChooser#rescanCurrentDirectory()} prima di mostrarlo.
+     * The shared chooser, brought back to the state of a freshly built one. The caller sets
+     * title, filter, folder and selection, and then calls
+     * {@link JFileChooser#rescanCurrentDirectory()} before showing it.
      */
     static JFileChooser acquire() {
         if (instance == null) {
             instance = new JFileChooser(new Scanner());
             instance.setFileView(new FlatView());
-            // Sotto FlatLaf, il Look and Feel in uso, la barra dei collegamenti c'è
-            // comunque: questa riga non serve a guadagnarsela. Serve invece se si torna
-            // al Look and Feel di sistema (il ripiego di Amija.applyLookAndFeel), dove la
-            // UI di Windows la crea SOLO se questo è vero — di suo sarebbe falso, perché
-            // il FileSystemView non è quello di sistema. Misurato il 2026-08-06:
-            //   Windows LAF: useShellFolder=false -> barra assente, true -> presente
-            //   FlatLaf:     presente in entrambi i casi
+            // Under FlatLaf, the Look and Feel in use, the shortcut bar is there anyway: this
+            // line is not what earns it. It matters if the system Look and Feel is used
+            // again (the fallback of Amija.applyLookAndFeel), where the Windows UI creates
+            // the bar ONLY if this is true; by itself it would be false, because the
+            // FileSystemView is not the system one. Measured on 2026-08-06:
+            //   Windows LAF: useShellFolder=false -> bar absent, true -> present
+            //   FlatLaf:     present in both cases
             instance.putClientProperty("FileChooser.useShellFolder", Boolean.TRUE);
         }
-        // Stato identico a quello di un chooser nuovo: il filtro corrente torna
-        // "tutti i file" e la tendina "Tipo file" non accumula i filtri dei giri
-        // precedenti (ROM, ADF, HDF, LHA si alternano sullo stesso oggetto).
+        // State identical to a new chooser's: the current filter goes back to "all files"
+        // and the "File type" drop-down does not accumulate the filters of the previous
+        // rounds (ROM, ADF, HDF, LHA alternate on the same object).
         instance.resetChoosableFileFilters();
         instance.setSelectedFile(null);
         return instance;
     }
 
     /**
-     * Un {@link File} che conosce già i propri attributi, presi dalla scansione della
-     * directory: {@code isDirectory()} e compagni non costano più una syscall.
+     * A {@link File} that already knows its attributes, taken from the directory scan:
+     * {@code isDirectory()} and company no longer cost a syscall.
      *
-     * <p>Sono una fotografia del momento della scansione — è esattamente ciò che il
-     * chooser mostra, e viene rinfrescata a ogni {@code rescanCurrentDirectory()}.
+     * <p>They are a snapshot of the moment of the scan, which is exactly what the chooser
+     * shows, refreshed at every {@code rescanCurrentDirectory()}.
      */
     private static final class ScannedFile extends File {
 
@@ -142,10 +141,10 @@ final class FastFileChooser {
         @Override public long lastModified() { return modified; }
     }
 
-    /** Elenca una cartella in una sola passata, attributi compresi. */
+    /** Lists a folder in a single pass, attributes included. */
     private static final class Scanner extends FileSystemView {
 
-        /** Per tutto ciò che non è l'elenco dei file vale il comportamento di sistema. */
+        /** For everything but the file listing the system behaviour applies. */
         private final FileSystemView system = FileSystemView.getFileSystemView();
 
         @Override
@@ -154,16 +153,15 @@ final class FastFileChooser {
             try {
                 root = dir.toPath();
             } catch (InvalidPathException e) {
-                // «Questo PC», «Rete»: cartelle virtuali della shell, il cui percorso è
-                // un segnaposto («ShellFolder: 0x11») e non un percorso di Windows. Il
-                // loro contenuto — i dischi, le macchine di rete — esiste solo per la
-                // shell, quindi qui si delega. Senza questo ramo l'eccezione usciva da
-                // getFiles e uccideva il thread di caricamento di Swing: nessun errore a
-                // schermo, solo l'elenco che restava vuoto.
+                // "This PC", "Network": virtual shell folders, whose path is a placeholder
+                // ("ShellFolder: 0x11") and not a Windows path. Their content (the drives,
+                // the network machines) exists only for the shell, so it is delegated here.
+                // Without this branch the exception left getFiles and killed Swing's loading
+                // thread: no error on screen, just the listing staying empty.
                 //
-                // Anche la delega va protetta: FileSystemView.getFiles passa per
-                // ShellFolder.getShellFolder, che su un File che ShellFolder non è
-                // ritenta lo stesso Paths.get e rilancia la stessa eccezione.
+                // The delegation must be protected too: FileSystemView.getFiles goes through
+                // ShellFolder.getShellFolder, which on a File that is not a ShellFolder
+                // retries the same Paths.get and throws the same exception.
                 try {
                     return system.getFiles(dir, useFileHiding);
                 } catch (RuntimeException ignored) {
@@ -176,8 +174,8 @@ final class FastFileChooser {
                         new SimpleFileVisitor<Path>() {
                     @Override
                     public FileVisitResult preVisitDirectory(Path p, BasicFileAttributes a) {
-                        // La cartella di partenza non è un suo stesso figlio; per le
-                        // sottocartelle basta la voce, non il contenuto.
+                        // The starting folder is not a child of itself; for subfolders the
+                        // entry is enough, not the content.
                         if (p.equals(root)) return FileVisitResult.CONTINUE;
                         add(out, dir, p, a, useFileHiding);
                         return FileVisitResult.SKIP_SUBTREE;
@@ -185,20 +183,20 @@ final class FastFileChooser {
 
                     @Override
                     public FileVisitResult visitFile(Path p, BasicFileAttributes a) {
-                        // Arrivate al limite di profondità anche le sottocartelle
-                        // passano di qui, a seconda della versione del JDK.
+                        // At the depth limit subfolders also come through here, depending on
+                        // the JDK version.
                         add(out, dir, p, a, useFileHiding);
                         return FileVisitResult.CONTINUE;
                     }
 
                     @Override
                     public FileVisitResult visitFileFailed(Path p, IOException e) {
-                        return FileVisitResult.CONTINUE;   // voce illeggibile: si salta
+                        return FileVisitResult.CONTINUE;   // unreadable entry: skipped
                     }
                 });
             } catch (IOException | RuntimeException e) {
-                // Cartella sparita, permessi, percorso non valido: elenco vuoto, come
-                // fa il chooser di serie.
+                // Folder gone, permissions, invalid path: empty listing, as the stock chooser
+                // does.
                 return new File[0];
             }
             return out.toArray(new File[0]);
@@ -215,8 +213,8 @@ final class FastFileChooser {
 
         @Override
         public String getSystemDisplayName(File f) {
-            // Solo le nostre voci saltano la shell: le scorciatoie della barra laterale
-            // devono restare "Questo PC", "Rete"… e quelle il nome ce l'hanno solo lì.
+            // Only our entries skip the shell: the sidebar shortcuts must stay "This PC",
+            // "Network"... and only the shell has their names.
             if (f instanceof ScannedFile) {
                 String name = f.getName();
                 return name.isEmpty() ? f.getAbsolutePath() : name;
@@ -238,16 +236,16 @@ final class FastFileChooser {
     }
 
     /**
-     * Evita alla shell la domanda «che icona e che nome ha questo file», che altrimenti
-     * arriverebbe una volta per riga disegnata.
+     * Spares the shell the question "what icon and what name does this file have", which
+     * would otherwise come once per drawn row.
      */
     private static final class FlatView extends FileView {
 
         private final Icon fileIcon = UIManager.getIcon("FileView.fileIcon");
         private final Icon directoryIcon = UIManager.getIcon("FileView.directoryIcon");
 
-        // null = "non lo so", e il chooser ricade sul comportamento di sistema: è quello
-        // che serve alle voci della barra laterale, che non sono ScannedFile.
+        // null = "I do not know", and the chooser falls back on the system behaviour: what
+        // the sidebar entries, which are not ScannedFiles, need.
 
         @Override
         public Icon getIcon(File f) {

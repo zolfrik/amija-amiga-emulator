@@ -131,11 +131,11 @@ public class NegInstruction extends AbstractM68kInstruction {
                         return false;
                     }
                     // Overlapped prefetch (Phase 3): finalize with the .b/.w write (seam 0).
-                    // See docs/cpu-overlapped-prefetch-rework-plan.md §Phase 3.
+                    // See docs/cpu-overlapped-prefetch-rework-plan.md, Phase 3.
                     cpu.scheduleWrite(getTemp(cpu, ADDR), getTemp(cpu, VAL), size);
                     return finalizeInstructionSafe(cpu);
                 }
-                case 9 -> { // .L memory MSW write + finalize (last bus cycle → seam 0)
+                case 9 -> { // .L memory MSW write + finalize (last bus cycle: seam 0)
                     if (!cpu.isBusCycleIdle()) return false;
                     cpu.scheduleWrite(getTemp(cpu, ADDR), (getTemp(cpu, VAL) >>> 16) & 0xFFFF, 2);
                     return finalizeInstructionSafe(cpu);

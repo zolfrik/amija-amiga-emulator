@@ -21,29 +21,29 @@
 package io.github.zolfrik.amija.common;
 
 /**
- * Rappresenta la modalità video dell'Amiga (PAL o NTSC) e le relative frequenze di clock.
- * Le frequenze si riferiscono al Color Clock (CCK), che è il Master Clock / 4.
+ * The Amiga's video mode (PAL or NTSC) and its clock frequencies. The frequencies refer to the
+ * colour clock (CCK), which is the master clock / 4.
  */
 public enum VideoMode {
     /**
-     * PAL: Master Clock = 28.37516 MHz, CCK = 7.093790 MHz.
-     * Display: 256 righe attive (×2 line-doubling = 512 px), 288 in overscan (576 px).
+     * PAL: master clock = 28.37516 MHz, CCK = 7.093790 MHz.
+     * Display: 256 active lines (x2 line doubling = 512 px), 288 in overscan (576 px).
      */
     PAL(7093790, 512, 576),
 
     /**
-     * NTSC: Master Clock = 28.63636 MHz, CCK = 7.159090 MHz.
-     * Display: 200 righe attive (×2 line-doubling = 400 px), 240 in overscan (480 px).
+     * NTSC: master clock = 28.63636 MHz, CCK = 7.159090 MHz.
+     * Display: 200 active lines (x2 line doubling = 400 px), 240 in overscan (480 px).
      */
     NTSC(7159090, 400, 480);
 
     /**
-     * Larghezza del viewport senza overscan: il timing ORIZZONTALE è identico in PAL e
-     * NTSC (227 CCK / 454 SC per riga), quindi la larghezza non dipende dalla modalità.
+     * Viewport width without overscan: the HORIZONTAL timing is identical in PAL and NTSC
+     * (227 CCK / 454 SC per line), so the width does not depend on the mode.
      */
     public static final int NORMAL_WIDTH = 640;
 
-    /** Larghezza del viewport con overscan (orizzontale identico PAL/NTSC). */
+    /** Viewport width with overscan (horizontal identical in PAL/NTSC). */
     public static final int OVERSCAN_WIDTH = 724;
 
     private final long frequency;
@@ -59,33 +59,33 @@ public enum VideoMode {
     }
 
     /**
-     * Ritorna la frequenza in Hz.
+     * Returns the frequency in Hz.
      */
     public long getFrequency() {
         return frequency;
     }
 
     /**
-     * Ritorna il periodo di un ciclo in nanosecondi.
+     * Returns the period of one cycle in nanoseconds.
      */
     public double getPeriodNs() {
         return periodNs;
     }
 
     /**
-     * Larghezza in pixel del viewport (canvas logico) per questa modalità.
+     * Width in pixels of the viewport (logical canvas) for this mode.
      *
-     * @param overscan se {@code true} include l'area di overscan.
+     * @param overscan if {@code true} the overscan area is included.
      */
     public int displayWidth(boolean overscan) {
         return overscan ? OVERSCAN_WIDTH : NORMAL_WIDTH;
     }
 
     /**
-     * Altezza in pixel del viewport (canvas logico) per questa modalità. NTSC è più
-     * basso del PAL (meno righe attive): 400/480 px contro 512/576 px.
+     * Height in pixels of the viewport (logical canvas) for this mode. NTSC is shorter than PAL
+     * (fewer active lines): 400/480 px against 512/576 px.
      *
-     * @param overscan se {@code true} include l'area di overscan.
+     * @param overscan if {@code true} the overscan area is included.
      */
     public int displayHeight(boolean overscan) {
         return overscan ? overscanHeight : normalHeight;

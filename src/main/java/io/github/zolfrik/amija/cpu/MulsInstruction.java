@@ -134,8 +134,8 @@ public class MulsInstruction extends AbstractM68kInstruction {
                     cpu.writeSR(sr, false);
 
                     cpu.setD(reg, res, 4);
-                    // NOTE (Phase 4): terminal internal-idle cycles — finalizing here breaks the
-                    // JSON 'n' count; +1 seam left as a documented residual. See the plan doc.
+                    // NOTE (Phase 4): terminal internal-idle cycles; finalizing here breaks the
+                    // JSON 'n' count, so the +1 seam is left as a documented residual.
                     nextStep(cpu);
                     return false;
                 }

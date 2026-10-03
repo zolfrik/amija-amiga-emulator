@@ -21,27 +21,26 @@
 package io.github.zolfrik.amija.common;
 
 /**
- * Chipset custom dell'Amiga emulato. Determina quale variante dei chip Agnus e
- * Denise viene istanziata (vedi {@code AbstractAgnus}/{@code OcsAgnus}/{@code EcsAgnus}
- * e l'analoga gerarchia di Denise) e il comportamento dei registri ECS-only.
+ * Custom chipset of the emulated Amiga. Decides which variant of the Agnus and Denise chips is
+ * instantiated (see {@code AbstractAgnus}/{@code OcsAgnus}/{@code EcsAgnus} and the matching
+ * Denise hierarchy) and the behaviour of the ECS-only registers.
  *
  * <ul>
- *   <li>{@link #OCS} — Original Chip Set: Agnus 8371 (512 KB chip RAM), Denise 8362.
- *       È il comportamento storico dell'emulatore (Amiga 500 base).</li>
- *   <li>{@link #ECS} — Enhanced Chip Set: Agnus 8372 "Fat" (1 MB), Denise 8373
- *       "Super Denise" (super-hires, BPLCON3, DIWHIGH, ...).</li>
+ *   <li>{@link #OCS}: Original Chip Set: Agnus 8371 (512 KB chip RAM), Denise 8362. The stock
+ *       Amiga 500.</li>
+ *   <li>{@link #ECS}: Enhanced Chip Set: Agnus 8372 "Fat" (1 MB), Denise 8373 "Super Denise"
+ *       (super-hires, BPLCON3, DIWHIGH, ...).</li>
  * </ul>
  *
- * <p>Letto da {@code amiga.properties} con la chiave {@code chipset} (default
- * {@link #OCS}), analogamente a {@code video.mode}. Il cambio ha effetto solo a
- * macchina riavviata (cold restart). L'enum è volutamente estendibile a una terza
- * voce {@code AGA} in futuro senza toccare la sorgente di verità.
+ * <p>Read from {@code amiga.properties} with the key {@code chipset} (default {@link #OCS}),
+ * like {@code video.mode}. A change takes effect only after a restart (cold restart). The enum
+ * can be extended with a third value {@code AGA} without touching the source of truth.
  */
 public enum Chipset {
     OCS,
     ECS;
 
-    /** {@code true} se questo chipset è l'ECS (o più recente). */
+    /** {@code true} if this chipset is ECS (or newer). */
     public boolean isEcs() {
         return this != OCS;
     }

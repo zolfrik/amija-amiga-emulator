@@ -30,51 +30,49 @@ import java.util.List;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Servizio di lettura dei joystick/gamepad fisici tramite GLFW (LWJGL).
+ * Service reading physical joysticks/gamepads through GLFW (LWJGL).
  *
- * <p>GLFW è già una dipendenza del progetto (usata solo come binding, non per il
- * windowing: il rendering OpenGL passa da {@code AWTGLCanvas}/JAWT). Le API
- * joystick di GLFW non richiedono una finestra: interrogano direttamente il
- * sottosistema di input del SO. Vanno però chiamate tutte dallo stesso thread che
- * ha eseguito {@code glfwInit}: per questo il servizio possiede un thread daemon
- * dedicato ("glfw-joystick") che inizializza GLFW e fa polling a ~125 Hz.
+ * <p>GLFW is already a dependency of the project (used only as a binding, not for windowing:
+ * OpenGL rendering goes through {@code AWTGLCanvas}/JAWT). GLFW's joystick API needs no
+ * window: it queries the OS input subsystem directly. It must however be called entirely
+ * from the thread that ran {@code glfwInit}: that is why the service owns a dedicated daemon
+ * thread ("glfw-joystick") that initialises GLFW and polls at ~125 Hz.
  *
- * <p>Il thread viene avviato pigramente al primo {@link #setPorts(List)} con
- * almeno una porta (cioè solo se l'utente seleziona "Joystick (reale)"): finché
- * nessuna porta usa un joystick reale, GLFW non viene mai inizializzato e non c'è
- * alcun costo.
+ * <p>The thread is started lazily at the first {@link #setPorts(List)} with at least one port
+ * (i.e. only if the user selects "Joystick (real)"): while no port uses a real joystick, GLFW
+ * is never initialised and there is no cost.
  *
- * <p>I joystick presenti vengono assegnati in ordine alle porte richiedenti: il
- * primo controller collegato pilota la prima porta, il secondo la seconda, ecc.
- * Sono supportati sia i gamepad mappati ({@code glfwGetGamepadState}, layout
- * uniforme XInput-like) sia i joystick generici (assi/hat/pulsanti grezzi).
+ * <p>The joysticks present are assigned in order to the requesting ports: the first
+ * controller connected drives the first port, the second the second, and so on. Both mapped
+ * gamepads ({@code glfwGetGamepadState}, uniform XInput-like layout) and generic joysticks
+ * (raw axes/hats/buttons) are supported.
  *
- * <p><b>Threading verso l'emulazione:</b> il servizio scrive sulle porte solo alla
- * <i>variazione</i> di stato (assi/pulsanti), esattamente come fanno gli adapter AWT
- * dall'EDT. Le {@code GamePort} sono già scritte da thread host (EDT) e lette dal
- * thread di emulazione; questo servizio segue lo stesso modello.
+ * <p><b>Threading toward the emulation:</b> the service writes to the ports only on a
+ * <i>change</i> of state (axes/buttons), exactly as the AWT adapters do from the EDT. The
+ * {@code GamePort}s are already written by host threads (EDT) and read by the emulation
+ * thread; this service follows the same model.
  *
- * <p>Le porte sono {@link GamePortControls} e non {@link GamePort}: nel gioco a distanza
- * l'ospite non ha nessuna macchina, quindi nessuna {@code GamePort} da pilotare, e il suo
- * joystick fisico deve poter finire in un pacchetto come ci finiscono mouse e tastiera.
- * Di quel che c'è dietro l'interfaccia questo servizio non usa niente.
+ * <p>The ports are {@link GamePortControls}, not {@link GamePort}: in remote play the guest
+ * has no machine, so no {@code GamePort} to drive, and its physical joystick must be able to
+ * end up in a packet as mouse and keyboard do. This service uses nothing of what is behind
+ * the interface.
  */
 public final class GlfwJoystickService {
 
-    /** Soglia oltre la quale un asse analogico è considerato "premuto" (direzione digitale). */
+    /** Threshold beyond which an analogue axis counts as "pressed" (digital direction). */
     private static final float AXIS_THRESHOLD = 0.5f;
-    /** Periodo di polling (~125 Hz): reattivo senza pesare sulla CPU. */
+    /** Polling period (~125 Hz): responsive without weighing on the CPU. */
     private static final long POLL_INTERVAL_MS = 8;
 
     private static GlfwJoystickService instance;
 
-    /** Istanza singleton (una sola inizializzazione GLFW per processo). */
+    /** Singleton instance (a single GLFW initialisation per process). */
     public static synchronized GlfwJoystickService getInstance() {
         if (instance == null) instance = new GlfwJoystickService();
         return instance;
     }
 
-    // Porte pilotate dal joystick reale, in ordine, con lo stato precedente parallelo.
+    // Ports driven by the real joystick, in order, with the parallel previous state.
     private final Object lock = new Object();
     private GamePortControls[] ports = new GamePortControls[0];
     private Prev[] prev = new Prev[0];
@@ -86,27 +84,27 @@ public final class GlfwJoystickService {
 
     private GlfwJoystickService() { }
 
-    /** Stato precedente di una porta, per inviare alla {@link GamePort} solo le variazioni. */
+    /** Previous state of a port, to send the {@link GamePort} only the changes. */
     private static final class Prev {
         int x = 0, y = 0;
         boolean fire, b2, b3;
-        boolean valid = false; // false => forza il primo invio (anche neutro)
+        boolean valid = false; // false => forces the first send (even neutral)
     }
 
     /**
-     * Imposta le porte da pilotare col joystick reale (in ordine di preferenza).
-     * Lista vuota = nessuna porta usa un joystick reale (il thread, se avviato, resta
-     * inattivo). La prima chiamata con lista non vuota avvia il thread GLFW.
+     * Sets the ports to drive with the real joystick (in order of preference). Empty list =
+     * no port uses a real joystick (the thread, if started, stays idle). The first call with
+     * a non-empty list starts the GLFW thread.
      *
-     * <p>Le porte che escono dall'elenco vengono <b>rilasciate</b>. Senza, cambiare la
-     * periferica di una porta col fuoco premuto lascerebbe il fuoco premuto per sempre:
-     * quella porta non la guarda più nessuno, quindi non arriva più niente a contraddirlo.
+     * <p>The ports that leave the list are <b>released</b>. Otherwise, changing the device of
+     * a port with fire held would leave fire held forever: nobody looks at that port any
+     * more, so nothing arrives to contradict it.
      *
-     * <p>Lo scambio e il rilascio stanno <b>dentro</b> il lock, che {@link #poll()} tiene per
-     * tutta la propria passata. Rilasciare fuori non basterebbe: una passata entrata un
-     * istante prima dello scambio sta per scrivere sulla porta vecchia, e se quella scrittura
-     * atterrasse <i>dopo</i> il rilascio rimetterebbe premuto il fuoco che si è appena
-     * mollato — cioè esattamente il guasto che questo rilascio esiste per evitare.
+     * <p>The swap and the release are <b>inside</b> the lock, which {@link #poll()} holds for
+     * its whole pass. Releasing outside would not be enough: a pass entered an instant before
+     * the swap is about to write to the old port, and if that write landed <i>after</i> the
+     * release it would set fire held again just after it was let go, exactly the failure this
+     * release exists to avoid.
      */
     public void setPorts(List<? extends GamePortControls> newPorts) {
         synchronized (lock) {
@@ -130,7 +128,7 @@ public final class GlfwJoystickService {
         thread.start();
     }
 
-    /** Ferma il thread e libera GLFW. Da chiamare allo shutdown della JVM. */
+    /** Stops the thread and releases GLFW. To be called at JVM shutdown. */
     public synchronized void shutdown() {
         if (!running) return;
         running = false;
@@ -161,7 +159,7 @@ public final class GlfwJoystickService {
         System.out.println("[JOYSTICK] Servizio joystick GLFW avviato");
         try {
             while (running) {
-                glfwPollEvents(); // gestisce il collegamento/scollegamento a caldo
+                glfwPollEvents(); // handles hot plugging/unplugging
                 poll();
                 try {
                     Thread.sleep(POLL_INTERVAL_MS);
@@ -178,14 +176,13 @@ public final class GlfwJoystickService {
     }
 
     /**
-     * Una passata di lettura, <b>tutta sotto il lock</b>.
+     * One reading pass, <b>entirely under the lock</b>.
      *
-     * <p>Il lock è preso da {@link #setPorts} e da qui, e basta: la contesa è fra un thread
-     * che passa ogni 8 ms e una riconfigurazione che capita quando l'utente conferma il
-     * popup, quindi non c'è niente da ottimizzare. In cambio una porta che esce dall'elenco
-     * non può ricevere una scrittura in ritardo <i>dopo</i> essere stata rilasciata, che è
-     * l'unico modo in cui il fuoco resterebbe premuto per sempre su una porta che nessuno
-     * guarda più.
+     * <p>The lock is taken by {@link #setPorts} and here, and nowhere else: the contention is
+     * between a thread passing every 8 ms and a reconfiguration that happens when the user
+     * confirms the popup, so there is nothing to optimise. In exchange a port that leaves the
+     * list cannot receive a late write <i>after</i> being released, the only way fire would
+     * stay held forever on a port nobody looks at any more.
      */
     private void poll() {
         synchronized (lock) {
@@ -193,14 +190,14 @@ public final class GlfwJoystickService {
             Prev[] prevSnap = prev;
             if (snap.length == 0) return;
 
-            // Assegna i joystick presenti alle porte, nell'ordine dei loro indici GLFW.
+            // Assigns the present joysticks to the ports, in the order of their GLFW indices.
             int jid = GLFW_JOYSTICK_1;
             for (int i = 0; i < snap.length; i++) {
                 GamePortControls port = snap[i];
                 Prev p = prevSnap[i];
                 while (jid <= GLFW_JOYSTICK_LAST && !glfwJoystickPresent(jid)) jid++;
                 if (jid > GLFW_JOYSTICK_LAST) {
-                    // Nessun controller per questa porta: centra e rilascia i pulsanti.
+                    // No controller for this port: centre and release the buttons.
                     apply(port, p, 0, 0, false, false, false);
                     continue;
                 }
@@ -210,13 +207,13 @@ public final class GlfwJoystickService {
         }
     }
 
-    /** Legge lo stato del joystick {@code jid} e lo applica alla porta. */
+    /** Reads the state of joystick {@code jid} and applies it to the port. */
     private void readAndApply(int jid, GamePortControls port, Prev p) {
         int x = 0, y = 0;
         boolean fire = false, b2 = false, b3 = false;
 
         if (glfwJoystickIsGamepad(jid) && glfwGetGamepadState(jid, gamepadState)) {
-            // Gamepad con mapping noto: layout uniforme (stick sinistro + D-pad).
+            // Gamepad with a known mapping: uniform layout (left stick + D-pad).
             float ax = gamepadState.axes(GLFW_GAMEPAD_AXIS_LEFT_X);
             float ay = gamepadState.axes(GLFW_GAMEPAD_AXIS_LEFT_Y);
             if (ax < -AXIS_THRESHOLD) x = -1; else if (ax > AXIS_THRESHOLD) x = 1;
@@ -229,7 +226,7 @@ public final class GlfwJoystickService {
             b2   = gamepadState.buttons(GLFW_GAMEPAD_BUTTON_B) == GLFW_PRESS;
             b3   = gamepadState.buttons(GLFW_GAMEPAD_BUTTON_X) == GLFW_PRESS;
         } else {
-            // Joystick generico: assi/hat/pulsanti grezzi.
+            // Generic joystick: raw axes/hats/buttons.
             FloatBuffer axes = glfwGetJoystickAxes(jid);
             if (axes != null && axes.capacity() >= 2) {
                 float ax = axes.get(0);
@@ -256,7 +253,7 @@ public final class GlfwJoystickService {
         apply(port, p, x, y, fire, b2, b3);
     }
 
-    /** Invia alla porta solo i valori cambiati rispetto allo stato precedente. */
+    /** Sends the port only the values changed from the previous state. */
     private static void apply(GamePortControls port, Prev p,
             int x, int y, boolean fire, boolean b2, boolean b3) {
         if (!p.valid || p.x != x || p.y != y) {

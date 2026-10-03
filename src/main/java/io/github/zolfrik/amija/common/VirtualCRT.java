@@ -35,33 +35,33 @@ import java.util.Arrays;
 import java.util.Objects;
 
 /**
- * Rappresenta l'intero raster PAL dell'Amiga, overscan incluso.
- * Nessun crop né elaborazione: ogni pixel raw prodotto da Denise viene scritto
- * direttamente nel framebuffer. La logica di viewport appartiene ad AmigaDisplay.
+ * The whole PAL raster of the Amiga, overscan included. No crop and no processing: every
+ * raw pixel Denise produces is written straight into the framebuffer. The viewport logic
+ * belongs to AmigaDisplay.
  */
 public final class VirtualCRT {
 
-    /** Larghezza del raster raw PAL (4 * 228 pixel per riga, incluso blanking). */
+    /** Width of the PAL raw raster (4 * 228 pixels per line, blanking included). */
     public static final int RAW_WIDTH = AbstractDenise.RAW_LINE_PIXELS;  // 912
 
-    /** Numero di righe del raster raw PAL (0–311). */
+    /** Number of lines of the raw PAL raster (0-311). */
     public static final int RAW_HEIGHT = 312;
 
     private final AbstractAgnus agnus;
     private final AbstractDenise denise;
     private final AmigaDisplay display;
 
-    // Doppio buffer per il presenter asincrono: l'emulazione scrive in frameBuffer,
-    // il thread di rendering legge renderBuffer. A frame completo i due si scambiano.
-    // Così la composizione costosa (line-doubling, allocazione canvas, scaling) NON
-    // gira più sul thread del MasterClock (~13% del tempo recuperato all'emulazione).
+    // Double buffer for the asynchronous presenter: the emulation writes frameBuffer, the
+    // rendering thread reads renderBuffer. When a frame is complete the two are swapped, so
+    // the expensive composition (line doubling, canvas allocation, scaling) does NOT run on
+    // the MasterClock thread.
     private int[] frameBuffer;
     private int[] renderBuffer;
 
-    // Gioco a distanza (docs/remote-play-plan.md §2, §11.1): quando c'è un host attivo,
-    // ogni frame completato viene consegnato anche a lui. È l'unico punto in cui nasce
-    // un frame intero, quindi è da qui che parte il video. Con la funzione spenta il
-    // campo è null e il percorso caldo resta quello di sempre: un confronto con null.
+    // Remote play (docs/remote-play-plan.md sections 2 and 11.1): when a host is active,
+    // every completed frame is also handed to it. This is the only place where a whole frame
+    // is born, so the video starts here. With the feature off the field is null and the hot
+    // path is unchanged: one comparison with null.
     private volatile RemotePlayHost remotePlayHost;
 
     private final Object renderLock = new Object();
@@ -72,35 +72,31 @@ public final class VirtualCRT {
     private FrameInfo pendingInfo;
     private Thread renderThread;
 
-    // STEP 11 (PERFORMANCE_REPORT_FINAL): beamX/beamY (overlay di debug del pennello)
-    // venivano ricalcolati ad ogni tick (~7M/s) con una divisione intera, ma i getter
-    // getBeamX/getBeamY non sono usati né in produzione né nei test. Il calcolo è stato
-    // reso lazy (vedi getBeamX/getBeamY): si esegue solo quando effettivamente richiesto.
+    // beamX/beamY (debug overlay of the beam) are computed lazily (see getBeamX/getBeamY),
+    // only when requested, instead of with an integer division at every tick (~7M/s).
     private int lastHpos;
     private int lastVpos;
     private int lastFrameCount;
 
-    // ── Bordo-destro deep-HBLANK (vAmiga Beam::pixel, Beam.cpp:244) ──────────────
-    // L'ultimo CCK visibile della texture di regressione (col 836-839 = beam cck 0..3 in
-    // HBLANK profondo) è mappato da vAmiga sul lato DESTRO della riga PRECEDENTE: col
-    // 836-839 della riga V = COLOR00 al beam cck 0 della riga V+1 (border a inizio riga).
-    // Il nostro modello per-riga clampa l'HBLANK profondo a sinistra, quindi col 836
-    // restava col colore di fine-riga → classe C bordo-destro (stop3/4, CHK4/6, DIVS1,
-    // TRAPV5, RTR1, ASL1). Il valore dipende dalla riga SEGUENTE, quindi è campionato a
-    // cck 0 di V+1 e memorizzato per-riga; la correzione è applicata SOLO nello screenshot
-    // di regressione (saveRegressionScreenshot), NON nel framebuffer live: vAmiga blanka la
-    // colonna nel display live e la wrappa solo in RegressionTester::dumpTexture, perciò il
-    // display dei giochi resta invariato (niente banda nera del vecchio FIX #15).
+    // -- Deep-HBLANK right border -----------------------------------------------------
+    // The last visible CCK of the regression texture (cols 836-839 = beam CCK 0..3 in deep
+    // HBLANK) belongs to the RIGHT side of the PREVIOUS line: cols 836-839 of line V =
+    // COLOR00 at beam CCK 0 of line V+1 (the border at the start of the line). The per-line
+    // model clamps deep HBLANK on the left, so col 836 would keep the end-of-line colour.
+    // The value depends on the NEXT line, so it is sampled at CCK 0 of V+1 and stored per
+    // line; the correction is applied ONLY to the regression screenshot
+    // (saveRegressionScreenshot), NOT to the live framebuffer, where that column is
+    // blanked, so the games' display is unchanged.
     // 4*(227 - HBLANK_MIN) = 4*(227-18) = 836.
     private static final int RIGHT_HBLANK_WRAP_COL = 4 * (227 - 0x12); // 836
-    private int wrapPendingRow = -1;                          // riga V, campiona a cck 0 di V+1
+    private int wrapPendingRow = -1;                          // line V, sampled at cck 0 of V+1
     /**
-     * Sentinella di {@link #borderCck0Rgb}: <b>nessun campione</b> per questa riga, quindi
-     * la colonna di wrap tiene il pixel che abbiamo renderizzato. Non è un colore valido
-     * (l'RGB sta in 24 bit), quindi non può collidere con un campione vero.
+     * Sentinel of {@link #borderCck0Rgb}: <b>no sample</b> for this line, so the wrap column
+     * keeps the pixel we rendered. It is not a valid colour (RGB fits in 24 bits), so it
+     * cannot collide with a real sample.
      */
     private static final int NO_WRAP_SAMPLE = -1;
-    private final int[] borderCck0Rgb = new int[RAW_HEIGHT];  // COLOR00 al beam cck 0 di ogni riga
+    private final int[] borderCck0Rgb = new int[RAW_HEIGHT];  // COLOR00 at beam cck 0 of each line
     // 4-bit mask, one bit per sub-pixel of the wrap cell: where the bit is set the
     // line produced content and the wrap does not apply. See saveRegressionScreenshot.
     private final int[] wrapIsPlayfield = new int[RAW_HEIGHT];
@@ -109,42 +105,38 @@ public final class VirtualCRT {
     private int frameInterlacedLines;
 
     /**
-     * Riga più alta del framebuffer scritta dal fotogramma corrente, oppure {@code -1}.
+     * Highest framebuffer row written by the current frame, or {@code -1}.
      *
-     * <p>⛔ Serve perché <b>un fotogramma può essere più corto della finestra</b>: il
-     * framebuffer è alto {@link #RAW_HEIGHT} = 312 righe, quanto un frame PAL, ma un frame
-     * NTSC ne ha 262 — e su ECS il modo si commuta <b>a caldo</b> scrivendo BEAMCON0
-     * ({@code AbstractAgnus.beamNtsc}). Le 50 righe che il pennello non percorre più
-     * restavano com'erano, cioè col contenuto di un fotogramma PRECEDENTE, e un
-     * framebuffer non ha persistenza: quelle righe non esistono, quindi sono nere.
-     * L'oracolo dice la stessa cosa in un altro modo — il suo dump di `ntsc4`/`ntsc5` è
-     * alto {@code 262} e tutto ciò che sta sotto è riempito di zeri.
+     * <p>Needed because <b>a frame can be shorter than the window</b>: the framebuffer is
+     * {@link #RAW_HEIGHT} = 312 lines high, as a PAL frame, but an NTSC frame has 262, and
+     * on ECS the mode switches <b>live</b> through BEAMCON0 ({@code AbstractAgnus.beamNtsc}).
+     * The 50 lines the beam no longer covers would keep the content of a PREVIOUS frame, and
+     * a framebuffer has no persistence: those lines do not exist, so they are black. The
+     * reference dump of `ntsc4`/`ntsc5` is {@code 262} lines high and everything below it is
+     * zero.
      */
     private int frameMaxRow = -1;
 
-    // Estensione verticale REALE della finestra di display nel frame: prima/ultima
-    // scanline che cade dentro la DIW viva (campionata riga per riga). Serve a centrare
-    // l'immagine sulla porzione davvero mostrata invece che sul valore della DIW
-    // campionato a fine frame: le schermate con split DIW pilotato dal Copper (es. Wings
-    // of Fury: pannello strumenti sotto la plancia) cambiano DIWSTRT/DIWSTOP più volte
-    // per frame, perciò il valore finale è una banda minuscola e non rappresentativa.
-    // -1 = nessuna riga dentro la DIW nel frame.
+    // REAL vertical extent of the display window in the frame: first/last scanline inside
+    // the live DIW (sampled line by line). Used to centre the image on the part really
+    // shown rather than on the DIW sampled at the end of the frame: screens with a
+    // Copper-driven DIW split (e.g. Wings of Fury: instrument panel below the cockpit)
+    // change DIWSTRT/DIWSTOP several times per frame, so the final value is a tiny,
+    // unrepresentative band.
+    // -1 = no line inside the DIW in the frame.
     private int frameFirstDiwLine = -1;
     private int frameLastDiwLine  = -1;
 
-    // Estensione verticale delle righe EFFETTIVAMENTE DISEGNATE dai bitplane nel
-    // frame (output bitplane presente, cioè non bordo verticale). È l'analogo di
-    // WinUAE thisframe_first/last_drawn_line (drawing.cpp finish_playfield_line):
-    // l'inquadratura verticale si centra su questa estensione, non sulla finestra
-    // DIW. Decisivo quando un gioco apre la DIW su tutto l'overscan ma disegna solo
-    // una sotto-regione (It Came From The Desert: DIW [5,320) ma box [72,255]):
-    // centrare sulla DIW ammasserebbe l'overscan grigio in basso e spingerebbe il
-    // box in alto; centrare sull'estensione disegnata lo mantiene inquadrato come
-    // su WinUAE. -1 = nessuna riga disegnata nel frame.
+    // Vertical extent of the lines ACTUALLY DRAWN by the bitplanes in the frame (bitplane
+    // output present, i.e. not vertical border). The vertical framing is centred on this
+    // extent, not on the DIW. Decisive when a game opens the DIW over the whole overscan but
+    // draws only a sub-region (It Came From The Desert: DIW [5,320) but box [72,255]):
+    // centring on the DIW would pile the grey overscan at the bottom and push the box up;
+    // centring on the drawn extent keeps it framed. -1 = no line drawn in the frame.
     private int frameFirstDrawnLine = -1;
     private int frameLastDrawnLine  = -1;
 
-    // Diagnostica: tempo speso nel rendering (sul thread del MasterClock), una riga/sec.
+    // Diagnostics: time spent rendering (on the MasterClock thread), one line per second.
     private long renderNanos;
     private int  renderFrames;
     private long renderLogStartNs = System.nanoTime();
@@ -159,18 +151,18 @@ public final class VirtualCRT {
         startRenderThread();
     }
 
-    // Rendering SINCRONO di default (composizione sul thread di emulazione): garantisce
-    // il determinismo bit-identico dell'emulazione. La variante ASINCRONA (composizione
-    // su un thread separato, ~qualche % di tempo CPU recuperato sul thread di emulazione)
-    // introduce un non-determinismo intermittente e sensibile alla tempistica: pur non
-    // condividendo stato logico con l'emulazione, la sua esecuzione concorrente perturba
-    // l'esecuzione cycle-exact (artefatto JVM/scheduling). Per un emulatore cycle-exact
-    // il determinismo vale più dell'headroom (l'emulazione è comunque limitata a 50fps),
-    // quindi async è solo opt-in via -Damiga.asyncrender=true.
+    // SYNCHRONOUS rendering by default (composition on the emulation thread): it keeps the
+    // emulation bit-identically deterministic. The ASYNCHRONOUS variant (composition on a
+    // separate thread, a few % of CPU time recovered on the emulation thread) introduces an
+    // intermittent, timing-sensitive non-determinism: although it shares no logical state
+    // with the emulation, running concurrently perturbs the cycle-exact execution (a
+    // JVM/scheduling artefact). For a cycle-exact emulator determinism is worth more than
+    // the headroom (the emulation is capped at 50 fps anyway), so async is opt-in only,
+    // through -Damiga.asyncrender=true.
     private static final boolean ASYNC_RENDER = Boolean.getBoolean("amiga.asyncrender");
 
     private void startRenderThread() {
-        if (!ASYNC_RENDER) return; // rendering sincrono di default
+        if (!ASYNC_RENDER) return; // synchronous rendering by default
         renderRunning = true;
         renderThread = new Thread(this::renderLoop, "amiga-frame-render");
         renderThread.setDaemon(true);
@@ -178,14 +170,14 @@ public final class VirtualCRT {
     }
 
     /**
-     * Attacca (o stacca, con {@code null}) l'host di gioco a distanza: da qui in poi ogni
-     * frame completato viene consegnato anche a lui.
+     * Attaches (or detaches, with {@code null}) the remote play host: from now on every
+     * completed frame is also handed to it.
      */
     public void setRemotePlayHost(RemotePlayHost host) {
         this.remotePlayHost = host;
     }
 
-    /** Ferma il thread di rendering (opzionale; è comunque daemon). */
+    /** Stops the rendering thread (optional; it is a daemon anyway). */
     public void stop() {
         synchronized (renderLock) {
             renderRunning = false;
@@ -211,7 +203,7 @@ public final class VirtualCRT {
                 info = pendingInfo;
             }
 
-            // Composizione + paint fuori dal lock e fuori dal thread di emulazione.
+            // Composition + paint outside the lock and outside the emulation thread.
             long t0 = System.nanoTime();
             display.renderFrame(buf, RAW_WIDTH, RAW_HEIGHT, info);
             renderNanos += System.nanoTime() - t0;
@@ -246,26 +238,25 @@ public final class VirtualCRT {
 
         if (hpos < lastHpos) {
             completeScanline(lastVpos);
-            // La riga appena completata (lastVpos) prende il border-destro dal COLOR00 al
-            // beam cck 0 della riga CORRENTE (deep-HBLANK wrap): campionato al tick a cck 0
-            // sotto, quando l'eventuale write a cck 0 è già stato applicato al COLOR00 live.
+            // The line just completed (lastVpos) takes its right border from the COLOR00 at
+            // beam CCK 0 of the CURRENT line (deep-HBLANK wrap): sampled at the CCK 0 tick
+            // below, when any write at CCK 0 has already reached the live COLOR00.
             wrapPendingRow = displayRow(lastVpos);
         }
         if (frameCount != lastFrameCount) {
-            // Non attraversare il confine di frame: l'ultima riga userebbe la cck-0 del
-            // frame NUOVO. Scarta il campione cross-frame — e ⛔ **azzera anche quello che
-            // c'era prima**, altrimenti sull'ultima riga resta il wrap di un fotogramma
-            // precedente. In PAL è la riga 311, fuori dal crop, e non si vedeva; dopo una
-            // commutazione a NTSC è la 261, che nel crop è la riga 235: quattro pixel
-            // accesi dove l'oracolo ha il nero (`Agnus/Misc/ntsc5`).
+            // Do not cross the frame boundary: the last line would use CCK 0 of the NEW
+            // frame. The cross-frame sample is dropped, and the previous one is cleared too,
+            // or the last line would keep the wrap of an earlier frame. In PAL that is line
+            // 311, outside the crop; after a switch to NTSC it is 261, which in the crop is
+            // line 235: four pixels lit where the reference is black (`Agnus/Misc/ntsc5`).
             if (wrapPendingRow >= 0 && wrapPendingRow < RAW_HEIGHT) {
                 borderCck0Rgb[wrapPendingRow] = NO_WRAP_SAMPLE;
             }
             wrapPendingRow = -1;
-            // L'input dell'ospite si applica QUI e non dentro presentFrame(): quello può
-            // saltare un frame (frame-skip) e i controlli non devono saltare con lui.
-            // È il punto di quantizzazione fisso del piano §4.3 — una volta per frame,
-            // sul thread di emulazione, sempre nello stesso posto.
+            // The guest's input is applied HERE and not inside presentFrame(): that one can
+            // skip a frame (frame skip) and the controls must not skip with it. It is the
+            // fixed quantisation point of plan section 4.3: once per frame, on the emulation
+            // thread, always in the same place.
             blankRowsBelowFrame();
             RemotePlayHost inputHost = remotePlayHost;
             if (inputHost != null) {
@@ -273,8 +264,8 @@ public final class VirtualCRT {
             }
             presentFrame();
         } else if (wrapPendingRow >= 0 && hpos >= 2) {
-            // cck 0 della riga corrente completato: il COLOR00 live è il border a inizio
-            // riga = colore dell'ultimo CCK visibile (col 836) della riga precedente.
+            // CCK 0 of the current line completed: the live COLOR00 is the border at the start
+            // of the line = colour of the last visible CCK (col 836) of the previous line.
             if (wrapPendingRow < RAW_HEIGHT) {
                 borderCck0Rgb[wrapPendingRow] = denise.getLiveColor0Rgb();
                 // The wrap is conditional, and the condition is per sub-pixel: COLOR00
@@ -299,7 +290,7 @@ public final class VirtualCRT {
     }
 
 
-    private static final boolean DEBUG_RENDER_LOG = false; // diagnostica [RENDER] (off di default)
+    private static final boolean DEBUG_RENDER_LOG = false; // [RENDER] diagnostics (off by default)
 
     private void logRenderStats() {
         if (!DEBUG_RENDER_LOG) return;
@@ -319,18 +310,18 @@ public final class VirtualCRT {
     }
 
     /**
-     * Azzera le righe del framebuffer che il fotogramma appena chiuso non ha percorso.
+     * Clears the framebuffer rows the frame just closed did not cover.
      *
-     * <p>⚠️ In PAL non fa <b>niente</b>: {@code maxVpos} è 312 = {@link #RAW_HEIGHT} e
-     * l'ultima riga scritta è sempre l'ultima del buffer. Vale solo dopo una commutazione
-     * a NTSC, dove il fotogramma è di 262 righe. Vedi {@link #frameMaxRow}.
+     * <p>In PAL it does <b>nothing</b>: {@code maxVpos} is 312 = {@link #RAW_HEIGHT} and the
+     * last row written is always the buffer's last. It matters only after a switch to NTSC,
+     * where the frame has 262 lines. See {@link #frameMaxRow}.
      */
     private void blankRowsBelowFrame() {
         if (frameMaxRow >= 0 && frameMaxRow + 1 < RAW_HEIGHT) {
             final int from = frameMaxRow + 1;
             Arrays.fill(frameBuffer, from * RAW_WIDTH, RAW_HEIGHT * RAW_WIDTH, 0);
-            // La colonna di wrap del bordo destro è per-riga e si porta dietro lo stesso
-            // residuo: senza questo, delle righe azzerate restano accesi i 4 px di col 836.
+            // The right-border wrap column is per line and carries the same residue: without
+            // this, cleared rows would keep the 4 px of col 836 lit.
             java.util.Arrays.fill(borderCck0Rgb, from, RAW_HEIGHT, 0);
             java.util.Arrays.fill(wrapIsPlayfield, from, RAW_HEIGHT, 0);
         }
@@ -345,9 +336,9 @@ public final class VirtualCRT {
             return;
         }
 
-        // RAW_WIDTH == Denise.HPIXELS == rgbLine.length, quindi la copia in blocco
-        // è esattamente equivalente al loop per-pixel su getRawPixelColor(x), ma
-        // evita ~912 chiamate al getter (con bound-check) per ogni scanline.
+        // RAW_WIDTH == Denise.HPIXELS == rgbLine.length, so the block copy is exactly the
+        // per-pixel loop over getRawPixelColor(x), without ~912 getter calls (with bounds
+        // checks) per scanline.
         System.arraycopy(denise.getRgbLine(), 0, frameBuffer, row * RAW_WIDTH, RAW_WIDTH);
         if (row > frameMaxRow) {
             frameMaxRow = row;
@@ -359,22 +350,22 @@ public final class VirtualCRT {
             else                             frameLoresLines++;
             if ((lineBplcon0 & 0x0004) != 0) frameInterlacedLines++;
 
-            // Estensione verticale REALE della finestra di display nel frame: union di
-            // tutte le righe che cadono dentro la DIW viva (campionata riga per riga,
-            // non solo a fine frame). Indipendente dal valore finale della DIW, quindi
-            // corretto anche con split DIW pilotato dal Copper (Wings of Fury): senza
-            // questo, buildFrameInfo userebbe l'ultima banda residua e centrerebbe male.
-            // Il test di appartenenza alla DIW include anche le righe di bordo verticale
-            // dentro la finestra (lo sfondo che riempie lo schermo, es. schermo Workbench
-            // con DIW aperta 29..312 ma bitplane attivi solo al centro), così l'immagine
-            // resta inquadrata come sull'hardware invece di seguire solo il contenuto.
+            // REAL vertical extent of the display window in the frame: the union of every
+            // line inside the live DIW (sampled line by line, not only at the end of the
+            // frame). Independent of the final DIW value, so right even with a Copper-driven
+            // DIW split (Wings of Fury): without it, buildFrameInfo would use the last
+            // remaining band and centre badly. The DIW membership test includes the vertical
+            // border lines inside the window too (the background that fills the screen, e.g.
+            // a Workbench screen with the DIW open 29..312 but bitplanes active only in the
+            // middle), so the image stays framed as on the hardware instead of following the
+            // content alone.
             if (frameFirstDiwLine < 0) frameFirstDiwLine = row;
             frameLastDiwLine = row;
 
-            // Estensione delle righe con output bitplane (non bordo verticale):
-            // l'inquadratura verticale si centra su questa (come WinUAE), non
-            // sulla DIW. denise.hsyncHandler(vpos) è già stato chiamato sopra, quindi
-            // isLastLineVBorder() riflette la riga vpos appena renderizzata.
+            // Extent of the lines with bitplane output (not vertical border): the vertical
+            // framing is centred on this, not on the DIW. denise.hsyncHandler(vpos) has
+            // already been called above, so isLastLineVBorder() reflects the line vpos just
+            // rendered.
             if (!denise.isLastLineVBorder()) {
                 if (frameFirstDrawnLine < 0) frameFirstDrawnLine = row;
                 frameLastDrawnLine = row;
@@ -383,43 +374,41 @@ public final class VirtualCRT {
     }
 
     /**
-     * Riga del framebuffer su cui finisce la scanline {@code vpos}.
+     * Framebuffer row on which scanline {@code vpos} ends up.
      *
-     * <p>⛔ <b>Non è {@code vpos}</b>: il quadro è agganciato al <b>vsync</b>, non allo wrap
-     * del contatore, e in PAL il vsync del fotogramma corto (LOF=0) comincia una riga
-     * prima. Il modello sta in {@code AbstractAgnus.getDisplayRowShift()}, portato da
-     * {@code custom.cpp} ({@code vsync_mark()} azzera {@code linear_vpos}, che è la riga
-     * del framebuffer). Sul fotogramma lungo — quello su cui le costanti di crop sono
-     * tarate e su cui girano quasi tutti i riferimenti — lo scorrimento è 0 e questa
-     * funzione è l'identità.
+     * <p><b>It is not {@code vpos}</b>: the picture is locked to the <b>vsync</b>, not to the
+     * counter's wrap, and in PAL the vsync of the short frame (LOF=0) starts one line
+     * earlier. The model is in {@code AbstractAgnus.getDisplayRowShift()} (the vsync resets
+     * the linear line count, which is the framebuffer row). On the long frame (the one the
+     * crop constants are calibrated on, and on which nearly every reference runs) the shift
+     * is 0 and this function is the identity.
      */
     private int displayRow(int vpos) {
-        // ⛔ In INTERLACE lo scorrimento non si applica, e non è un'eccezione alla regola:
-        // è la stessa grandezza espressa a un'altra scala, e va applicata UNA VOLTA SOLA.
-        // Lo scarto fra fotogramma lungo e corto è mezza riga — è proprio ciò che separa i
-        // due semiquadri — e in interlace lo porta già l'intreccio di AmigaDisplay, che
-        // scrive la riga grezza srcY alla riga di schermo `srcY*2 + (campo pari ? 0 : 1)`.
-        // Sommarci anche una riga GREZZA intera significa spostare il semiquadro dispari
-        // di TRE righe di schermo invece di una: i due campi non si intrecciano più e
-        // l'immagine si sfoca. Misurato su uno schermo interlacciato sintetico: i due
-        // campi finivano alle righe 44 e 45 del framebuffer invece che entrambi alla 44.
+        // In INTERLACE the shift is not applied, and that is not an exception to the rule: it
+        // is the same quantity at another scale, and it must be applied ONCE. The difference
+        // between long and short frame is half a line (exactly what separates the two
+        // fields), and in interlace AmigaDisplay's interleaving already carries it, writing
+        // raw row srcY to screen row `srcY*2 + (even field ? 0 : 1)`. Adding a whole RAW row
+        // as well would move the odd field by THREE screen rows instead of one: the two
+        // fields would no longer interleave and the image would blur. Measured on a synthetic
+        // interlaced screen: the two fields ended at framebuffer rows 44 and 45 instead of
+        // both at 44.
         //
-        // Fuori dall'interlace l'intreccio non esiste (le righe si raddoppiano), quindi
-        // è lo scorrimento a portare l'offset: è il caso su cui l'oracolo è stato misurato
-        // (lof1/lof2/vhpos4/vhpos5, tutto il banco vAmigaTS è non interlacciato).
+        // Outside interlace there is no interleaving (lines are doubled), so the shift
+        // carries the offset: the case the references were measured on (lof1/lof2/
+        // vhpos4/vhpos5, the whole vAmigaTS bank is non-interlaced).
         if (denise.isInterlaced()) {
             return vpos;
         }
         return vpos + agnus.getDisplayRowShift();
     }
 
-    // RETE DI SICUREZZA: il frame-skip (lastCompletedFrameHadLateBitplaneDma) serve
-    // solo a NASCONDERE un singolo frame transitorio (es. mano insert-disk del KS).
-    // Un frame "parziale" è per definizione un evento isolato; un gioco che marca
-    // OGNI frame (es. uno split-screen mal classificato) NON deve mai congelare il
-    // display. Perciò non saltiamo MAI più di 1 frame consecutivo: al massimo si
-    // nasconde un singolo frame, mai una sequenza. Questo rende impossibile il blocco
-    // del display da frame-skip a prescindere dall'euristica in Agnus.
+    // SAFETY NET: frame skip (lastCompletedFrameHadLateBitplaneDma) only HIDES a single
+    // transient frame (e.g. the Kickstart's insert-disk hand). A "partial" frame is by
+    // definition an isolated event; a game that marks EVERY frame (e.g. a misclassified split
+    // screen) must NEVER freeze the display. So never more than 1 consecutive frame is
+    // skipped: at most a single frame is hidden, never a sequence. That makes a display
+    // freeze from frame skip impossible whatever the heuristic in Agnus.
     private int consecutiveSkips = 0;
 
     private void presentFrame() {
@@ -430,24 +419,25 @@ public final class VirtualCRT {
         }
         consecutiveSkips = 0;
         buildFrameInfo(frameInfo);
-        // Prima di presentare: il ramo asincrono scambia frameBuffer con renderBuffer, e
-        // dopo lo scambio il frame appena completato non è più in frameBuffer. Il costo
-        // ammesso qui è una copia (§11.2); submitFrame non codifica e non spedisce nulla,
-        // e se il thread di rete è ancora occupato salta il frame invece di accodarlo.
+        // Before presenting: the asynchronous branch swaps frameBuffer with renderBuffer, and
+        // after the swap the frame just completed is no longer in frameBuffer. The cost
+        // allowed here is one copy (section 11.2); submitFrame neither encodes nor sends
+        // anything, and if the network thread is still busy it skips the frame instead of
+        // queueing it.
         RemotePlayHost host = remotePlayHost;
         if (host != null) {
             host.submitFrame(frameBuffer, frameInfo);
         }
         if (!ASYNC_RENDER) {
-            // Default: composizione sincrona sul thread di emulazione (deterministica).
+            // Default: synchronous composition on the emulation thread (deterministic).
             display.renderFrame(frameBuffer, RAW_WIDTH, RAW_HEIGHT, frameInfo);
             resetFrameModeCounters();
             return;
         }
         synchronized (renderLock) {
             if (!renderBusy) {
-                // Scambia il frame appena completato col buffer del renderer e
-                // sveglialo. L'emulazione prosegue subito sull'altro buffer.
+                // Swap the frame just completed with the renderer's buffer and wake it up.
+                // The emulation goes on at once on the other buffer.
                 int[] tmp = renderBuffer;
                 renderBuffer = frameBuffer;
                 frameBuffer = tmp;
@@ -456,8 +446,8 @@ public final class VirtualCRT {
                 renderBusy = true;
                 renderLock.notifyAll();
             }
-            // Se il renderer è ancora occupato col frame precedente, scartiamo
-            // questo (frame skip): l'emulazione non si blocca mai.
+            // If the renderer is still busy with the previous frame, this one is dropped
+            // (frame skip): the emulation never blocks.
         }
         resetFrameModeCounters();
     }
@@ -467,35 +457,32 @@ public final class VirtualCRT {
         boolean hires      = chooseFrameHires(frameHiresLines, frameLoresLines, bplcon0);
         boolean interlaced = frameInterlacedLines > 0 ? frameInterlacedLines >= (frameHiresLines + frameLoresLines + 1) / 2
                                                       : (bplcon0 & 0x0004) != 0;
-        // field 0 → righe pari (0,2,4,…), field 1 → righe dispari (1,3,5,…)
+        // field 0 -> even rows (0,2,4,...), field 1 -> odd rows (1,3,5,...)
         boolean evenField  = agnus.getLastCompletedFrameField() == 0;
 
-        // Finestra orizzontale: deriva dalla DIW, ma CLAMPATA alla finestra video PAL
-        // standard. Su hardware reale il monitor mostra una regione raster FISSA; la DIW
-        // si limita a blankare i bitplane al suo interno. AmigaDisplay però centra il
-        // crop sul centro dell'area visibile: con una DIW estrema/asimmetrica (es. il 2°
-        // cracktro di Persian Gulf Inferno usa DIWSTRT con H=$05, hstart pixel negativo)
-        // il centro DIW si sposta e trascina il contenuto (posizionato dal DDF) fuori
-        // finestra a destra. Il clamp riporta l'inquadratura a quella standard: le
-        // schermate normali (DIW dentro i limiti) restano IDENTICHE, mentre quelle con
-        // DIW oltre i bordi vengono inquadrate come sull'hardware.
-        // STD_LEFT/RIGHT = pixel rgbLine della DIW PAL canonica (DIWSTRT H=$81,
-        // DIWSTOP H=$1C1): (H - 2*HBLANK_MIN)*2 con HBLANK_MIN=$12 → 186 e 826.
+        // Horizontal window: from the DIW, but CLAMPED to the standard PAL video window. On
+        // the hardware the monitor shows a FIXED raster region; the DIW only blanks the
+        // bitplanes inside it. AmigaDisplay however centres the crop on the centre of the
+        // visible area: with an extreme/asymmetric DIW (e.g. the 2nd cracktro of Persian Gulf
+        // Inferno uses DIWSTRT with H=$05, a negative hstart pixel) the DIW centre moves and
+        // drags the content (positioned by the DDF) out of the window on the right. The clamp
+        // brings the framing back to the standard one: normal screens (DIW within the limits)
+        // stay IDENTICAL, while those with a DIW past the edges are framed as on the hardware.
+        // STD_LEFT/RIGHT = rgbLine pixels of the canonical PAL DIW (DIWSTRT H=$81,
+        // DIWSTOP H=$1C1): (H - 2*HBLANK_MIN)*2 with HBLANK_MIN=$12 -> 186 and 826.
         final int STD_LEFT = 186, STD_RIGHT = 826;
         int visStart = Math.max(denise.getDiwHStartPixel(), STD_LEFT);
         int visStop  = Math.min(denise.getDiwHStopPixel(),  STD_RIGHT);
         int visibleX      = visStart;
         int visibleWidth  = Math.max(0, visStop - visStart);
 
-        // Verticale: centra sull'estensione delle righe EFFETTIVAMENTE DISEGNATE dai
-        // bitplane nel frame (output bitplane presente), come WinUAE
-        // (thisframe_first/last_drawn_line). NON sulla finestra DIW: un gioco può
-        // aprire la DIW su tutto l'overscan (It Came From The Desert: DIW [5,320)) ma
-        // disegnare solo una sotto-regione (box [72,255]); centrare sulla DIW
-        // ammasserebbe l'overscan grigio in basso e spingerebbe il contenuto in alto.
-        // Centrare sull'estensione disegnata mantiene il contenuto inquadrato come su
-        // WinUAE. Fallback: union delle righe dentro la DIW (gestisce gli split DIW
-        // pilotati dal Copper, es. Wings of Fury), poi la DIW campionata a fine frame.
+        // Vertical: centred on the extent of the lines ACTUALLY DRAWN by the bitplanes in the
+        // frame (bitplane output present), NOT on the DIW: a game can open the DIW over the
+        // whole overscan (It Came From The Desert: DIW [5,320)) but draw only a sub-region
+        // (box [72,255]); centring on the DIW would pile the grey overscan at the bottom and
+        // push the content up. Fallback: the union of the lines inside the DIW (handles
+        // Copper-driven DIW splits, e.g. Wings of Fury), then the DIW sampled at the end of
+        // the frame.
         int visibleY, visibleHeight;
         if (frameFirstDrawnLine >= 0) {
             visibleY      = frameFirstDrawnLine;
@@ -537,8 +524,8 @@ public final class VirtualCRT {
     }
 
     /**
-     * Salva il framebuffer raw PAL prodotto da Denise, senza crop, scaling, line doubling
-     * o overlay applicati da AmigaDisplay.
+     * Saves the raw PAL framebuffer produced by Denise, without the crop, scaling, line
+     * doubling or overlays applied by AmigaDisplay.
      */
     public void saveRawScreenshot(File file) throws IOException {
         Objects.requireNonNull(file, "file");
@@ -555,45 +542,43 @@ public final class VirtualCRT {
     }
 
     // =========================================================================
-    // Crop "regression" allineato a vAmiga (suite vAmigaTS)
+    // "Regression" crop (vAmigaTS suite)
     // =========================================================================
     //
-    // vAmiga (RegressionTester::dumpTexture) ritaglia dalla texture stabile una
-    // finestra fissa e la confronta con l'immagine di riferimento .tiff:
+    // The vAmigaTS reference images are a fixed window cut from the stable texture:
     //
     //   Texel *ptr = stablePtr - 4*HBLANK_MIN;          // HBLANK_MIN = 0x12
     //   for (y = Y1; y < Y2; y++)
     //     for (x = X1; x < X2; x++)
     //       pixel = ptr[y*HPIXELS + x];                 // HPIXELS = 912
     //
-    //   X1 = 4*0x31 = 196   X2 = HPIXELS = 912          → larghezza 716
-    //   Y1 = VBLANK_MAX+1 = 26   Y2 = VPIXELS-2 = 311   → altezza   285
+    //   X1 = 4*0x31 = 196   X2 = HPIXELS = 912          -> width  716
+    //   Y1 = VBLANK_MAX+1 = 26   Y2 = VPIXELS-2 = 311   -> height 285
     //
-    // La colonna di texture effettivamente letta è (x - 4*HBLANK_MIN) = x - 72,
-    // cioè 4*hpos - 72. Il NOSTRO line-buffer (AbstractDenise) ha esattamente lo
-    // stesso indice: rgbLine[i] corrisponde a hpos = HBLANK_MIN + i/4, quindi
-    // i = 4*hpos - 4*HBLANK_MIN = 4*hpos - 72. Le due indicizzazioni coincidono,
-    // perciò il ritaglio è diretto sul frameBuffer raw (912x312):
+    // The texture column actually read is (x - 4*HBLANK_MIN) = x - 72, i.e. 4*hpos - 72.
+    // Our line buffer (AbstractDenise) has exactly the same index: rgbLine[i] is
+    // hpos = HBLANK_MIN + i/4, so i = 4*hpos - 4*HBLANK_MIN = 4*hpos - 72. The two indexings
+    // coincide, so the crop is taken straight from the raw frameBuffer (912x312):
     //
-    //   colonne [124, 840)  (X1 - 4*HBLANK_MIN = 124, larghezza 716)
-    //   righe   [26, 311)   (Y1 = 26, altezza 285)
+    //   columns [124, 840)  (X1 - 4*HBLANK_MIN = 124, width 716)
+    //   rows    [26, 311)   (Y1 = 26, height 285)
     //
-    // La riga (vpos) coincide tra i due emulatori (entrambi contano da 0 in alto).
+    // The row (vpos) is the same on both sides (both count from 0 at the top).
 
-    /** Colonna iniziale del crop regression: X1(196) - 4*HBLANK_MIN(72). */
+    /** First column of the regression crop: X1(196) - 4*HBLANK_MIN(72). */
     public static final int REGRESSION_CROP_X = 124;
-    /** Riga iniziale del crop regression: VBLANK_MAX(25) + 1. */
+    /** First line of the regression crop: VBLANK_MAX(25) + 1. */
     public static final int REGRESSION_CROP_Y = 26;
-    /** Larghezza del crop regression: X2(912) - X1(196). */
+    /** Width of the regression crop: X2(912) - X1(196). */
     public static final int REGRESSION_CROP_W = 716;
-    /** Altezza del crop regression: (VPIXELS-2 = 311) - Y1(26). */
+    /** Height of the regression crop: (VPIXELS-2 = 311) - Y1(26). */
     public static final int REGRESSION_CROP_H = 285;
 
     /**
-     * Salva uno screenshot ritagliato esattamente come il dump di regressione di
-     * vAmiga (716x285), così da poterlo confrontare pixel-per-pixel con le immagini
-     * di riferimento della suite vAmigaTS. A differenza di {@link #saveRawScreenshot},
-     * non include il blanking né l'overscan esterno alla finestra di confronto.
+     * Saves a screenshot cropped exactly like the vAmigaTS regression dumps (716x285), so it
+     * can be compared pixel by pixel with the suite's reference images. Unlike
+     * {@link #saveRawScreenshot}, it excludes the blanking and the overscan outside the
+     * comparison window.
      */
     public void saveRegressionScreenshot(File file) throws IOException {
         saveRegressionScreenshot(file, 0);
@@ -620,24 +605,22 @@ public final class VirtualCRT {
             int srcY = REGRESSION_CROP_Y + row;
             System.arraycopy(snapshot, srcY * RAW_WIDTH + cropX,
                     dst, row * REGRESSION_CROP_W, REGRESSION_CROP_W);
-            // Bordo-destro deep-HBLANK wrap (vAmiga dumpTexture): l'ultimo CCK visibile
-            // (col 836-839 = beam cck 0) mostra il COLOR00 al confine di riga, campionato
-            // a cck 0 della riga successiva. Applicato SOLO qui (non nel framebuffer live).
+            // Deep-HBLANK right-border wrap: the last visible CCK (cols 836-839 = beam CCK 0)
+            // shows the COLOR00 at the line boundary, sampled at CCK 0 of the next line.
+            // Applied ONLY here (not to the live framebuffer).
             //
-            // ⛔ Ed è CONDIZIONALE, dopo tre misure sullo stesso oggetto:
-            //  1. toglierlo del tutto (2026-09-02) affondava TimingTest, BbusyTest,
-            //     memtim1 e MemoryRom ⇒ il wrap è reale, non un residuo del porto vAmiga;
-            //  2. prendere `rgbLine[0]` della riga V+1 invece di COLOR00 era peggio di
-            //     entrambe (oldDMACON 20/20, memtim1 da 0 a 456 px): la nostra riga
-            //     comincia a cck 18, non a cck 0, quindi quel pixel non è l'istante giusto;
-            //  3. toglierlo DOPO il rifacimento per-pixel di Denise (2026-09-03) portava
-            //     `BPLCON1/overscan` da 384 px (0,19%) a 27÷39 px (0,01%) ma rompeva di
-            //     nuovo memtim1 (2/0 → 0/2) e MemoryRom (3/1 → 2/2).
-            // ⇒ le due popolazioni sono separate e misurate: dove a cck 0 della riga V+1 il
-            // pennello è nel BORDO vale COLOR00 (memtim*, MemoryRom), dove invece la riga
-            // aveva PLAYFIELD fin lì vale il pixel che abbiamo renderizzato (overscan) —
-            // che prima di quel rifacimento non era ancora giusto, ed è per questo che la
-            // condizione non si poteva scrivere allora.
+            // It is CONDITIONAL, after three measurements of the same thing:
+            //  1. removing it entirely sank TimingTest, BbusyTest, memtim1 and MemoryRom: the
+            //     wrap is real;
+            //  2. taking `rgbLine[0]` of line V+1 instead of COLOR00 was worse than both
+            //     (oldDMACON 20/20, memtim1 from 0 to 456 px): our line starts at CCK 18, not
+            //     at CCK 0, so that pixel is not the right instant;
+            //  3. removing it after the per-pixel Denise rework took `BPLCON1/overscan` from
+            //     384 px (0.19%) to 27-39 px (0.01%) but broke memtim1 (2/0 -> 0/2) and
+            //     MemoryRom (3/1 -> 2/2) again.
+            // So the two populations are separate and measured: where at CCK 0 of line V+1
+            // the beam is in the BORDER, COLOR00 applies (memtim*, MemoryRom); where the line
+            // had PLAYFIELD up to there, the pixel we rendered applies (overscan).
             //
             // The "content" test has two parts, and both are needed:
             //  4. an open DIW window alone is not content. Where the window is open but
@@ -665,8 +648,8 @@ public final class VirtualCRT {
         ImageIO.write(cropped, "png", file);
     }
 
-    // STEP 11: calcolo lazy della posizione del pennello (solo su richiesta, p.es.
-    // overlay di debug), invece che ad ogni tick. Stessa formula di prima.
+    // Lazy computation of the beam position (only on request, e.g. a debug overlay),
+    // instead of at every tick.
     public int getBeamX() {
         return Math.min(RAW_WIDTH - 1,
                 Math.max(0, agnus.getHpos() * RAW_WIDTH / Math.max(1, agnus.getMaxHpos())));

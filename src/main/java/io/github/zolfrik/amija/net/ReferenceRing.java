@@ -21,25 +21,24 @@
 package io.github.zolfrik.amija.net;
 
 /**
- * Anello di frame di riferimento, tenuto identico sui due lati della sessione
- * ({@code docs/remote-play-plan.md} §4.1).
+ * Ring of reference frames, kept identical on both sides of the session
+ * ({@code docs/remote-play-plan.md} section 4.1).
  *
- * <h2>Il meccanismo che rende inutili ritrasmissioni, NACK e keyframe periodici</h2>
- * L'host comprime sempre contro <b>l'ultimo frame che l'ospite ha confermato di avere per
- * intero</b>. Se un frame si perde, l'ospite semplicemente non lo conferma: l'host se ne
- * accorge e comprime il successivo contro un riferimento piu' vecchio. Il delta e' piu'
- * grosso — misurato in Fase 0: al massimo il doppio, e meno quanto piu' la scena e' gia'
- * cara — ma e' <b>corretto</b>. Il sistema si ripara da solo e degrada con continuita'.
+ * <h2>The mechanism that makes retransmissions, NACKs and periodic keyframes unnecessary</h2>
+ * The host always compresses against <b>the last frame the guest confirmed having in full</b>.
+ * If a frame is lost, the guest simply does not confirm it: the host notices and compresses the
+ * next against an older reference. The delta is larger (measured: at most double, and less the
+ * more expensive the scene already is) but <b>correct</b>. The system repairs itself and
+ * degrades smoothly.
  *
- * <p>Quattro slot, indicizzati da {@code frameId % 4}: tengono gli ultimi quattro frame
- * spediti. Se l'ospite resta indietro di piu' di quattro frame il riferimento che ha
- * confermato e' gia' stato sfrattato, e allora — e solo allora — si manda un keyframe.
+ * <p>Four slots, indexed by {@code frameId % 4}: they hold the last four frames sent. If the
+ * guest falls more than four frames behind, the reference it confirmed has already been evicted,
+ * and then (and only then) a keyframe is sent.
  *
- * <p>L'indice per resto e' anche cio' che permette all'ospite di <b>decodificare in
- * loco</b>: quando {@code frameId} e {@code refFrameId} cadono nello stesso slot (cioe'
- * distano esattamente 4) la decodifica sovrascrive il proprio riferimento, che e' sicuro
- * per contratto di {@code FrameDecoder} ed e' anche esattamente cio' che si vuole — quel
- * riferimento sta per uscire dall'anello di entrambi i lati.
+ * <p>Indexing by remainder is also what lets the guest <b>decode in place</b>: when
+ * {@code frameId} and {@code refFrameId} fall in the same slot (i.e. are exactly 4 apart) the
+ * decoding overwrites its own reference, which is safe by {@code FrameDecoder}'s contract and
+ * also exactly what is wanted: that reference is about to leave the ring on both sides.
  */
 public final class ReferenceRing {
 
@@ -61,12 +60,12 @@ public final class ReferenceRing {
         return (int) Math.floorMod(frameId, SLOTS);
     }
 
-    /** Il buffer di uno slot, valido o no: serve a decodificarci dentro prima di validarlo. */
+    /** The buffer of a slot, valid or not: used to decode into it before validating it. */
     public int[] buffer(long frameId) {
         return frames[slot(frameId)];
     }
 
-    /** Il frame richiesto, o {@code null} se l'anello non lo tiene piu'. */
+    /** The frame requested, or {@code null} if the ring no longer holds it. */
     public int[] get(long frameId) {
         int s = slot(frameId);
         return ids[s] == frameId ? frames[s] : null;
@@ -76,7 +75,7 @@ public final class ReferenceRing {
         return ids[slot(frameId)] == frameId;
     }
 
-    /** Copia {@code pixels} nello slot di {@code frameId}, sfrattando quel che c'era. */
+    /** Copies {@code pixels} into the slot of {@code frameId}, evicting what was there. */
     public void store(long frameId, int[] pixels) {
         int s = slot(frameId);
         System.arraycopy(pixels, 0, frames[s], 0, pixelCount);
@@ -84,9 +83,8 @@ public final class ReferenceRing {
     }
 
     /**
-     * Dichiara valido lo slot di {@code frameId}, il cui buffer e' gia' stato riempito
-     * tramite {@link #buffer}. Evita la copia sul lato ospite, che decodifica direttamente
-     * nell'anello.
+     * Declares valid the slot of {@code frameId}, whose buffer has already been filled through
+     * {@link #buffer}. Avoids the copy on the guest side, which decodes straight into the ring.
      */
     public void commit(long frameId) {
         ids[slot(frameId)] = frameId;

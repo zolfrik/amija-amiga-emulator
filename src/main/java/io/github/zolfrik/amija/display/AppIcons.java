@@ -30,15 +30,15 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Icone dell'applicazione (logo AmiJa), caricate da {@code /icons/amija-<N>.png}.
+ * Application icons (the AmiJa logo), loaded from {@code /icons/amija-<N>.png}.
  *
- * <p>Il set viene passato per intero a {@link Window#setIconImages(List)}: il window
- * manager sceglie da solo la risoluzione piu' adatta a ogni contesto (barra del titolo,
- * taskbar, Alt+Tab, anteprime). Le immagini sono caricate una volta sola e condivise.
+ * <p>The whole set is passed to {@link Window#setIconImages(List)}: the window manager picks
+ * the best resolution for each context (title bar, taskbar, Alt+Tab, previews). The images
+ * are loaded once and shared.
  */
 public final class AppIcons {
 
-    /** Risoluzioni disponibili sotto {@code src/main/resources/icons}. */
+    /** Resolutions available under {@code src/main/resources/icons}. */
     private static final int[] SIZES = { 16, 20, 24, 32, 40, 48, 64, 128, 256, 512 };
 
     private static List<Image> icons;
@@ -46,7 +46,7 @@ public final class AppIcons {
     private AppIcons() {
     }
 
-    /** Le icone disponibili, dalla piu' piccola alla piu' grande (vuota se mancanti). */
+    /** The icons available, from the smallest to the largest (empty if missing). */
     public static synchronized List<Image> getIcons() {
         if (icons == null) {
             List<Image> loaded = new ArrayList<>(SIZES.length);
@@ -57,8 +57,8 @@ public final class AppIcons {
                         loaded.add(ImageIO.read(in));
                     }
                 } catch (Exception e) {
-                    // Icona assente o illeggibile: non e' un errore fatale, si prosegue
-                    // con le risoluzioni rimaste.
+                    // Icon missing or unreadable: not a fatal error, carry on with the
+                    // remaining resolutions.
                     System.err.println("[ICON] Impossibile caricare " + path + ": " + e);
                 }
             }
@@ -67,7 +67,7 @@ public final class AppIcons {
         return icons;
     }
 
-    /** Applica il set di icone alla finestra (no-op se il set e' vuoto). */
+    /** Applies the icon set to the window (no-op if the set is empty). */
     public static void apply(Window window) {
         List<Image> images = getIcons();
         if (window != null && !images.isEmpty()) {
@@ -76,9 +76,9 @@ public final class AppIcons {
     }
 
     /**
-     * Imposta l'icona a livello di applicazione (dock macOS, launcher di alcuni
-     * desktop Linux). Su Windows l'icona in barra viene dall'icona della finestra,
-     * quindi qui il supporto manca ed e' corretto ignorare la richiesta.
+     * Sets the application-level icon (macOS dock, launcher of some Linux desktops). On Windows
+     * the taskbar icon comes from the window's icon, so support is missing here and ignoring
+     * the request is right.
      */
     public static void applyToTaskbar() {
         List<Image> images = getIcons();
@@ -91,7 +91,7 @@ public final class AppIcons {
                 taskbar.setIconImage(images.get(images.size() - 1));
             }
         } catch (UnsupportedOperationException | SecurityException e) {
-            // Piattaforma senza icona di applicazione: irrilevante.
+            // Platform without an application icon: irrelevant.
         }
     }
 }

@@ -21,32 +21,31 @@
 package io.github.zolfrik.amija.net;
 
 /**
- * Rimette insieme i frammenti di un frame video ({@code docs/remote-play-plan.md} §4.1).
+ * Puts back together the fragments of a video frame ({@code docs/remote-play-plan.md} section
+ * 4.1).
  *
- * <h2>Tutto o niente</h2>
- * Un frame incompleto <b>non viene mai mostrato</b> e non viene ACKato: l'host se ne accorge
- * e comprime il successivo contro un riferimento piu' vecchio. Non c'e' quindi nessuna
- * ritrasmissione da chiedere e nessun riassemblaggio parziale da disegnare — che sarebbero
- * l'una latenza e l'altra sporcizia a schermo.
+ * <h2>All or nothing</h2>
+ * An incomplete frame is <b>never shown</b> and not ACKed: the host notices and compresses the
+ * next one against an older reference. So there is no retransmission to ask for and no
+ * partial reassembly to draw, which would be latency and screen garbage respectively.
  *
- * <h2>Perche' quattro slot e non uno</h2>
- * Con uno solo, due frame che si accavallano (normale: l'ultimo frammento di N arriva dopo
- * il primo di N+1, e su un link con jitter capita di continuo) si distruggerebbero a
- * vicenda. Con quattro, un frame incompleto resta in attesa finche' non arriva {@code N+4},
- * cioe' ~80 ms: piu' di quanto serva, e comunque un tempo <b>limitato e costante</b>.
+ * <h2>Why four slots and not one</h2>
+ * With one only, two overlapping frames (normal: the last fragment of N arrives after the first
+ * of N+1, and on a link with jitter it happens all the time) would destroy each other. With
+ * four, an incomplete frame waits until {@code N+4} arrives, ~80 ms: more than needed, and in
+ * any case a <b>bounded, constant</b> time.
  *
- * <h2>Tutto e' limitato a monte</h2>
- * {@code fragCount} arriva dalla rete e non viene mai usato per dimensionare niente: i
- * buffer sono allocati alla costruzione su {@link RemotePlayProtocol#MAX_FRAGMENTS}, e un
- * conteggio piu' grande e' un errore, non una richiesta. Anche la lunghezza dei frammenti e'
- * vincolata: tutti tranne l'ultimo devono essere <b>esattamente</b>
- * {@link RemotePlayProtocol#FRAGMENT_DATA} byte, perche' e' quello che rende l'offset di
- * ricomposizione un prodotto invece che una somma di lunghezze ricevute — e quindi
- * impossibile da spostare con frammenti su misura.
+ * <h2>Everything is bounded up front</h2>
+ * {@code fragCount} comes from the network and is never used to size anything: the buffers are
+ * allocated at construction for {@link RemotePlayProtocol#MAX_FRAGMENTS}, and a larger count is
+ * an error, not a request. The fragments' length is constrained too: all but the last must be
+ * <b>exactly</b> {@link RemotePlayProtocol#FRAGMENT_DATA} bytes, which makes the reassembly offset
+ * a product instead of a sum of received lengths, and so impossible to shift with tailored
+ * fragments.
  */
 public final class FragmentReassembler {
 
-    /** Un frame in corso di ricomposizione. */
+    /** A frame being reassembled. */
     public static final class Slot {
         long frameId = -1;
         int fragCount;
@@ -92,12 +91,12 @@ public final class FragmentReassembler {
     }
 
     /**
-     * Accoglie un frammento.
+     * Takes a fragment.
      *
-     * @param plain payload in chiaro del datagramma: {@code frameId:u32, fragIdx:u16,
-     *              fragCount:u16} seguiti dai dati
-     * @return lo slot se il frame e' ora completo, altrimenti {@code null}
-     * @throws ProtocolException se il frammento e' malformato o incoerente
+     * @param plain plaintext payload of the datagram: {@code frameId:u32, fragIdx:u16,
+     *              fragCount:u16} followed by the data
+     * @return the slot if the frame is now complete, otherwise {@code null}
+     * @throws ProtocolException if the fragment is malformed or inconsistent
      */
     public Slot accept(byte[] plain, int length) throws ProtocolException {
         if (length < RemotePlayProtocol.FRAGMENT_HEADER) {
@@ -154,12 +153,12 @@ public final class FragmentReassembler {
         return slot.complete() ? slot : null;
     }
 
-    /** Frame abbandonati perche' il loro slot e' servito a un frame piu' recente. */
+    /** Frames abandoned because their slot was needed by a newer frame. */
     public long droppedIncomplete() {
         return droppedIncomplete;
     }
 
-    /** Frammenti gia' visti: normale su un link che duplica, sospetto se sono tanti. */
+    /** Fragments already seen: normal on a link that duplicates, suspicious if many. */
     public long duplicates() {
         return duplicates;
     }

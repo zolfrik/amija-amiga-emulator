@@ -21,32 +21,33 @@
 package io.github.zolfrik.amija.net;
 
 /**
- * Chi porta lo stato dei controlli dell'ospite dentro la macchina dell'host.
+ * Whatever carries the state of the guest's controls into the host's machine.
  *
- * <p>Esiste per tenere il gioco a distanza fuori dall'emulazione: {@code net/} sa spedire,
- * ricevere e autenticare, e non deve sapere che esistono una game port e una tastiera.
- * L'implementazione ({@code input.RemoteInputApplier}) sa il contrario.
+ * <p>It exists to keep remote play out of the emulation: {@code net/} can send, receive and
+ * authenticate, and must not know that a game port and a keyboard exist. The implementation
+ * ({@code input.RemoteInputApplier}) knows the opposite.
  *
- * <p><b>Viene invocato dal thread di emulazione</b>, una volta per frame, tramite
- * {@link RemotePlayHost#applyPendingInput()} — mai dal thread di rete (piano §4.3).
+ * <p><b>It is called by the emulation thread</b>, once per frame, through
+ * {@link RemotePlayHost#applyPendingInput()}, never by the network thread (plan section 4.3).
  */
 public interface GuestInputTarget {
 
     /**
-     * @param state ultimo stato autenticato dell'ospite. E' un buffer <b>riusato</b>, valido
-     *              solo per la durata della chiamata: chi lo riceve lo consuma, non lo tiene
+     * @param state last authenticated state of the guest. A <b>reused</b> buffer, valid only for
+     *              the duration of the call: the receiver consumes it, it does not keep it
      */
     void apply(FeedbackPacket state);
 
     /**
-     * Riporta a riposo tutto cio' che l'ospite teneva premuto.
+     * Brings to rest everything the guest held pressed.
      *
-     * <p>Fa parte del contratto e non e' una comodita': quando l'ospite se ne va non arriva
-     * piu' nessuno stato che contraddica l'ultimo, quindi il tasto o il fuoco che aveva
-     * premuto <b>resterebbero premuti per sempre</b>. Non perche' il protocollo abbia perso
-     * qualcosa — proprio perche' non ha piu' niente da dire.
+     * <p>Part of the contract, not a convenience: when the guest leaves no state arrives any more
+     * to contradict the last one, so the key or the fire it held <b>would stay pressed
+     * forever</b>, not because the protocol lost something but because it has nothing more to
+     * say.
      *
-     * <p>Come {@link #apply}, va invocato dal <b>thread di emulazione</b>: tocca la macchina.
+     * <p>Like {@link #apply}, it must be called by the <b>emulation thread</b>: it touches the
+     * machine.
      */
     void releaseAll();
 }

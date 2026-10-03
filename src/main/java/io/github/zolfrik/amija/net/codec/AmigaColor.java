@@ -23,31 +23,30 @@ package io.github.zolfrik.amija.net.codec;
 import java.util.Arrays;
 
 /**
- * Conversione fra il pixel RGB a 24 bit del framebuffer e i 12 bit del colore Amiga.
+ * Conversion between the framebuffer's 24-bit RGB pixel and the 12 bits of the Amiga colour.
  *
- * <p><b>Perche' esiste.</b> {@code AbstractDenise} colorizza <i>sempre</i> attraverso
- * {@code amigaToRGB()}, cioe' una LUT a 4096 voci, e lo fa anche in HAM: ogni pixel che
- * esce da Denise e' quindi uno di soli 4096 valori. La Fase 0 del piano
- * {@code docs/remote-play-plan.md} l'ha verificato su 853 milioni di pixel, zero eccezioni.
- * E' il fatto su cui poggia tutta la compressione di {@link FrameEncoder}: il frame non e'
- * un'immagine a 16 milioni di colori, e' a 12 bit.
+ * <p><b>Why it exists.</b> {@code AbstractDenise} always colorizes through {@code amigaToRGB()},
+ * i.e. a 4096-entry LUT, and does so in HAM too: every pixel leaving Denise is therefore one of
+ * only 4096 values (checked on 853 million pixels, zero exceptions; see
+ * {@code docs/remote-play-plan.md}). It is the fact all of {@link FrameEncoder}'s compression
+ * rests on: the frame is not a 16-million-colour image, it is 12-bit.
  *
- * <p><b>Perche' l'inversa costa una LUT da 256 byte e non una tabella hash da 4096 voci.</b>
- * {@code AMIGA_RGB_LUT} costruisce ogni canale come {@code nibble * 17} (0x00, 0x11, ...
- * 0xFF), quindi i canali validi sono 16 su 256 e l'inversa e' una semplice tabella indicizzata
- * dal byte di canale. Tre load per pixel, niente hashing.
+ * <p><b>Why the inverse costs a 256-byte LUT and not a 4096-entry hash table.</b>
+ * {@code AMIGA_RGB_LUT} builds each channel as {@code nibble * 17} (0x00, 0x11, ... 0xFF), so 16
+ * channel values out of 256 are valid and the inverse is a plain table indexed by the channel
+ * byte. Three loads per pixel, no hashing.
  *
- * <p><b>Dominio.</b> Il codec e' definito sui 24 bit bassi del pixel; i bit 24..31 (alpha)
- * sono ignorati in codifica e scritti a zero in decodifica. {@code VirtualCRT} consegna il
- * raster con quel byte gia' a zero, quindi non si perde niente — ma la regola va scritta
- * perche' e' un contratto, non una coincidenza.
+ * <p><b>Domain.</b> The codec is defined on the pixel's low 24 bits; bits 24..31 (alpha) are
+ * ignored when encoding and written as zero when decoding. {@code VirtualCRT} delivers the
+ * raster with that byte already zero, so nothing is lost, but the rule is written down because
+ * it is a contract, not a coincidence.
  */
 public final class AmigaColor {
 
-    /** Valori distinti del colore Amiga: 4 bit per canale. */
+    /** Distinct values of the Amiga colour: 4 bits per channel. */
     public static final int LEVELS = 4096;
 
-    /** Maschera dei bit del pixel che il codec considera significativi. */
+    /** Mask of the pixel bits the codec considers significant. */
     public static final int RGB_MASK = 0x00FFFFFF;
 
     private static final int[] TO_RGB = new int[LEVELS];
@@ -68,18 +67,19 @@ public final class AmigaColor {
     private AmigaColor() {
     }
 
-    /** 12 bit Amiga -> RGB 24 bit, esattamente come la LUT di Denise. */
+    /** 12-bit Amiga -> 24-bit RGB, exactly as Denise's LUT. */
     public static int toRgb(int amiga12) {
         return TO_RGB[amiga12 & 0xFFF];
     }
 
     /**
-     * RGB 24 bit -> 12 bit Amiga, oppure {@code -1} se il pixel non e' rappresentabile.
+     * 24-bit RGB -> 12-bit Amiga, or {@code -1} if the pixel is not representable.
      *
-     * <p>Il {@code -1} non e' teorico anche se la Fase 0 non l'ha mai osservato: esiste un
-     * ramo di test in Denise ({@code useVAmigaColorLut}) che usa una LUT diversa, e nulla
-     * garantisce che una modifica futura del rendering non introduca altri valori. Chi
-     * chiama <b>deve</b> gestirlo — {@link FrameEncoder} lo fa ripiegando sul modo RGB.
+     * <p>The {@code -1} is not theoretical even though it has never been observed: there is a
+     * test branch in Denise ({@code useVAmigaColorLut}) that uses a different LUT, and nothing
+     * guarantees that a future change of the rendering will not introduce other values.
+     * Callers <b>must</b> handle it; {@link FrameEncoder} does so by falling back on the RGB
+     * mode.
      */
     public static int fromRgb(int rgb) {
         int r = FROM_CHANNEL[(rgb >>> 16) & 0xFF];

@@ -26,73 +26,73 @@ import java.io.IOException;
 import java.util.List;
 
 /**
- * Apre la porta sul router e la tiene aperta finche' si ospita
- * ({@code docs/remote-play-plan.md} §7.1).
+ * Opens the port on the router and keeps it open while hosting
+ * ({@code docs/remote-play-plan.md} section 7.1).
  *
- * <p>Tutto avviene su un thread suo: cercare il router e parlargli costa secondi, e chi lo
- * chiede — il popup F12, sull'EDT, o l'avvio di una sessione — non puo' aspettarli. Lo
- * stato si legge con {@link #state()} e la riga di stato del popup lo mostra man mano.
+ * <p>Everything happens on a thread of its own: finding the router and talking to it costs
+ * seconds, and whoever asks (the F12 popup on the EDT, or a session start) cannot wait for
+ * them. The state is read with {@link #state()} and the popup's status line shows it as it
+ * goes.
  *
- * <h2>Prima si guarda l'indirizzo, poi si apre la porta</h2>
- * L'ordine non e' indifferente. Se il router e' dietro il NAT dell'operatore (§7.3) la
- * mappatura riuscirebbe lo stesso e sarebbe <b>inutile</b>: si chiede quindi prima
- * l'indirizzo esterno, e se non e' raggiungibile ci si ferma li' — nessuna porta aperta
- * per niente, e la diagnosi giusta in un paio di secondi invece di un «Collega» che va in
- * timeout dall'altra parte. Se invece e' il router a rifiutare la domanda (capita), si
- * prosegue comunque con la mappatura: meglio una porta aperta senza sapere l'indirizzo che
- * niente.
+ * <h2>First look at the address, then open the port</h2>
+ * The order matters. If the router is behind the operator's NAT (section 7.3) the mapping
+ * would succeed anyway and be <b>useless</b>: so the external address is asked first, and if
+ * it is not reachable the process stops there: no port opened for nothing, and the right
+ * diagnosis in a couple of seconds instead of a "Connect" timing out on the other side. If
+ * instead the router refuses the question (it happens), the mapping goes ahead anyway: a port
+ * open without knowing the address is better than nothing.
  *
- * <h2>La prenotazione ha una scadenza, e si rinnova</h2>
- * {@value #LEASE_SECONDS} secondi, rinnovati ogni {@value #RENEW_MINUTES} minuti. Un lease
- * infinito verrebbe rifiutato da parecchi router — e soprattutto, se AmiJa muore di schianto,
- * una prenotazione a termine sparisce da sola invece di restare sul router per sempre. Chi
- * rifiuta perfino il lease a termine (errore {@value IgdClient#ERROR_ONLY_PERMANENT_LEASES})
- * lo dice con un codice suo, e allora si ritenta senza scadenza.
+ * <h2>The reservation expires, and is renewed</h2>
+ * {@value #LEASE_SECONDS} seconds, renewed every {@value #RENEW_MINUTES} minutes. An infinite
+ * lease would be refused by quite a few routers, and above all, if AmiJa dies abruptly, a
+ * reservation with an expiry disappears by itself instead of staying on the router forever.
+ * Whoever refuses even the expiring lease (error {@value IgdClient#ERROR_ONLY_PERMANENT_LEASES})
+ * says so with a code of its own, and then the request is retried with no expiry.
  */
 public final class PortMapper implements AutoCloseable {
 
-    /** Durata della prenotazione chiesta al router. */
+    /** Lease duration requested from the router. */
     static final int LEASE_SECONDS = 3600;
 
-    /** Ogni quanto si rinnova, con abbondante margine sulla scadenza. */
+    /** How often to renew, with a generous margin on the expiry. */
     static final int RENEW_MINUTES = 30;
 
-    /** Quanto si aspettano le risposte all'M-SEARCH. */
+    /** How long to wait for the answers to the M-SEARCH. */
     private static final int DISCOVERY_TIMEOUT_MS = 3000;
 
-    /** Quanto si concede al ritiro della mappatura prima di lasciar perdere. */
+    /** How long the withdrawal of the mapping is given before giving up. */
     private static final int TEARDOWN_TIMEOUT_MS = 8000;
 
-    /** Come la mappatura si presenta nell'elenco del router. */
+    /** How the mapping appears in the router's list. */
     private static final String DESCRIPTION = "AmiJa remote play";
 
     private static final String[] PROTOCOLS = { "TCP", "UDP" };
 
-    /** A che punto e' l'apertura della porta. */
+    /** How far the port opening has got. */
     public enum State {
-        /** Non e' stata chiesta. */
+        /** Not requested. */
         OFF,
-        /** Si sta cercando un router che collabori. */
+        /** Looking for a cooperating router. */
         SEARCHING,
-        /** Porta aperta: {@link #externalAddress()} dice dove si viene raggiunti. */
+        /** Port open: {@link #externalAddress()} says where one can be reached. */
         MAPPED,
-        /** Nessun router UPnP ha risposto (spesso: UPnP disattivato nel router). */
+        /** No UPnP router answered (often: UPnP disabled in the router). */
         NO_GATEWAY,
-        /** Il router ha risposto ma ha rifiutato di aprire; {@link #detail()} dice perche'. */
+        /** The router answered but refused to open; {@link #detail()} says why. */
         REFUSED,
-        /** L'operatore non espone un indirizzo pubblico: da fuori non si arriva (§7.3). */
+        /** The operator exposes no public address: nobody gets in from outside (section 7.3). */
         CARRIER_NAT
     }
 
     /**
-     * Come si arriva al router.
+     * How to reach the router.
      *
-     * <p>Esiste per una ragione sola: il collaudo. Cercare via SSDP significa spedire
-     * multicast dalle interfacce vere, cioe' dipendere dalla rete su cui gira la build —
-     * mentre tutto quel che questa classe <b>decide</b> (prima l'indirizzo, poi la porta;
-     * il ripiego sul lease permanente; il ritiro alla chiusura) e' logica che non ha niente
-     * a che vedere con il modo in cui il router e' stato trovato. Con questa cucitura la si
-     * puo' esercitare contro un router finto in loopback.
+     * <p>It exists for one reason: testing. Searching through SSDP means sending multicast
+     * from the real interfaces, i.e. depending on the network the build runs on, while
+     * everything this class <b>decides</b> (first the address, then the port; the fallback on
+     * the permanent lease; the withdrawal at closing) is logic that has nothing to do with how
+     * the router was found. With this seam it can be exercised against a fake router on
+     * loopback.
      */
     interface GatewayFinder {
         IgdClient find();
@@ -106,7 +106,7 @@ public final class PortMapper implements AutoCloseable {
     private volatile String detail;
     private volatile boolean closed;
 
-    /** Il router con cui si e' parlato, da riusare per il rinnovo e per la rimozione. */
+    /** The router talked to, to be reused for renewal and removal. */
     private volatile IgdClient gateway;
     private Thread worker;
 
@@ -114,13 +114,13 @@ public final class PortMapper implements AutoCloseable {
         this(port, null);
     }
 
-    /** @param finder come trovare il router; {@code null} = SSDP, cioe' il caso vero */
+    /** @param finder how to find the router; {@code null} = SSDP, i.e. the real case */
     PortMapper(int port, GatewayFinder finder) {
         this.port = port;
         this.finder = finder;
     }
 
-    /** Comincia a cercare e ad aprire. Torna subito. */
+    /** Starts searching and opening. Returns at once. */
     public synchronized void open() {
         if (worker != null || closed) {
             return;
@@ -136,37 +136,37 @@ public final class PortMapper implements AutoCloseable {
     }
 
     /**
-     * {@code indirizzo:porta} da dare all'altro giocatore, o {@code null} se non c'e'.
+     * {@code address:port} to give the other player, or {@code null} if there is none.
      *
-     * <p>«Non c'e'» comprende il caso in cui l'indirizzo <b>si conosce</b> ma la porta non
-     * e' aperta — dietro CGNAT si sa benissimo cosa risponde il router, e proprio per questo
-     * non va restituito: sarebbe un indirizzo dall'aspetto giusto a cui nessuno arriva, cioe'
-     * il modo piu' efficace di far cercare il problema dalla parte sbagliata. Chi vuole
-     * l'indirizzo per la diagnosi usa {@link #externalIp()}, che dice cosa si e' visto e non
-     * cosa si puo' usare.
+     * <p>"None" includes the case in which the address <b>is known</b> but the port is not
+     * open: behind CGNAT what the router answers is well known, and for exactly that reason it
+     * must not be returned: it would be a right-looking address nobody can reach, the most
+     * effective way to make people look for the problem in the wrong place. Whoever wants the
+     * address for diagnosis uses {@link #externalIp()}, which says what was seen, not what can
+     * be used.
      */
     public String externalAddress() {
         String ip = externalIp;
         return state == State.MAPPED && ip != null ? ip + ":" + port : null;
     }
 
-    /** L'indirizzo pubblico del router, anche quando non e' raggiungibile (CGNAT). */
+    /** The router's public address, even when it is not reachable (CGNAT). */
     public String externalIp() {
         return externalIp;
     }
 
-    /** Il motivo tecnico dell'ultimo esito, o {@code null}. */
+    /** The technical reason of the last outcome, or {@code null}. */
     public String detail() {
         return detail;
     }
 
     /**
-     * Ritira la mappatura e ferma il rinnovo.
+     * Withdraws the mapping and stops the renewal.
      *
-     * <p>Va chiamata <b>sempre</b>: allo stop dell'ascolto e alla chiusura dell'applicazione
-     * (§7.1). Lasciare una porta aperta sul router di casa di qualcuno dopo che ha smesso di
-     * giocare non e' accettabile, ed e' il motivo per cui la prenotazione ha comunque una
-     * scadenza — la rete non e' affidabile e questa chiamata potrebbe non arrivare mai.
+     * <p>Must <b>always</b> be called: when listening stops and when the application closes
+     * (section 7.1). Leaving a port open on someone's home router after they stopped playing
+     * is not acceptable, which is why the reservation expires anyway: the network is not
+     * reliable and this call may never arrive.
      */
     @Override
     public void close() {
@@ -178,13 +178,13 @@ public final class PortMapper implements AutoCloseable {
             closed = true;
             pending = worker;
             worker = null;
-            notifyAll();   // sveglia il rinnovo, che sta aspettando
+            notifyAll();   // wakes the renewal, which is waiting
         }
         if (pending != null) {
             try {
-                // Si aspetta, ma non si INTERROMPE: il thread sta per fare l'unica cosa che
-                // non si puo' perdere — ritirare la mappatura — e un interrupt in mezzo a
-                // quella chiamata HTTP lascerebbe la porta aperta sul router.
+                // Wait, but do NOT INTERRUPT: the thread is about to do the one thing that
+                // cannot be lost (withdrawing the mapping), and an interrupt in the middle of
+                // that HTTP call would leave the port open on the router.
                 pending.join(TEARDOWN_TIMEOUT_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -199,7 +199,7 @@ public final class PortMapper implements AutoCloseable {
     private void run() {
         IgdClient igd = findGateway();
         if (closed) {
-            return;   // chiusi mentre si cercava: non si apre niente e non c'e' niente da dire
+            return;   // closed while searching: nothing is opened and there is nothing to say
         }
         if (igd == null) {
             state = State.NO_GATEWAY;
@@ -209,14 +209,14 @@ public final class PortMapper implements AutoCloseable {
         }
         gateway = igd;
 
-        // Prima la diagnosi (§7.3): se da fuori non si arriva, aprire non serve a niente.
+        // First the diagnosis (section 7.3): if nobody can get in from outside, opening is useless.
         String external = null;
         try {
             external = igd.externalAddress();
             externalIp = external;
             if (!NatAddress.isReachable(external)) {
-                // CGNAT vero o router in cascata: per chi vuole giocare è lo stesso
-                // problema e la stessa cura — ospitare dall'altra parte.
+                // Real CGNAT or cascaded routers: for whoever wants to play it is the same
+                // problem with the same cure: host from the other side.
                 state = State.CARRIER_NAT;
                 detail = external;
                 RemotePlaySettings.say("UPnP: il router ha un indirizzo non pubblico (%s):"
@@ -225,8 +225,8 @@ public final class PortMapper implements AutoCloseable {
                 return;
             }
         } catch (IOException e) {
-            // Non fatale: ci sono router che aprono le porte e non dicono il proprio
-            // indirizzo. Si prosegue senza, e la riga di stato mostrera' solo la LAN.
+            // Not fatal: some routers open ports and do not tell their address. Carry on
+            // without it, and the status line will show the LAN only.
             RemotePlaySettings.log("UPnP: indirizzo esterno non disponibile: %s", e.getMessage());
         }
 
@@ -241,16 +241,16 @@ public final class PortMapper implements AutoCloseable {
         removeMapping(igd);
     }
 
-    /** Apre TCP e UDP. {@code false} se il router rifiuta: lo stato lo dice gia'. */
+    /** Opens TCP and UDP. {@code false} if the router refuses: the state already says so. */
     private boolean map(IgdClient igd) {
         for (String protocol : PROTOCOLS) {
             try {
                 igd.addPortMapping(protocol, port, LEASE_SECONDS, DESCRIPTION);
             } catch (IgdClient.UpnpException e) {
                 if (e.code() == IgdClient.ERROR_ONLY_PERMANENT_LEASES) {
-                    // Questo router vuole mappature senza scadenza. Si accetta la sua
-                    // condizione: la rimozione alla chiusura resta, e a quel punto e' l'unica
-                    // cosa che le toglie di mezzo.
+                    // This router wants mappings with no expiry. Its condition is accepted:
+                    // the removal at closing remains, and at that point it is the only thing
+                    // that takes them away.
                     try {
                         igd.addPortMapping(protocol, port, 0, DESCRIPTION);
                         continue;
@@ -274,7 +274,7 @@ public final class PortMapper implements AutoCloseable {
         return false;
     }
 
-    /** Rinnova finche' non si chiude. */
+    /** Renews until closed. */
     private void renewLoop(IgdClient igd) {
         while (true) {
             synchronized (this) {
@@ -292,7 +292,7 @@ public final class PortMapper implements AutoCloseable {
                 }
             }
             if (!map(igd)) {
-                return;   // il router ha cambiato idea: lo stato lo dice, niente da ritirare
+                return;   // the router changed its mind: the state says so, nothing to withdraw
             }
             RemotePlaySettings.log("UPnP: mappatura della porta %d rinnovata", port);
         }
@@ -310,7 +310,7 @@ public final class PortMapper implements AutoCloseable {
         RemotePlaySettings.log("UPnP: mappatura della porta %d ritirata", port);
     }
 
-    /** Il primo gateway che risponde e sa mappare. */
+    /** The first gateway that answers and can map. */
     private IgdClient findGateway() {
         if (finder != null) {
             return finder.find();
@@ -323,8 +323,8 @@ public final class PortMapper implements AutoCloseable {
             try {
                 return IgdClient.connect(candidate);
             } catch (IOException e) {
-                // Un dispositivo UPnP qualunque — una stampante, una smart TV — risponde
-                // all'M-SEARCH e non sa mappare niente. Non e' un errore: e' il prossimo.
+                // Any UPnP device (a printer, a smart TV) answers the M-SEARCH and cannot map
+                // anything. Not an error: try the next.
                 RemotePlaySettings.log("UPnP: %s non e' un gateway utile (%s)",
                         candidate.descriptionUrl(), e.getMessage());
             }

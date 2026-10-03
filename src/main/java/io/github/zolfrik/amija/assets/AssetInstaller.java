@@ -46,24 +46,23 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * Scarica e installa un {@link AssetPackage} per conto dell'utente.
+ * Downloads and installs an {@link AssetPackage} on the user's behalf.
  *
- * <p>Il flusso è: download in un file temporaneo (calcolando lo SHA-256 mentre i
- * byte scorrono) → verifica → scompattazione selettiva nella cartella di
- * destinazione → cancellazione dei temporanei. Nessuna dipendenza esterna: HTTP dal
- * client del JDK, ZIP da {@code java.util.zip}, LHA dall'estrattore che già serve i
- * pacchetti WHDLoad.
+ * <p>The flow: download into a temporary file (computing the SHA-256 while the bytes flow) ->
+ * check -> selective unpacking into the destination folder -> deletion of the temporaries.
+ * No external dependency: HTTP from the JDK's client, ZIP from {@code java.util.zip}, LHA from
+ * the extractor that already serves the WHDLoad packages.
  *
- * <p><b>La verifica è in due tempi, con severità diverse.</b> Il controllo
- * <i>strutturale</i> (le voci attese devono esserci) è bloccante: se manca, il file
- * scaricato non è quello che credevamo e installarlo sarebbe un danno. Il confronto
- * dello SHA-256 è invece solo un avvertimento: gli URL a monte non sono versionati,
- * quindi una nuova release cambia l'impronta in modo del tutto legittimo, e
- * trattarlo come errore fatale romperebbe l'assistente a ogni aggiornamento altrui.
+ * <p><b>The check has two stages, of different severity.</b> The <i>structural</i> check (the
+ * expected entries must be there) blocks: if it fails, the downloaded file is not what we
+ * thought and installing it would do harm. The SHA-256 comparison is only a warning: the
+ * upstream URLs are not versioned, so a new release changes the fingerprint quite
+ * legitimately, and treating it as a fatal error would break the assistant at every upstream
+ * update.
  */
 public final class AssetInstaller {
 
-    /** Si presenta onestamente al server, così l'origine del traffico è tracciabile. */
+    /** Introduces itself honestly to the server, so the origin of the traffic is traceable. */
     private static final String USER_AGENT = "AmiJa/1.0 (+https://github.com/zolfrik/amija)";
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(20);
@@ -72,21 +71,21 @@ public final class AssetInstaller {
 
     private AssetInstaller() {}
 
-    /** Riscontro dell'avanzamento verso l'interfaccia; tutti i metodi sono opzionali. */
+    /** Progress feedback to the interface; every method is optional. */
     public interface Progress {
-        /** Cambio di fase (download, verifica, scompattazione...). */
+        /** Phase change (download, verification, unpacking...). */
         default void stage(String message) {}
-        /** Byte scaricati finora su totale atteso ({@code total <= 0} se ignoto). */
+        /** Bytes downloaded so far out of the expected total ({@code total <= 0} if unknown). */
         default void bytes(long done, long total) {}
-        /** {@code true} se l'utente ha chiesto di annullare. */
+        /** {@code true} if the user asked to cancel. */
         default boolean cancelled() { return false; }
     }
 
     /**
-     * Esito dell'installazione.
+     * Outcome of the installation.
      *
-     * @param files    numero di file scritti nella cartella di destinazione
-     * @param warnings avvertimenti non bloccanti (p.es. impronta difforme)
+     * @param files    number of files written to the destination folder
+     * @param warnings non-blocking warnings (e.g. fingerprint mismatch)
      */
     public record Result(int files, List<String> warnings) {
         public Result {
@@ -95,12 +94,12 @@ public final class AssetInstaller {
     }
 
     /**
-     * Scarica e installa il pacchetto.
+     * Downloads and installs the package.
      *
-     * @throws IOException se il download fallisce, se l'archivio non contiene le voci
-     *                     attese o se non se ne ricava alcun file. Il messaggio riporta
-     *                     sempre URL e cartella di destinazione, così l'utente può fare
-     *                     a mano ciò che l'assistente non è riuscito a fare.
+     * @throws IOException if the download fails, if the archive does not contain the expected
+     *                     entries or if no file comes out of it. The message always reports
+     *                     URL and destination folder, so the user can do by hand what the
+     *                     assistant could not.
      */
     public static Result install(AssetPackage pkg, Progress progress) throws IOException {
         Progress p = (progress != null) ? progress : new Progress() {};
@@ -173,8 +172,8 @@ public final class AssetInstaller {
 
         String actual = HexFormat.of().formatHex(digest.digest());
         if (pkg.sha256() != null && !pkg.sha256().equalsIgnoreCase(actual)) {
-            // Non è un errore: l'URL punta sempre all'ultimo rilascio, che a monte
-            // cambia senza avvisarci. Si avverte e si prosegue col controllo strutturale.
+            // Not an error: the URL always points to the latest release, which changes
+            // upstream without telling us. Warn and carry on with the structural check.
             warnings.add(Messages.t("assets.warn.hash", pkg.displayName(), actual, pkg.sha256()));
         }
         return tmp;
@@ -217,8 +216,8 @@ public final class AssetInstaller {
     }
 
     private static int installLha(AssetPackage pkg, Path archive, Progress p) throws IOException {
-        // L'estrattore LHA non sa elencare senza estrarre: si scompatta in un'area
-        // temporanea, si verifica la struttura e si copia solo ciò che serve.
+        // The LHA extractor cannot list without extracting: unpack into a temporary area,
+        // check the structure and copy only what is needed.
         Path work = Files.createTempDirectory("amija-asset-");
         try {
             LhaExtractor.extract(archive.toString(), work);
@@ -243,7 +242,7 @@ public final class AssetInstaller {
         }
     }
 
-    /** Percorsi dei file regolari sotto {@code root}, relativi e con separatore '/'. */
+    /** Paths of the regular files under {@code root}, relative and with '/' separator. */
     private static List<String> relativePaths(Path root) throws IOException {
         try (Stream<Path> walk = Files.walk(root)) {
             return walk.filter(Files::isRegularFile)
@@ -253,7 +252,7 @@ public final class AssetInstaller {
         }
     }
 
-    /** Verifica bloccante: l'archivio deve contenere le voci che ci aspettiamo. */
+    /** Blocking check: the archive must contain the entries we expect. */
     private static void requireEntries(AssetPackage pkg, List<String> names) throws IOException {
         for (String required : pkg.requiredEntries()) {
             if (!names.contains(required)) {
@@ -270,10 +269,10 @@ public final class AssetInstaller {
     }
 
     /**
-     * Risolve {@code rel} dentro {@code base} rifiutando le fughe dalla cartella di
-     * destinazione: un archivio ostile può contenere voci tipo {@code ../../x} e
-     * scriverebbe dove non deve (zip slip). I mapper del catalogo non le produrrebbero
-     * mai, ma la guardia sta qui perché è qui che si scrive su disco.
+     * Resolves {@code rel} inside {@code base}, refusing escapes from the destination folder:
+     * a hostile archive can contain entries like {@code ../../x} and would write where it must
+     * not (zip slip). The catalogue's mappers would never produce them, but the guard is here
+     * because this is where the disk is written.
      */
     private static Path resolveSafe(Path base, String rel) throws IOException {
         Path dest = base.resolve(rel).normalize();
@@ -290,7 +289,7 @@ public final class AssetInstaller {
         try {
             Files.deleteIfExists(path);
         } catch (IOException ignored) {
-            // File temporaneo: se resta, ci penserà il sistema operativo.
+            // Temporary file: if it stays, the operating system will take care of it.
         }
     }
 
@@ -305,7 +304,7 @@ public final class AssetInstaller {
                 }
             });
         } catch (IOException | UncheckedIOException ignored) {
-            // Idem: area temporanea, la sua sopravvivenza non è un errore per l'utente.
+            // Likewise: temporary area, its survival is not an error for the user.
         }
     }
 }

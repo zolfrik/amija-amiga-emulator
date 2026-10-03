@@ -25,20 +25,20 @@ import java.util.MissingResourceException;
 import java.util.ResourceBundle;
 
 /**
- * Accesso centralizzato alle stringhe localizzate dell'interfaccia, basato sul
- * meccanismo standard {@link ResourceBundle}.
+ * Central access to the interface's localised strings, based on the standard
+ * {@link ResourceBundle} mechanism.
  *
- * <p>I bundle risiedono in {@code src/main/resources} con base name {@code messages}:
- * {@code messages.properties} (inglese, default/root) e {@code messages_it.properties}
- * (italiano). La lingua si seleziona con {@link #setLanguage(String)} (tipicamente dal
- * valore {@code ui.language} di {@code amiga.properties}).
+ * <p>The bundles live in {@code src/main/resources} with base name {@code messages}:
+ * {@code messages.properties} (English, default/root) and {@code messages_it.properties}
+ * (Italian). The language is selected with {@link #setLanguage(String)} (usually from the
+ * {@code ui.language} value of {@code amiga.properties}).
  */
 public final class Messages {
 
     private static final String BASE_NAME = "messages";
 
-    // No-fallback: richiedendo l'inglese non si ricade mai sul locale di default della
-    // JVM (che potrebbe essere italiano), ma sul bundle root (inglese).
+    // No fallback: asking for English never falls back on the JVM's default locale (which
+    // could be Italian), but on the root bundle (English).
     private static final ResourceBundle.Control CONTROL =
             ResourceBundle.Control.getNoFallbackControl(ResourceBundle.Control.FORMAT_PROPERTIES);
 
@@ -46,26 +46,26 @@ public final class Messages {
             ResourceBundle.getBundle(BASE_NAME, Locale.ENGLISH, CONTROL);
 
     /**
-     * Lingua scelta, tenuta a parte dal bundle: quello dell'inglese è il bundle
-     * <i>root</i> e {@code getLocale()} risponderebbe {@link Locale#ROOT}, che come
-     * locale di formattazione non è l'inglese ma un neutro con date in forma ISO.
+     * Chosen language, kept apart from the bundle: English's is the <i>root</i> bundle and
+     * {@code getLocale()} would answer {@link Locale#ROOT}, which as a formatting locale is not
+     * English but a neutral one with ISO dates.
      */
     private static volatile Locale locale = Locale.ENGLISH;
 
     private Messages() {}
 
-    /** Imposta la lingua dell'interfaccia ({@code "it"} = italiano, altrimenti inglese). */
+    /** Sets the interface language ({@code "it"} = Italian, otherwise English). */
     public static void setLanguage(String lang) {
         locale = (lang != null && lang.equalsIgnoreCase("it")) ? Locale.ITALIAN : Locale.ENGLISH;
         bundle = ResourceBundle.getBundle(BASE_NAME, locale, CONTROL);
     }
 
-    /** Lingua corrente dell'interfaccia, per date, numeri e ordinamenti. */
+    /** Current interface language, for dates, numbers and sorting. */
     public static Locale locale() {
         return locale;
     }
 
-    /** Stringa localizzata per la chiave; ritorna la chiave stessa se mancante. */
+    /** Localised string for the key; returns the key itself if missing. */
     public static String t(String key) {
         try {
             return bundle.getString(key);
@@ -75,9 +75,9 @@ public final class Messages {
     }
 
     /**
-     * Come {@link #t(String)}, ma ritorna {@code null} se la chiave non è nel bundle.
-     * Utile quando la stringa localizzata è un'alternativa preferenziale a un valore
-     * calcolato altrimenti (es. il nome dei tasti fornito da AWT).
+     * Like {@link #t(String)}, but returns {@code null} if the key is not in the bundle. Useful
+     * when the localised string is a preferred alternative to a value computed otherwise
+     * (e.g. the key names provided by AWT).
      */
     public static String tOrNull(String key) {
         try {
@@ -88,16 +88,15 @@ public final class Messages {
     }
 
     /**
-     * Stringa localizzata con sostituzione dei segnaposto {@code {0}}, {@code {1}}, ...
-     * (sostituzione testuale semplice, così gli apostrofi nelle stringhe restano letterali).
+     * Localised string with the placeholders {@code {0}}, {@code {1}}, ... replaced (plain
+     * textual replacement, so apostrophes in the strings stay literal).
      *
-     * <p>Una scansione sola, e i valori sostituiti <b>non</b> vengono riletti. Un ciclo di
-     * {@code String.replace}, uno per argomento, riscandiva ogni volta anche quel che
-     * aveva appena scritto: se {@code args[0]} conteneva la sequenza {@code {1}} — un
-     * percorso di file, o un messaggio d'errore che rimbalza da un altro componente — il
-     * giro successivo la sostituiva, e nel testo finale compariva un argomento al posto
-     * di un altro. Qui il segnaposto lo si cerca nel <i>modello</i>, e quel che si emette
-     * non viene piu' guardato.
+     * <p>A single scan, and the replaced values are <b>not</b> re-read. A loop of
+     * {@code String.replace}, one per argument, would rescan what it had just written: if
+     * {@code args[0]} contained the sequence {@code {1}} (a file path, or an error message
+     * bouncing from another component) the next round would replace it, and an argument would
+     * appear in place of another in the final text. Here the placeholder is looked for in the
+     * <i>template</i>, and what is emitted is not looked at again.
      */
     public static String t(String key, Object... args) {
         String s = t(key);
@@ -112,7 +111,7 @@ public final class Messages {
             int close = s.indexOf('}', open + 1);
             int index = close < 0 ? -1 : parseIndex(s, open + 1, close);
             if (index < 0 || index >= args.length) {
-                // Non e' un segnaposto nostro (o non c'e' l'argomento): resta com'e'.
+                // Not one of our placeholders (or the argument is missing): stays as it is.
                 out.append(s, i, open + 1);
                 i = open + 1;
                 continue;
@@ -123,7 +122,7 @@ public final class Messages {
         return out.toString();
     }
 
-    /** L'intero fra {@code from} incluso e {@code to} escluso, o {@code -1} se non lo e'. */
+    /** The integer between {@code from} included and {@code to} excluded, or {@code -1} if it is not one. */
     private static int parseIndex(String s, int from, int to) {
         if (from >= to || to - from > 9) {
             return -1;

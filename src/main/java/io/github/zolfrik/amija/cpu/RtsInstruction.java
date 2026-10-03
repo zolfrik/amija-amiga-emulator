@@ -76,8 +76,8 @@ public class RtsInstruction extends AbstractM68kInstruction {
                 case 3 -> {
                     // np: Second prefetch refill
                     if (!cpu.isBusCycleIdle()) return false;
-                    // WinUAE op_4e75_14_ff: `ipl_fetch_next()` sta FRA le due prefetch di
-                    // refill; le letture dello stack non passano dalla macchina EA.
+                    // RTS ($4E75): the `next` sample sits BETWEEN the two refill prefetches; the
+                    // stack reads do not go through the EA machine.
                     cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     refillPipeline(cpu); // np 2
                     return finalizeInstructionSafe(cpu);

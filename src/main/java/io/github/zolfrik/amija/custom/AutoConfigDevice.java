@@ -21,43 +21,41 @@
 package io.github.zolfrik.amija.custom;
 
 /**
- * Scheda di espansione Zorro II che partecipa alla sequenza di AutoConfig.
+ * Zorro II expansion board taking part in the AutoConfig sequence.
  *
- * <p>Al boot l'{@code expansion.library} del Kickstart interroga lo spazio di
- * configurazione $E80000–$E8FFFF: la prima scheda ancora <i>unconfigured</i> della
- * catena risponde con il proprio descrittore, riceve un indirizzo base e poi si
- * ritira (CONFIGURED o SHUTUP), lasciando rispondere la scheda successiva. Questo
- * modella la "daisy chain" hardware in cui il CONFIG_OUT di una scheda pilota il
- * CONFIG_IN della seguente.
+ * <p>At boot the Kickstart's {@code expansion.library} queries the configuration space
+ * $E80000-$E8FFFF: the first board of the chain still <i>unconfigured</i> answers with its
+ * descriptor, receives a base address and then withdraws (CONFIGURED or SHUTUP), letting the
+ * next board answer. This models the hardware "daisy chain" in which a board's CONFIG_OUT
+ * drives the next one's CONFIG_IN.
  *
- * <p>{@link Agnus} mantiene una catena ordinata di queste schede (es. Fast RAM +
- * controller hard disk) e instrada gli accessi a $E8xxxx alla prima ancora in
- * attesa. Implementazioni: {@link FastRam}, {@link HdController}.
+ * <p>{@link Agnus} keeps an ordered chain of these boards (e.g. Fast RAM + hard disk
+ * controller) and routes the accesses to $E8xxxx to the first one still waiting.
+ * Implementations: {@link FastRam}, {@link HdController}.
  */
 public interface AutoConfigDevice {
 
-    /** {@code true} finché la scheda risponde nello spazio di AutoConfig (UNCONFIGURED). */
+    /** {@code true} while the board answers in the AutoConfig space (UNCONFIGURED). */
     boolean autoconfiguring();
 
     /**
-     * Lettura di un byte del descrittore di configurazione (spazio $E8xxxx).
-     * Restituisce $FF quando la scheda non è più in fase di AutoConfig.
+     * Read of a byte of the configuration descriptor ($E8xxxx space). Returns $FF when the
+     * board is no longer in the AutoConfig phase.
      */
     int peekConfigByte(int addr);
 
     /**
-     * Scrittura nello spazio di AutoConfig: il Kickstart assegna l'indirizzo base
-     * ($48/$4A) o ordina lo "shut up" ($4C).
+     * Write to the AutoConfig space: the Kickstart assigns the base address ($48/$4A) or orders
+     * the "shut up" ($4C).
      *
-     * @return {@code true} se la scrittura ha completato la configurazione (base
-     *         assegnato): il chiamante deve mappare la scheda all'indirizzo
-     *         restituito da {@link #configuredBaseAddr()}.
+     * @return {@code true} if the write completed the configuration (base assigned): the caller
+     *         must map the board at the address returned by {@link #configuredBaseAddr()}.
      */
     boolean pokeConfigByte(int addr, int value);
 
-    /** Indirizzo base assegnato dal Kickstart (valido dopo {@link #pokeConfigByte} = true). */
+    /** Base address assigned by the Kickstart (valid after {@link #pokeConfigByte} = true). */
     int configuredBaseAddr();
 
-    /** Reset di sistema: la scheda torna in attesa di AutoConfig. */
+    /** System reset: the board goes back to waiting for AutoConfig. */
     void reset();
 }

@@ -166,13 +166,13 @@ public class OrInstruction extends AbstractM68kInstruction {
                 }
                 case 8 -> { // Write result for .B/.W memory
                     if (!cpu.isBusCycleIdle()) return false;
-                    // Overlapped prefetch (Phase 3): the .b/.w write is the LAST bus cycle —
+                    // Overlapped prefetch (Phase 3): the .b/.w write is the LAST bus cycle;
                     // finalize in this same step (seam 0) instead of deferring to step 11.
-                    // See docs/cpu-overlapped-prefetch-rework-plan.md §Phase 3.
+                    // See docs/cpu-overlapped-prefetch-rework-plan.md, Phase 3.
                     cpu.scheduleWrite(getTemp(cpu, ADDR), getTemp(cpu, RESULT), size);
                     return finalizeInstructionSafe(cpu);
                 }
-                case 9 -> { // .L memory MSW write + finalize (last bus cycle → seam 0)
+                case 9 -> { // .L memory MSW write + finalize (last bus cycle: seam 0)
                     if (!cpu.isBusCycleIdle()) return false;
                     cpu.scheduleWriteWord(getTemp(cpu, ADDR), (getTemp(cpu, RESULT) >>> 16) & 0xFFFF);
                     return finalizeInstructionSafe(cpu);

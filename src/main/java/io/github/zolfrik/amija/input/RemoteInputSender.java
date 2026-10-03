@@ -23,60 +23,58 @@ package io.github.zolfrik.amija.input;
 import io.github.zolfrik.amija.net.FeedbackPacket;
 
 /**
- * Lato ospite dell'input: raccoglie i gesti locali in uno <b>stato completo</b> da spedire
- * 200 volte al secondo ({@code docs/remote-play-plan.md} §4.3).
+ * Guest side of the input: gathers the local gestures into a <b>complete state</b> to send
+ * 200 times a second ({@code docs/remote-play-plan.md} section 4.3).
  *
- * <p>Implementa le stesse due interfacce che pilotano una macchina vera, quindi gli adapter
- * di input dell'emulatore — quelli con dentro la traduzione dei tasti, la cattura del
- * puntatore, la mappa del joystick da tastiera — ci si attaccano <b>senza saperlo</b>. Sul
- * lato ospite non cambia niente di come si gioca: cambia solo dove finiscono i gesti.
+ * <p>It implements the same two interfaces that drive a real machine, so the emulator's input
+ * adapters (with the key translation, the pointer capture, the keyboard joystick map inside)
+ * attach to it <b>without knowing</b>. On the guest side nothing changes in how one plays:
+ * only where the gestures end up.
  *
- * <h2>Mai eventi: solo stato</h2>
- * Ogni pacchetto porta la verita' completa, cosi' un pacchetto perso non ha conseguenze e
- * nessun rilascio puo' restare appeso. Due cose pero' non sono stato per natura, e vanno
- * riportate a stato:
+ * <h2>Never events: only state</h2>
+ * Every packet carries the complete truth, so a lost packet has no consequences and no
+ * release can stay hanging. Two things, though, are not state by nature, and must be brought
+ * back to state:
  *
  * <ul>
- *   <li><b>il movimento del mouse e' un delta.</b> Se si spedisse {@code dx,dy} e il
- *       pacchetto si perdesse, quel movimento sarebbe perso per sempre. Qui si accumulano
- *       due <b>contatori a 32 bit che non si azzerano mai</b>: l'host applica la differenza,
- *       e il pacchetto successivo consegna da solo anche il movimento mancante. Combacia col
- *       modello hardware, dove {@code AmigaMouse} e' gia' una coppia di contatori di
- *       quadratura che avvolgono;</li>
- *   <li><b>un tasto premuto e rilasciato fra due campionamenti sparirebbe.</b> A 200 Hz la
- *       finestra cieca e' 5 ms — corta, ma non zero. Il rimedio e' il <b>latch appiccicoso</b>:
- *       il bit di un tasto premuto resta alzato per {@value #LATCH_SNAPSHOTS} campionamenti
- *       (15 ms), quindi un tocco sopravvive anche a due pacchetti persi di fila. E il
- *       pacchetto <b>resta uno stato puro</b>: nessun registro di eventi, nessun contatore da
- *       riconciliare. Il rilascio arriva 15 ms dopo, che e' sotto la soglia di percezione e
- *       sotto la durata di qualunque pressione umana.</li>
+ *   <li><b>mouse movement is a delta.</b> Sending {@code dx,dy}, a lost packet would lose
+ *       that movement forever. Here two <b>32-bit counters that are never reset</b>
+ *       accumulate: the host applies the difference, and the next packet delivers the
+ *       missing movement by itself. It matches the hardware model, where {@code AmigaMouse}
+ *       is already a pair of wrapping quadrature counters;</li>
+ *   <li><b>a key pressed and released between two samples would vanish.</b> At 200 Hz the
+ *       blind window is 5 ms: short, but not zero. The remedy is the <b>sticky latch</b>: the
+ *       bit of a key pressed stays raised for {@value #LATCH_SNAPSHOTS} samples (15 ms), so a
+ *       tap survives even two packets lost in a row. And the packet <b>stays pure state</b>:
+ *       no event log, no counter to reconcile. The release arrives 15 ms later, below the
+ *       threshold of perception and below the duration of any human press.</li>
  * </ul>
  *
- * <h2>Anche cosa c'e' collegato e' stato</h2>
- * La porta che l'host assegna all'ospite la riempie <b>l'ospite</b>: mouse, joystick reale,
- * joystick da tastiera con i <i>suoi</i> tasti, o niente. Quella scelta e' una proprieta'
- * della porta come le altre, quindi viaggia nel pacchetto ({@link #setDevice}) invece che in
- * un messaggio a parte — e come le altre si autoripara, perche' ogni pacchetto la ripete.
+ * <h2>What is plugged in is state too</h2>
+ * The port the host assigns to the guest is filled by <b>the guest</b>: mouse, real joystick,
+ * keyboard joystick with <i>its</i> keys, or nothing. That choice is a property of the port
+ * like the others, so it travels in the packet ({@link #setDevice}) rather than in a separate
+ * message, and like the others it repairs itself, because every packet repeats it.
  *
- * <p>Come {@code GamePort}, la periferica si deduce <b>anche dai gesti</b>: chi muove il
- * mouse ha un mouse. Le due strade non litigano, perche' i gesti arrivano solo dagli adapter
- * che la scelta stessa ha cablato; dedurla serve al caso in cui gesti non ne arrivano
- * affatto, che e' poi il solo modo di distinguere una porta vuota da una ferma.
+ * <p>As in {@code GamePort}, the device is also inferred <b>from the gestures</b>: whoever
+ * moves the mouse has a mouse. The two ways do not conflict, because the gestures come only
+ * from the adapters the choice itself has wired; inferring it serves the case in which no
+ * gestures arrive at all, the only way to tell an empty port from a still one.
  *
- * <h2>Nessun filtro di sicurezza qui</h2>
- * Il divieto di resettare la macchina dell'host (CTRL+Amiga+Amiga) <b>non</b> sta in questa
- * classe, e non e' una dimenticanza: e' la macchina dell'host, quindi la decisione e'
- * dell'host. Un filtro messo qui sarebbe aggirabile da chiunque scriva il proprio client —
- * e il pacchetto e' 44 byte, scriverne uno e' un pomeriggio. Vedi {@link RemoteInputApplier}.
+ * <h2>No security filter here</h2>
+ * The ban on resetting the host's machine (CTRL+Amiga+Amiga) is <b>not</b> in this class, and
+ * not by oversight: it is the host's machine, so the decision is the host's. A filter placed
+ * here could be bypassed by anyone writing their own client, and the packet is 44 bytes:
+ * writing one is an afternoon's work. See {@link RemoteInputApplier}.
  *
- * <p>Thread: i gesti arrivano dall'EDT, {@link #snapshot} e' chiamato dal thread di feedback
- * a 200 Hz. Tutto sincronizzato — sono decine di nanosecondi su strutture minuscole, e
- * l'alternativa (campi volatile sparsi) darebbe uno stato che non e' mai stato vero tutto
- * insieme in nessun istante.
+ * <p>Threads: the gestures come from the EDT, {@link #snapshot} is called by the feedback
+ * thread at 200 Hz. Everything is synchronised: tens of nanoseconds on tiny structures, and
+ * the alternative (scattered volatile fields) would give a state that was never true all
+ * together at any instant.
  */
 public final class RemoteInputSender implements GamePortControls, AmigaKeyTarget {
 
-    /** Per quanti campionamenti resta alzato il bit di un tasto appena premuto. */
+    /** How many samples the bit of a key just pressed stays raised. */
     public static final int LATCH_SNAPSHOTS = 3;
 
     private static final int KEY_COUNT = 128;
@@ -91,15 +89,15 @@ public final class RemoteInputSender implements GamePortControls, AmigaKeyTarget
     private int buttons;
     private int device = FeedbackPacket.DEVICE_NONE;
 
-    /** Vero finche' l'utente non ha toccato niente: serve a non spedire rumore. */
+    /** True until the user has touched anything: avoids sending noise. */
     private boolean idle = true;
 
     /**
-     * Riversa lo stato corrente nel pacchetto e fa scorrere il latch di un passo.
+     * Pours the current state into the packet and advances the latch by one step.
      *
-     * <p>Ha un effetto collaterale voluto — il latch scorre — quindi va chiamato una volta
-     * per pacchetto e da un thread solo. Se lo si chiamasse due volte per pacchetto, un
-     * tocco durerebbe la meta'.
+     * <p>It has a deliberate side effect (the latch advances), so it must be called once per
+     * packet and from a single thread. Called twice per packet, a tap would last half as
+     * long.
      */
     public synchronized void snapshot(FeedbackPacket out) {
         out.mouseCounterX = mouseCounterX;
@@ -119,17 +117,17 @@ public final class RemoteInputSender implements GamePortControls, AmigaKeyTarget
         }
     }
 
-    /** Vero se non e' ancora arrivato nessun gesto: l'host non ha niente da applicare. */
+    /** True if no gesture has arrived yet: the host has nothing to apply. */
     public synchronized boolean isIdle() {
         return idle;
     }
 
     /**
-     * Dimentica tutti i <b>gesti</b>: nuova sessione, niente ereditato dalla precedente.
+     * Forgets all the <b>gestures</b>: new session, nothing inherited from the previous one.
      *
-     * <p>La periferica collegata <b>non</b> si azzera, ed e' la sola cosa che sopravvive:
-     * non e' un gesto, e' la scelta che l'utente ha fatto nel proprio popup F12. Azzerarla
-     * qui vorrebbe dire che riconnettersi svuota la porta di chi si riconnette.
+     * <p>The plugged-in device is <b>not</b> reset, and it is the only thing that survives: it
+     * is not a gesture, it is the choice the user made in their own F12 popup. Resetting it
+     * here would mean that reconnecting empties the port of whoever reconnects.
      */
     public synchronized void reset() {
         java.util.Arrays.fill(held, false);
@@ -143,7 +141,7 @@ public final class RemoteInputSender implements GamePortControls, AmigaKeyTarget
     }
 
     // =====================================================================
-    // Tastiera
+    // Keyboard
     // =====================================================================
 
     @Override
@@ -156,9 +154,9 @@ public final class RemoteInputSender implements GamePortControls, AmigaKeyTarget
 
     @Override
     public synchronized void releaseKey(int rawKeyNum) {
-        // Il latch NON si tocca: e' proprio il rilascio immediato che deve poter aspettare.
-        // Se la pressione e' durata piu' di 15 ms il latch e' gia' sceso a zero e il
-        // rilascio parte col pacchetto successivo, come ci si aspetta.
+        // The latch is NOT touched: it is exactly the immediate release that must be able to
+        // wait. If the press lasted more than 15 ms the latch has already dropped to zero and
+        // the release leaves with the next packet, as expected.
         held[rawKeyNum & 0x7F] = false;
         idle = false;
     }
@@ -168,12 +166,12 @@ public final class RemoteInputSender implements GamePortControls, AmigaKeyTarget
     // =====================================================================
 
     /**
-     * Dichiara cosa l'utente ha collegato alla porta che l'host gli ha assegnato.
+     * Declares what the user plugged into the port the host assigned to them.
      *
-     * <p>Lo chiama {@code Amija} quando cabla gli adapter, e di nuovo a ogni conferma del
-     * popup F12: da li' in poi il campo parte 200 volte al secondo, e l'host lo posa sulla
-     * game port vera. Non c'e' nessun momento in cui la scelta e' fatta ma non e' ancora
-     * arrivata piu' a lungo di un pacchetto.
+     * <p>Called by {@code Amija} when it wires the adapters, and again at every confirmation
+     * of the F12 popup: from then on the field leaves 200 times a second, and the host puts
+     * it on the real game port. There is no moment in which the choice is made but has not
+     * arrived for longer than one packet.
      */
     @Override
     public synchronized void setDevice(GamePortDevice device) {
@@ -237,7 +235,7 @@ public final class RemoteInputSender implements GamePortControls, AmigaKeyTarget
         idle = false;
     }
 
-    /** Il codice che il pacchetto usa per una periferica. */
+    /** The code the packet uses for a device. */
     private static int wire(GamePortDevice device) {
         if (device == null) {
             return FeedbackPacket.DEVICE_NONE;

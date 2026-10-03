@@ -58,11 +58,10 @@ public class JsrInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                 }
                 case 2 -> {
-                    // WinUAE (op_4ed0/op_4ef9/op_4ea8/op_4eb9 _14_ff): `ipl_fetch_now()` e'
-                    // emessa SUBITO DOPO il calcolo dell'EA — cioe' al ciclo 0 per i modi che
-                    // leggono l'estensione gia' in IRC, e dopo la sua prefetch per (xxx).L.
-                    // `set_ipl_now()` forza il ramo `now` e congela l'ancora: le push di JSR
-                    // e le due prefetch al target non la spostano.
+                    // ($4ED0/$4EF9/$4EA8/$4EB9): the `now` sample comes RIGHT AFTER the EA
+                    // computation, i.e. at cycle 0 for the modes that read the extension already
+                    // in IRC, and after its prefetch for (xxx).L. The anchor is forced `now` and
+                    // frozen: JSR's pushes and the two prefetches at the target do not move it.
                     cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                     int targetPC = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);
                     setTemp(cpu, TARGET_PC, targetPC);
@@ -102,8 +101,8 @@ public class JsrInstruction extends AbstractM68kInstruction {
                 case 4 -> {
                     if (!cpu.isIRDValid()) return false;
                     int returnAddress = getTemp(cpu, RETURN_ADDR);
-                    // Il guasto e' sulla PUSH, non sull'EA: per JSR il generato non applica il
-                    // delta del modo (op_4ea8/4eba: incpci(4), non 2). Delta zero.
+                    // The fault is on the PUSH, not on the EA: for JSR the mode delta does not
+                    // apply ($4EA8/$4EBA: +4, not 2). Delta zero.
                     cpu.markGroup0EaDelta(0);
                     cpu.setA7(cpu.getA7() - 4);
                     cpu.scheduleWriteWord(cpu.getA7(), (returnAddress >>> 16) & 0xFFFF); // nS (Push MSW)
@@ -117,10 +116,10 @@ public class JsrInstruction extends AbstractM68kInstruction {
                     return false;
                 }
                 case 6 -> {
-                    // Overlapped prefetch (Phase 5): np2 is the last bus cycle — finalize in
-                    // this same step (like RTS) so the target instruction decodes the instant
-                    // np2 drains (seam 0), instead of waiting in a separate step (wasted 1 mc).
-                    // See docs/cpu-overlapped-prefetch-rework-plan.md §Phase 5.
+                    // Overlapped prefetch (Phase 5): np2 is the last bus cycle; finalize in this
+                    // same step (like RTS) so the target instruction decodes the instant np2
+                    // drains (seam 0), instead of waiting in a separate step (wasted 1 mc). See
+                    // docs/cpu-overlapped-prefetch-rework-plan.md, Phase 5.
                     cpu.startPrefetchCycle(); // np 2
                     return finalizeInstructionSafe(cpu);
                 }

@@ -25,90 +25,75 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Gary (Gate Array) — Amiga 500 address decoding e bus arbitration.
+ * Gary (gate array): Amiga 500 address decoding and bus arbitration.
  *
- * Gary è il gate array responsabile della decodifica degli indirizzi e della
- * generazione dei chip-select per tutti i dispositivi del bus dell'Amiga 500.
- * Non è un chip documentato pubblicamente: il suo comportamento è stato
- * ricostruito per reverse engineering e da documentazione di terze parti.
+ * Gary is the gate array that decodes addresses and generates the chip selects for every
+ * device on the Amiga 500 bus. It is not publicly documented: its behaviour has been
+ * reconstructed by reverse engineering and from third-party documentation.
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * MAPPA DI MEMORIA AMIGA 500 (24-bit address bus, 16 MB)
- * ═══════════════════════════════════════════════════════════════════════════
+ * AMIGA 500 MEMORY MAP (24-bit address bus, 16 MB)
  *
- *   $000000 – $07FFFF   Chip RAM (512 KB, espandibile a 1 MB con ECS/AGA)
- *                       Con OVL=1 (overlay attivo): letture reindirizzate alla ROM
- *   $080000 – $0FFFFF   Chip RAM espansione / slow RAM bassa (dipende dall'hardware)
- *   $100000 – $1FFFFF   Chip RAM espansione ECS (solo con Agnus "Fat")
- *   $200000 – $9FFFFF   Fast RAM (autoconfig, non presente di default su A500)
- *   $A00000 – $BFFFFF   Decodifica CIA (mirroring su tutto il range)
- *   $C00000 – $D7FFFF   Slow RAM / "Ranger" RAM (trapdoor A500); sopra la RAM
- *                       installata rispondono i registri custom (mirror ogni 64 KB)
- *   $D80000 – $DDFFFF   Non mappato su A500 (open bus), tranne l'orologio a $DC0000
- *   $DE0000 – $DFFFFF   Custom registers (Agnus/Paula/Denise) — $DFF000–$DFF1FF
- *                       ma decodifica incompleta risponde su tutte e due le pagine
- *   $E00000 – $E7FFFF   Kickstart ROM Mirror (A500)
- *   $E80000 – $EFFFFF   Autoconfig / Zorro II I/O
- *   $F00000 – $F7FFFF   Non decodificato (open bus) — mirror ROM su alcuni modelli
- *   $F80000 – $FBFFFF   Kickstart ROM (256 KB — mirror della seconda metà su A500)
- *   $FC0000 – $FFFFFF   Kickstart ROM (256 KB)
- *   $F80000 – $FFFFFF   Kickstart ROM (512 KB — Kickstart 2.x e successivi)
+ *   $000000-$07FFFF   Chip RAM (512 KB, expandable to 1 MB with ECS/AGA)
+ *                     With OVL=1 (overlay on): reads redirected to the ROM
+ *   $080000-$0FFFFF   Chip RAM expansion / low slow RAM (depends on the hardware)
+ *   $100000-$1FFFFF   ECS Chip RAM expansion (only with the "Fat" Agnus)
+ *   $200000-$9FFFFF   Fast RAM (autoconfig, not present on a stock A500)
+ *   $A00000-$BFFFFF   CIA decoding (mirrored over the whole range)
+ *   $C00000-$D7FFFF   Slow RAM / "Ranger" RAM (A500 trapdoor); above the installed
+ *                     RAM the custom registers answer (mirrored every 64 KB)
+ *   $D80000-$DDFFFF   Unmapped on the A500 (open bus), except the clock at $DC0000
+ *   $DE0000-$DFFFFF   Custom registers (Agnus/Paula/Denise), $DFF000-$DFF1FF, but the
+ *                     incomplete decoding answers on both pages
+ *   $E00000-$E7FFFF   Kickstart ROM mirror (A500)
+ *   $E80000-$EFFFFF   Autoconfig / Zorro II I/O
+ *   $F00000-$F7FFFF   Not decoded (open bus); ROM mirror on some models
+ *   $F80000-$FBFFFF   Kickstart ROM (256 KB: mirror of the upper half on the A500)
+ *   $FC0000-$FFFFFF   Kickstart ROM (256 KB)
+ *   $F80000-$FFFFFF   Kickstart ROM (512 KB: Kickstart 2.x and later)
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * DECODIFICA CIA
- * ═══════════════════════════════════════════════════════════════════════════
+ * CIA DECODING
  *
- * Gary seleziona le CIA quando i bit superiori dell'indirizzo sono nel range $A0-$BF.
- * La selezione interna usa i bit A13 e A12:
+ * Gary selects the CIAs when the upper address bits are in the range $A0-$BF. Each chip
+ * select is one address line (see {@link #routeCia}):
  *
- *   /CIAB_CS attivo se: A13=0, A12=1  → $xxDxxx
- *   /CIAA_CS attivo se: A13=1, A12=0  → $xxExxx
+ *   /CIAB_CS active when A13 = 0  ($xxDxxx)
+ *   /CIAA_CS active when A12 = 0  ($xxExxx)
  *
- * Le CIA dell'Amiga sono mappate su indirizzi di byte:
- *   CIA-A: indirizzi DISPARI ($BFE001, $BFE101, ..., $BFE F01)
- *          I bit A11..A8 selezionano il registro interno (0-15)
- *   CIA-B: indirizzi PARI   ($BFD000, $BFD100, ..., $BFD F00)
- *          I bit A11..A8 selezionano il registro interno (0-15)
+ * The CIAs are mapped on byte addresses:
+ *   CIA-A: ODD addresses ($BFE001, $BFE101, ..., $BFEF01)
+ *          bits A11..A8 select the internal register (0-15)
+ *   CIA-B: EVEN addresses ($BFD000, $BFD100, ..., $BFDF00)
+ *          bits A11..A8 select the internal register (0-15)
  *
- * Nota: in realtà il 68000 accede sempre in word; UDS/LDS determinano quale
- * byte è valido. La CIA-A risponde su LDS=basso (byte basso), CIA-B su UDS.
- * Un accesso word a $BFExxx / $BFDxxx legge entrambe le CIA contemporaneamente
- * (comportamento usato da alcuni programmi per leggere due CIA in un accesso).
+ * The 68000 always accesses a word; UDS/LDS tell which byte is valid. CIA-A answers on
+ * LDS (low byte), CIA-B on UDS. A word access to an address that selects both reads the
+ * two CIAs at once.
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * OVERLAY ROM (OVL)
- * ═══════════════════════════════════════════════════════════════════════════
+ * ROM OVERLAY (OVL)
  *
- * Al reset Gary attiva il flip-flop OVL interno. Finché OVL è attivo:
- *   - Letture in $000000–$07FFFF sono reindirizzate alla Kickstart ROM
- *   - Scritture vanno comunque alla Chip RAM (il 68000 non può scrivere in ROM)
+ * At reset Gary sets its internal OVL flip-flop. While OVL is on:
+ *   - reads in $000000-$07FFFF are redirected to the Kickstart ROM
+ *   - writes still go to the Chip RAM (the 68000 cannot write the ROM)
  *
- * Il flip-flop OVL si azzera automaticamente alla PRIMA operazione di scrittura
- * sul bus (qualsiasi indirizzo, qualsiasi target). Questo rispecchia il
- * comportamento hardware: Gary vede /AS attivo con R/W=LOW e azzera il flip-flop.
+ * The OVL flip-flop clears by itself at the FIRST write on the bus (any address, any
+ * target): Gary sees /AS active with R/W low and clears the flip-flop.
  *
- * Il CIA-A (bit 0 del registro PRA, pin PA0) può controllare il segnale /OVL
- * via software: PA0=1 → overlay attivo, PA0=0 → overlay disattivo. Quando il
- * CIA-A scrive su questo bit, il valore viene applicato direttamente al flip-flop
- * interno di Gary (setRomOverlay() sovrascrive lo stato del flip-flop).
+ * CIA-A (bit 0 of PRA, pin PA0) can drive /OVL from software: PA0=1 -> overlay on,
+ * PA0=0 -> overlay off. When CIA-A writes this bit the value is applied straight to
+ * Gary's internal flip-flop (setRomOverlay() overwrites its state).
  *
- * Mirroring dell'indirizzo durante l'overlay:
- *   ROM 256 KB ($FC0000–$FFFFFF, dimensione $40000):
+ * Address mirroring during the overlay:
+ *   256 KB ROM ($FC0000-$FFFFFF, size $40000):
  *     address_in_rom = (access_address) & (romSize - 1)
  *     read_from      = $FC0000 + address_in_rom
- *   ROM 512 KB ($F80000–$FFFFFF, dimensione $80000):
+ *   512 KB ROM ($F80000-$FFFFFF, size $80000):
  *     address_in_rom = (access_address) & (romSize - 1)
  *     read_from      = $F80000 + address_in_rom
  *
- * ═══════════════════════════════════════════════════════════════════════════
  * KEYBOARD RESET
- * ═══════════════════════════════════════════════════════════════════════════
  *
- * L'Amiga 500 supporta il "long reset" da tastiera: tenere CTRL+A.Left+A.Right
- * per ~2 secondi. La tastiera tiene il segnale KDAT basso per ~500ms per
- * segnalare a Gary di eseguire il reset di sistema.
- * Gary monitora KDAT (non KCLK che è il clock seriale) e dopo la soglia
- * asserta /RESET e /HALT verso il 68000.
+ * CTRL+AMIGA+AMIGA makes the keyboard MPU pull /KBRST low (see
+ * {@link #setKeyboardResetLine}); Gary propagates it to /RESET and /HALT toward the 68000.
  *
  * @author alessio.carotenuto
  */
@@ -140,35 +125,35 @@ public final class Gary {
         CIA_B,
         RTC,
         AUTOCONFIG,
-        HD_CONTROLLER, // Scheda Zorro II del controller hard disk (exprom + porte)
-        OVERLAY_ROM,   // Lettura in area $000000 con overlay attivo → ROM
-        OPEN_BUS,      // Area non decodificata: legge il valore corrente del bus dati
+        HD_CONTROLLER, // Zorro II board of the hard disk controller (exprom + ports)
+        OVERLAY_ROM,   // read in the $000000 area with the overlay on: ROM
+        OPEN_BUS,      // area not decoded: reads the current value of the data bus
         OTHER_IO,
-        CIA_BOTH       // Riservato per compatibilità; non più emesso da routeCia()
+        CIA_BOTH       // kept for compatibility; no longer issued by routeCia()
     }
 
     // -------------------------------------------------------------------------
 
     public static final class RegionRules {
 
-        /** Se true, word/longword su indirizzo dispari genera Address Error sul 68000. */
+        /** If true, a word/longword at an odd address raises an Address Error on the 68000. */
         public boolean generateAddressErrorOnOddWord = true;
 
         /**
-         * Se true, un accesso non valido secondo le regole della regione genera
-         * un Bus Error invece di essere ignorato silenziosamente.
+         * If true, an access that breaks the region's rules raises a Bus Error instead of
+         * being silently ignored.
          */
         public boolean generateBusErrorOnIllegal = false;
 
         /**
-         * Se true, questa regione accetta solo accessi a byte (no word/longword).
-         * Usato per i registri CIA.
+         * If true, this region accepts byte accesses only (no word/longword). Used for the
+         * CIA registers.
          */
         public boolean byteAccessOnly = false;
 
         /**
-         * Numero di cicli aggiuntivi di wait state prima che DTACK venga asserted.
-         * 0 = nessun wait state (DTACK immediato).
+         * Number of extra wait-state cycles before DTACK is asserted.
+         * 0 = no wait state (immediate DTACK).
          */
         public int dtackCycles = 0;
 
@@ -189,12 +174,12 @@ public final class Gary {
         public final int start;
         public final int end;
         public final Target target;
-        /** Nome del segnale chip-select generato da Gary per questa regione. */
+        /** Name of the chip-select signal Gary generates for this region. */
         public final String chipSelect;
         public final RegionRules rules;
         /**
-         * Dimensione fisica del componente associato (0 se non applicabile).
-         * Usata per il calcolo del wrap-around (mirroring).
+         * Physical size of the component behind the region (0 if not applicable). Used for
+         * the wrap-around (mirroring).
          */
         public int physicalSize;
 
@@ -229,59 +214,58 @@ public final class Gary {
 
     public static final class Route {
 
-        /** true se il ciclo di bus può procedere normalmente. */
+        /** True if the bus cycle can proceed normally. */
         public boolean ok;
         public Target target;
-        /** Chip-select attivato da Gary per questa route. */
+        /** Chip select asserted by Gary for this route. */
         public String chipSelect;
         /**
-         * Upper Data Strobe: true se il byte alto del bus dati (D15-D8) è valido.
-         * Su 68000: UDS basso durante accessi al byte pari (A0=0) o word/longword.
+         * Upper Data Strobe: true if the high byte of the data bus (D15-D8) is valid.
+         * On the 68000 UDS is low for byte accesses at even addresses (A0=0) and for
+         * word/longword accesses.
          */
         public boolean uds;
         /**
-         * Lower Data Strobe: true se il byte basso del bus dati (D7-D0) è valido.
-         * Su 68000: LDS basso durante accessi al byte dispari (A0=1) o word/longword.
+         * Lower Data Strobe: true if the low byte of the data bus (D7-D0) is valid.
+         * On the 68000 LDS is low for byte accesses at odd addresses (A0=1) and for
+         * word/longword accesses.
          */
         public boolean lds;
-        /** Cicli di wait state aggiuntivi prima di DTACK. */
+        /** Extra wait-state cycles before DTACK. */
         public int dtackCycles;
-        /** Se true: il 68000 deve eseguire la sequenza di Address Error. */
+        /** If true, the 68000 must run the Address Error sequence. */
         public boolean addressError;
-        /** Se true: il 68000 deve eseguire la sequenza di Bus Error. */
+        /** If true, the 68000 must run the Bus Error sequence. */
         public boolean busError;
-        /** La regione sorgente della route (può essere null per aree non mappate). */
+        /** The region the route comes from (may be null for unmapped areas). */
         public Region region;
         /**
-         * Indirizzo effettivo da presentare alla risorsa target dopo eventuali
-         * trasformazioni (es. mirroring ROM durante overlay).
+         * Effective address to present to the target after any transformation (e.g. ROM
+         * mirroring during the overlay).
          */
         public int effectiveAddress;
 
-        /** Se true: il ciclo di bus è valido ma la scrittura deve essere scartata.
-         *  Usato per le aree ROM: Gary asserta CS_ROM normalmente, il bus cycle
-         *  si completa con DTACK, ma la ROM EPROM ignora il segnale /WE.
-         *  Il chiamante deve leggere/non-scrivere senza generare Bus Error. */
+        /** If true, the bus cycle is valid but the write must be discarded. Used for the
+         *  ROM areas: Gary asserts CS_ROM normally and the cycle completes with DTACK, but
+         *  the EPROM ignores /WE. The caller must not write, and raise no Bus Error. */
         public boolean readOnly;
 
         /**
-         * STEP 2 (PERFORMANCE_REPORT_FINAL): Route è ora un oggetto MUTABILE
-         * riutilizzabile. {@link Gary#route(int, AccessType, boolean, boolean, boolean, Route)}
-         * riempie un'istanza "scratch" fornita dal chiamante invece di allocare
-         * una nuova Route ad ogni accesso al bus (~3.5M/s), eliminando la
-         * pressione GC. I metodi factory statici restano disponibili (allocano
-         * internamente) per i chiamanti di convenienza e i test.
+         * Route is a MUTABLE, reusable object.
+         * {@link Gary#route(int, AccessType, boolean, boolean, boolean, Route)} fills a
+         * "scratch" instance supplied by the caller instead of allocating a new Route at
+         * every bus access (~3.5M/s), which removes the GC pressure. The static factory
+         * methods are still available (they allocate) for convenience callers and tests.
          *
-         * ATTENZIONE: poiché l'oggetto viene riutilizzato, ogni master di bus che
-         * conserva la propria Route oltre la chiamata successiva di route() sullo
-         * stesso scratch deve possedere uno scratch dedicato (vedi
-         * Agnus.cpuScratchRoute / copperScratchRoute). I due
-         * master usano scratch distinti, quindi non c'è aliasing nonostante
-         * vengano serviti nello stesso fronte di clock.
+         * Because the object is reused, every bus master that keeps its Route beyond the
+         * next route() call on the same scratch must own a dedicated scratch (see
+         * Agnus.cpuScratchRoute / copperScratchRoute). The two masters use distinct
+         * scratches, so there is no aliasing even when they are served on the same clock
+         * edge.
          */
         public Route() { }
 
-        /** Imposta tutti i campi e restituisce {@code this} (fluent fill). */
+        /** Sets every field and returns {@code this} (fluent fill). */
         Route set(boolean ok, Target target, String chipSelect,
                   boolean uds, boolean lds, int dtackCycles,
                   boolean addressError, boolean busError,
@@ -308,7 +292,7 @@ public final class Gary {
             return fillOk(r, uds, lds, dtackCycles, -1);
         }
 
-        /** Route ok ma con scrittura soppressa (ROM write: ciclo valido, dato perso). */
+        /** Route ok but with the write suppressed (ROM write: valid cycle, data lost). */
         Route fillOkReadOnly(Region r, boolean uds, boolean lds, int dtackCycles, int effectiveAddress) {
             return set(true, r.target, r.chipSelect, uds, lds, dtackCycles, false, false, r, effectiveAddress, true);
         }
@@ -326,11 +310,10 @@ public final class Gary {
         }
 
         /**
-         * Area non decodificata: open bus.
-         * Sull'Amiga reale il ciclo si conclude comunque (auto-DTACK o timeout),
-         * e la lettura restituisce il valore attuale del bus dati ($FFFF tipicamente).
-         * region=null: nessun consumatore legge Route.region per l'open bus
-         * (in passato veniva allocata una Region dummy, ora evitata per azzerare l'allocazione).
+         * Area not decoded: open bus. On a real Amiga the cycle completes anyway
+         * (auto-DTACK or timeout) and the read returns the current value of the data bus.
+         * region = null: no consumer reads Route.region for the open bus, so no dummy
+         * Region is allocated.
          */
         Route fillOpenBus(int address) {
             return set(true, Target.OPEN_BUS, "CS_NONE", true, true, 0, false, false, null, address & 0xFFFFFF, false);
@@ -345,7 +328,7 @@ public final class Gary {
             return new Route().fillOk(r, uds, lds, dtackCycles, -1);
         }
 
-        /** Route ok ma con scrittura soppressa (ROM write: ciclo valido, dato perso). */
+        /** Route ok but with the write suppressed (ROM write: valid cycle, data lost). */
         public static Route okReadOnly(Region r, boolean uds, boolean lds,
                                        int dtackCycles, int effectiveAddress) {
             return new Route().fillOkReadOnly(r, uds, lds, dtackCycles, effectiveAddress);
@@ -360,9 +343,8 @@ public final class Gary {
         }
 
         /**
-         * Area non decodificata: open bus.
-         * Sull'Amiga reale il ciclo si conclude comunque (auto-DTACK o timeout),
-         * e la lettura restituisce il valore attuale del bus dati ($FFFF tipicamente).
+         * Area not decoded: open bus. On a real Amiga the cycle completes anyway
+         * (auto-DTACK or timeout) and the read returns the current value of the data bus.
          */
         public static Route openBus(int address) {
             return new Route().fillOpenBus(address);
@@ -378,82 +360,75 @@ public final class Gary {
     }
 
     // =========================================================================
-    // Stato interno Gary
+    // Gary internal state
     // =========================================================================
 
     private final List<Region> regions = new ArrayList<>();
 
     /**
-     * STEP 2 (PERFORMANCE_REPORT_FINAL): lookup table per pagina di 64 KB.
+     * Lookup table per 64 KB page.
      *
-     * {@link #findRegionByAddress} sostituisce la scansione lineare O(N) su
-     * {@code regions} (chiamata a ~3.5M/s) con un accesso O(1) indicizzato dai
-     * bit A23..A16 dell'indirizzo. La mappa A500 ha tutte le regioni decodificate
-     * via findRegionByAddress allineate a 64 KB e disgiunte, quindi ogni pagina
-     * mappa esattamente a una regione.
+     * {@link #findRegionByAddress} replaces an O(N) linear scan of {@code regions} (called
+     * ~3.5M/s) with an O(1) access indexed by bits A23..A16 of the address. On the A500 map
+     * every region resolved through findRegionByAddress is 64 KB aligned and disjoint, so
+     * each page maps to exactly one region.
      *
-     * Correttezza: {@code pageLut[p]} è popolata SOLO se un'unica regione copre
-     * INTERAMENTE la pagina p (ed è la prima della lista a intersecarla, come
-     * farebbe la scansione lineare). Le pagine non uniformi (copertura parziale o
-     * regioni sub-pagina, es. le CIA in $BFxxxx) sono marcate {@code pageAmbiguous}
-     * e ricadono sulla scansione lineare esatta. Questo rende la LUT provabilmente
-     * equivalente al comportamento originale. Nota: le CIA non vengono comunque
-     * mai risolte via findRegionByAddress (route() intercetta prima $A00000–$BFFFFF).
+     * Correctness: {@code pageLut[p]} is filled ONLY if a single region covers page p
+     * ENTIRELY (and it is the first in the list to intersect it, as the linear scan would
+     * find). Non-uniform pages (partial coverage or sub-page regions, e.g. the CIAs in
+     * $BFxxxx) are marked {@code pageAmbiguous} and fall back to the exact linear scan, so
+     * the LUT is provably equivalent to the scan. The CIAs are never resolved through
+     * findRegionByAddress anyway (route() intercepts $A00000-$BFFFFF first).
      */
     private final Region[]  pageLut       = new Region[256];
     private final boolean[] pageAmbiguous = new boolean[256];
 
     /**
-     * STEP 2: cache "prima regione per target" per evitare la scansione lineare
-     * anche in {@link #findFirstRegionByTarget} (usata nel path CIA/overlay/mirror).
+     * Cache of the first region per target, so {@link #findFirstRegionByTarget} (used on
+     * the CIA/overlay/mirror paths) needs no linear scan either.
      */
     private final Region[]  firstRegionByTarget = new Region[Target.values().length];
 
     /**
-     * Flip-flop OVL interno di Gary.
-     * Inizia a true al reset (overlay ROM attivo).
-     * Si azzera automaticamente alla PRIMA scrittura sul bus SOLO durante la
-     * finestra di power-on (quando ciaOwnsOvl=false).
-     * Può essere sovrascritto esplicitamente dal CIA-A (bit PA0 → segnale /OVL).
+     * Gary's internal OVL flip-flop. Starts true at reset (ROM overlay on). It clears by
+     * itself at the FIRST write on the bus ONLY during the power-on window (while
+     * ciaOwnsOvl = false). CIA-A can overwrite it explicitly (bit PA0, the /OVL signal).
      */
     private boolean ovlFlipFlop = true;
 
     /**
-     * Indica se CIA-A ha preso il controllo attivo del segnale /OVL.
+     * Whether CIA-A has taken active control of the /OVL signal.
      *
-     * Sull'hardware reale, Gary contiene un circuito one-shot che azzera il
-     * flip-flop OVL alla prima scrittura sul bus dopo il power-on. Questo
-     * permette al 68000 di fetchare il reset vector dalla ROM ($000000–$000007)
-     * e poi di scrivere sullo stack (prima write → OVL cleared) prima che il
-     * Kickstart prenda il controllo del segnale via CIA-A PA0.
+     * Gary contains a one-shot circuit that clears the OVL flip-flop at the first bus
+     * write after power-on. That lets the 68000 fetch the reset vector from the ROM
+     * ($000000-$000007) and then write to the stack (first write, OVL cleared) before the
+     * Kickstart takes control of the signal through CIA-A PA0.
      *
-     * Una volta che il Kickstart scrive CIA-A PRA (bit PA0 = OVL), il segnale è
-     * guidato direttamente dal CIA-A output. Da quel momento Gary non deve più
-     * sovrascriverlo con il suo auto-clear: CIA-A e Gary sono collegati allo
-     * stesso pin fisico, e se CIA-A guida il pin HIGH (OVL attivo) e Gary
-     * tenta di abbassarlo, si produce un conflitto di bus.
+     * Once the Kickstart writes CIA-A PRA (bit PA0 = OVL), the signal is driven by the
+     * CIA-A output. From then on Gary must no longer override it with its auto-clear: CIA-A
+     * and Gary are wired to the same pin, and Gary pulling it low while CIA-A drives it
+     * high would be a bus conflict.
      *
-     * Implementazione: quando setRomOverlay() viene chiamato dal CIA-A, questo
-     * flag viene impostato a true e l'auto-clear viene disabilitato per il
-     * resto della sessione. Viene azzerato solo al reset hardware.
+     * When setRomOverlay() is called by CIA-A this flag is set and the auto-clear is
+     * disabled for the rest of the session. It is cleared only by a hardware reset.
      */
     private boolean ciaOwnsOvl = false;
 
     /**
-     * Dimensione della ROM Kickstart installata.
-     * 256 KB ($40000): Kickstart 1.2, 1.3 (A500 base)
+     * Size of the installed Kickstart ROM.
+     * 256 KB ($40000): Kickstart 1.2, 1.3 (stock A500)
      * 512 KB ($80000): Kickstart 2.x, 3.x
      */
     private int romSize = 256 * 1024; // Default 256 KB
 
-    /** Base address della ROM (dipende da romSize). */
-    private int romBase = 0xFC0000; // 256 KB → $FC0000–$FFFFFF
+    /** Base address of the ROM (depends on romSize). */
+    private int romBase = 0xFC0000; // 256 KB -> $FC0000-$FFFFFF
 
     /**
-     * true se la Slow RAM (trapdoor) è presente nel sistema. Quanta ne è installata lo
-     * dice {@code physicalSize} della sua Region: delimita la parte bassa della finestra
-     * {@code $C00000–$D7FFFF}, e sopra quella soglia rispondono i registri custom (vedi
-     * {@link #route}). È così che il Kickstart capisce dove finisce la trapdoor.
+     * True if Slow RAM (trapdoor) is present. How much is installed is given by the
+     * {@code physicalSize} of its Region: it bounds the low part of the window
+     * {@code $C00000-$D7FFFF}, and above that the custom registers answer (see
+     * {@link #route}). That is how the Kickstart finds where the trapdoor ends.
      */
     private boolean slowRamPresent = true;
 
@@ -462,44 +437,42 @@ public final class Gary {
     // -------------------------------------------------------------------------
 
     /**
-     * Stato della linea /KBRST proveniente dalla tastiera (pin 3 del connettore
-     * tastiera dell'A500). È la MPU della tastiera a rilevare CTRL+AMIGA+AMIGA e a
-     * tenerla bassa — per almeno 500 ms e comunque finché i tasti restano premuti;
-     * la scheda madre si limita a propagarla su /RESET e /HALT.
-     * Convenzione qui: true = asserita (bassa sul bus fisico).
+     * State of the /KBRST line from the keyboard (pin 3 of the A500 keyboard connector).
+     * The keyboard MPU detects CTRL+AMIGA+AMIGA and holds the line low, for at least 500 ms
+     * and as long as the keys are held; the motherboard only propagates it to /RESET and
+     * /HALT. Convention: true = asserted (low on the physical bus).
      */
     private boolean kbResetLine = false;
 
     // -------------------------------------------------------------------------
-    // Linee di output verso il 68000 (active-low sul bus reale)
+    // Output lines toward the 68000 (active low on the real bus)
     // -------------------------------------------------------------------------
 
     /**
-     * Indica che Gary sta assertando /RESET verso il 68000.
-     * true = linea asserted (bassa sul bus fisico).
+     * Whether Gary is asserting /RESET toward the 68000.
+     * true = line asserted (low on the physical bus).
      */
     private boolean resetAsserted = false;
 
     /**
-     * Indica che Gary sta assertando /HALT verso il 68000.
-     * true = linea asserted (bassa sul bus fisico).
-     * /RESET e /HALT vengono assertati contemporaneamente per un reset completo.
+     * Whether Gary is asserting /HALT toward the 68000.
+     * true = line asserted (low on the physical bus).
+     * /RESET and /HALT are asserted together for a full reset.
      */
     private boolean haltAsserted = false;
 
     // =========================================================================
-    // Costruttore e factory
+    // Constructor and factory
     // =========================================================================
 
     public Gary() {}
 
     /**
-     * Crea e restituisce una configurazione Gary per Amiga 500 standard
-     * con Kickstart 1.3 (256 KB ROM, 512 KB Chip RAM, Slow RAM trapdoor).
+     * Creates and returns a Gary configuration for a standard Amiga 500 with Kickstart 1.3
+     * (256 KB ROM, 512 KB Chip RAM, trapdoor Slow RAM).
      *
-     * La decodifica CIA NON viene inserita come regione statica: è gestita
-     * direttamente in {@link #route} tramite la decodifica A12/A13, come
-     * avviene nell'hardware reale.
+     * The CIA decoding is NOT a static region: it is done in {@link #route} through the
+     * A12/A13 decoding, as on the hardware.
      */
     public static Gary defaultA500() {
         Gary g = new Gary();
@@ -507,53 +480,43 @@ public final class Gary {
         g.romBase = 0xFC0000;
         g.slowRamPresent = true;
 
-        // Chip RAM: $000000–$1FFFFF (512 KB fisici di default)
+        // Chip RAM: $000000-$1FFFFF (512 KB physical by default)
         //
-        // Il chip select /CHIP copre i primi DUE megabyte, non uno solo: è lo spazio
-        // che l'Agnus più capiente (8375, 2 MB) sa indirizzare, e sulle Agnus più
-        // piccole gli indirizzi oltre la RAM installata mirrorano i bit bassi perché
-        // le linee di indirizzo alte non sono collegate. physicalSize decide dove
-        // comincia il mirror: 512 KB → $080000 rispecchia $000000, 1 MB → $100000
-        // rispecchia $000000, 2 MB → nessun mirror.
+        // The /CHIP chip select covers the first TWO megabytes, not one: the space the
+        // largest Agnus (8375, 2 MB) can address. On smaller Agnus chips the addresses past
+        // the installed RAM mirror the low bits because the high address lines are not
+        // connected. physicalSize decides where the mirror starts: 512 KB -> $080000
+        // mirrors $000000, 1 MB -> $100000 mirrors $000000, 2 MB -> no mirror.
         //
-        // È così che il Kickstart misura la Chip RAM: sale a passi e confronta con
-        // l'indirizzo 0; dove ritrova il proprio pattern, la RAM finisce. Fermando la
-        // decodifica a $0FFFFF il tetto diventava 1 MB comunque, e una macchina
-        // configurata con 2 MB di Chip ne vedeva solo la metà — abbastanza per far
-        // fallire WHDLoad sui giochi con ws_BaseMemSize > $100000 (p.es. Dragon's
-        // Lair, $180000) con "you need chipmem up to $180000".
-        //
-        // Oracolo WinUAE (memory.cpp, map_overlay): `mapsize = 32` pagine da 64 KB,
-        // cioè 2 MB, con `map_banks(cb, 0, mapsize, chipmem_bank.allocated_size)` —
-        // il quarto parametro è proprio la dimensione del mirror.
+        // That is how the Kickstart measures the Chip RAM: it walks up in steps and
+        // compares with address 0; where it finds its own pattern again, the RAM ends.
+        // Stopping the decoding at $0FFFFF would cap it at 1 MB anyway, and a machine set
+        // up with 2 MB of Chip would see only half of it, enough to make WHDLoad fail on
+        // games with ws_BaseMemSize > $100000 (e.g. Dragon's Lair, $180000) with "you need
+        // chipmem up to $180000".
         RegionRules rrChip = new RegionRules();
         g.addRegion(new Region(0x000000, 0x1FFFFF, Target.CHIP_RAM, "CS_CHIP", rrChip, 512 * 1024));
 
         
-        // Custom Registers: $DE0000–$DFFFFF, mirrorati ogni 64 KB
-        // (i registri veri sono $DFF000–$DFF1FF, ma la decodifica è incompleta).
+        // Custom registers: $DE0000-$DFFFFF, mirrored every 64 KB (the real registers are
+        // $DFF000-$DFF1FF, but the decoding is incomplete).
         //
-        // La pagina $DE non è un di più: il chip-select dei custom copre l'intero
-        // $C00000–$DFFFFF e su A500 Gary ci apre UN SOLO buco, $D80000–$DDFFFF.
-        // Oracolo WinUAE (memory.cpp): `map_banks(&custom_bank, 0xC0, 0xE0-0xC0)`
-        // e subito dopo, per ogni macchina che non sia A1000-con-RAM o A2000-con-orologio,
-        //     /* D80000 - DDFFFF not mapped (A1000 or A2000 = custom chips) */
-        //     map_banks(&dummy_bank, 0xD8, 6);
-        // cioè SEI pagine da 64 KB, $D8..$DD: $DE e $DF restano custom.
-        // Fermando la regione a $DF0000 la pagina $DE finiva in open bus.
+        // Page $DE is not a spare: the custom chip select covers the whole of
+        // $C00000-$DFFFFF and on the A500 Gary opens ONE hole in it, $D80000-$DDFFFF, i.e.
+        // SIX 64 KB pages $D8..$DD: $DE and $DF stay custom.
         //
-        // Lo misura vAmigaTS Memory/Rom/mirror/custD, che scrive COLOR00 a passi di
-        // $200 da $D00180 in su e lampeggia dove i custom rispondono: il riferimento
-        // (e la foto dell'A500 vero accanto) mostra il buco lungo 768 iterazioni
-        // ($D80000–$DDFFFF) e la ripresa del lampeggio a $DE0000; senza questa pagina
-        // il nostro buco era lungo 896 iterazioni e il blocco finale partiva 12 righe
-        // dopo. Vedi docs/vamigats-import-order.md §Esiti Memory/Rom.
+        // Measured by vAmigaTS Memory/Rom/mirror/custD, which writes COLOR00 in $200 steps
+        // from $D00180 upward and flashes where the custom chips answer: the reference (and
+        // the photo of a real A500 next to it) shows a hole 768 iterations long
+        // ($D80000-$DDFFFF) and the flashing resuming at $DE0000; without this page the
+        // hole was 896 iterations long and the final block started 12 lines later. See
+        // docs/vamigats-import-order.md, Memory/Rom outcomes.
         //
-        // physicalSize = 64 KB: l'offset che arriva ad AbstractAgnus resta quello
-        // dentro la pagina ($DFF180 → $F180) sia da qui sia dal ramo di fallback
-        // della finestra Slow RAM, che usa `addr & 0xFFFF`.
+        // physicalSize = 64 KB: the offset that reaches AbstractAgnus is the one inside the
+        // page ($DFF180 -> $F180) both from here and from the fallback branch of the Slow
+        // RAM window, which uses `addr & 0xFFFF`.
         RegionRules rrCustom = new RegionRules();
-        rrCustom.generateAddressErrorOnOddWord = false; // Denise/Paula accettano word su dispari
+        rrCustom.generateAddressErrorOnOddWord = false; // Denise/Paula accept words at odd addresses
         g.addRegion(new Region(0xDE0000, 0xDFFFFF, Target.CUSTOM_REGS, "CS_CUSTOM", rrCustom,
                 64 * 1024));
 
@@ -561,40 +524,33 @@ public final class Gary {
         rrRtc.generateAddressErrorOnOddWord = false;
         g.addRegion(new Region(0xDC0000, 0xDCFFFF, Target.RTC, "CS_RTC", rrRtc));
 
-        // Slow RAM ("Ranger"): $C00000–$D7FFFF (1.5 MB decodificati da Gary)
+        // Slow RAM ("Ranger"): $C00000-$D7FFFF (1.5 MB decoded by Gary)
         //
-        // IMPORTANTE: Gary decodifica l'intero range $C00000–$D7FFFF per la Slow RAM.
-        // Tuttavia, la RAM fisica presente dipende dalla trapdoor installata.
-        // Su una scheda standard da 512 KB, la RAM risponde a $C00000–$C7FFFF.
-        // Gli indirizzi $C80000–$D7FFFF non hanno RAM fisica e restituiscono open bus.
+        // Gary decodes the whole $C00000-$D7FFFF range, but the RAM present depends on the
+        // trapdoor board: a standard 512 KB board answers at $C00000-$C7FFFF. Above the
+        // installed RAM the custom registers answer (see route(), step 6).
         //
-        // Per gestire correttamente questo aliasing/open bus, mappiamo l'intero
-        // range decodificato da Gary, e usiamo physicalSize per il wrap se necessario,
-        // ma la logica in Agnus deve gestire il fatto che la RAM fisica potrebbe
-        // non coprire l'intera regione (in quel caso la lettura torna 0).
-        //
-        // dtackCycles=1: la Slow RAM sull'A500 è DRAM sincrona al color clock di
-        // Agnus (chip bus). A differenza della Fast RAM (asincrona, DTACK immediato),
-        // la Slow RAM richiede un ciclo di bus sincronizzato al CCK: questo si traduce
-        // in un wait state aggiuntivo rispetto alle aree non-chip-bus. In pratica,
-        // Agnus gestisce il timing CCK-sync (come per la Chip RAM), ma il ritardo
-        // nominale a livello Gary è di 1 ciclo rispetto alla Fast RAM.
+        // dtackCycles = 1: the A500's Slow RAM is DRAM synchronous to Agnus's colour clock
+        // (chip bus). Unlike Fast RAM (asynchronous, immediate DTACK) it needs a bus cycle
+        // synchronised to the CCK, i.e. one more wait state than the non-chip-bus areas.
+        // Agnus handles the CCK sync (as for Chip RAM); the nominal delay at Gary's level
+        // is 1 cycle over Fast RAM.
         RegionRules rrSlow = new RegionRules();
         rrSlow.dtackCycles = 1;
         g.addRegion(new Region(0xC00000, 0xD7FFFF, Target.SLOW_RAM, "CS_SLOW", rrSlow, 512 * 1024));
 
-        // Kickstart ROM: $FC0000–$FFFFFF (256 KB)
-        // Gary mappa anche $F80000–$FBFFFF come mirror della stessa ROM (decodifica incompleta)
+        // Kickstart ROM: $FC0000-$FFFFFF (256 KB)
+        // Gary also maps $F80000-$FBFFFF as a mirror of the same ROM (incomplete decoding)
         RegionRules rrKick = new RegionRules();
         g.addRegion(new Region(0xF80000, 0xFFFFFF, Target.KICKSTART_ROM, "CS_ROM", rrKick, 256 * 1024));
 
-        // CIA-A: $BFE000–$BFEFFF (indirizzi dispari, byte basso D7-D0)
-        // CIA-B: $BFD000–$BFDFFF (indirizzi pari, byte alto D15-D8)
-        // Queste region sono necessarie affinché routeCia() possa trovare il target
-        // tramite findFirstRegionByTarget(). La decodifica reale avviene via bit A12/A13
-        // nel range $A00000-$BFFFFF (vedere routeCia()), ma il Region object funge da "handle".
+        // CIA-A: $BFE000-$BFEFFF (odd addresses, low byte D7-D0)
+        // CIA-B: $BFD000-$BFDFFF (even addresses, high byte D15-D8)
+        // These regions let routeCia() find the target through findFirstRegionByTarget().
+        // The real decoding uses bits A12/A13 over $A00000-$BFFFFF (see routeCia()); the
+        // Region objects are only handles.
         RegionRules rrCia = new RegionRules();
-        rrCia.byteAccessOnly = false; // Permettiamo word access come da hardware
+        rrCia.byteAccessOnly = false; // word access allowed, as on the hardware
 
         g.addRegion(new Region(0xBFE000, 0xBFEFFF, Target.CIA_A, "CS_CIAA", rrCia));
         g.addRegion(new Region(0xBFD000, 0xBFDFFF, Target.CIA_B, "CS_CIAB", rrCia));
@@ -616,29 +572,28 @@ public final class Gary {
         rebuildPageLut();
     }
 
-    /** Rimuove tutte le regioni con il target specificato e ricostruisce la LUT. */
+    /** Removes every region with the given target and rebuilds the LUT. */
     public void removeRegionsByTarget(Target t) {
         boolean changed = regions.removeIf(r -> r.target == t);
         if (changed) rebuildPageLut();
     }
 
     /**
-     * Abilita o disabilita la decodifica dello spazio di AutoConfig Zorro II
-     * ($E80000–$E8FFFF). Va abilitato quando è presente una scheda Fast RAM in
-     * attesa di configurazione: il Kickstart legge qui il descrittore della
-     * scheda e ne assegna l'indirizzo base. La risposta effettiva (descrittore vs
-     * bus flottante) è prodotta dalla scheda ({@code FastRam}); Gary si limita a
-     * instradare gli accessi al target AUTOCONFIG.
+     * Enables or disables the decoding of the Zorro II AutoConfig space ($E80000-$E8FFFF).
+     * To be enabled while a Fast RAM board waits to be configured: the Kickstart reads the
+     * board's descriptor here and assigns its base address. The answer itself (descriptor
+     * or floating bus) comes from the board ({@code FastRam}); Gary only routes the
+     * accesses to the AUTOCONFIG target.
      */
     public void setFastRamPresent(boolean present) {
         setAutoconfigSpacePresent(present);
     }
 
     /**
-     * Abilita o disabilita la decodifica dello spazio di AutoConfig Zorro II
-     * ($E80000–$E8FFFF). Va abilitato quando è presente almeno una scheda
-     * (Fast RAM o controller hard disk) in attesa di configurazione: il Kickstart
-     * legge qui i descrittori delle schede e ne assegna gli indirizzi base.
+     * Enables or disables the decoding of the Zorro II AutoConfig space ($E80000-$E8FFFF).
+     * To be enabled while at least one board (Fast RAM or hard disk controller) waits to be
+     * configured: the Kickstart reads the boards' descriptors here and assigns their base
+     * addresses.
      */
     public void setAutoconfigSpacePresent(boolean present) {
         removeRegionsByTarget(Target.AUTOCONFIG);
@@ -651,10 +606,10 @@ public final class Gary {
     }
 
     /**
-     * Mappa la pagina (64 KB) di un controller hard disk all'indirizzo base
-     * assegnato dall'AutoConfig. La pagina espone la boot ROM del controller e le
-     * porte di comando del driver (vedi {@code HdController}). Possono coesistere
-     * più controller (master/slave): ciascuno occupa la propria pagina.
+     * Maps the 64 KB page of a hard disk controller at the base address assigned by
+     * AutoConfig. The page exposes the controller's boot ROM and the driver's command ports
+     * (see {@code HdController}). Several controllers can coexist (master/slave): each one
+     * takes its own page.
      */
     public void mapHdController(int base) {
         RegionRules rr = new RegionRules();
@@ -662,31 +617,30 @@ public final class Gary {
         addRegion(new Region(base, base + 0xFFFF, Target.HD_CONTROLLER, "CS_HD", rr));
     }
 
-    /** Rimuove tutte le pagine dei controller hard disk (reset). */
+    /** Removes every hard disk controller page (reset). */
     public void unmapHdControllers() {
         removeRegionsByTarget(Target.HD_CONTROLLER);
     }
 
     /**
-     * Mappa la Fast RAM all'indirizzo base assegnato dall'AutoConfig. La regione è
-     * dinamica: viene creata solo dopo che il Kickstart ha configurato la scheda.
+     * Maps the Fast RAM at the base address assigned by AutoConfig. The region is dynamic:
+     * it is created only after the Kickstart has configured the board.
      *
-     * <p>Con {@code sizeBytes} potenza di due il wrap è la maschera {@code size-1};
-     * altrimenti {@link #route} ripiega sul modulo. Le dimensioni AutoConfig valide
-     * sono comunque tutte potenze di due (vedi {@code FastRam.VALID_SIZES}), quindi
-     * il ramo col modulo non si percorre — a differenza di {@link #setRomSize} e
-     * {@link #setChipRamSize} qui non si rifiuta nulla, perché la dimensione non
-     * arriva dall'utente ma dalla scheda.
+     * <p>With a power-of-two {@code sizeBytes} the wrap is the mask {@code size-1};
+     * otherwise {@link #route} falls back to the modulo. Valid AutoConfig sizes are all
+     * powers of two anyway (see {@code FastRam.VALID_SIZES}), so the modulo branch is never
+     * taken; unlike {@link #setRomSize} and {@link #setChipRamSize} nothing is refused
+     * here, because the size comes from the board, not from the user.
      */
     public void mapFastRam(int base, int sizeBytes) {
         removeRegionsByTarget(Target.FAST_RAM);
         if (sizeBytes <= 0) return;
-        // Fast RAM: asincrona, nessun wait-state (DTACK immediato), niente DMA.
+        // Fast RAM: asynchronous, no wait states (immediate DTACK), no DMA.
         RegionRules rr = new RegionRules();
         addRegion(new Region(base, base + sizeBytes - 1, Target.FAST_RAM, "CS_FAST", rr, sizeBytes));
     }
 
-    /** Rimuove la regione Fast RAM (es. al reset, prima della riconfigurazione). */
+    /** Removes the Fast RAM region (e.g. at reset, before reconfiguration). */
     public void unmapFastRam() {
         removeRegionsByTarget(Target.FAST_RAM);
     }
@@ -696,9 +650,9 @@ public final class Gary {
     }
 
     /**
-     * Byte di Slow RAM installati sulla trapdoor. Oltre questa soglia la finestra
-     * {@code $C00000–$D7FFFF} espone i registri custom, che è il modo in cui il
-     * Kickstart ne misura la dimensione.
+     * Bytes of Slow RAM installed on the trapdoor. Past this threshold the window
+     * {@code $C00000-$D7FFFF} exposes the custom registers, which is how the Kickstart
+     * measures its size.
      */
     public void setSlowRamSize(int sizeBytes) {
         int size = Math.max(0, sizeBytes);
@@ -708,20 +662,18 @@ public final class Gary {
     }
 
     /**
-     * Imposta la dimensione della ROM Kickstart e aggiorna automaticamente
-     * il base address.
+     * Sets the size of the Kickstart ROM and updates the base address accordingly.
      *
-     * <p>L'unico vincolo è che la dimensione sia una potenza di due non superiore ai
-     * 512 KB della finestra {@code $F80000–$FFFFFF}: il mirroring hardware è una
-     * maschera di bit sull'indirizzo ({@code addr & (romSize-1)}), e su una dimensione
-     * non-potenza-di-due non esisterebbe. La ROM occupa sempre la coda dello spazio di
-     * indirizzamento e viene replicata all'indietro fino a riempire la finestra —
-     * 256 KB a {@code $FC0000} con mirror a {@code $F80000}, 512 KB a {@code $F80000},
-     * 64 KB a {@code $FF0000} con tre mirror, e così via.
+     * <p>The only constraint is a power of two no larger than the 512 KB of the window
+     * {@code $F80000-$FFFFFF}: the hardware mirroring is a bit mask on the address
+     * ({@code addr & (romSize-1)}), which would not exist for a size that is not a power of
+     * two. The ROM always sits at the top of the address space and is repeated downward
+     * to fill the window: 256 KB at {@code $FC0000} with a mirror at {@code $F80000},
+     * 512 KB at {@code $F80000}, 64 KB at {@code $FF0000} with three mirrors, and so on.
      *
-     * <p>Le immagini vengono portate a questa forma da
-     * {@link io.github.zolfrik.amija.memory.KickstartImage}, che scarta header, code
-     * appese e metà duplicate dei dump.
+     * <p>Images are brought to this form by
+     * {@link io.github.zolfrik.amija.memory.KickstartImage}, which drops the headers,
+     * appended tails and duplicated halves of dumps.
      */
     public void setRomSize(int size) {
         if (size <= 0 || (size & (size - 1)) != 0 || size > 512 * 1024) {
@@ -730,7 +682,7 @@ public final class Gary {
                 + " (serve una potenza di due fino a 512K)");
         }
         this.romSize = size;
-        // La ROM è ancorata alla fine dello spazio: 256 KB → $FC0000, 512 KB → $F80000.
+        // The ROM is anchored at the end of the space: 256 KB -> $FC0000, 512 KB -> $F80000.
         this.romBase = 0x1000000 - size;
         for (Region r : regions) {
             if (r.target == Target.KICKSTART_ROM) {
@@ -740,21 +692,20 @@ public final class Gary {
     }
 
     /**
-     * Imposta la dimensione fisica della Chip RAM e la propaga alla relativa
-     * Region. Gary decodifica comunque i primi due megabyte ($000000–$1FFFFF):
-     * questo valore determina solo il punto in cui gli indirizzi "wrappano"
-     * (aliasing) sui primi byte fisici.
+     * Sets the physical size of the Chip RAM and propagates it to its Region. Gary decodes
+     * the first two megabytes ($000000-$1FFFFF) anyway: this value only sets where the
+     * addresses wrap (alias) onto the first physical bytes.
      *
-     * Con 512 KB (A500 standard, Agnus da 512K) gli accessi sopra $07FFFF
-     * mirrorano i primi 512 KB; con 1 MB (Fatter Agnus 8372A) la Chip RAM è
-     * contigua fino a $0FFFFF; con 2 MB (Super Agnus 8375) non c'è mirror.
-     * È da qui che il Kickstart deduce quanta Chip RAM c'è, quindi è anche il
-     * tetto che WHDLoad vede quando confronta il ws_BaseMemSize dello slave.
+     * With 512 KB (stock A500, 512K Agnus) accesses above $07FFFF mirror the first 512 KB;
+     * with 1 MB (Fatter Agnus 8372A) Chip RAM is contiguous up to $0FFFFF; with 2 MB (Super
+     * Agnus 8375) there is no mirror. That is how the Kickstart works out how much Chip RAM
+     * there is, so it is also the ceiling WHDLoad sees when it checks the slave's
+     * ws_BaseMemSize.
      *
-     * Normalmente non serve chiamarlo: il costruttore di AbstractAgnus lo fa
-     * con la dimensione del banco Chip che gli è stato passato.
+     * Normally there is no need to call it: the AbstractAgnus constructor does, with the
+     * size of the Chip bank it was given.
      *
-     * Valori validi: potenze di due (es. 524288 = 512 KB, 2097152 = 2 MB).
+     * Valid values: powers of two (e.g. 524288 = 512 KB, 2097152 = 2 MB).
      */
     public void setChipRamSize(int size) {
         if (size <= 0 || (size & (size - 1)) != 0) {
@@ -769,53 +720,49 @@ public final class Gary {
     }
 
     /**
-     * Imposta lo stato del flip-flop OVL interno di Gary.
+     * Sets the state of Gary's internal OVL flip-flop.
      *
-     * Chiamato dal CIA-A quando il bit PA0 (segnale /OVL) cambia valore.
-     * PA0=1 (HIGH) → overlay attivo (ROM visibile a $000000).
-     * PA0=0 (LOW)  → overlay disattivo (Chip RAM visibile a $000000).
+     * Called by CIA-A when bit PA0 (the /OVL signal) changes.
+     * PA0=1 (HIGH) -> overlay on (ROM visible at $000000).
+     * PA0=0 (LOW)  -> overlay off (Chip RAM visible at $000000).
      *
-     * Questa chiamata sovrascrive lo stato attuale del flip-flop, replicando
-     * il collegamento hardware diretto tra il CIA-A e il Gary.
+     * The call overwrites the flip-flop, like the direct wire between CIA-A and Gary.
      *
-     * Effetto collaterale: dalla prima chiamata in poi, il circuito di auto-clear
-     * one-shot di Gary viene disabilitato (ciaOwnsOvl=true). Sull'hardware reale
-     * questa è la transizione dal "boot mode" (Gary controlla OVL) al "run mode"
-     * (CIA-A controlla OVL direttamente tramite PA0).
+     * Side effect: from the first call on, Gary's one-shot auto-clear is disabled
+     * (ciaOwnsOvl = true): the move from "boot mode" (Gary controls OVL) to "run mode"
+     * (CIA-A drives OVL through PA0).
      */
     public void setRomOverlay(boolean enabled) {
         this.ovlFlipFlop = enabled;
-        this.ciaOwnsOvl  = true;   // CIA-A ha preso il controllo del pin /OVL
+        this.ciaOwnsOvl  = true;   // CIA-A has taken control of the /OVL pin
     }
 
-    /** Restituisce lo stato corrente del flip-flop OVL. */
+    /** Returns the current state of the OVL flip-flop. */
     public boolean isRomOverlayEnabled() {
         return ovlFlipFlop;
     }
 
     /**
-     * Restituisce true se CIA-A ha preso il controllo del segnale /OVL.
-     * Quando true, l'auto-clear one-shot di Gary è disabilitato.
-     * Utile per debugger e save state.
+     * Returns true if CIA-A has taken control of the /OVL signal. When true, Gary's
+     * one-shot auto-clear is disabled. Useful for debuggers and save states.
      */
     public boolean isCiaControllingOvl() {
         return ciaOwnsOvl;
     }
 
     // =========================================================================
-    // Reset di sistema da tastiera
+    // System reset from the keyboard
     // =========================================================================
 
     /**
-     * Aggiorna la linea /KBRST proveniente dalla tastiera e la propaga su /RESET e
-     * /HALT verso il 68000 — che sull'hardware sono asseriti insieme per un reset
-     * completo, e restano bassi per tutta la durata dell'impulso della tastiera.
+     * Updates the /KBRST line from the keyboard and propagates it to /RESET and /HALT
+     * toward the 68000, which are asserted together for a full reset and stay low for the
+     * whole keyboard pulse.
      *
-     * <p>La temporizzazione (500 ms minimi, mantenimento finché i tasti sono
-     * premuti) appartiene alla MPU della tastiera, non a Gary: vedi
-     * {@code Keyboard.serviceResetLine}.
+     * <p>The timing (500 ms minimum, held while the keys are pressed) belongs to the
+     * keyboard MPU, not to Gary: see {@code Keyboard.serviceResetLine}.
      *
-     * @param asserted true = /KBRST bassa (reset richiesto)
+     * @param asserted true = /KBRST low (reset requested)
      */
     public void setKeyboardResetLine(boolean asserted) {
         this.kbResetLine   = asserted;
@@ -823,16 +770,16 @@ public final class Gary {
         this.haltAsserted  = asserted;
     }
 
-    /** @return true se la tastiera sta tenendo bassa /KBRST. */
+    /** @return true if the keyboard is holding /KBRST low. */
     public boolean isKeyboardResetLineAsserted() { return kbResetLine; }
 
-    /** @return true se Gary sta assertando /RESET verso il 68000. */
+    /** @return true if Gary is asserting /RESET toward the 68000. */
     public boolean isResetAsserted() { return resetAsserted; }
 
-    /** @return true se Gary sta assertando /HALT verso il 68000. */
+    /** @return true if Gary is asserting /HALT toward the 68000. */
     public boolean isHaltAsserted()  { return haltAsserted;  }
 
-    /** Rilascia le linee /RESET e /HALT (e l'ingresso /KBRST che le pilota). */
+    /** Releases the /RESET and /HALT lines (and the /KBRST input that drives them). */
     public void clearResetLines() {
         this.kbResetLine   = false;
         this.resetAsserted = false;
@@ -840,22 +787,22 @@ public final class Gary {
     }
 
     // =========================================================================
-    // Reset di sistema
+    // System reset
     // =========================================================================
 
     /**
-     * Reset di sistema (power-on o RESET hardware).
+     * System reset (power-on or hardware RESET).
      *
-     * Al reset Gary:
-     *   1. Attiva il flip-flop OVL (la ROM è visibile a $000000)
-     *   2. Azzera i contatori interni
+     * At reset Gary:
+     *   1. Sets the OVL flip-flop (the ROM is visible at $000000)
+     *   2. Clears its internal counters
      *
-     * Il flip-flop OVL si azzera automaticamente alla prima scrittura sul bus
-     * (vedere logica in {@link #route}).
+     * The OVL flip-flop clears by itself at the first write on the bus (see
+     * {@link #route}).
      */
     public void reset() {
         this.ovlFlipFlop    = true;
-        this.ciaOwnsOvl     = false;  // al reset il CIA-A non guida ancora /OVL
+        this.ciaOwnsOvl     = false;  // at reset CIA-A does not drive /OVL yet
         this.kbResetLine    = false;
         this.resetAsserted  = false;
         this.haltAsserted   = false;
@@ -866,35 +813,35 @@ public final class Gary {
     // =========================================================================
 
     /**
-     * Risolve un accesso al bus e determina quale dispositivo deve rispondere.
+     * Resolves a bus access and determines which device must answer.
      *
-     * Il 68000 presenta un indirizzo a 24 bit, il tipo di accesso (R/W) e
-     * i segnali UDS/LDS. Gary decodifica l'indirizzo e restituisce una Route che
-     * descrive il target, i segnali UDS/LDS effettivi, i wait state e gli eventuali errori.
+     * The 68000 presents a 24-bit address, the access type (R/W) and the UDS/LDS signals.
+     * Gary decodes the address and returns a Route describing the target, the effective
+     * UDS/LDS, the wait states and any error.
      *
-     * Ordine di priorità della decodifica (come nell'hardware reale):
-     *   1. CIA area ($A00000–$BFFFFF) — decodifica speciale con A12/A13
-     *   2. ROM Overlay ($000000–$07FFFF con OVL attivo)
-     *   3. Kickstart ROM Mirror ($E00000–$E7FFFF)
-     *   4. Decodifica normale per regione registrata
-     *   5. Open bus per tutto il resto
+     * Decoding priority (as on the hardware):
+     *   1. CIA area ($A00000-$BFFFFF), special decoding on A12/A13
+     *   2. ROM overlay ($000000-$07FFFF with OVL on)
+     *   3. Kickstart ROM mirror ($E00000-$E7FFFF)
+     *   4. Normal decoding by registered region
+     *   5. Open bus for everything else
      *
-     * Gary disabilita l'overlay alla prima operazione di scrittura sul bus (qualsiasi target).
+     * Gary disables the overlay at the first write on the bus (any target).
      *
-     * Route.readOnly=true indica che il bus cycle si completa normalmente
-     * ma il dato scritto deve essere scartato (ROM write: EPROM ignora /WE).
+     * Route.readOnly = true means the bus cycle completes normally but the data written
+     * must be discarded (ROM write: the EPROM ignores /WE).
      *
-     * @param rawAddress Indirizzo a 24 bit generato dal 68000
-     * @param type       READ o WRITE
+     * @param rawAddress 24-bit address generated by the 68000
+     * @param type       READ or WRITE
      * @param uds        Upper Data Strobe (D15-D8)
      * @param lds        Lower Data Strobe (D7-D0)
-     * @return Route che descrive come gestire il ciclo di bus
+     * @return Route describing how to handle the bus cycle
      */
     /** Backward compatibility for tests or other callers still using sizeBytes */
     public Route route(int rawAddress, AccessType type, int sizeBytes) {
         final int addr = rawAddress & 0x00FFFFFF;
         if (sizeBytes == 4 && addr >= 0xA00000 && addr <= 0xBFFFFF) {
-            // Le CIA non accettano accessi a 32 bit
+            // The CIAs do not accept 32-bit accesses
             return Route.busErr(findFirstRegionByTarget(Target.CIA_A));
         }
 
@@ -918,36 +865,34 @@ public final class Gary {
     }
 
     /**
-     * STEP 2 (PERFORMANCE_REPORT_FINAL): variante zero-allocazione. Riempie e
-     * restituisce l'oggetto {@code out} fornito dal chiamante invece di allocare
-     * una nuova Route. Il chiamante deve possedere uno scratch dedicato per ogni
-     * route che conserva oltre la chiamata successiva (vedi {@link Route}).
+     * Zero-allocation variant: fills and returns the {@code out} object supplied by the
+     * caller instead of allocating a new Route. The caller must own a dedicated scratch for
+     * every route it keeps beyond the next call (see {@link Route}).
      */
     public Route route(int rawAddress, AccessType type, boolean uds, boolean lds, boolean isCpu, Route out) {
         final int addr = rawAddress & 0x00FFFFFF;
 
-        // ── 1. Auto-clear OVL (Bug fix #3) ───────────────────────────────────
-        // Gary disabilita l'overlay alla prima operazione di scrittura sul bus.
-        // Qualsiasi ciclo di scrittura (CIA, Custom, RAM...) fa scattare il flip-flop.
+        // -- 1. OVL auto-clear ----------------------------------------------------
+        // Gary disables the overlay at the first write on the bus. Any write cycle (CIA,
+        // custom, RAM...) triggers the flip-flop.
         if (type == AccessType.WRITE && ovlFlipFlop && !ciaOwnsOvl) {
             ovlFlipFlop = false;
         }
 
-        // ── 2. CIA ($A00000 – $BFFFFF) — priorità assoluta (Bug fix #1) ──────
-        // Gary decodifica l'intero range per le CIA.
+        // -- 2. CIA ($A00000-$BFFFFF), absolute priority ----------------------------
+        // Gary decodes the whole range for the CIAs.
         if (addr >= 0xA00000 && addr <= 0xBFFFFF) {
             return routeCia(addr, type, uds, lds, out);
         }
 
-        // ── 3. ROM Overlay ($000000–$07FFFF con OVL attivo) ──────────────────
-        // routeOverlay() gestisce internamente READ→ROM e WRITE→Chip RAM.
-        // IMPORTANTE: solo gli accessi CPU sono soggetti a overlay.
-        // Il DMA (Copper, Blitter) vede sempre la Chip RAM.
+        // -- 3. ROM overlay ($000000-$07FFFF with OVL on) ---------------------------
+        // routeOverlay() sends READ to the ROM and WRITE to the Chip RAM. Only CPU
+        // accesses are subject to the overlay: DMA (Copper, Blitter) always sees Chip RAM.
         if (isCpu && ovlFlipFlop && addr < 0x080000) {
             return routeOverlay(addr, type, uds, lds, out);
         }
 
-        // ── 4. Mirroring ROM a $E00000 (Bug fix #2) ──────────────────────────
+        // -- 4. ROM mirror at $E00000 -----------------------------------------------
         if (addr >= 0xE00000 && addr <= 0xE7FFFF) {
             Region rom = findFirstRegionByTarget(Target.KICKSTART_ROM);
             if (rom != null) {
@@ -960,22 +905,20 @@ public final class Gary {
             }
         }
 
-        // ── 5. Decodifica normale per regione registrata ──────────────────────
+        // -- 5. Normal decoding by registered region ---------------------------------
         Region hit = findRegionByAddress(addr);
 
-        // ── 6. Finestra Slow RAM $C00000–$D7FFFF ──────────────────────────────
-        // Dove la trapdoor non arriva rispondono i REGISTRI CUSTOM. Non è una
-        // stranezza: Gary decodifica l'intero $C00000–$DFFFFF come chip-select dei
-        // custom, e la RAM lenta si limita a coprirne la parte bassa, per quanta ne
-        // è installata. Oracolo WinUAE (memory.cpp): `map_banks(&custom_bank, 0xC0,
-        // 0xE0-0xC0)` e solo dopo `map_banks(&bogomem_bank, 0xC0, size)`.
+        // -- 6. Slow RAM window $C00000-$D7FFFF ---------------------------------------
+        // Where the trapdoor does not reach, the CUSTOM REGISTERS answer: Gary decodes the
+        // whole of $C00000-$DFFFFF as the custom chip select, and the slow RAM only covers
+        // its low part, for as much as is installed.
         //
-        // È il meccanismo con cui il Kickstart misura la Slow RAM: sale a passi di
-        // 256 KB e a ogni passo prova a scrivere INTENA e rileggere INTENAR nel
-        // mirror (p.es. $CBF09A/$CBF01C). Se i custom rispondono, lì la RAM non c'è.
-        // Trattando l'intera finestra come Slow RAM il probe non vedeva mai i custom
-        // e il Kickstart 1.2 concludeva di avere RAM fino a $DBFFFF: ci metteva lo
-        // stack supervisore e moriva con lo schermo giallo al primo uso.
+        // That is how the Kickstart measures the Slow RAM: it walks up in 256 KB steps and
+        // at each step writes INTENA and reads INTENAR back in the mirror (e.g.
+        // $CBF09A/$CBF01C). Where the custom chips answer, there is no RAM. Treating the
+        // whole window as Slow RAM, the probe never saw the custom chips and Kickstart 1.2
+        // concluded it had RAM up to $DBFFFF: it put the supervisor stack there and died
+        // with a yellow screen at the first use.
         if (hit != null && hit.target == Target.SLOW_RAM) {
             int slowOffset = addr - hit.start;
             if (slowRamPresent && slowOffset < hit.physicalSize) {
@@ -986,12 +929,12 @@ public final class Gary {
             return applyRules(custom, addr, type, uds, lds, addr & 0xFFFF, out);
         }
 
-        // ── 7. Open bus per tutto il resto ────────────────────────────────────
+        // -- 7. Open bus for everything else ----------------------------------------
         if (hit == null) {
             return out.fillOpenBus(addr);
         }
 
-        // Calcolo indirizzo relativo ed eventuale wrap-around (mirroring)
+        // Relative address and any wrap-around (mirroring)
         int effectiveAddr = addr - hit.start;
         if (hit.physicalSize > 0) {
             if ((hit.physicalSize & (hit.physicalSize - 1)) == 0) {
@@ -1005,64 +948,50 @@ public final class Gary {
     }
 
     // =========================================================================
-    // Decodifica CIA
+    // CIA decoding
     // =========================================================================
 
     /**
-     * Decodifica un accesso nell'area $BFxxxx e determina quale CIA risponde.
+     * Decodes an access in the $BFxxxx area and determines which CIA answers.
      *
-     * Sull'hardware A500 le CIA sono collegate al bus del 68000 nel modo seguente:
-     *   - La CIA-A occupa il byte basso del bus dati (D7-D0): risponde su /LDS
-     *     agli indirizzi DISPARI ($BFE001, $BFE101, ...).
-     *     I bit A11..A8 dell'indirizzo selezionano il registro interno CIA (0-15).
-     *   - La CIA-B occupa il byte alto del bus dati (D15-D8): risponde su /UDS
-     *     agli indirizzi PARI ($BFD000, $BFD100, ...).
-     *     I bit A11..A8 dell'indirizzo selezionano il registro interno CIA (0-15).
+     * On the A500 the CIAs are wired to the 68000 bus as follows:
+     *   - CIA-A sits on the low byte of the data bus (D7-D0): it answers on /LDS at ODD
+     *     addresses ($BFE001, $BFE101, ...). Bits A11..A8 select the internal register.
+     *   - CIA-B sits on the high byte of the data bus (D15-D8): it answers on /UDS at EVEN
+     *     addresses ($BFD000, $BFD100, ...). Bits A11..A8 select the internal register.
      *
-     * Un accesso word a $BFExxx/$BFDxxx può leggere entrambe le CIA contemporaneamente
-     * (CIA-A sul byte alto, CIA-B sul byte basso) — comportamento usato da alcuni
-     * programmi per eseguire due accessi CIA in un unico ciclo di bus.
-     *
-     * La decodifica è "incomplete": qualsiasi indirizzo in $BFxxxx con la
-     * combinazione A13/A12 corretta seleziona la CIA, indipendentemente dagli
-     * altri bit (A0, A4..A11 vengono ignorati o usati per il registro interno).
+     * The decoding is incomplete: any address in $BFxxxx with the right A13/A12
+     * combination selects the CIA, whatever the other bits (A0 and A4..A11 are ignored or
+     * used for the internal register).
      */
     private Route routeCia(int addr, AccessType type, boolean uds, boolean lds, Route out) {
-        // Decodifica CIA hardware Amiga (Gary): i due chip select sono attivi bassi e
-        // sono UNA LINEA D'INDIRIZZO CIASCUNO, indipendenti fra loro:
+        // CIA decoding: the two chip selects are active low and are ONE ADDRESS LINE EACH,
+        // independent of each other:
         //
-        //   /CIAA_CS = A12      → CIA-A selezionata quando A12 = 0
-        //   /CIAB_CS = A13      → CIA-B selezionata quando A13 = 0
+        //   /CIAA_CS = A12      CIA-A selected when A12 = 0
+        //   /CIAB_CS = A13      CIA-B selected when A13 = 0
         //
-        // Le quattro combinazioni, e sono quattro, non due:
-        //   $BFE001: A12=0, A13=1 → solo CIA-A
-        //   $BFD000: A12=1, A13=0 → solo CIA-B
-        //   $BFC000: A12=0, A13=0 → ⛔ TUTTE E DUE (era: open bus)
-        //   $BFF000: A12=1, A13=1 → nessuna
+        // So four combinations, not two:
+        //   $BFE001: A12=0, A13=1 -> CIA-A only
+        //   $BFD000: A12=1, A13=0 -> CIA-B only
+        //   $BFC000: A12=0, A13=0 -> BOTH
+        //   $BFF000: A12=1, A13=1 -> none
         //
-        // ⛔ Il caso "tutte e due" c'era e si era perso. Oracolo WinUAE, `cia_chipselect`
-        // (cia.cpp:2705) `cs = (addr >> 12) & 3` e lo switch di `cia_bget`/`cia_wget`:
-        // il `case 0` — cioè A12=A13=0 — non è affatto un buco, fa
-        // `cia_wait_pre(1|2)` e poi `v = (addr & 1) ? ReadCIAA(r) : ReadCIAB(r)`, cioè
-        // seleziona entrambi i chip e lascia decidere alla lane del bus quale dei due
-        // pilota il dato. È esattamente ciò che fanno {@code readCiaData}/{@code
-        // writeCiaData} di AbstractAgnus con `Target.CIA_BOTH`, che era rimasto cablato
-        // di là ma non veniva più emesso di qua.
+        // With both selected, the bus lane decides which of the two drives the data: that
+        // is what readCiaData/writeCiaData of AbstractAgnus do with `Target.CIA_BOTH`.
         //
-        // Lo misura vAmigaTS Memory/Ram/memtim/memtim1, che cronometra tre letture long
-        // in dieci regioni: le sue tre sonde nello spazio CIA ($A00000, $A80000,
-        // $BF0000) hanno tutte A12=A13=0, quindi da noi cadevano in open bus con DTACK
-        // immediato invece di pagare il ciclo sincrono E-clock. Le bande colorate di
-        // quelle tre regioni erano corte di 22 500 pixel su 61 000.
+        // Measured by vAmigaTS Memory/Ram/memtim/memtim1, which times three long reads in
+        // ten regions: its three probes in the CIA space ($A00000, $A80000, $BF0000) all
+        // have A12=A13=0, and must pay the synchronous E-clock cycle rather than an
+        // open-bus access with immediate DTACK.
         //
-        // ⚠️ Resta noto e NON toccato qui: nel `case 3` (A12=A13=1, nessuna CIA) WinUAE
-        // per un 68000 fa comunque `cia_wait_pre(0)`/`cia_wait_post(0)` e rende `irc` —
-        // cioè /VPA è generata su TUTTA la finestra $A00000-$BFFFFF, non solo dove un
-        // chip risponde. Da noi quel caso resta open bus con DTACK immediato. È un'altra
-        // proprietà (la generazione di /VPA, non il chip select), nessun test del banco
-        // la misura, e va fatta con la sua misura.
+        // Not handled here: with A12=A13=1 (no CIA) a 68000 access may still pay the
+        // synchronous cycle, i.e. /VPA might be generated over the whole $A00000-$BFFFFF
+        // window, not only where a chip answers. Here that case stays open bus with an
+        // immediate DTACK. It is another property (the generation of /VPA, not the chip
+        // select), no test of the bank measures it, and it needs its own measurement.
 
-        // Address error: word su indirizzo dispari
+        // Address error: word at an odd address
         if (uds && lds && (addr & 1) != 0) {
             return out.fillAddressErr(null);
         }
@@ -1071,8 +1000,8 @@ public final class Gary {
         boolean selectB = (addr & 0x2000) == 0; // /CIAB_CS = A13
 
         if (selectA && selectB) {
-            // ─── Tutte e due ─── la lane del bus decide chi pilota il dato:
-            // CIA-A sul byte basso (LDS, indirizzi dispari), CIA-B sull'alto (UDS, pari).
+            // -- Both -- the bus lane decides who drives the data: CIA-A on the low byte
+            // (LDS, odd addresses), CIA-B on the high byte (UDS, even).
             Region ciaA = findFirstRegionByTarget(Target.CIA_A);
             Region ciaB = findFirstRegionByTarget(Target.CIA_B);
             if (ciaA == null && ciaB == null) return out.fillOpenBus(addr);
@@ -1082,9 +1011,8 @@ public final class Gary {
         }
 
         if (selectA) {
-            // ─── CIA-A ─── Byte basso D7-D0.
-            // Gary attiva /CIAA_CS basandosi sulla decodifica dell'indirizzo.
-            // I segnali UDS/LDS passano come richiesti dalla CPU (Bug fix #4).
+            // -- CIA-A -- low byte D7-D0. Gary asserts /CIAA_CS from the address decoding;
+            // UDS/LDS pass through as requested by the CPU.
             Region ciaA = findFirstRegionByTarget(Target.CIA_A);
             if (ciaA == null) return out.fillOpenBus(addr);
             return out.set(true, Target.CIA_A, ciaA.chipSelect,
@@ -1092,17 +1020,16 @@ public final class Gary {
         }
 
         if (selectB) {
-            // ─── CIA-B ─── Byte alto D15-D8.
-            // Gary attiva /CIAB_CS basandosi sulla decodifica dell'indirizzo.
-            // I segnali UDS/LDS passano come richiesti dalla CPU (Bug fix #4).
+            // -- CIA-B -- high byte D15-D8. Gary asserts /CIAB_CS from the address
+            // decoding; UDS/LDS pass through as requested by the CPU.
             Region ciaB = findFirstRegionByTarget(Target.CIA_B);
             if (ciaB == null) return out.fillOpenBus(addr);
             return out.set(true, Target.CIA_B, ciaB.chipSelect,
                     uds, lds, 0, false, false, ciaB, addr, false);
         }
 
-        // A12=1, A13=1 ($BFFxxx): nessun chip select attivo → open bus.
-        // (⚠️ WinUAE qui paga comunque il ciclo sincrono: vedi la nota in testa al metodo.)
+        // A12=1, A13=1 ($BFFxxx): no chip select active, open bus (see the note at the top
+        // of the method).
         return out.fillOpenBus(addr);
     }
 
@@ -1111,55 +1038,52 @@ public final class Gary {
     // =========================================================================
 
     /**
-     * Gestisce un accesso nell'area $000000–$07FFFF mentre l'overlay è attivo.
+     * Handles an access in $000000-$07FFFF while the overlay is on.
      *
-     * READ: l'accesso viene reindirizzato alla Kickstart ROM con mirroring
-     *   corretto dell'indirizzo. Il campo effectiveAddress della Route è un
-     *   offset 0-based nella ROM (0 = primo byte). Il chiamante legge da
-     *   romData[effectiveAddress] senza aggiungere romBase.
+     * READ: the access is redirected to the Kickstart ROM with the address mirrored. The
+     *   Route's effectiveAddress is a 0-based offset into the ROM (0 = first byte); the
+     *   caller reads romData[effectiveAddress] without adding romBase.
      *
-     * WRITE: l'accesso va alla Chip RAM. Su hardware reale il 68000 non può
-     *   scrivere in ROM (la ROM EPROM ignora /WE). Gary lascia passare la write
-     *   alla Chip RAM perché il segnale /CHIP è generato in base all'indirizzo
-     *   fisico ($000000–$07FFFF), non in base allo stato di OVL.
-     *   Nota: con ciaOwnsOvl=false il chiamante ha già eseguito l'auto-clear di
-     *   OVL prima di invocare questo metodo, quindi questo ramo WRITE viene
-     *   raggiunto solo quando CIA-A mantiene OVL=1 esplicitamente dopo il boot.
+     * WRITE: the access goes to the Chip RAM. The 68000 cannot write the ROM (the EPROM
+     *   ignores /WE); Gary lets the write through to the Chip RAM because /CHIP is
+     *   generated from the physical address ($000000-$07FFFF), not from OVL. With
+     *   ciaOwnsOvl = false the caller has already auto-cleared OVL before calling this
+     *   method, so this WRITE branch is reached only when CIA-A explicitly keeps OVL = 1
+     *   after the boot.
      *
-     * Mirroring dell'indirizzo nella ROM:
+     * Mirroring in the ROM:
      *   effectiveAddr = addr & (romSize - 1)
-     * Garantisce che $000000 legga dal byte 0 della ROM, e che se addr supera
-     * romSize il valore si avvolga correttamente (come sull'hardware reale).
+     * so $000000 reads byte 0 of the ROM, and an address past romSize wraps around as on
+     * the hardware.
      */
     private Route routeOverlay(int addr, AccessType type, boolean uds, boolean lds, Route out) {
-        // Verifica allineamento (word su dispari → address error)
+        // Alignment check (word at an odd address -> address error)
         if (uds && lds && (addr & 1) != 0) {
             Region rom = findFirstRegionByTarget(Target.KICKSTART_ROM);
             return out.fillAddressErr(rom);
         }
 
         if (type == AccessType.WRITE) {
-            // WRITE: indirizza alla Chip RAM (la ROM non è scrivibile).
-            // Gary asserta CS_CHIP per l'area $000000–$07FFFF indipendentemente
-            // dallo stato di OVL — OVL ridirecciona solo le letture.
+            // WRITE: routed to the Chip RAM (the ROM is not writable). Gary asserts CS_CHIP
+            // for $000000-$07FFFF whatever the state of OVL: OVL redirects reads only.
             Region chipRam = findFirstRegionByTarget(Target.CHIP_RAM);
             if (chipRam == null) {
                 return out.fillOpenBus(addr);
             }
-            int effectiveAddr = addr; // offset diretto nella Chip RAM (base=$000000)
+            int effectiveAddr = addr; // direct offset into Chip RAM (base=$000000)
             if (chipRam.physicalSize > 0 && (chipRam.physicalSize & (chipRam.physicalSize - 1)) == 0) {
                 effectiveAddr &= (chipRam.physicalSize - 1);
             }
             return out.fillOk(chipRam, uds, lds, chipRam.rules.dtackCycles, effectiveAddr);
         }
 
-        // READ: reindirizza alla Kickstart ROM con mirroring
+        // READ: redirected to the Kickstart ROM with mirroring
         Region rom = findFirstRegionByTarget(Target.KICKSTART_ROM);
         if (rom == null) {
             return out.fillOpenBus(addr);
         }
 
-        // Offset 0-based nella ROM: il chiamante accede a romData[effectiveAddr].
+        // 0-based offset into the ROM: the caller accesses romData[effectiveAddr].
         int effectiveAddr = addr & (romSize - 1);
 
         return out.set(true, Target.OVERLAY_ROM, rom.chipSelect,
@@ -1167,46 +1091,46 @@ public final class Gary {
     }
 
     // =========================================================================
-    // Validazione accesso e generazione Route
+    // Access validation and Route generation
     // =========================================================================
 
     /**
-     * Applica le regole della regione all'accesso corrente e genera la Route.
+     * Applies the region's rules to the current access and builds the Route.
      *
-     * Contratto effectiveAddress per le regioni ROM (KICKSTART_ROM):
+     * effectiveAddress contract for ROM regions (KICKSTART_ROM):
      *   effectiveAddress = (addr - region.start) & (physicalSize - 1)
-     *   = offset 0-based nel dato ROM. Il chiamante legge romData[effectiveAddress].
-     *   Le scritture a regioni ROM restituiscono readOnly=true: il bus cycle si
-     *   completa normalmente (DTACK asserted, nessun Bus Error), ma il chiamante
-     *   deve scartare il dato scritto (la EPROM ignora /WE sul pin fisico).
+     *   = 0-based offset into the ROM data. The caller reads romData[effectiveAddress].
+     *   Writes to ROM regions return readOnly = true: the bus cycle completes normally
+     *   (DTACK asserted, no Bus Error), but the caller must discard the data (the EPROM
+     *   ignores /WE).
      *
-     * @param reg            Regione target
-     * @param addr           Indirizzo da decodificare (24 bit)
-     * @param type           READ o WRITE
+     * @param reg            target region
+     * @param addr           address to decode (24 bits)
+     * @param type           READ or WRITE
      * @param uds            Upper Data Strobe
      * @param lds            Lower Data Strobe
-     * @param effectiveAddr  Indirizzo effettivo da presentare al dispositivo target
+     * @param effectiveAddr  effective address to present to the target device
      */
     private Route applyRules(Region reg, int addr, AccessType type,
                              boolean uds, boolean lds, int effectiveAddr, Route out) {
         RegionRules rules = reg.rules;
 
-        // Address Error: word su indirizzo dispari
+        // Address Error: word at an odd address
         if (uds && lds && (addr & 1) != 0) {
             if (rules.generateAddressErrorOnOddWord) {
                 return out.fillAddressErr(reg);
             }
-            // Alcune regioni (es. Custom) tollerano accessi non allineati
+            // Some regions (e.g. Custom) tolerate unaligned accesses
         }
 
-        // Regione che accetta solo byte (es. CIA in modalità byte-only)
+        // Region that accepts bytes only (e.g. CIA in byte-only mode)
         if (rules.byteAccessOnly && uds && lds) {
             return rules.generateBusErrorOnIllegal
                     ? out.fillBusErr(reg) : out.fillOpenBus(addr);
         }
 
-        // ROM write: il bus cycle si completa con DTACK (nessun errore), ma il
-        // dato viene perso. readOnly=true segnala al chiamante di scartare la write.
+        // ROM write: the bus cycle completes with DTACK (no error) but the data is lost.
+        // readOnly = true tells the caller to discard the write.
         if (type == AccessType.WRITE && reg.target == Target.KICKSTART_ROM) {
             return out.fillOkReadOnly(reg, uds, lds, rules.dtackCycles, effectiveAddr);
         }
@@ -1219,9 +1143,9 @@ public final class Gary {
     // =========================================================================
 
     /**
-     * STEP 2: ricostruisce {@link #pageLut}, {@link #pageAmbiguous} e
-     * {@link #firstRegionByTarget}. Da chiamare ad ogni modifica di {@code regions}.
-     * Costo O(256 × N) ma eseguito solo durante il setup della mappa di memoria.
+     * Rebuilds {@link #pageLut}, {@link #pageAmbiguous} and {@link #firstRegionByTarget}.
+     * To be called at every change of {@code regions}. Costs O(256 x N), but runs only
+     * while the memory map is set up.
      */
     private void rebuildPageLut() {
         java.util.Arrays.fill(pageLut, null);
@@ -1231,23 +1155,23 @@ public final class Gary {
         for (int p = 0; p < 256; p++) {
             int pageStart = p << 16;
             int pageEnd   = pageStart | 0xFFFF;
-            // Prima regione (in ordine di lista) che interseca la pagina: è quella
-            // che la scansione lineare restituirebbe per almeno un indirizzo di p.
+            // First region (in list order) that intersects the page: the one the linear
+            // scan would return for at least one address of p.
             for (Region r : regions) {
-                if (r.end < pageStart || r.start > pageEnd) continue; // nessuna intersezione
+                if (r.end < pageStart || r.start > pageEnd) continue; // no intersection
                 if (r.start <= pageStart && r.end >= pageEnd) {
-                    // Copre l'intera pagina → ogni indirizzo di p mappa a r (r è prima).
+                    // Covers the whole page: every address of p maps to r (r comes first).
                     pageLut[p] = r;
                 } else {
-                    // Copertura parziale → la scansione lineare può variare entro la
-                    // pagina: fallback lineare esatto per questa pagina.
+                    // Partial coverage: the linear scan may vary within the page, so this
+                    // page falls back to the exact linear scan.
                     pageAmbiguous[p] = true;
                 }
-                break; // solo la PRIMA regione intersecante determina l'esito
+                break; // only the FIRST intersecting region decides the outcome
             }
         }
 
-        // Cache prima-regione-per-target (preserva l'ordine di inserimento).
+        // Cache of the first region per target (keeps the insertion order).
         for (Region r : regions) {
             int ti = r.target.ordinal();
             if (firstRegionByTarget[ti] == null) firstRegionByTarget[ti] = r;
@@ -1257,7 +1181,7 @@ public final class Gary {
     private Region findRegionByAddress(int address) {
         int p = (address >>> 16) & 0xFF;
         if (pageAmbiguous[p]) {
-            // Raro: replica esatta della scansione lineare per le pagine non uniformi.
+            // Rare: exact replica of the linear scan for non-uniform pages.
             for (Region r : regions) {
                 if (r.contains(address)) return r;
             }
@@ -1283,7 +1207,7 @@ public final class Gary {
         rebuildPageLut();
     }
 
-    /** Restituisce la lista corrente delle regioni (sola lettura). */
+    /** Returns the current list of regions (read-only). */
     public List<Region> getRegions() {
         return java.util.Collections.unmodifiableList(regions);
     }

@@ -33,54 +33,53 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Walker riflessivo <b>vincolato per tipo</b> per il salvataggio/ripristino dello stato
- * di un componente dell'emulatore (vedi il piano save state).
+ * <b>Type-constrained</b> reflective walker for saving/restoring the state of an emulator
+ * component (see the save state plan).
  *
- * <p>Per un dato oggetto "root" serializza i suoi <b>campi d'istanza</b> (salendo anche
- * lungo le superclassi, es. {@code AbstractAgnus}/{@code AbstractDenise}) <b>solo</b> se
- * il tipo del campo è:
+ * <p>For a given "root" object it serialises its <b>instance fields</b> (going up the
+ * superclasses too, e.g. {@code AbstractAgnus}/{@code AbstractDenise}) <b>only</b> if the
+ * field's type is:
  * <ul>
- *   <li>una primitiva ({@code int/long/short/byte/boolean/char/double/float});</li>
- *   <li>un array di primitive (a qualunque dimensione: 1D, 2D, …);</li>
- *   <li>un {@code enum} (salvato come ordinale) o un array di {@code enum}.</li>
+ *   <li>a primitive ({@code int/long/short/byte/boolean/char/double/float});</li>
+ *   <li>an array of primitives (of any dimension: 1D, 2D, ...);</li>
+ *   <li>an {@code enum} (saved as its ordinal) or an array of {@code enum}.</li>
  * </ul>
- * Ogni altro tipo di campo (riferimenti ad altri componenti, oggetti Swing/AWT, la linea
- * audio, la {@code decodeTable} del 68000, i pool di {@code BusOp}, {@code DiskImage}, gli
- * adapter di input host, i recorder per-linea…) viene <b>ignorato per costruzione</b>: mai
- * si segue un riferimento a oggetto. Questo, a differenza della serializzazione Java, tiene
- * fuori dallo snapshot thread, risorse native e grafi transitori.
+ * Every other field type (references to other components, Swing/AWT objects, the audio line,
+ * the 68000's {@code decodeTable}, the {@code BusOp} pools, {@code DiskImage}, the host input
+ * adapters, the per-line recorders...) is <b>ignored by construction</b>: an object reference
+ * is never followed. Unlike Java serialisation, this keeps threads, native resources and
+ * transient graphs out of the snapshot.
  *
- * <p>Il formato è <b>auto-descrittivo</b> (ogni valore porta un tag di tipo e ogni campo il
- * proprio nome): il reader assegna per nome, saltando i campi sconosciuti e lasciando al
- * default quelli mancanti. Questo rende lo slot resiliente all'evoluzione del codice.
+ * <p>The format is <b>self-describing</b> (every value carries a type tag and every field its
+ * name): the reader assigns by name, skipping unknown fields and leaving missing ones at
+ * their default. That makes the slot resilient to the evolution of the code.
  *
- * <p>Non thread-safe: va usato a macchina in pausa.
+ * <p>Not thread-safe: to be used with the machine paused.
  */
 public final class ReflectiveState {
 
     private ReflectiveState() {}
 
-    // Tag di tipo, scelti come caratteri leggibili per il debug degli slot.
+    // Type tags, chosen as readable characters for debugging the slots.
     private static final byte T_BOOL = 'Z', T_BYTE = 'B', T_CHAR = 'C', T_SHORT = 'S',
             T_INT = 'I', T_LONG = 'J', T_FLOAT = 'F', T_DOUBLE = 'D',
             T_ENUM = 'E', T_PARR = 'a', T_OARR = 'A';
 
-    // Cache dei campi serializzabili per classe (setAccessible già applicato).
+    // Cache of the serialisable fields per class (setAccessible already applied).
     //
-    // ⛔ ConcurrentHashMap e non HashMap: la cache è STATICA, quindi è condivisa fra
-    // tutte le macchine vive nello stesso JVM — e il game sweep ne fa girare tre in
-    // parallelo. Il resto della classe è dichiaratamente non thread-safe e va usato a
-    // macchina in pausa, ma "in pausa" è una proprietà PER MACCHINA: due macchine
-    // diverse, ciascuna correttamente in pausa, possono entrare qui insieme e su una
-    // HashMap in resize concorrente il danno non è un valore sbagliato, è la mappa
-    // corrotta (nel caso peggiore un ciclo infinito nel bucket).
+    // ConcurrentHashMap and not HashMap: the cache is STATIC, so it is shared by all the
+    // machines alive in the same JVM, and the game sweep runs three in parallel. The rest of
+    // the class is declared not thread-safe and must be used with the machine paused, but
+    // "paused" is a PER-MACHINE property: two different machines, each correctly paused, can
+    // enter here together, and on a HashMap in a concurrent resize the damage is not a wrong
+    // value but a corrupt map (at worst an infinite loop in a bucket).
     private static final Map<Class<?>, List<Field>> FIELD_CACHE = new ConcurrentHashMap<>();
 
     // =========================================================================
     // API
     // =========================================================================
 
-    /** Scrive i campi serializzabili di {@code root} su {@code out}. */
+    /** Writes the serialisable fields of {@code root} to {@code out}. */
     public static void write(DataOutputStream out, Object root) throws IOException {
         List<Field> fields = stateFields(root.getClass());
         out.writeInt(fields.size());
@@ -94,16 +93,16 @@ public final class ReflectiveState {
         }
     }
 
-    /** Ripristina in {@code root} i campi letti da {@code in} (assegnazione per nome). */
+    /** Restores into {@code root} the fields read from {@code in} (assigned by name). */
     public static void read(DataInputStream in, Object root) throws IOException {
         Map<String, Field> byName = new HashMap<>();
         for (Field f : stateFields(root.getClass())) byName.put(f.getName(), f);
         int count = in.readInt();
         for (int i = 0; i < count; i++) {
             String name = in.readUTF();
-            Object val = decode(in); // consuma sempre i byte, anche se il campo non esiste più
+            Object val = decode(in); // always consumes the bytes, even if the field no longer exists
             Field f = byName.get(name);
-            if (f == null) continue; // campo sconosciuto in questa versione: scartato
+            if (f == null) continue; // field unknown in this version: discarded
             try {
                 assign(root, f, val);
             } catch (IllegalAccessException e) {
@@ -113,7 +112,7 @@ public final class ReflectiveState {
     }
 
     // =========================================================================
-    // Selezione dei campi
+    // Field selection
     // =========================================================================
 
     private static List<Field> stateFields(Class<?> cls) {
@@ -123,8 +122,8 @@ public final class ReflectiveState {
         for (Class<?> c = cls; c != null && c != Object.class; c = c.getSuperclass()) {
             for (Field f : c.getDeclaredFields()) {
                 if (Modifier.isStatic(f.getModifiers())) continue;
-                if (f.isSynthetic()) continue;              // es. this$0 delle inner class
-                if (!isSerializable(f.getType())) continue; // regola per-tipo
+                if (f.isSynthetic()) continue;              // e.g. this$0 of inner classes
+                if (!isSerializable(f.getType())) continue; // per-type rule
                 f.setAccessible(true);
                 out.add(f);
             }
@@ -171,7 +170,7 @@ public final class ReflectiveState {
             int n = Array.getLength(arr);
             o.writeInt(n);
             writePrimArray(o, ct, arr, n);
-        } else { // array di enum o array multidimensionale
+        } else { // enum array or multidimensional array
             o.writeByte(T_OARR);
             if (arr == null) { o.writeInt(-1); return; }
             int n = Array.getLength(arr);
@@ -193,23 +192,22 @@ public final class ReflectiveState {
     }
 
     // =========================================================================
-    // Decode (auto-descrittivo: consuma sempre, mappa al campo solo se presente)
+    // Decode (self-describing: always consumes, maps to the field only if present)
     // =========================================================================
 
     /**
-     * Tetto al numero di elementi di un array letto dallo slot.
+     * Cap on the number of elements of an array read from the slot.
      *
-     * <p>La lunghezza la dichiara il <b>file</b>, e un file puo' essere troncato, corrotto
-     * a meta' scrittura o semplicemente non essere uno slot. Senza tetto,
-     * {@code new int[in.readInt()]} su un valore qualunque dava {@code OutOfMemoryError} —
-     * che e' un {@code Error}, quindi sfuggiva al {@code catch (Exception)} di chi carica
-     * e arrivava all'EDT invece di diventare il messaggio «slot non compatibile».
+     * <p>The length is declared by the <b>file</b>, and a file can be truncated, corrupted
+     * halfway through a write or simply not be a slot. Without a cap,
+     * {@code new int[in.readInt()]} on any value would give {@code OutOfMemoryError}, an
+     * {@code Error}, so it would escape the loader's {@code catch (Exception)} and reach the
+     * EDT instead of becoming the "slot not compatible" message.
      *
-     * <p>Il tetto e' scelto largo: l'array piu' grande che una macchina emulata possa
-     * avere e' la Fast RAM al massimo, 8 MB in un {@code byte[]} (vedi {@code RAM.mem}),
-     * e 64 milioni di elementi lasciano otto volte quel margine — abbastanza da non
-     * doverci tornare se un domani le espansioni crescono. Serve a rifiutare i numeri
-     * assurdi di un file corrotto, non a fare da quota di memoria.
+     * <p>The cap is generous: the largest array an emulated machine can have is Fast RAM at
+     * its maximum, 8 MB in a {@code byte[]} (see {@code RAM.mem}), and 64 million elements
+     * leave eight times that margin, enough not to revisit it if expansions grow one day. It
+     * rejects the absurd numbers of a corrupt file; it is not a memory quota.
      */
     private static final int MAX_ARRAY_ELEMENTS = 1 << 26;
 
@@ -265,7 +263,7 @@ public final class ReflectiveState {
     }
 
     // =========================================================================
-    // Assegnazione al campo (coercizione al tipo dichiarato)
+    // Assignment to the field (coerced to the declared type)
     // =========================================================================
 
     private static void assign(Object root, Field f, Object val)
@@ -274,10 +272,10 @@ public final class ReflectiveState {
         boolean isFinal = Modifier.isFinal(f.getModifiers());
 
         if (type.isArray()) {
-            // Gli array final (es. i registri d[]/a[] della CPU, i puntatori DMA di Agnus,
-            // la Chip RAM) mantengono lo stesso riferimento: si copia il CONTENUTO in-place,
-            // mai riscrivendo il campo final. Se forma/lunghezza combaciano si copia; altrimenti
-            // (array non-final) si assegna un nuovo array.
+            // Final arrays (e.g. the CPU's d[]/a[] registers, Agnus's DMA pointers, the Chip
+            // RAM) keep the same reference: the CONTENT is copied in place, never rewriting
+            // the final field. If shape/length match it is copied; otherwise (non-final array)
+            // a new array is assigned.
             Object arr = (val == null) ? null : buildArray(type.getComponentType(), val);
             Object cur = f.get(root);
             if (cur != null && arr != null
@@ -292,17 +290,17 @@ public final class ReflectiveState {
             } else if (!isFinal && (arr == null || type.isInstance(arr))) {
                 f.set(root, arr);
             }
-            // Array final di forma diversa: caso non atteso, si lascia com'e'. Idem per un
-            // array il cui tipo non e' piu' quello di allora (un campo passato da short[] a
-            // int[], p.es.): assegnarlo darebbe IllegalArgumentException, che non e' fra le
-            // eccezioni che read() converte e farebbe fallire l'intero caricamento invece
-            // del solo campo. Si salta, come per un campo sconosciuto.
+            // Final array of a different shape: not expected, left as it is. Likewise for an
+            // array whose type is no longer what it was (a field changed from short[] to
+            // int[], e.g.): assigning it would give IllegalArgumentException, which is not
+            // among the exceptions read() converts and would fail the whole load instead of
+            // just the field. It is skipped, as an unknown field.
             return;
         }
 
-        // Campi scalari/enum FINAL: sono costanti (fissati in costruzione, uguali tra due
-        // macchine con la stessa configurazione), quindi non vanno riscritti. Evita anche
-        // la mutazione riflessiva di campi final, deprecata dalle JDK recenti.
+        // FINAL scalar/enum fields: they are constants (set at construction, equal between
+        // two machines with the same configuration), so they are not rewritten. That also
+        // avoids the reflective mutation of final fields, deprecated by recent JDKs.
         if (isFinal) return;
 
         if (val == null) {
@@ -315,8 +313,8 @@ public final class ReflectiveState {
             if (constant != NO_CONSTANT) {
                 f.set(root, constant);
             }
-            // Ordinale fuori dalle costanti di oggi: si lascia il default, come per un
-            // campo assente. Vedi enumConstant().
+            // Ordinal outside today's constants: the default is kept, as for a missing field.
+            // See enumConstant().
             return;
         }
         f.set(root, coercePrim(type, val));
@@ -324,7 +322,7 @@ public final class ReflectiveState {
 
     private static Object buildArray(Class<?> ct, Object decoded) {
         if (ct.isPrimitive()) {
-            return decoded; // già un array primitivo del kind letto dallo stream
+            return decoded; // already a primitive array of the kind read from the stream
         }
         Object[] src = (Object[]) decoded;
         Object arr = Array.newInstance(ct, src.length);
@@ -365,20 +363,19 @@ public final class ReflectiveState {
         return T_DOUBLE;
     }
 
-    /** Sentinella: l'ordinale letto non corrisponde ad alcuna costante di oggi. */
+    /** Sentinel: the ordinal read matches no constant of today. */
     private static final Object NO_CONSTANT = new Object();
 
     /**
-     * La costante di {@code type} con quell'ordinale, {@code null} per {@code -1}
-     * (che e' come si scrive un enum nullo), {@link #NO_CONSTANT} se l'ordinale non esiste.
+     * The constant of {@code type} with that ordinal, {@code null} for {@code -1} (how a null
+     * enum is written), {@link #NO_CONSTANT} if the ordinal does not exist.
      *
-     * <p>Il caso non e' teorico ed e' proprio quello che questa classe dichiara di
-     * reggere: il formato e' auto-descrittivo perche' «lo slot sia resiliente
-     * all'evoluzione del codice», e togliere o riordinare una costante di un enum e'
-     * evoluzione del codice come le altre. Prima, un ordinale rimasto scoperto tirava
-     * {@code ArrayIndexOutOfBoundsException} e faceva fallire l'INTERO caricamento —
-     * esattamente nello scenario che la promessa copre. Ora si comporta come un campo
-     * sconosciuto: si salta e si lascia il default.
+     * <p>Not a theoretical case, and exactly what this class claims to handle: the format is
+     * self-describing so that "the slot is resilient to the evolution of the code", and
+     * removing or reordering an enum constant is code evolution like any other. An ordinal
+     * left uncovered would throw {@code ArrayIndexOutOfBoundsException} and fail the WHOLE
+     * load, exactly in the scenario the promise covers. It behaves like an unknown field
+     * instead: skipped, with the default kept.
      */
     private static Object enumConstant(Class<?> type, int ordinal) {
         if (ordinal < 0) {
@@ -388,7 +385,7 @@ public final class ReflectiveState {
         return (consts == null || ordinal >= consts.length) ? NO_CONSTANT : consts[ordinal];
     }
 
-    /** Holder dell'ordinale di un enum letto, risolto alla costante nota il tipo del campo. */
+    /** Holder of the ordinal of an enum read, resolved to the constant once the field's type is known. */
     private static final class EnumRef {
         final int ordinal;
         EnumRef(int ordinal) { this.ordinal = ordinal; }

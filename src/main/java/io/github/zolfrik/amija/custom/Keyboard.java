@@ -28,58 +28,58 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.Deque;
 
 /**
- * Emulazione della tastiera Amiga 500.
+ * Amiga 500 keyboard.
  *
- * Implementa il protocollo seriale su CIA-A (KDAT=SP, KCLK=CNT).
- * Specifica hardware di riferimento: Amiga HW Reference Manual, App. A + schematics rev. 6A.
+ * Implements the serial protocol on CIA-A (KDAT = SP, KCLK = CNT).
+ * Hardware reference: Amiga Hardware Reference Manual, appendix A, and schematics rev. 6A.
  *
- * Protocollo:
- *   - Bitrate: ~17 kbit/s  →  periodo per bit ≈ 58.8 µs
- *   - Clock PAL: 7.09375 MHz  →  ~417 cicli/bit  →  3 fasi × ~139 cicli ciascuna
- *   - Ordine di trasmissione: bit 6,5,4,3,2,1,0,7 (MSB logico per primo)
- *   - Logica invertita su linea fisica: 1 logico = 0V (LOW), 0 logico = 5V (HIGH)
+ * Protocol:
+ *   - Bit rate: ~17 kbit/s, i.e. ~58.8 us per bit
+ *   - PAL clock: 7.09375 MHz, i.e. ~417 cycles per bit, 3 phases of ~139 cycles each
+ *   - Transmission order: bits 6,5,4,3,2,1,0,7 (logical MSB first)
+ *   - Inverted logic on the line: logical 1 = 0 V (LOW), logical 0 = 5 V (HIGH)
  *
- * Sequenza power-on:
- *   1. Attende pulse di reset su SP (CIA-A in modalità output)
- *   2. Attende ≥ 1 ms
- *   3. Invia 0xFD  (Initiate Power-Up Key Stream)
- *   4. Attende handshake ACK dall'Amiga (KDAT LOW per ≥ 85 µs)
- *   5. Attende ≥ 1 ms
- *   6. Invia 0xFE  (Terminate Power-Up Key Stream)
- *   7. Attende ACK → entra in IDLE
+ * Power-on sequence:
+ *   1. Wait for the reset pulse on SP (CIA-A in output mode)
+ *   2. Wait at least 1 ms
+ *   3. Send 0xFD (Initiate Power-Up Key Stream)
+ *   4. Wait for the ACK handshake from the Amiga (KDAT LOW)
+ *   5. Wait at least 1 ms
+ *   6. Send 0xFE (Terminate Power-Up Key Stream)
+ *   7. Wait for the ACK, then IDLE
  *
- * Formato keycode (1 byte):
- *   - Bit [7:1]: raw key number (7 bit)
- *   - Bit 0:     0 = key down, 1 = key up
+ * Keycode format (1 byte):
+ *   - Bits [7:1]: raw key number (7 bits)
+ *   - Bit 0:      0 = key down, 1 = key up
  *
- * Codici speciali del controller:
- *   - 0xF8: Lost Sync  (tastiera ha perso la sincronizzazione)
+ * Special controller codes:
+ *   - 0xF8: Lost Sync
  *   - 0xF9: Keyboard Failure
  *   - 0xFA: Power-Up Stream Error
  *   - 0xFD: Initiate Power-Up Stream
  *   - 0xFE: Terminate Power-Up Stream
  *
- * Gestione ACK:
- *   - Handshake valido: KDAT LOW per almeno MIN_ACK_CYCLES cicli, poi ritorna HIGH
- *   - Timeout ACK: se non arriva entro ~143 ms, invia 0xF8 e ritenta il byte corrente
- *   - Dopo MAX_RETRIES tentativi falliti, il byte viene scartato
+ * ACK handling:
+ *   - Valid handshake: KDAT LOW for at least MIN_ACK_CYCLES cycles, then back HIGH
+ *   - ACK timeout: if none arrives within ~143 ms, send 0xF8 and retry the current byte
+ *   - After MAX_RETRIES failed attempts the byte is dropped
  *
- * Reset CTRL+AMIGA+AMIGA:
- *   - La MPU della tastiera rileva la combinazione e asserisce la linea /KBRST
- *     (pin 3 del connettore tastiera dell'A500), che sulla scheda madre genera
- *     /RESET e /HALT verso il 68000 e tutti i chip.
- *   - Finché /KBRST è bassa la tastiera NON trasmette nulla: i keycode dei tre
- *     tasti (e di quelli premuti nel frattempo) non arrivano mai all'Amiga.
- *   - La linea resta bassa per almeno 500 ms e comunque finché i tasti restano
- *     premuti: la macchina riparte al rilascio, non alla pressione.
- *   - Lo stato della linea si legge con {@link #isResetLineAsserted()}; è
- *     {@code Gary} a propagarla su /RESET (vedi AbstractAgnus.serviceCiaEvent).
+ * CTRL+AMIGA+AMIGA reset:
+ *   - The keyboard MPU detects the combination and asserts /KBRST (pin 3 of the A500
+ *     keyboard connector), which on the motherboard drives /RESET and /HALT to the 68000
+ *     and every chip.
+ *   - While /KBRST is low the keyboard transmits NOTHING: the keycodes of the three keys
+ *     (and of any pressed meanwhile) never reach the Amiga.
+ *   - The line stays low for at least 500 ms and for as long as the keys are held: the
+ *     machine restarts on release, not on press.
+ *   - The line is read with {@link #isResetLineAsserted()}; {@code Gary} propagates it to
+ *     /RESET (see AbstractAgnus.serviceCiaEvent).
  */
 public class Keyboard implements AmigaKeyTarget {
 
     // -------------------------------------------------------------------------
-    // Raw key numbers (bits [7:1] del byte keycode trasmesso)
-    // Tabella completa: Amiga HW Reference Manual, Appendix A
+    // Raw key numbers (bits [7:1] of the keycode byte transmitted)
+    // Full table: Amiga Hardware Reference Manual, Appendix A
     // -------------------------------------------------------------------------
     public static final int KEY_ESC        = 0x45;
     public static final int KEY_F1         = 0x50;
@@ -103,7 +103,7 @@ public class Keyboard implements AmigaKeyTarget {
     public static final int KEY_RIGHT      = 0x4E;
 
     // -------------------------------------------------------------------------
-    // Codici speciali tastiera
+    // Special keyboard codes
     // -------------------------------------------------------------------------
     public static final int KCODE_LOST_SYNC     = 0xF8;
     public static final int KCODE_KBD_FAILURE   = 0xF9;
@@ -112,67 +112,64 @@ public class Keyboard implements AmigaKeyTarget {
     public static final int KCODE_POWERUP_TERM  = 0xFE;
 
     // -------------------------------------------------------------------------
-    // Costanti di timing (clock PAL 7.09375 MHz)
+    // Timing constants (PAL clock 7.09375 MHz)
     // -------------------------------------------------------------------------
 
-    /** Cicli per singola fase (KDAT setup / KCLK low / KCLK high ≈ 19.6 µs ciascuna). */
+    /** Cycles per phase (KDAT setup / KCLK low / KCLK high, ~19.6 us each). */
     private static final int  PHASE_CYCLES    = 139;
 
-    /** ~1 ms in cicli PAL. */
+    /** ~1 ms in PAL cycles. */
     private static final long DELAY_1MS       = 7_094L;
 
-    /** ~143 ms — timeout handshake ACK (HW Ref. Manual §9). */
+    /** ~143 ms: ACK handshake timeout (Hardware Reference Manual, section 9). */
     private static final long ACK_TIMEOUT     = 1_014_506L;
 
-    /** Durata minima del pulse ACK: ~1 µs ≈ 7 cicli PAL.
+    /** Minimum length of the ACK pulse: ~1 us, ~7 PAL cycles.
      *
-     *  L'HRM (3a ed.) dice: "While some keyboards can detect a 1 microsecond
+     *  The HRM (3rd ed.) says: "While some keyboards can detect a 1 microsecond
      *  handshake pulse, the pulse must be at least 85 microseconds for operation
-     *  with ALL models of Amiga keyboards." I 603 cicli (~85µs) usati in
-     *  precedenza erano il limite "garantito su tutti i modelli", ma vAmiga e
-     *  WinUAE accettano l'handshake già da ~1µs (vAmiga: (spHigh-spLow)/28 >= 1).
-     *  Il keyboard.device del Kickstart pulsa l'handshake per ~85µs, ma molti
-     *  giochi con handler di tastiera custom (es. Pinball Dreams) lo pulsano per
-     *  molto meno: con la soglia a 85µs il loro ACK veniva rifiutato → timeout
-     *  143ms → Lost Sync → ritrasmissione, da cui levette/tasti "lenti/incantati".
-     *  Allineiamo la soglia a ~1µs come i reference emulator. */
+     *  with ALL models of Amiga keyboards." The Kickstart's keyboard.device pulses the
+     *  handshake for ~85 us, but many games with their own keyboard handler (e.g. Pinball
+     *  Dreams) pulse it for much less: with an 85 us threshold their ACK was refused, which
+     *  led to the 143 ms timeout, Lost Sync and a retransmission, i.e. slow or stuck
+     *  flippers and keys. The threshold is therefore ~1 us. */
     private static final long MIN_ACK_CYCLES  = 7L;
 
-    /** Tentativi massimi prima di abbandonare un byte non confermato. */
+    /** Maximum attempts before giving up on an unacknowledged byte. */
     private static final int  MAX_RETRIES     = 3;
 
-    /** Durata minima dell'impulso /KBRST: 500 ms (HW Ref. Manual, keyboard reset).
-     *  La MPU tiene la linea bassa almeno per questo tempo anche se i tasti vengono
-     *  rilasciati subito, così il ciclo di reset è sempre completo. */
+    /** Minimum length of the /KBRST pulse: 500 ms (Hardware Reference Manual, keyboard
+     *  reset). The MPU holds the line low at least this long even if the keys are released
+     *  at once, so the reset cycle is always complete. */
     private static final long KBRST_MIN_CYCLES = 3_546_895L;   // 0,5 s @ 7,09379 MHz
 
-    /** Tetto di sicurezza sull'impulso /KBRST (5 s).
+    /** Safety cap on the /KBRST pulse (5 s).
      *
-     *  Sull'hardware la linea resta bassa finché i tre tasti sono premuti, e la MPU
-     *  vede sempre il rilascio. L'host no: Windows non consegna ad AWT il keyup del
-     *  primo modificatore rilasciato quando ne sono premuti due dello stesso tipo
-     *  (lo stesso limite aggirato dal poller fisico di AmigaKeyAdapter), e con la
-     *  finestra che perde il fuoco un keyup può sparire del tutto. Senza questo tetto
-     *  un keyup perso lascerebbe la macchina in reset per sempre. */
+     *  On the hardware the line stays low while the three keys are held, and the MPU always
+     *  sees the release. The host does not: Windows does not deliver to AWT the key-up of
+     *  the first modifier released while two of the same kind are held (the same limit the
+     *  physical poller of AmigaKeyAdapter works around), and a key-up can vanish entirely
+     *  when the window loses focus. Without this cap a lost key-up would leave the machine
+     *  in reset forever. */
     private static final long KBRST_MAX_CYCLES = 35_468_950L;  // 5 s
 
     // -------------------------------------------------------------------------
-    // Stato della macchina a stati
+    // State of the state machine
     // -------------------------------------------------------------------------
     private enum State {
-        /** Attesa del pulse di reset iniziale su SP (CIA-A in output). */
+        /** Waiting for the initial reset pulse on SP (CIA-A in output). */
         POWERON_WAIT,
-        /** SP rilevato in output — attesa del fronte di discesa (fine pulse). */
+        /** SP seen in output: waiting for the falling edge (end of the pulse). */
         DETECTED_OUTPUT,
-        /** Attesa di 1 ms dopo la fine del pulse prima di inviare 0xFD. */
+        /** Waiting 1 ms after the end of the pulse before sending 0xFD. */
         WAIT_AFTER_PULSE,
-        /** Trasmissione in corso: fase bit-per-bit. */
+        /** Transmission in progress: bit-by-bit phase. */
         SENDING_BYTE,
-        /** Byte trasmesso — in attesa di ACK dall'Amiga. */
+        /** Byte transmitted: waiting for the ACK from the Amiga. */
         WAITING_FOR_ACK,
-        /** ACK ricevuto per 0xFD — attesa di 1 ms prima di inviare 0xFE. */
+        /** ACK received for 0xFD: waiting 1 ms before sending 0xFE. */
         WAIT_BEFORE_FE,
-        /** Power-up completato — in attesa di eventi dalla coda. */
+        /** Power-up done: waiting for events from the queue. */
         IDLE
     }
 
@@ -183,72 +180,70 @@ public class Keyboard implements AmigaKeyTarget {
     private final CIAPinSet pins;
 
     // -------------------------------------------------------------------------
-    // Variabili di stato
+    // State variables
     // -------------------------------------------------------------------------
     private State state = State.POWERON_WAIT;
 
     /** Timer generico (timeout, delay). */
     private long timer = 0;
 
-    /** Buffer di trasmissione con bit riordinati secondo la specifica Amiga. */
+    /** Transmit buffer, bits reordered as the Amiga protocol requires. */
     private int  sendBuffer      = 0;
-    /** Valore originale del byte in trasmissione (per log e decisioni di stato). */
+    /** Original value of the byte being transmitted (for logs and state decisions). */
     private int  currentByteVal  = 0;
-    /** Indice del bit da trasmettere (parte da 7). */
+    /** Index of the bit to transmit (starts from 7). */
     private int  bitIndex        = 7;
-    /** Sotto-stato della macchina di invio (0=KDAT, 1=KCLK↓, 2=KCLK↑). */
+    /** Sub-state of the send machine (0 = KDAT, 1 = KCLK falling, 2 = KCLK rising). */
     private int  sendSubState    = 0;
-    /** Accumulatore cicli per il timer di fase. */
+    /** Cycle accumulator for the phase timer. */
     private int  sendTickCounter = 0;
 
-    /** Contatore cicli di attesa ACK (per timeout). */
+    /** Counter of the cycles waiting for the ACK (for the timeout). */
     private long ackTimer      = 0;
-    /** Cicli in cui KDAT è rimasto LOW nell'attuale impulso discendente. */
+    /** Cycles KDAT has stayed LOW in the current falling pulse. */
     private long ackLowCycles  = 0;
-    /** Stato precedente del pin SP (per rilevare fronti). */
+    /** Previous state of the SP pin (to detect edges). */
     private boolean lastSpState = true;
-    /** Flag impostato dall'ACK monitor quando rileva un pulse valido. */
+    /** Flag set by the ACK monitor when it detects a valid pulse. */
     private boolean ackReceived = false;
 
-    /** Byte da reinviare dopo l'ACK di un 0xF8 (Lost Sync). -1 = nessuno. */
+    /** Byte to resend after the ACK of a 0xF8 (Lost Sync). -1 = none. */
     private int retryByteVal   = -1;
-    /** Numero di tentativi effettuati per il byte corrente. */
+    /** Number of attempts made for the current byte. */
     private int retryCount     = 0;
 
-    /** Coda FIFO dei keycodes da trasmettere (formato: rawKeyNum<<1 | upFlag).
-     *  Acceduta da due thread (MasterClock e Swing EDT): deve essere thread-safe. */
+    /** FIFO of keycodes to transmit (format: rawKeyNum<<1 | upFlag).
+     *  Accessed by two threads (MasterClock and the Swing EDT): it must be thread-safe. */
     private final Deque<Integer> keyQueue = new ConcurrentLinkedDeque<>();
 
 
-    /** Stato dei tasti modificatori per rilevare CTRL+AMIGA+AMIGA.
-     *  Aggiornati dal thread che consegna gli eventi di tastiera (EDT di Swing). */
+    /** State of the modifier keys, to detect CTRL+AMIGA+AMIGA.
+     *  Updated by the thread that delivers keyboard events (the Swing EDT). */
     private boolean ctrlDown   = false;
     private boolean lAmigaDown = false;
     private boolean rAmigaDown = false;
 
-    /** true quando i tre tasti del reset sono premuti INSIEME (scritto dall'EDT,
-     *  letto dal thread di emulazione: è ciò che tiene bassa /KBRST). */
+    /** True while the three reset keys are held TOGETHER (written by the EDT, read by the
+     *  emulation thread: it is what holds /KBRST low). */
     private volatile boolean resetComboHeld = false;
 
-    /** true dalla combinazione completata finché tutti e tre i tasti non sono
-     *  rilasciati: i loro keycode — pressione e rilascio — non vengono trasmessi.
-     *  La MPU reale, rilevata la combinazione, smette di trasmettere e pilota
-     *  soltanto /KBRST; senza questo flag l'Amiga appena riavviato riceverebbe i
-     *  key-up "orfani" dei tasti del reset. */
+    /** True from the completed combination until all three keys are released: their
+     *  keycodes, press and release, are not transmitted. Once the MPU has detected the
+     *  combination it stops transmitting and drives /KBRST only; without this flag the
+     *  freshly restarted Amiga would receive the orphan key-ups of the reset keys. */
     private volatile boolean resetKeysSuppressed = false;
 
-    /** /KBRST asserita verso la scheda madre (true = linea bassa).
-     *  Scritta dal thread di emulazione in {@link #tick(int)}. */
+    /** /KBRST asserted toward the motherboard (true = line low).
+     *  Written by the emulation thread in {@link #tick(int)}. */
     private volatile boolean kbResetAsserted = false;
 
-    /** Cicli di clock trascorsi da quando /KBRST è stata asserita. */
+    /** Clock cycles elapsed since /KBRST was asserted. */
     private long kbResetCycles = 0;
 
-    /** true quando la MPU è pronta a rilevare una NUOVA combinazione di reset.
-     *  Si ri-arma solo quando i tasti risultano rilasciati: l'assertione segue il
-     *  fronte della combinazione, non il livello, così lo scadere del tetto di
-     *  sicurezza non fa ripartire subito un altro impulso a tasti (apparentemente)
-     *  ancora premuti. */
+    /** True when the MPU is ready to detect a NEW reset combination. It re-arms only once
+     *  the keys read released: the assertion follows the edge of the combination, not its
+     *  level, so the expiry of the safety cap does not immediately start another pulse
+     *  with keys that (apparently) are still held. */
     private boolean resetArmed = true;
 
 
@@ -259,49 +254,49 @@ public class Keyboard implements AmigaKeyTarget {
     public Keyboard(MOS8520 ciaA) {
         this.ciaA = ciaA;
         this.pins = ciaA.getPinSet();
-        // Linee rilasciate (HIGH) prima dell'inizializzazione
+        // Lines released (HIGH) before initialisation
         pins.getSpPin().setExternalInput(true);
         pins.getCntPin().setExternalInput(true);
     }
 
     /**
-     * Accodare un evento di pressione tasto.
+     * Queues a key press event.
      *
-     * @param rawKeyNum numero grezzo del tasto (7 bit), vedere costanti KEY_*
+     * @param rawKeyNum raw key number (7 bits), see the KEY_* constants
      */
     public void pressKey(int rawKeyNum) {
-        if (updateModifiers(rawKeyNum, true)) return;   // reset in corso: nessuna trasmissione
-        // Keycode format: {upFlag=0, rawKeyNum[6:0]} — bit rotation applied in beginTransmit
+        if (updateModifiers(rawKeyNum, true)) return;   // reset in progress: no transmission
+        // Keycode format: {upFlag=0, rawKeyNum[6:0]}; bit rotation applied in beginTransmit
         int keycode = rawKeyNum & 0x7F;
         keyQueue.addLast(keycode);
-        // NB: NON si chiama drainQueueIfIdle() qui — vedi nota sul threading in
-        // drainQueueIfIdle(). L'accodamento è l'unica operazione thread-safe.
+        // drainQueueIfIdle() is NOT called here: see the threading note in
+        // drainQueueIfIdle(). Queueing is the only thread-safe operation.
     }
 
     /**
-     * Accodare un evento di rilascio tasto.
+     * Queues a key release event.
      *
-     * @param rawKeyNum numero grezzo del tasto (7 bit), vedere costanti KEY_*
+     * @param rawKeyNum raw key number (7 bits), see the KEY_* constants
      */
     public void releaseKey(int rawKeyNum) {
-        if (updateModifiers(rawKeyNum, false)) return;  // reset in corso: nessuna trasmissione
-        // Keycode format: {upFlag=1, rawKeyNum[6:0]} — bit rotation applied in beginTransmit
+        if (updateModifiers(rawKeyNum, false)) return;  // reset in progress: no transmission
+        // Keycode format: {upFlag=1, rawKeyNum[6:0]}; bit rotation applied in beginTransmit
         int keycode = (rawKeyNum & 0x7F) | 0x80;
         keyQueue.addLast(keycode);
-        // NB: NON si chiama drainQueueIfIdle() qui — vedi nota sul threading in
-        // drainQueueIfIdle(). L'accodamento è l'unica operazione thread-safe.
+        // drainQueueIfIdle() is NOT called here: see the threading note in
+        // drainQueueIfIdle(). Queueing is the only thread-safe operation.
     }
 
     /**
-     * Restituisce il numero di keycodes in attesa di essere inviati.
+     * Returns the number of keycodes waiting to be sent.
      */
     public int getPendingKeyCount() {
         return keyQueue.size();
     }
 
     /**
-     * Svuota la coda e azzera lo stato, compresa la linea /KBRST e i modificatori.
-     * Da chiamare in caso di reset hardware esterno (power-on).
+     * Empties the queue and clears the state, including the /KBRST line and the modifiers.
+     * To be called on an external hardware reset (power-on).
      */
     public void hardReset() {
         resetProtocolState();
@@ -314,10 +309,10 @@ public class Keyboard implements AmigaKeyTarget {
     }
 
     /**
-     * Riporta il protocollo seriale allo stato di power-up: coda vuota, linee
-     * rilasciate, macchina a stati in attesa dell'impulso di sync su SP.
-     * NON tocca i modificatori né la linea /KBRST (che appartengono alla MPU e
-     * devono sopravvivere al reset che la MPU stessa sta pilotando).
+     * Brings the serial protocol back to its power-up state: empty queue, lines released,
+     * state machine waiting for the sync pulse on SP. It does NOT touch the modifiers or the
+     * /KBRST line, which belong to the MPU and must survive the reset the MPU itself is
+     * driving.
      */
     private void resetProtocolState() {
         keyQueue.clear();
@@ -333,31 +328,30 @@ public class Keyboard implements AmigaKeyTarget {
     }
 
     /**
-     * @return true se la tastiera sta assertando /KBRST verso la scheda madre
-     *         (CTRL+AMIGA+AMIGA premuti, o impulso minimo da 500 ms non ancora
-     *         scaduto). Letta a ogni E-clock da {@code AbstractAgnus}.
+     * @return true if the keyboard is asserting /KBRST toward the motherboard
+     *         (CTRL+AMIGA+AMIGA held, or the 500 ms minimum pulse not yet expired). Read at
+     *         every E clock by {@code AbstractAgnus}.
      */
     public boolean isResetLineAsserted() {
         return kbResetAsserted;
     }
 
-    /** @return true se i tre tasti della combinazione di reset sono premuti ora. */
+    /** @return true if the three keys of the reset combination are held now. */
     public boolean isResetComboHeld() {
         return resetComboHeld;
     }
 
     /**
-     * @return true se {@code rawKeyNum} e' uno dei tre tasti della combinazione di reset e
-     *         gli <b>altri due sono gia' premuti ora</b>: premere questo la completerebbe.
+     * @return true if {@code rawKeyNum} is one of the three keys of the reset combination
+     *         and the <b>other two are already held</b>: pressing this one would complete it.
      *
-     * <p>Serve al gioco a distanza, e serve per un motivo che la sola
-     * {@link #isResetComboHeld()} non copre: quella risponde a cose fatte, mentre il filtro
-     * dell'ospite deve decidere <i>prima</i> di consegnare un tasto. E soprattutto la terna
-     * puo' formarsi <b>a cavallo delle due tastiere</b> — l'host tiene CTRL e un'Amiga per
-     * i fatti suoi, l'ospite porta la terza — e li' guardare solo cio' che manda l'ospite
-     * non basta: nessuno dei suoi pacchetti contiene i tre tasti, eppure la macchina si
-     * resetterebbe. Questa e' l'unica domanda a cui la tastiera puo' rispondere e il
-     * filtro no, perche' lo stato dell'host il filtro non lo vede.
+     * <p>Used by remote play, for a reason {@link #isResetComboHeld()} alone does not cover:
+     * that one answers after the fact, while the host's filter must decide <i>before</i>
+     * delivering a key. Above all, the three keys can be split <b>across the two
+     * keyboards</b> (the host holds CTRL and one Amiga key, the guest brings the third), and
+     * looking only at what the guest sends is then not enough: none of its packets contains
+     * all three keys, yet the machine would reset. This is the one question the keyboard can
+     * answer and the filter cannot, because the filter does not see the host's state.
      */
     public boolean resetComboPendingOn(int rawKeyNum) {
         return switch (rawKeyNum) {
@@ -369,15 +363,15 @@ public class Keyboard implements AmigaKeyTarget {
     }
 
     // =========================================================================
-    // Tick principale — da chiamare ogni frame o a ogni gruppo di cicli
+    // Main tick: called every frame or for every group of cycles
     // =========================================================================
 
     public void tick(int cycles) {
-        // Reset CTRL+AMIGA+AMIGA: finché /KBRST è bassa la tastiera è muta
-        // (linee rilasciate, nessun keycode, nessun handshake).
+        // CTRL+AMIGA+AMIGA reset: while /KBRST is low the keyboard is silent (lines
+        // released, no keycode, no handshake).
         if (serviceResetLine(cycles)) return;
 
-        // Monitoraggio continuo del pulse ACK (indipendente dallo stato)
+        // Continuous monitoring of the ACK pulse (independent of the state)
         pollAckPin(cycles);
 
         int cra = ciaA.readRegister(0xE) & 0xFF;
@@ -386,14 +380,14 @@ public class Keyboard implements AmigaKeyTarget {
         switch (state) {
 
             case POWERON_WAIT:
-                // Attende che la CPU porti SP in modalità output (inizio pulse reset)
+                // Waits for the CPU to put SP in output mode (start of the reset pulse)
                 if (spOutputMode) {
                     state = State.DETECTED_OUTPUT;
                 }
                 break;
 
             case DETECTED_OUTPUT:
-                // Attende la fine del pulse (SP torna in input)
+                // Waits for the end of the pulse (SP back to input)
                 if (!spOutputMode) {
                     state = State.WAIT_AFTER_PULSE;
                     timer = DELAY_1MS;
@@ -409,12 +403,12 @@ public class Keyboard implements AmigaKeyTarget {
                 break;
 
             case SENDING_BYTE:
-                // Avanza la trasmissione bit per bit con granularità PHASE_CYCLES
+                // Advances the transmission bit by bit, PHASE_CYCLES at a time
                 sendTickCounter += cycles;
                 while (sendTickCounter >= PHASE_CYCLES) {
                     sendTickCounter -= PHASE_CYCLES;
                     handleSendStep();
-                    // handleSendStep() può cambiare state → usciamo dal loop
+                    // handleSendStep() may change state: leave the loop
                     if (state != State.SENDING_BYTE) break;
                 }
                 break;
@@ -442,7 +436,7 @@ public class Keyboard implements AmigaKeyTarget {
                 break;
 
             case IDLE:
-                // Pronto: scarica la coda se ci sono eventi
+                // Ready: drain the queue if there are events
                 drainQueueIfIdle();
                 break;
         }
@@ -453,30 +447,28 @@ public class Keyboard implements AmigaKeyTarget {
     // =========================================================================
 
     /**
-     * Pilota la linea /KBRST secondo la combinazione di reset.
+     * Drives the /KBRST line from the reset combination.
      *
-     * Comportamento della MPU reale (6570-036 dell'A500):
-     *   1. Appena i tre tasti risultano premuti insieme, abbassa /KBRST e
-     *      abbandona qualunque trasmissione in corso.
-     *   2. Tiene la linea bassa per almeno 500 ms, e comunque finché i tasti
-     *      restano premuti: la macchina resta ferma in reset e riparte al
-     *      RILASCIO, non alla pressione.
-     *   3. Al rilascio della linea la macchina esegue il ciclo di boot; il
-     *      Kickstart ri-inizializza keyboard.device e pulsa SP, facendo
-     *      ripartire da capo la sequenza di power-up (0xFD/0xFE).
+     * Behaviour of the A500 keyboard MPU (6570-036):
+     *   1. As soon as the three keys are held together, it pulls /KBRST low and abandons
+     *      any transmission in progress.
+     *   2. It holds the line low for at least 500 ms, and for as long as the keys are held:
+     *      the machine stays in reset and restarts on RELEASE, not on press.
+     *   3. When the line is released the machine boots; the Kickstart re-initialises
+     *      keyboard.device and pulses SP, restarting the power-up sequence (0xFD/0xFE).
      *
-     * @param cycles cicli di clock trascorsi dall'ultima chiamata
-     * @return true se /KBRST è asserita (la tastiera non deve trasmettere)
+     * @param cycles clock cycles elapsed since the last call
+     * @return true if /KBRST is asserted (the keyboard must not transmit)
      */
     private boolean serviceResetLine(int cycles) {
         if (!kbResetAsserted) {
             if (!resetComboHeld) { resetArmed = true; return false; }
-            if (!resetArmed)     return false;   // combinazione già servita
+            if (!resetArmed)     return false;   // combination already served
             kbResetAsserted = true;
             resetArmed      = false;
             kbResetCycles   = 0;
-            // I tasti in coda non arriveranno mai all'Amiga, che sta per essere
-            // resettato: la MPU tronca la trasmissione e rilascia KDAT/KCLK.
+            // The queued keys will never reach the Amiga, which is about to be reset: the
+            // MPU truncates the transmission and releases KDAT/KCLK.
             resetProtocolState();
             return true;
         }
@@ -496,33 +488,26 @@ public class Keyboard implements AmigaKeyTarget {
     // =========================================================================
 
     /**
-     * Monitora il pin SP/KDAT per rilevare un pulse ACK valido.
+     * Watches the SP/KDAT pin for a valid ACK pulse.
      *
-     * Il protocollo Amiga prevede che, dopo aver ricevuto un keycode, la CIA-A
-     * abbassi KDAT per almeno ~1 µs e poi lo rilasci. Questo metodo misura la
-     * durata del livello LOW e segnala un ACK valido al termine del pulse.
+     * After receiving a keycode the CIA-A pulls KDAT low for at least ~1 us and then
+     * releases it. This method measures how long the line stays LOW and reports a valid
+     * ACK at the end of the pulse.
      *
-     * FIX auto-ACK (levette incantate in Pinball Dreams): la misura va fatta
-     * SOLO in WAITING_FOR_ACK. Durante SENDING_BYTE la linea KDAT è pilotata
-     * dalla TASTIERA STESSA (logica invertita: bit logico 1 → LOW), e la vecchia
-     * versione accumulava ackLowCycles anche lì. Al rilascio delle linee a fine
-     * trasmissione, il fronte di salita dell'ULTIMO BIT DATI veniva quindi letto
-     * come handshake dell'Amiga: ackLowCycles valeva già ≥ PHASE_CYCLES (139),
-     * ben oltre MIN_ACK_CYCLES → ACK spurio immediato.
-     *
-     * L'ultimo bit trasmesso è sendBuffer[0] = keycode[7] = flag up/down, e vale
-     * 1 (→ linea LOW) proprio per i KEY-UP: l'auto-ACK colpiva sistematicamente
-     * i rilasci. La tastiera passava subito al keycode successivo senza attendere
-     * l'handshake reale del gioco; con pressioni rapide il byte seguente
-     * sovrascriveva l'SDR della CIA prima che il gioco lo leggesse, e il key-up
-     * andava perso → levetta bloccata fino alla pressione successiva.
+     * The measurement is taken ONLY in WAITING_FOR_ACK. During SENDING_BYTE the KDAT line is
+     * driven by the KEYBOARD ITSELF (inverted logic: logical 1 -> LOW), so counting LOW
+     * cycles there would read the rising edge of the LAST DATA BIT, when the lines are
+     * released at the end of the transmission, as the Amiga's handshake. The last bit sent
+     * is sendBuffer[0] = keycode[7] = the up/down flag, which is 1 (line LOW) for every
+     * KEY-UP: such a spurious ACK would hit releases systematically, the next keycode would
+     * overwrite the CIA's SDR before the program read it, and the key-up would be lost
+     * (a stuck flipper in Pinball Dreams until the next press).
      */
     private void pollAckPin(int cycles) {
         if (state != State.WAITING_FOR_ACK) {
-            // Fuori dall'attesa dell'handshake la linea è pilotata dalla tastiera:
-            // i suoi livelli LOW non vanno mai contati come ACK. Si riparte puliti,
-            // così solo un fronte di discesa GENERATO DALL'AMIGA dopo l'ingresso in
-            // WAITING_FOR_ACK può produrre un handshake valido.
+            // Outside the wait for the handshake the line is driven by the keyboard: its LOW
+            // levels never count as an ACK. Start clean, so only a falling edge DRIVEN BY
+            // THE AMIGA after entering WAITING_FOR_ACK can make a valid handshake.
             ackLowCycles = 0;
             lastSpState  = true;
             return;
@@ -531,12 +516,12 @@ public class Keyboard implements AmigaKeyTarget {
         boolean spNow = pins.getSpPin().getPinState();
 
         if (!spNow) {
-            // KDAT è LOW — accumulo durata
+            // KDAT is LOW: accumulate the length
             ackLowCycles += cycles;
         } else {
-            // KDAT tornato HIGH — fronte di salita
+            // KDAT back HIGH: rising edge
             if (!lastSpState && ackLowCycles >= MIN_ACK_CYCLES) {
-                // Pulse abbastanza lungo → ACK valido
+                // Pulse long enough: valid ACK
                 ackReceived = true;
             }
             ackLowCycles = 0;
@@ -544,21 +529,21 @@ public class Keyboard implements AmigaKeyTarget {
         lastSpState = spNow;
     }
 
-    /** Logica di transizione dopo un ACK confermato. */
+    /** Transition logic after a confirmed ACK. */
     private void onAckReceived() {
         retryCount = 0;
 
         if (currentByteVal == KCODE_POWERUP_INIT) {
-            // 0xFD confermato → attesa 1ms poi invio 0xFE
+            // 0xFD acknowledged: wait 1 ms, then send 0xFE
             state = State.WAIT_BEFORE_FE;
             timer = DELAY_1MS;
 
         } else if (currentByteVal == KCODE_POWERUP_TERM) {
-            // 0xFE confermato → sequenza power-up completata
+            // 0xFE acknowledged: power-up sequence complete
             state = State.IDLE;
 
         } else if (currentByteVal == KCODE_LOST_SYNC) {
-            // 0xF8 (Lost Sync) confermato → reinviare il byte originale se presente
+            // 0xF8 (Lost Sync) acknowledged: resend the original byte, if any
             if (retryByteVal >= 0) {
                 int toRetry = retryByteVal;
                 retryByteVal = -1;
@@ -569,7 +554,7 @@ public class Keyboard implements AmigaKeyTarget {
             }
 
         } else {
-            // Keycode normale confermato → prossimo dalla coda
+            // Normal keycode acknowledged: next one from the queue
             retryByteVal = -1;
             state = State.IDLE;
             drainQueueIfIdle();
@@ -577,13 +562,13 @@ public class Keyboard implements AmigaKeyTarget {
     }
 
     /**
-     * Gestisce il timeout ACK (~143 ms senza risposta dall'Amiga).
-     * Il controller reale invia 0xF8 (Lost Sync) e poi ritrasmette l'ultimo byte.
+     * Handles the ACK timeout (~143 ms with no answer from the Amiga).
+     * The controller sends 0xF8 (Lost Sync) and then retransmits the last byte.
      */
     private void handleAckTimeout() {
         if (retryCount < MAX_RETRIES) {
             retryCount++;
-            // Salva il byte da reinviare (evita di sovrascriverlo con 0xF8)
+            // Save the byte to resend (so 0xF8 does not overwrite it)
             if (currentByteVal != KCODE_LOST_SYNC) {
                 retryByteVal = currentByteVal;
             }
@@ -597,28 +582,24 @@ public class Keyboard implements AmigaKeyTarget {
     }
 
     /**
-     * Preleva il prossimo keycode dalla coda e avvia la trasmissione,
-     * ma solo se la macchina è in stato IDLE.
+     * Takes the next keycode from the queue and starts transmitting it, but only if the
+     * machine is IDLE.
      *
-     * THREADING: questo metodo (e quindi beginTransmit) va invocato SOLO dal
-     * thread di emulazione, da tick(). pressKey()/releaseKey() sono chiamate
-     * dall'EDT di Swing e si limitano ad accodare su keyQueue (concorrente).
+     * THREADING: this method (and so beginTransmit) must be called ONLY from the emulation
+     * thread, from tick(). pressKey()/releaseKey() are called by the Swing EDT and only
+     * queue on keyQueue (concurrent). If the EDT drained the queue too, both threads could
+     * read state == IDLE, both pollFirst() and both call beginTransmit(), which overwrites
+     * ALL the transmission state (sendBuffer, bitIndex, sendSubState): the losing thread's
+     * keycode would be dropped without ever being sent, and a lost key-up leaves the key
+     * "held" until the next press. The state is not volatile either, so the EDT could read
+     * a stale value.
      *
-     * In precedenza anche l'EDT chiamava drainQueueIfIdle(): i due thread
-     * potevano leggere entrambi state==IDLE, fare entrambi pollFirst() e
-     * chiamare entrambi beginTransmit(), che sovrascrive TUTTO lo stato di
-     * trasmissione (sendBuffer, bitIndex, sendSubState). Il keycode del thread
-     * perdente veniva scartato senza mai essere trasmesso. Se il byte perso era
-     * un key-up, il tasto restava "premuto" fino alla pressione successiva —
-     * esattamente le levette incantate di Pinball Dreams sotto pressioni rapide.
-     * Lo stato non è volatile, quindi l'EDT poteva anche leggere uno state stale.
-     *
-     * tick() è chiamato a ogni E-clock (~709 kHz), quindi togliere il drain
-     * dall'EDT costa al più ~1.4 µs di latenza: impercettibile.
+     * tick() is called at every E clock (~709 kHz), so draining only there costs at most
+     * ~1.4 us of latency.
      */
     private void drainQueueIfIdle() {
         if (state == State.IDLE) {
-            Integer next = keyQueue.pollFirst();   // atomico: null se vuota
+            Integer next = keyQueue.pollFirst();   // atomic: null if empty
             if (next != null) {
                 retryCount   = 0;
                 retryByteVal = -1;
@@ -628,13 +609,12 @@ public class Keyboard implements AmigaKeyTarget {
     }
 
     /**
-     * Prepara il buffer di trasmissione e avvia la macchina di invio.
+     * Prepares the transmit buffer and starts the send machine.
      *
-     * Il riordino dei bit segue la specifica Amiga:
-     * il byte fisico trasmesso ha i bit nell'ordine 6,5,4,3,2,1,0,7
-     * rispetto al valore logico originale.
+     * The bits are reordered as the Amiga protocol requires: the byte sent on the line has
+     * the bits in the order 6,5,4,3,2,1,0,7 of the original logical value.
      *
-     * @param val valore logico del byte da trasmettere (0x00–0xFF)
+     * @param val logical value of the byte to transmit (0x00-0xFF)
      */
     private void beginTransmit(int val) {
         currentByteVal = val;
@@ -656,36 +636,35 @@ public class Keyboard implements AmigaKeyTarget {
     }
 
     /**
-     * Avanza di una fase nella trasmissione del byte corrente.
+     * Advances the transmission of the current byte by one phase.
      *
-     * Ogni bit richiede 3 fasi (ognuna dura PHASE_CYCLES cicli):
-     *   Fase 0: porta KDAT al valore corretto (logica invertita: 1→LOW, 0→HIGH)
-     *   Fase 1: abbassa KCLK (fronte di discesa — l'Amiga campiona KDAT qui)
-     *   Fase 2: alza  KCLK (fronte di salita — bit acquisito dalla CIA)
+     * Each bit takes 3 phases (each PHASE_CYCLES cycles long):
+     *   Phase 0: drive KDAT to the bit (inverted logic: 1 -> LOW, 0 -> HIGH)
+     *   Phase 1: pull KCLK low (falling edge: the Amiga samples KDAT here)
+     *   Phase 2: raise KCLK (rising edge: the CIA takes the bit)
      *
-     * Al termine di tutti gli 8 bit le linee vengono rilasciate e si passa
-     * a WAITING_FOR_ACK.
+     * After all 8 bits the lines are released and the machine moves to WAITING_FOR_ACK.
      */
     private void handleSendStep() {
         switch (sendSubState) {
 
-            case 0: // Imposta KDAT
+            case 0: // Set KDAT
                 boolean bit = (sendBuffer & (1 << bitIndex)) != 0;
-                // Logica invertita: bit logico 1 → tensione LOW → false
+                // Inverted logic: logical 1 -> LOW voltage -> false
                 pins.getSpPin().setExternalInput(!bit);
                 sendSubState = 1;
                 break;
 
-            case 1: // KCLK → LOW (fronte di discesa, l'Amiga campiona KDAT)
+            case 1: // KCLK LOW (falling edge, the Amiga samples KDAT)
                 pins.getCntPin().setExternalInput(false);
                 sendSubState = 2;
                 break;
 
-            case 2: // KCLK → HIGH (fronte di salita, bit latched dalla CIA)
+            case 2: // KCLK HIGH (rising edge, bit latched by the CIA)
                 pins.getCntPin().setExternalInput(true);
                 bitIndex--;
                 if (bitIndex < 0) {
-                    // Tutti gli 8 bit inviati → rilascia le linee e attendi ACK
+                    // All 8 bits sent: release the lines and wait for the ACK
                     pins.getSpPin().setExternalInput(true);
                     pins.getCntPin().setExternalInput(true);
                     ackTimer    = 0;
@@ -699,33 +678,33 @@ public class Keyboard implements AmigaKeyTarget {
     }
 
     /**
-     * Aggiorna lo stato dei tasti modificatori e valuta la combinazione di reset.
+     * Updates the state of the modifier keys and evaluates the reset combination.
      *
-     * Chiamato dal thread degli eventi di tastiera: qui si aggiornano solo i flag,
-     * la linea /KBRST è pilotata dal thread di emulazione in {@link #serviceResetLine}.
+     * Called by the keyboard-event thread: only the flags are updated here, the /KBRST line
+     * is driven by the emulation thread in {@link #serviceResetLine}.
      *
-     * @param rawKeyNum numero grezzo del tasto
-     * @param pressed   true = pressione, false = rilascio
-     * @return true se il keycode NON va trasmesso (sequenza di reset in corso)
+     * @param rawKeyNum raw key number
+     * @param pressed   true = press, false = release
+     * @return true if the keycode must NOT be transmitted (reset sequence in progress)
      */
     private boolean updateModifiers(int rawKeyNum, boolean pressed) {
         if (rawKeyNum == KEY_CTRL)    ctrlDown   = pressed;
         if (rawKeyNum == KEY_L_AMIGA) lAmigaDown = pressed;
         if (rawKeyNum == KEY_R_AMIGA) rAmigaDown = pressed;
 
-        // CTRL + L.AMIGA + R.AMIGA → la MPU asserisce /KBRST e smette di trasmettere.
+        // CTRL + L.AMIGA + R.AMIGA: the MPU asserts /KBRST and stops transmitting.
         boolean combo = ctrlDown && lAmigaDown && rAmigaDown;
         resetComboHeld = combo;
 
-        // La decisione va presa PRIMA di sciogliere la soppressione: anche il
-        // rilascio dell'ultimo dei tre tasti appartiene alla sequenza di reset e
-        // non deve arrivare all'Amiga come key-up orfano.
+        // The decision is taken BEFORE lifting the suppression: the release of the last of
+        // the three keys also belongs to the reset sequence and must not reach the Amiga as
+        // an orphan key-up.
         boolean suppress = resetKeysSuppressed || kbResetAsserted;
         if (combo) {
             resetKeysSuppressed = true;
             suppress = true;
         } else if (resetKeysSuppressed && !ctrlDown && !lAmigaDown && !rAmigaDown) {
-            // Tutti e tre rilasciati: si torna a trasmettere normalmente.
+            // All three released: back to transmitting normally.
             resetKeysSuppressed = false;
         }
         return suppress;

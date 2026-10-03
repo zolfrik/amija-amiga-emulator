@@ -49,9 +49,9 @@ public class SubxInstruction extends AbstractM68kInstruction {
             switch (getStep(cpu)) {
                 case 0 -> {
                     if (isMemory) {
-                        // Le forme memoria-memoria dichiarano il proprio offset del PC di gruppo 0:
-                        // nel generato di WinUAE il ramo di guasto porta sempre due byte in piu'
-                        // della regola generale, per entrambe le taglie (op_9188/op_d188 _14_ff).
+                        // The memory-to-memory forms declare their own group 0 PC offset: the
+                        // fault branch always carries two bytes more than the general rule, for
+                        // both sizes ($9188/$D188).
                         cpu.markGroup0EaDelta(2);
                         indexedGap2(cpu); // n
                         nextStep(cpu);
@@ -73,9 +73,9 @@ public class SubxInstruction extends AbstractM68kInstruction {
                     cpu.setA(regY, cpu.getA(regY, 4) - dec);
                     int addrY = cpu.getA(regY, 4);
                     setTemp(cpu, ADDR_Y, addrY);
-                    // WinUAE op_9108/op_d108 _14_ff (.B/.W -(An),-(An)): `ipl_fetch_now()` sta
-                    // PRIMA della lettura sorgente, non sulla lettura destinazione. Per la .L
-                    // invece cade in mezzo alla lettura long della destinazione (case 4).
+                    // .B/.W -(An),-(An) ($9108/$D108): the `now` sample sits BEFORE the source
+                    // read, not on the destination read. For .L it falls in the middle of the
+                    // destination's long read instead (case 4).
                     if (size != 4) {
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                     }
@@ -119,9 +119,9 @@ public class SubxInstruction extends AbstractM68kInstruction {
                         cpu.setA(regX, cpu.getA(regX, 4) - 2);
                         int addrX = cpu.getA(regX, 4);
                         setTemp(cpu, ADDR_X, addrX);
-                        // WinUAE op_9188/op_d188 _14_ff: `ipl_fetch_now()` sta FRA le due word
-                        // della lettura destinazione — l'unica ancora del modello che cade
-                        // dentro un accesso long.
+                        // $9188/$D188: the `now` sample sits BETWEEN the two words of the
+                        // destination read: the only anchor of the model that falls inside a
+                        // long access.
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                         cpu.scheduleRead(addrX, 2);
                         nextStep(cpu);

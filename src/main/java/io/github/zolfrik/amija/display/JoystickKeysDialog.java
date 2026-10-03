@@ -61,19 +61,19 @@ import java.util.EnumMap;
 import java.util.Map;
 
 /**
- * Popup di configurazione dei tasti del joystick da tastiera di una game port.
+ * Configuration popup of the keyboard joystick keys of a game port.
  *
- * <p>Una riga per funzione (Su / Giù / Destra / Sinistra / Fuoco): l'etichetta e un
- * pulsante che mostra il tasto attualmente associato. Premendo il pulsante il dialog
- * entra in <b>cattura</b>: il primo tasto premuto diventa la nuova associazione, ESC
- * annulla (e non è quindi assegnabile ad alcuna funzione).
+ * <p>One row per function (Up / Down / Right / Left / Fire): the label and a button showing
+ * the key currently assigned. Pressing the button puts the dialog into <b>capture</b>: the
+ * first key pressed becomes the new assignment, ESC cancels (and so cannot be assigned to
+ * any function).
  *
- * <p>Un tasto non può essere usato da due funzioni, né dallo stesso joystick né da
- * quello dell'altra porta: in tal caso l'utente riceve un messaggio che indica a quale
- * funzione (e di quale porta) il tasto è già assegnato, e la scelta viene rifiutata.
+ * <p>A key cannot be used by two functions, neither of the same joystick nor of the other
+ * port's: then the user gets a message saying to which function (and of which port) the
+ * key is already assigned, and the choice is refused.
  *
- * <p>Le modifiche sono applicate alla mappa del chiamante alla chiusura del popup; il
- * pulsante "Ripristina default" riporta la porta ai tasti predefiniti dell'emulatore.
+ * <p>The changes are applied to the caller's map when the popup closes; the "Restore
+ * defaults" button brings the port back to the emulator's default keys.
  */
 public final class JoystickKeysDialog {
 
@@ -84,8 +84,8 @@ public final class JoystickKeysDialog {
     private static final Color ACCENT   = new Color(0x4D, 0x9D, 0xE0);
     private static final Color BORDER   = new Color(0x45, 0x49, 0x50);
 
-    // Metodo e non costante: la misura dipende dalla scala dell'interfaccia, che va letta
-    // quando il componente si costruisce, non quando la classe si carica.
+    // A method, not a constant: the size depends on the interface scale, which must be read
+    // when the component is built, not when the class loads.
     private static Dimension keyButtonSize() {
         return dim(190, 30);
     }
@@ -93,24 +93,24 @@ public final class JoystickKeysDialog {
     private JoystickKeysDialog() { }
 
     /**
-     * Mostra il popup (modale) per la porta {@code portIndex} (0 o 1).
+     * Shows the (modal) popup for port {@code portIndex} (0 or 1).
      *
-     * @param maps mappe di lavoro delle due porte, indicizzate per numero di porta:
-     *             quella della porta in esame viene aggiornata alla chiusura, l'altra
-     *             è usata (in sola lettura) per rilevare i tasti già occupati.
+     * @param maps working maps of the two ports, indexed by port number: the one of the port
+     *             in question is updated at closing, the other is used (read-only) to detect
+     *             the keys already taken.
      */
     public static void show(Window parent, int portIndex, JoystickKeyMap[] maps) {
         new Editor(parent, portIndex, maps).open();
     }
 
-    /** Stato e comportamento di una singola apertura del popup. */
+    /** State and behaviour of a single opening of the popup. */
     private static final class Editor {
 
         private final int portIndex;
         private final JoystickKeyMap[] maps;
-        /** Copia di lavoro: confermata su {@code maps[portIndex]} alla chiusura. */
+        /** Working copy: committed to {@code maps[portIndex]} on close. */
         private final JoystickKeyMap working;
-        /** Mappa dell'altra porta, per il controllo dei tasti già assegnati. */
+        /** Map of the other port, to check the keys already assigned. */
         private final JoystickKeyMap other;
 
         private final JDialog dialog;
@@ -119,10 +119,10 @@ public final class JoystickKeysDialog {
         private final JLabel hint = new JLabel();
         private JButton okButton;
 
-        /** Funzione in attesa di un tasto, o {@code null} se non si sta catturando. */
+        /** Function waiting for a key, or {@code null} if not capturing. */
         private JoystickAction capturing;
         private KeyEventDispatcher captureDispatcher;
-        /** Aspetto del pulsante prima dell'evidenziazione, da ripristinare a fine cattura. */
+        /** Look of the button before the highlight, to restore at the end of the capture. */
         private Color savedBackground;
         private Color savedForeground;
         private Border savedBorder;
@@ -150,8 +150,8 @@ public final class JoystickKeysDialog {
             dialog.getContentPane().add(content, BorderLayout.CENTER);
             dialog.getContentPane().add(buildButtonBar(), BorderLayout.SOUTH);
 
-            // ESC chiude il popup solo quando non si sta catturando un tasto: durante la
-            // cattura l'evento è intercettato dal dispatcher, che lo usa per annullare.
+            // ESC closes the popup only when no key is being captured: during the capture the
+            // event is intercepted by the dispatcher, which uses it to cancel.
             dialog.getRootPane().registerKeyboardAction(e -> confirmAndClose(),
                     KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
                     JComponent.WHEN_IN_FOCUSED_WINDOW);
@@ -163,15 +163,15 @@ public final class JoystickKeysDialog {
 
                 @Override
                 public void windowOpened(WindowEvent e) {
-                    // Il fuoco parte da OK: nessun pulsante dei tasti nasce con l'alone
-                    // del fuoco, che si confonderebbe con l'evidenziazione della cattura.
+                    // The focus starts from OK: no key button starts with the focus halo,
+                    // which would be confused with the capture highlight.
                     if (okButton != null) okButton.requestFocusInWindow();
                 }
             });
 
             dialog.pack();
             dialog.setResizable(false);
-            hint.setText(" "); // riserva l'altezza senza mostrare nulla a riposo
+            hint.setText(" "); // reserves the height without showing anything at rest
             dialog.setLocationRelativeTo(parent());
             dialog.setVisible(true); // bloccante (modale)
         }
@@ -181,7 +181,7 @@ public final class JoystickKeysDialog {
         }
 
         // -----------------------------------------------------------------
-        // Costruzione dell'interfaccia
+        // Building the interface
         // -----------------------------------------------------------------
 
         private JPanel buildHeader() {
@@ -203,9 +203,9 @@ public final class JoystickKeysDialog {
             hint.setForeground(ACCENT);
             hint.setFont(derive(hint.getFont(), Font.PLAIN, 11f));
             hint.setAlignmentX(Component.LEFT_ALIGNMENT);
-            // Al momento del pack la riga di stato contiene il messaggio di cattura più
-            // lungo: così il popup nasce già abbastanza largo da contenerli tutti e il
-            // layout non cambia quando la cattura inizia (viene svuotata subito dopo).
+            // At pack time the status line holds the longest capture message: so the popup is
+            // born wide enough to hold them all and the layout does not change when the
+            // capture starts (it is cleared right after).
             hint.setText(longestCapturingMessage());
 
             header.add(title);
@@ -230,12 +230,11 @@ public final class JoystickKeysDialog {
                 JLabel label = new JLabel(Messages.t(action.messageKey()));
                 label.setForeground(FG);
 
-                // Il colore del testo lo sceglie il look and feel, perché è lui a
-                // disegnare lo sfondo del pulsante: con FlatLaf (scuro) è chiaro, col
-                // look and feel di sistema è scuro. Forzarlo nero, come si faceva quando
-                // il look and feel era per forza quello di Windows, renderebbe il tasto
-                // illeggibile sul tema scuro. Durante la cattura invece lo sfondo lo
-                // imponiamo noi, e lì serve un colore esplicito: vedi startCapture.
+                // The text colour is chosen by the look and feel, because it draws the
+                // button's background: with FlatLaf (dark) it is light, with the system look
+                // and feel it is dark. Forcing it black would make the key unreadable on the
+                // dark theme. During the capture the background is imposed by us, and there an
+                // explicit colour is needed: see startCapture.
                 JButton keyButton = new JButton();
                 keyButton.setFocusPainted(false);
                 keyButton.setPreferredSize(keyButtonSize());
@@ -285,21 +284,20 @@ public final class JoystickKeysDialog {
         }
 
         // -----------------------------------------------------------------
-        // Cattura del tasto
+        // Key capture
         // -----------------------------------------------------------------
 
         /**
-         * Mette il popup in attesa del prossimo tasto per {@code action}. Finché la
-         * cattura è attiva tutti gli eventi di tastiera dell'applicazione sono
-         * intercettati (e consumati), così nessun tasto — nemmeno INVIO o SPAZIO —
-         * finisce ai pulsanti del dialog.
+         * Puts the popup in wait for the next key for {@code action}. While the capture is
+         * active every keyboard event of the application is intercepted (and consumed), so
+         * no key, not even ENTER or SPACE, reaches the dialog's buttons.
          */
         private void startCapture(JoystickAction action) {
             cancelCapture();
             capturing = action;
 
-            // Evidenzia il pulsante in attesa. Il bordo colorato è l'unico segnale che
-            // ogni look and feel rispetta: lo sfondo dei pulsanti alcuni lo disegnano da sé.
+            // Highlight the waiting button. The coloured border is the only signal every look
+            // and feel honours: some draw the buttons' background themselves.
             JButton b = keyButtons.get(action);
             savedBackground = b.getBackground();
             savedForeground = b.getForeground();
@@ -307,8 +305,8 @@ public final class JoystickKeysDialog {
             savedFont       = b.getFont();
             b.setText(Messages.t("joykeys.press"));
             b.setBackground(ACCENT);
-            // Sfondo azzurro imposto da noi: qui il testo va scritto scuro, a
-            // prescindere da quale look and feel sia in uso.
+            // Light blue background imposed by us: here the text must be dark, whatever look
+            // and feel is in use.
             b.setForeground(Color.BLACK);
             b.setBorder(BorderFactory.createLineBorder(ACCENT, px(2)));
             b.setFont(savedFont.deriveFont(Font.BOLD));
@@ -321,8 +319,8 @@ public final class JoystickKeysDialog {
                 KeyBinding binding = KeyBinding.fromEvent(e);
                 stopCapture();
                 if (code != KeyEvent.VK_ESCAPE && code != KeyEvent.VK_UNDEFINED) {
-                    // Fuori dal dispatch dell'evento: l'eventuale messaggio di conflitto
-                    // è modale e non deve aprirsi dentro la catena di dispatch.
+                    // Outside the event dispatch: any conflict message is modal and must not
+                    // open inside the dispatch chain.
                     SwingUtilities.invokeLater(() -> assign(target, binding));
                 }
                 return true;
@@ -331,7 +329,7 @@ public final class JoystickKeysDialog {
                     .addKeyEventDispatcher(captureDispatcher);
         }
 
-        /** Termina la cattura in corso, ripristinando l'aspetto del pulsante. */
+        /** Ends the capture in progress, restoring the button's look. */
         private void stopCapture() {
             if (captureDispatcher != null) {
                 KeyboardFocusManager.getCurrentKeyboardFocusManager()
@@ -358,9 +356,9 @@ public final class JoystickKeysDialog {
         }
 
         /**
-         * Assegna il tasto alla funzione, se libero. Un tasto già usato dall'altra porta
-         * o da un'altra funzione della stessa porta viene rifiutato con un messaggio che
-         * indica dove è già impegnato.
+         * Assigns the key to the function, if free. A key already used by the other port or
+         * by another function of the same port is refused with a message saying where it is
+         * already in use.
          */
         private void assign(JoystickAction action, KeyBinding binding) {
             if (action == null || binding == null) return;
@@ -382,7 +380,7 @@ public final class JoystickKeysDialog {
             showBinding(action);
         }
 
-        /** Riporta la porta ai tasti predefiniti, se nessuno è occupato dall'altra porta. */
+        /** Brings the port back to the default keys, if none is taken by the other port. */
         private void resetToDefaults() {
             cancelCapture();
             JoystickKeyMap defaults = JoystickKeyMap.defaults(portIndex);
@@ -406,16 +404,16 @@ public final class JoystickKeysDialog {
         }
 
         // -----------------------------------------------------------------
-        // Utilità
+        // Utilities
         // -----------------------------------------------------------------
 
-        /** Mostra sul pulsante il tasto attualmente associato alla funzione. */
+        /** Shows on the button the key currently assigned to the function. */
         private void showBinding(JoystickAction action) {
             JButton b = keyButtons.get(action);
             if (b != null) b.setText(displayName(working.get(action)));
         }
 
-        /** Messaggio di cattura più largo fra tutte le funzioni (per dimensionare il popup). */
+        /** Widest capture message among all the functions (to size the popup). */
         private static String longestCapturingMessage() {
             String longest = " ";
             for (JoystickAction action : JoystickAction.values()) {
@@ -443,13 +441,12 @@ public final class JoystickKeysDialog {
     }
 
     /**
-     * Nome del tasto mostrato all'utente, qualificato con la posizione quando il tasto
-     * esiste in più copie sulla tastiera (es. "Ctrl destro", "Shift sinistro").
+     * Name of the key shown to the user, qualified with its position when the key exists in
+     * several copies on the keyboard (e.g. "Right Ctrl", "Left Shift").
      *
-     * <p>Il nome base viene dal bundle dei messaggi ({@code key.name.<NOME VK>}), così da
-     * seguire la lingua scelta per l'interfaccia; per i tasti senza voce dedicata —
-     * lettere, cifre e funzione, il cui nome non ha bisogno di traduzione — si usa quello
-     * fornito da AWT.
+     * <p>The base name comes from the message bundle ({@code key.name.<VK NAME>}), so it
+     * follows the language chosen for the interface; for keys without a dedicated entry
+     * (letters, digits and function keys, whose names need no translation) AWT's is used.
      */
     static String displayName(KeyBinding binding) {
         if (binding == null) return "";

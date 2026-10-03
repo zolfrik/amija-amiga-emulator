@@ -153,7 +153,7 @@ public class OriInstruction extends AbstractM68kInstruction {
                     } else {
                         // Overlapped prefetch (Phase 3): finalize with the .b/.w write (seam 0)
                         // rather than deferring to step 11. See
-                        // docs/cpu-overlapped-prefetch-rework-plan.md §Phase 3.
+                        // docs/cpu-overlapped-prefetch-rework-plan.md, Phase 3.
                         cpu.scheduleWrite(getTemp(cpu, ADDR), getTemp(cpu, VAL), size);
                         return finalizeInstructionSafe(cpu);
                     }
@@ -171,7 +171,7 @@ public class OriInstruction extends AbstractM68kInstruction {
                         nextStep(cpu);
                         return false;
                     } else {
-                        // .L memory MSW write is the LAST bus cycle → finalize with it (seam 0).
+                        // .L memory MSW write is the LAST bus cycle: finalize with it (seam 0).
                         cpu.scheduleWriteWord(getTemp(cpu, ADDR), (getTemp(cpu, VAL) >>> 16) & 0xFFFF);
                         return finalizeInstructionSafe(cpu);
                     }

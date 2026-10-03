@@ -126,7 +126,7 @@ public class MuluInstruction extends AbstractM68kInstruction {
                     cpu.writeSR(sr, false);
 
                     cpu.setD(reg, (int) res, 4);
-                    // NOTE (Phase 4): terminal activity is internal idle cycles — finalizing here
+                    // NOTE (Phase 4): terminal activity is internal idle cycles; finalizing here
                     // breaks the JSON 'n' transaction count, so the +1 back-to-back seam is left
                     // as a documented residual. See docs/cpu-overlapped-prefetch-rework-plan.md.
                     nextStep(cpu);

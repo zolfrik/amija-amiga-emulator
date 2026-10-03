@@ -99,14 +99,14 @@ import javax.swing.UIManager;
 import javax.swing.UnsupportedLookAndFeelException;
 
 /**
- * Classe principale di AmiJa, l'emulatore Amiga 500. Istanzia e collega tutti i
- * componenti interni, avviando la simulazione cycle-exact.
+ * Main class of AmiJa, the Amiga 500 emulator. Creates and wires all the internal
+ * components and starts the cycle-exact simulation.
  *
- * <p>Funge anche da controller del ciclo di vita della macchina: la configurazione
- * è letta da {@link AmigaConfig} ed è modificabile a runtime tramite il popup
- * raggiungibile con <b>F12</b> ({@link ConfigDialog}). All'apertura del popup
- * l'emulazione va in pausa e il mouse host viene rilasciato; alla chiusura la
- * macchina riparte (a freddo o riprendendo) e il mouse viene ricatturato.
+ * <p>It is also the controller of the machine's life cycle: the configuration is read from
+ * {@link AmigaConfig} and can be changed at run time through the popup opened with
+ * <b>F12</b> ({@link ConfigDialog}). While the popup is open the emulation is paused and the
+ * host mouse released; when it closes the machine restarts (cold, or resuming) and the
+ * mouse is captured again.
  */
 public class Amija implements RemotePlayControl {
 
@@ -128,7 +128,7 @@ public class Amija implements RemotePlayControl {
      * ({@code MaxInlineSize=200 FreqInlineSize=1000 InlineSmallCode=5000 MaxInlineLevel=20})
      * measures <b>+3.8 %</b>, a slowdown twice the size of the gain, because the compiled
      * body outgrows the register file and the instruction cache. Neither half of the set
-     * pays on its own — the effect belongs to the combination. Re-measure before changing a
+     * pays on its own: the effect belongs to the combination. Re-measure before changing a
      * number, and never extrapolate one.
      *
      * <p>The same four options are passed by the native launcher, so they must be kept in
@@ -142,26 +142,26 @@ public class Amija implements RemotePlayControl {
         "-XX:MaxInlineLevel=15",
     };
 
-    // Modalita' video corrente (PAL/NTSC): letta da config a ogni avvio a freddo
-    // (bootMachine). Il cambio nel popup F12 ha effetto solo dopo un cold restart.
+    // Current video mode (PAL/NTSC): read from the config at every cold start
+    // (bootMachine). Changing it in the F12 popup takes effect only after a cold restart.
     private VideoMode videoMode = VideoMode.PAL;
-    // La spiegazione sul Kickstart mancante si dà una volta sola per avvio: se l'utente
-    // chiude il popup senza impostarlo, alla seconda volta basta ricordargli cosa manca.
+    // The explanation about the missing Kickstart is given once per run: if the user closes
+    // the popup without setting it, the second time a reminder of what is missing is enough.
     private boolean welcomeShown;
 
-    // --- Stato persistente tra i riavvii (finestra/display + configurazione) ---
+    // --- State kept across restarts (window/display + configuration) ---
     private AmigaConfig config;
     private AmigaDisplay display;
     private JFrame frame;
-    // Componente a cui sono agganciati i listener di input: il frame in software, il
-    // canvas GL (heavyweight) in OpenGL. Fissato a ogni (ri)creazione del display.
+    // Component the input listeners are attached to: the frame in software, the GL canvas
+    // (heavyweight) in OpenGL. Set at every (re)creation of the display.
     private java.awt.Component inputComponent;
 
-    // --- Componenti della macchina corrente (ricreati a ogni avvio a freddo) ---
-    // I supporti montati sulla macchina accesa, fotografati alla sua costruzione;
-    // null quando non c'è macchina. Sono l'hardware in vigore: il popup ci confronta
-    // la lista dei supporti per sapere che cosa l'utente sta aggiungendo, e quello
-    // aspetta il prossimo avvio invece di cambiare la macchina sotto al gioco.
+    // --- Components of the current machine (recreated at every cold start) ---
+    // The media mounted on the running machine, taken when it was built; null when there
+    // is no machine. They are the hardware in force: the popup compares its media list with
+    // them to know what the user is adding, which then waits for the next start instead of
+    // changing the machine under the game.
     private ConfigDialog.DriveHardware activeHardware;
     private MasterClock clock;
     private Paula paula;
@@ -172,68 +172,67 @@ public class Amija implements RemotePlayControl {
     private AmigaMouseAdapter mouseAdapter;
     private AmigaKeyAdapter keyAdapter;
     private AmigaJoystickKeyAdapter joystickAdapter;
-    // Game port correnti (ricreate a ogni boot): Port 0 = mouse/JOY0DAT, Port 1 = joystick/JOY1DAT.
+    // Current game ports (recreated at every boot): Port 0 = mouse/JOY0DAT, Port 1 = joystick/JOY1DAT.
     private GamePort gamePort1;
     private GamePort gamePort2;
-    // Servizio joystick reale (GLFW): singleton, avviato pigramente solo se selezionato.
+    // Real joystick service (GLFW): singleton, started lazily only if selected.
     private final GlfwJoystickService joystickService = GlfwJoystickService.getInstance();
 
-    // --- Gioco a distanza (docs/remote-play-plan.md). Uno dei due, mai entrambi:
-    // o questa macchina emula e serve un ospite, o non emula affatto e ne è l'ospite.
-    // Avvio solo da -D finché la Fase 5 non porta la sezione nel popup F12.
+    // --- Remote play (docs/remote-play-plan.md). One of the two, never both: either this
+    // machine emulates and serves a guest, or it does not emulate at all and is the guest.
     private RemotePlayHost remotePlayHost;
-    /** Apertura della porta sul router mentre si ospita (§7.1); null se non richiesta. */
+    /** Port forwarding on the router while hosting (section 7.1); null if not requested. */
     private volatile PortMapper portMapper;
     private Thread routerCloser;
     private volatile RemotePlayGuest remotePlayGuest;
     private RemotePlaySettings remotePlaySettings = RemotePlaySettings.off();
-    /** Lato ospite: raccoglie i gesti locali nel pacchetto da spedire. */
+    /** Guest side: gathers the local gestures into the packet to send. */
     private RemoteInputSender remoteInputSender;
-    // --- Collegarsi a un host: la sessione si apre col popup ANCORA APERTO -------------
-    // Il collegamento vero avviene su un thread suo (l'handshake puo' metterci secondi e
-    // l'EDT non puo' aspettarlo), mentre la macchina locale resta montata: cosi' il popup
-    // puo' raccontare come sta andando e un fallimento ha ancora una finestra in cui essere
-    // detto. A smontare la macchina — che e' la parte che da dentro un dialog modale non si
-    // fa — si arriva solo se l'utente conferma con OK (applyPendingRemotePlayTransition).
+    // --- Connecting to a host: the session opens with the popup STILL OPEN ---------------
+    // The actual connection happens on its own thread (the handshake can take seconds and
+    // the EDT cannot wait for it), while the local machine stays mounted: so the popup can
+    // report how it is going, and a failure still has a window in which to be told.
+    // Unmounting the machine, which cannot be done from inside a modal dialog, happens only
+    // if the user confirms with OK (applyPendingRemotePlayTransition).
     private volatile boolean joining;
     private String joiningAddress;
-    /** Chiusura chiesta mentre il tentativo era in volo. Protetto da {@code this}. */
+    /** Close requested while the attempt was in flight. Guarded by {@code this}. */
     private boolean joinCancelled;
-    /** Vero quando la macchina e' stata davvero smontata per fare l'ospite. */
+    /** True when the machine has really been unmounted to act as a guest. */
     private volatile boolean guestMode;
-    /** Ultimo esito negativo del gioco a distanza, che resta nella riga di stato. */
+    /** Last negative outcome of remote play, kept in the status line. */
     private volatile String remotePlayLastError;
     private boolean pendingLeave;
     private final FloppySound[] floppySounds = new FloppySound[4];
     private final java.util.List<HardFile> hardFiles = new java.util.ArrayList<>();
-    // Sorgenti di attività per il LED HD del display, una per unità (WHDLoad, master,
-    // slave) nell'ordine in cui devono comparire da sinistra a destra.
+    // Activity sources for the display's HD LED, one per unit (WHDLoad, master, slave), in
+    // the order they appear from left to right.
     private final java.util.List<java.util.function.BooleanSupplier> hdLedSources =
             new java.util.ArrayList<>();
 
     public static void main(String[] args) {
-        // PRIMA di ogni altra cosa (in particolare prima che AWT si inizializzi):
-        // dichiara il processo per-monitor DPI aware. Il launcher nativo di jpackage
-        // non ha manifest e partirebbe DPI-unaware, facendo fotografare ad AWT i font
-        // di sistema a 96 DPI; alla prima JFileChooser quelle desktop property vengono
-        // rilette alla DPI reale e i font dell'intero Look and Feel si ingrandiscono.
-        // Sotto java.exe (manifest dpiAware=true/PM) e' un no-op.
+        // BEFORE anything else (in particular before AWT initialises): declare the process
+        // per-monitor DPI aware. The jpackage native launcher has no manifest and would start
+        // DPI-unaware, making AWT take the system fonts at 96 DPI; at the first JFileChooser
+        // those desktop properties would be re-read at the real DPI and the fonts of the
+        // whole Look and Feel would grow. Under java.exe (manifest dpiAware=true/PM) it is a
+        // no-op.
         WindowsDpiAwareness.ensurePerMonitorAware();
-        // Lo scaling HiDPI di Java2D e' spento SEMPRE, e va spento QUI, prima che il
-        // toolkit AWT/Swing si inizializzi (la prima init avviene in
-        // applyWindowsLookAndFeel): il toolkit lo fissa una volta sola all'avvio.
+        // Java2D HiDPI scaling is ALWAYS off, and must be turned off HERE, before the
+        // AWT/Swing toolkit initialises (the first init happens in
+        // applyWindowsLookAndFeel): the toolkit fixes it once, at start-up.
         //
-        // Da qui in poi 1 pixel Java = 1 pixel fisico, e le due scale sono indipendenti:
-        //  - la finestra emulata la ingrandisce AmiJa, di un fattore INTERO
-        //    (video.integerScaling), in AmigaDisplay/DisplayPanel per il renderer software
-        //    e sulla GPU per quello OpenGL;
-        //  - l'interfaccia la ingrandisce il Look and Feel, di un fattore anche
-        //    frazionario, senza toccare la finestra emulata.
-        // Lasciando decidere Java, invece, un desktop al 150% scalerebbe TUTTO per 1,5 —
-        // finestra emulata compresa, con interpolazione: l'opposto dell'integer scaling.
-        // Le due property insieme non sono ridondanti: la prima e' quella che disattiva
-        // lo scaling di sistema, la seconda e' la cintura di sicurezza.
-        // Vedi docs/gui-scaling-flatlaf-plan.md.
+        // From here on 1 Java pixel = 1 physical pixel, and the two scales are independent:
+        //  - the emulated window is enlarged by AmiJa, by an INTEGER factor
+        //    (video.integerScaling), in AmigaDisplay/DisplayPanel for the software renderer
+        //    and on the GPU for the OpenGL one;
+        //  - the interface is enlarged by the Look and Feel, by a factor that may be
+        //    fractional, without touching the emulated window.
+        // Letting Java decide, a desktop at 150% would scale EVERYTHING by 1.5, emulated
+        // window included, with interpolation: the opposite of integer scaling.
+        // The two properties together are not redundant: the first turns system scaling
+        // off, the second is the safety belt.
+        // See docs/gui-scaling-flatlaf-plan.md.
         System.setProperty("sun.java2d.uiScale.enabled", "false");
         System.setProperty("sun.java2d.uiScale", "1");
         applyUiScale(AmigaConfig.load());
@@ -242,39 +241,37 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Passa a FlatLaf il fattore di scala dell'interfaccia ({@code ui.scale}). Va fatto
-     * PRIMA di installare il Look and Feel: {@code flatlaf.uiScale} viene letta all'init
-     * di {@code UIScale}, cioe' una volta sola, e non e' modificabile a caldo — per
-     * questo il cambio nel popup F12 rilancia il processo.
+     * Passes the interface scale factor ({@code ui.scale}) to FlatLaf. It must be done
+     * BEFORE installing the Look and Feel: {@code flatlaf.uiScale} is read when
+     * {@code UIScale} initialises, i.e. once, and cannot be changed live; that is why
+     * changing it in the F12 popup relaunches the process.
      *
-     * <p><b>La property si imposta sempre, anche quando vale 1.</b> Non e' ridondanza:
-     * con lo scaling di sistema spento (le due righe qui sopra) FlatLaf, in assenza di un
-     * valore esplicito, dedurrebbe il fattore dalla dimensione del font di sistema. Su
-     * questa macchina quel font e' 12 anche con il desktop al 150%, quindi dedurrebbe 1 e
-     * andrebbe bene per caso; ma sotto il launcher jpackage esiste uno stato noto in cui
-     * AWT rilegge i font alla DPI reale e quel 12 diventa 18 (vedi WindowsDpiAwareness),
-     * e li' la deduzione darebbe 1,5. Un valore esplicito rende il comportamento
-     * indipendente da quale font AWT abbia fotografato, e da quando.
+     * <p><b>The property is always set, even when it is 1.</b> With system scaling off (the
+     * two lines above) and no explicit value, FlatLaf would derive the factor from the size
+     * of the system font. Under the jpackage launcher there is a known state in which AWT
+     * re-reads the fonts at the real DPI and a 12 becomes 18 (see WindowsDpiAwareness), and
+     * there the derivation would give 1.5. An explicit value makes the behaviour
+     * independent of which font AWT took, and when.
      */
     private static void applyUiScale(AmigaConfig cfg) {
         System.setProperty("flatlaf.uiScale", cfg.uiScaleValue());
     }
 
     /**
-     * Installa FlatLaf (tema scuro) sull'intera interfaccia Swing.
+     * Installs FlatLaf (dark theme) on the whole Swing interface.
      *
-     * <p>Scuro perche' i dialoghi di AmiJa dipingono gia' a mano la propria palette scura
-     * (ConfigDialog, JoystickKeysDialog, AssetDownloadDialog, ShaderParamsDialog): con il
-     * Look and Feel di sistema restavano chiari solo i componenti che disegnava lui —
-     * combo, spinner, checkbox, scrollbar, tooltip, JOptionPane — dentro finestre scure.
+     * <p>Dark because AmiJa's dialogs already paint their own dark palette by hand
+     * (ConfigDialog, JoystickKeysDialog, AssetDownloadDialog, ShaderParamsDialog): with the
+     * system Look and Feel only the components it drew stayed light (combo boxes, spinners,
+     * checkboxes, scroll bars, tooltips, JOptionPane) inside dark windows.
      *
-     * <p>Ma la ragione per cui la scelta e' FlatLaf e non un tema qualunque e' il suo
-     * <em>user scaling</em>: scala l'interfaccia di un fattore anche frazionario
-     * indipendentemente dallo scaling HiDPI di Java, che qui e' spento perche' la finestra
-     * emulata deve ricevere pixel fisici esatti. Vedi {@link #applyUiScale}.
+     * <p>The reason it is FlatLaf and not any theme is its <em>user scaling</em>: it scales
+     * the interface by a factor that may be fractional, independently of Java's HiDPI
+     * scaling, which is off here because the emulated window must get exact physical pixels.
+     * See {@link #applyUiScale}.
      *
-     * <p>Se per qualsiasi motivo non si installasse, si ripiega sul Look and Feel di
-     * sistema: l'interfaccia resta usabile, solo non scalata.
+     * <p>If it cannot be installed for any reason, the system Look and Feel is used: the
+     * interface stays usable, only not scaled.
      */
     private static void applyLookAndFeel() {
         try {
@@ -292,7 +289,7 @@ public class Amija implements RemotePlayControl {
     }
 
     // =========================================================================
-    // Ciclo di vita
+    // Life cycle
     // =========================================================================
 
     public void start() {
@@ -303,8 +300,8 @@ public class Amija implements RemotePlayControl {
         }
 
         config = AmigaConfig.load();
-        Messages.setLanguage(config.language()); // prima di creare qualsiasi UI
-        // Lo stato salvato quando lo slot era uno solo finisce nello Slot 1: una volta, qui.
+        Messages.setLanguage(config.language()); // before creating any UI
+        // The state saved when there was a single slot goes to Slot 1: once, here.
         SaveStateManager.migrateLegacySlot();
         boolean overscan = config.overscanEnabled();
         int fw = config.videoMode().displayWidth(overscan);
@@ -313,25 +310,25 @@ public class Amija implements RemotePlayControl {
                 config.integerScaling(), config.monitorIndex());
         frame = display.getFrame();
         inputComponent = display.getInputComponent();
-        // Un disco droppato su un drive aggiorna la config in memoria, così il popup F12
-        // mostra il percorso nel drive relativo (e lo salva se l'utente conferma con OK).
+        // A disk dropped on a drive updates the config in memory, so the F12 popup shows the
+        // path in that drive (and saves it if the user confirms with OK).
         display.setDiskDropListener(this::rememberDroppedDisk);
         display.setShaderPreset(resolveShaderPath(config.shader()));
         installConfigHotkey();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             shutdownRemotePlay();
-            // La porta sul router va ritirata davvero, non solo ordinata: il thread che la
-            // ritira è daemon e alla chiusura della JVM verrebbe ucciso a metà (§7.1).
+            // The router port must really be withdrawn, not just ordered to: the thread that
+            // withdraws it is a daemon and would be killed halfway at JVM exit (section 7.1).
             awaitRouterPortClosed();
             shutdownMachine();
-            joystickService.shutdown(); // termina GLFW (solo alla chiusura del processo)
+            joystickService.shutdown(); // terminate GLFW (only when the process exits)
         }, "amiga-shutdown"));
 
         RemotePlaySettings remotePlay = readRemotePlaySettings();
         if (remotePlay.mode() == RemotePlaySettings.Mode.GUEST) {
-            // L'ospite NON emula: niente Kickstart, niente ROM, niente MasterClock (§3).
-            // La finestra c'è già; da qui in poi la riempie la rete al posto di Denise.
+            // The guest does NOT emulate: no Kickstart, no ROM, no MasterClock (section 3).
+            // The window already exists; from here on the network fills it instead of Denise.
             joinRemoteHost(remotePlay);
             return;
         }
@@ -340,14 +337,14 @@ public class Amija implements RemotePlayControl {
             bootMachine();
             startHosting(remotePlay);
         } else {
-            // ROM mancante/errata al primo avvio: apri il popup così l'utente può
-            // impostare il percorso del Kickstart e gli altri parametri.
+            // ROM missing or wrong at the first start: open the popup so the user can set
+            // the Kickstart path and the other parameters.
             SwingUtilities.invokeLater(this::openConfig);
         }
     }
 
     // =========================================================================
-    // Gioco a distanza (docs/remote-play-plan.md §12, Fase 2: avvio via -D)
+    // Remote play (docs/remote-play-plan.md section 12)
     // =========================================================================
 
     private RemotePlaySettings readRemotePlaySettings() {
@@ -361,10 +358,10 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Apre la sessione lato host e attacca il video a {@code VirtualCRT}.
+     * Opens the host-side session and attaches the video to {@code VirtualCRT}.
      *
-     * <p>Un fallimento qui <b>non</b> è fatale: la macchina è già avviata e deve restare
-     * giocabile in locale. Si dice cosa è andato storto e si prosegue senza ospite.
+     * <p>A failure here is <b>not</b> fatal: the machine is already running and must stay
+     * playable locally. What went wrong is reported and the run goes on without a guest.
      */
     private void startHosting(RemotePlaySettings settings) {
         if (settings.mode() != RemotePlaySettings.Mode.HOST || virtualCRT == null) {
@@ -390,13 +387,12 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Chiede al router di inoltrare la porta, se l'utente lo vuole (§7.1).
+     * Asks the router to forward the port, if the user wants it (section 7.1).
      *
-     * <p>Non con la <b>sola rete locale</b> accesa, e non è una precauzione formale: quella
-     * spunta dice «da fuori non entra nessuno», e chi entrasse dalla porta appena aperta
-     * verrebbe rifiutato dall'host un istante dopo. Sarebbe una porta aperta sul router di
-     * casa per una connessione che non può funzionare — cioè il contrario di quel che
-     * entrambe le opzioni promettono.
+     * <p>Not with <b>local network only</b> on, and not as a formality: that option says
+     * "nobody gets in from outside", and whoever came in through the newly opened port would
+     * be refused by the host an instant later. It would be a port open on the home router
+     * for a connection that cannot work, the opposite of what both options promise.
      */
     private void openRouterPort(int port) {
         closeRouterPort();
@@ -407,28 +403,27 @@ public class Amija implements RemotePlayControl {
         portMapper.open();
     }
 
-    /** Ritira la mappatura. Chiamata da ogni percorso che smette di ospitare. */
+    /** Withdraws the mapping. Called by every path that stops hosting. */
     private void closeRouterPort() {
         PortMapper mapper = portMapper;
         if (mapper == null) {
             return;
         }
         portMapper = null;
-        // Su un thread suo: la rimozione parla col router e può metterci secondi, e chi
-        // chiude l'ascolto è quasi sempre l'EDT dentro il popup.
+        // On its own thread: the removal talks to the router and can take seconds, and the
+        // one closing the listener is almost always the EDT inside the popup.
         routerCloser = new Thread(mapper::close, "amija-remoteplay-upnp-close");
         routerCloser.setDaemon(true);
         routerCloser.start();
     }
 
     /**
-     * Aspetta che la mappatura sia stata ritirata davvero. <b>Solo per lo shutdown hook.</b>
+     * Waits until the mapping has really been withdrawn. <b>Only for the shutdown hook.</b>
      *
-     * <p>Un thread daemon che sta parlando col router viene ucciso quando la JVM esce, e la
-     * porta resterebbe aperta: qui si concede il tempo di finire. Poco, però — se il router
-     * non risponde è preferibile un'uscita pulita a una chiusura che sembra bloccata, e la
-     * porta si chiude comunque da sé alla scadenza del lease, che è il motivo per cui una
-     * scadenza c'è.
+     * <p>A daemon thread talking to the router is killed when the JVM exits, and the port
+     * would stay open: this gives it time to finish. Not much, though: if the router does
+     * not answer, a clean exit is better than a close that looks stuck, and the port closes
+     * by itself when the lease expires, which is why there is a lease.
      */
     private void awaitRouterPortClosed() {
         Thread closer = routerCloser;
@@ -443,12 +438,12 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Si collega a un host e disegna quello che arriva.
+     * Connects to a host and draws what arrives.
      *
-     * <p>Il frame che arriva è il <b>raster grezzo</b> 912x312, cioè esattamente ciò che
-     * {@code AmigaDisplay.renderFrame} riceve dall'emulazione: crop, integer scaling,
-     * overscan, shader e fullscreen restano quindi scelte locali di questa macchina e
-     * funzionano senza saperne niente.
+     * <p>The frame that arrives is the <b>raw</b> 912x312 raster, exactly what
+     * {@code AmigaDisplay.renderFrame} receives from the emulation: crop, integer scaling,
+     * overscan, shaders and fullscreen stay choices of this machine and work without
+     * knowing anything about it.
      */
     private void joinRemoteHost(RemotePlaySettings settings) {
         try {
@@ -460,8 +455,8 @@ public class Amija implements RemotePlayControl {
                     settings.address() + ":" + settings.port(), joinFailureCause(e));
             remotePlayLastError = message;
             reportRemotePlayProblem(message);
-            // Meglio la propria macchina che una finestra vuota: da lì l'utente può
-            // ritentare dal popup, che è anche dove ora si legge cosa è andato storto.
+            // Our own machine is better than an empty window: from there the user can retry
+            // from the popup, which is also where what went wrong can now be read.
             if (validateRom(config)) {
                 bootMachine();
             }
@@ -475,25 +470,25 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Dove finiscono i frame che arrivano dall'host: nello <b>stesso</b>
-     * {@code renderFrame} che riceve il raster dall'emulazione.
+     * Where the frames from the host go: into the <b>same</b> {@code renderFrame} that
+     * receives the raster from the emulation.
      *
-     * <p>È tutto quel che serve perché crop, integer scaling, overscan, shader, LED,
-     * fullscreen e screenshot funzionino sull'ospite senza che una riga di quel codice
-     * sappia della rete.
+     * <p>That is all it takes for crop, integer scaling, overscan, shaders, LEDs, fullscreen
+     * and screenshots to work on the guest without one line of that code knowing about the
+     * network.
      */
     private VideoReceiver.FrameSink guestFrameSink() {
         return (pixels, w, h, info, frameId) -> display.renderFrame(pixels, w, h, info);
     }
 
     /**
-     * Sorveglia la sessione e, se finisce da sé, lo dice all'utente.
+     * Watches the session and, if it ends by itself, tells the user.
      *
-     * <p>Una spia che si spegne non avvisa chi sta guardando il gioco, e l'ultima immagine
-     * congelata somiglia troppo a un emulatore piantato: quando il collegamento cade deve
-     * comparire un messaggio, con il motivo. Se invece la sessione l'abbiamo chiusa noi
-     * ({@link RemotePlayGuest.EndCause#LOCAL}) non c'è niente da annunciare — l'utente ha
-     * appena premuto il pulsante che la chiude.
+     * <p>A light going off does not warn someone watching the game, and the last frozen image
+     * looks too much like a hung emulator: when the connection drops a message must appear,
+     * with the reason. If we closed the session ourselves
+     * ({@link RemotePlayGuest.EndCause#LOCAL}) there is nothing to announce: the user has
+     * just pressed the button that closes it.
      */
     private void startGuestWatchdog(RemotePlayGuest guest) {
         Thread watchdog = new Thread(() -> {
@@ -514,27 +509,27 @@ public class Amija implements RemotePlayControl {
         watchdog.start();
     }
 
-    /** Sull'EDT: la sessione è caduta da sé. Si dice perché, e si rimette in piedi la macchina. */
+    /** On the EDT: the session dropped by itself. Say why, and bring the machine back up. */
     private void onRemoteSessionLost(RemotePlayGuest guest) {
         if (remotePlayGuest != guest) {
-            return;   // già sostituita o chiusa nel frattempo: nessun annuncio da fare
+            return;   // already replaced or closed meanwhile: nothing to announce
         }
         String message = Messages.t("msg.remoteplay.lost", lostCause(guest));
         boolean wasGuestMode = guestMode;
-        // Va letto PRIMA di aprire il nostro messaggio, che è a sua volta modale.
+        // Must be read BEFORE opening our own message, which is modal too.
         boolean popupOpen = modalDialogShowing();
         shutdownGuestSession();
         remotePlayLastError = message;
         reportRemotePlayProblem(message);
         if (wasGuestMode && !popupOpen) {
-            // Senza macchina resterebbe una finestra morta. Col popup aperto invece non si
-            // ricostruisce niente da qui: lo fa settleRemotePlayAfterConfig alla chiusura,
-            // fuori dal dialog modale, che è la regola di tutto questo sviluppo.
+            // Without a machine the window would be dead. With the popup open nothing is
+            // rebuilt from here: settleRemotePlayAfterConfig does it when it closes, outside
+            // the modal dialog, which is the rule throughout.
             leaveGuestMode();
         }
     }
 
-    /** Il motivo della caduta, nella lingua dell'utente. */
+    /** The reason for the drop, in the user's language. */
     private String lostCause(RemotePlayGuest guest) {
         String detail = guest.endDetail();
         return switch (guest.endCause()) {
@@ -547,12 +542,12 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Perché un collegamento non è riuscito, nella lingua dell'utente.
+     * Why a connection failed, in the user's language.
      *
-     * <p>«Impossibile collegarsi» e basta manda a controllare il router anche chi ha solo
-     * sbagliato a copiare il codice. I quattro motivi di REJECT li conosce l'host e li
-     * manda apposta (§3): buttarli via qui sarebbe sprecare l'unica informazione che
-     * distingue un problema di rete da un errore di battitura.
+     * <p>"Unable to connect" alone sends to check the router even someone who merely
+     * mistyped the code. The four REJECT reasons are known to the host, which sends them on
+     * purpose (section 3): throwing them away here would waste the one piece of information
+     * that tells a network problem from a typo.
      */
     private String joinFailureCause(IOException e) {
         if (e instanceof Handshake.RejectedException rejected) {
@@ -581,13 +576,13 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Mostra un guasto del gioco a distanza, da qualunque thread lo si sia scoperto.
+     * Shows a remote play failure, from whatever thread it was found on.
      *
-     * <p>La finestra a cui parentarlo non è sempre la stessa, e sbagliarla si paga caro: il
-     * popup F12 è <b>modale</b>, quindi un messaggio parentato alla finestra di gioco mentre
-     * quello è aperto verrebbe bloccato da Swing — comparirebbe e non si potrebbe chiudere.
-     * Si parenta quindi alla finestra attiva, che è il popup quando c'è e la finestra di
-     * gioco quando non c'è.
+     * <p>The parent window is not always the same, and getting it wrong is costly: the F12
+     * popup is <b>modal</b>, so a message parented to the game window while it is open would
+     * be blocked by Swing (it would appear and could not be closed). It is therefore
+     * parented to the active window, which is the popup when there is one and the game
+     * window otherwise.
      */
     private void reportRemotePlayProblem(String message) {
         System.err.println("[NET] " + message);
@@ -600,15 +595,15 @@ public class Amija implements RemotePlayControl {
         }
     }
 
-    /** La finestra a cui parentare un messaggio perché non finisca bloccato da un modale. */
+    /** The window to parent a message to so it is not blocked by a modal dialog. */
     private java.awt.Window activeWindow() {
         java.awt.Window active = java.awt.KeyboardFocusManager
                 .getCurrentKeyboardFocusManager().getActiveWindow();
         if (active != null && active.isShowing()) {
             return active;
         }
-        // Applicazione in secondo piano: nessuna finestra è attiva, ma se c'è un dialog
-        // modale aperto il messaggio deve comunque appenderglisi.
+        // Application in the background: no window is active, but if a modal dialog is open
+        // the message must still attach to it.
         java.awt.Window modal = modalDialog();
         return modal != null ? modal : frame;
     }
@@ -621,34 +616,34 @@ public class Amija implements RemotePlayControl {
         java.awt.Window found = null;
         for (java.awt.Window w : java.awt.Window.getWindows()) {
             if (w instanceof java.awt.Dialog d && d.isModal() && d.isShowing()) {
-                found = d;   // l'ultimo aperto è quello che blocca gli altri
+                found = d;   // the last one opened is the one that blocks the others
             }
         }
         return found;
     }
 
     /**
-     * Lato ospite: aggancia gli adapter di input veri a un {@link RemoteInputSender}
-     * invece che a una macchina.
+     * Guest side: attaches the real input adapters to a {@link RemoteInputSender} instead of
+     * a machine.
      *
-     * <p>Sono gli <b>stessi</b> adapter che pilotano l'emulazione — quelli con dentro la
-     * traduzione dei tasti, la cattura del puntatore, la mappa del joystick da tastiera —
-     * e non si accorgono di niente: scrivono su {@code GamePortControls} e
-     * {@code AmigaKeyTarget}, e qui dietro c'è la rete al posto dei registri. Si gioca
-     * esattamente come in locale, mouse catturato compreso.
+     * <p>They are the <b>same</b> adapters that drive the emulation (with the key
+     * translation, the pointer capture, the keyboard joystick map inside) and notice
+     * nothing: they write to {@code GamePortControls} and {@code AmigaKeyTarget}, and behind
+     * those there is the network instead of the registers. Play is exactly as local, mouse
+     * capture included.
      *
-     * <p><b>Quale porta, e cosa ci sta dentro, sono due decisioni diverse.</b> La porta la
-     * assegna l'host — è la sua macchina, e deve poter tenere per sé quella su cui gioca —
-     * ma la periferica la sceglie l'ospite, nella tendina di <i>quella</i> porta del proprio
-     * popup F12. È ciò che rende sensato il caso normale: chi si collega gioca col proprio
-     * joystick, o coi propri tasti se il joystick lo emula sulla tastiera. I tasti sono i
-     * suoi, letti dalla sua {@code amiga.properties}; quelli dell'host non c'entrano nulla e
-     * non hanno mai attraversato la rete. Il cablaggio vero sta in
-     * {@link #applyGuestPortAssignment()}, che è anche ciò che ogni conferma del popup
-     * richiama — così cambiare periferica a partita in corso funziona.
+     * <p><b>Which port, and what is plugged into it, are two different decisions.</b> The
+     * host assigns the port (it is its machine, and it must be able to keep the one it plays
+     * on), but the guest chooses the device, in the drop-down of <i>that</i> port of its own
+     * F12 popup. That is what makes the normal case sensible: whoever connects plays with
+     * their own joystick, or with their own keys if the joystick is emulated on the
+     * keyboard. The keys are theirs, read from their {@code amiga.properties}; the host's
+     * have nothing to do with it and never cross the network. The actual wiring is in
+     * {@link #applyGuestPortAssignment()}, which every confirmation of the popup calls too,
+     * so changing device in the middle of a game works.
      *
-     * <p>F12 non arriva fin qui: {@code installConfigHotkey} lo consuma prima, quindi apre
-     * il popup <b>di questa</b> macchina e non tocca quella dell'host.
+     * <p>F12 does not get this far: {@code installConfigHotkey} consumes it first, so it
+     * opens the popup of <b>this</b> machine and does not touch the host's.
      */
     private void installGuestInput() {
         remoteInputSender = new RemoteInputSender();
@@ -656,15 +651,15 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Aggancia gli adapter dell'ospite al componente di input corrente, <b>senza</b> toccare
-     * il {@link RemoteInputSender}.
+     * Attaches the guest's adapters to the current input component <b>without</b> touching
+     * the {@link RemoteInputSender}.
      *
-     * <p>Separata da {@link #installGuestInput()} per una ragione precisa: rifare il sender
-     * vuol dire riportare a zero i <b>contatori cumulativi del mouse</b>, e l'host applica la
-     * loro differenza. Siccome la generazione di sessione non cambia, l'host non ha modo di
-     * accorgersi che l'origine è cambiata e calcolerebbe un delta grande quanto tutto il
-     * movimento fatto fin lì: il puntatore sull'Amiga farebbe un salto. Quando a cambiare è
-     * solo la finestra — ed è per quello che questa esiste — i contatori devono proseguire.
+     * <p>Separate from {@link #installGuestInput()} for a precise reason: recreating the
+     * sender resets the <b>cumulative mouse counters</b>, and the host applies their
+     * difference. Since the session generation does not change, the host cannot notice that
+     * the origin changed and would compute a delta as large as all the movement made so far:
+     * the pointer on the Amiga would jump. When only the window changes, which is why this
+     * method exists, the counters must carry on.
      */
     private void attachGuestInput() {
         remotePlayGuest.setInputSource(remoteInputSender::snapshot);
@@ -676,8 +671,8 @@ public class Amija implements RemotePlayControl {
         applyGuestPortAssignment();
 
         if (inputComponent != null) {
-            // Stesso ordine dell'emulazione: il joystick prima, perché consuma i tasti
-            // mappati su direzioni e fuoco, che non vanno anche alla tastiera Amiga.
+            // Same order as the emulation: the joystick first, because it consumes the keys
+            // mapped to directions and fire, which must not also reach the Amiga keyboard.
             inputComponent.addKeyListener(joystickAdapter);
             inputComponent.addKeyListener(keyAdapter);
             inputComponent.addMouseListener(mouseAdapter);
@@ -688,19 +683,18 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Il «riavvio a freddo» di un ospite: si rifà la finestra, e basta.
+     * The "cold restart" of a guest: the window is rebuilt, and that is all.
      *
-     * <p>{@link #coldRestart()} non va bene qui, e non per poco: finisce in
-     * {@code bootMachine()}, cioè costruirebbe un'Amiga locale sotto il video che sta
-     * arrivando dall'host. Delle impostazioni che lo richiedono, a un ospite ne riguardano
-     * solo quelle della finestra — overscan, zoom, modo finestra, monitor, renderer — e per
-     * quelle serve esattamente questo: display nuovo, adapter riagganciati al componente
-     * nuovo (quello di prima è stato buttato via con la finestra), spia di rete ricollegata
-     * perché le sue sorgenti stanno sul display.
+     * <p>{@link #coldRestart()} does not fit here: it ends in {@code bootMachine()}, which
+     * would build a local Amiga under the video arriving from the host. Of the settings that
+     * require it, only the window's concern a guest (overscan, zoom, window mode, monitor,
+     * renderer), and for those this is exactly what is needed: a new display, the adapters
+     * reattached to the new component (the old one was thrown away with the window), the
+     * network light reconnected because its sources live on the display.
      */
     private void recreateGuestDisplay() {
-        // Prima di buttare la finestra: gli adapter vanno fermati, non solo dimenticati —
-        // dentro ci sono un poller di tastiera e un listener di focus.
+        // Before throwing the window away: the adapters must be stopped, not just forgotten;
+        // they contain a keyboard poller and a focus listener.
         detachInputAdapters();
         recreateDisplay();
         attachGuestInput();
@@ -708,12 +702,12 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Collega i controlli dell'ospite alla macchina: la game port che l'host gli ha
-     * assegnato e, se concessa, la tastiera.
+     * Connects the guest's controls to the machine: the game port the host assigned to it
+     * and, if granted, the keyboard.
      *
-     * <p>Va rifatto a ogni riavvio a freddo, perché la game port e la tastiera di prima non
-     * esistono più. Se la macchina non c'è ancora, si stacca e basta: l'ospite continua a
-     * vedere il video senza toccare niente.
+     * <p>Must be redone at every cold restart, because the previous game port and keyboard
+     * no longer exist. If there is no machine yet, it only detaches: the guest keeps seeing
+     * the video without touching anything.
      */
     private void attachRemoteInput() {
         if (remotePlayHost == null) return;
@@ -726,11 +720,11 @@ public class Amija implements RemotePlayControl {
         remotePlayHost.setInputTarget(new RemoteInputApplier(target,
                 remotePlaySettings.guestKeyboard() ? keyboard : null,
                 remotePlaySettings.guestAllowReset()));
-        // Quella porta ora è dell'ospite: gli adapter locali che ci puntavano vanno tolti
-        // di lì, o mouse e joystick dell'host continuerebbero a scriverci sopra.
+        // That port now belongs to the guest: the local adapters pointing at it must be
+        // removed, or the host's mouse and joystick would keep writing to it.
         applyPortAssignments();
 
-        // L'audio va derivato dal nuovo Paula: quello di prima non esiste più.
+        // The audio must be taken from the new Paula: the old one no longer exists.
         if (paula != null) {
             RemotePlayHost host = remotePlayHost;
             paula.setPcmTap(remotePlaySettings.audioFormat() == 0
@@ -739,7 +733,7 @@ public class Amija implements RemotePlayControl {
     }
 
     // =========================================================================
-    // RemotePlayControl: quello che il popup F12 comanda (§9)
+    // RemotePlayControl: what the F12 popup controls (section 9)
     // =========================================================================
 
     @Override
@@ -762,9 +756,9 @@ public class Amija implements RemotePlayControl {
     public int remoteGamePort() {
         RemotePlayGuest guest = remotePlayGuest;
         if (guest != null) {
-            // Da ospite vale quel che ha detto l'host nel WELCOME, non la propria
-            // configurazione: quella dice a chi ospita quale porta cederebbe, che qui non
-            // c'entra. Confonderle vorrebbe dire mostrare all'utente la tendina sbagliata.
+            // As a guest what counts is what the host said in the WELCOME, not the own
+            // configuration: that tells a host which port it would give away, which does
+            // not apply here. Mixing them would show the user the wrong drop-down.
             return guest.gamePort();
         }
         return hostedGuestPort();
@@ -788,25 +782,25 @@ public class Amija implements RemotePlayControl {
 
     @Override
     public String internetAddress() {
-        // Lo dice il router, non lo si indovina: un indirizzo inventato manda l'utente a
-        // cercare il problema dove non c'è. Finché UPnP non ha risposto, si tace.
+        // The router says it, it is not guessed: a made-up address sends the user looking for
+        // the problem where it is not. Until UPnP has answered, say nothing.
         PortMapper mapper = portMapper;
         return mapper == null || mapper.state() != PortMapper.State.MAPPED
                 ? null : mapper.externalAddress();
     }
 
     /**
-     * A che punto è l'apertura della porta sul router, in una riga leggibile.
+     * How far the port opening on the router has got, as a readable line.
      *
-     * <p>{@code null} quando non c'è niente da dire, cioè quando UPnP non è stato chiesto:
-     * una riga «non richiesto» sarebbe rumore in un popup che ne ha già tante.
+     * <p>{@code null} when there is nothing to say, i.e. when UPnP was not requested: a
+     * "not requested" line would be noise in a popup that already has many.
      */
     @Override
     public String routerStatus() {
         PortMapper mapper = portMapper;
         if (mapper == null) {
-            // Con la sola rete locale accesa la porta non si chiede apposta, e vale la pena
-            // dirlo: è la differenza fra «UPnP non ha funzionato» e «non gliel'ho chiesto».
+            // With local network only on, the port is deliberately not requested, and it is
+            // worth saying: it is the difference between "UPnP failed" and "I did not ask".
             return isHosting() && config.remotePlayUpnp() && config.remotePlayLanOnly()
                     ? Messages.t("msg.remoteplay.upnp.lanonly") : null;
         }
@@ -842,8 +836,8 @@ public class Amija implements RemotePlayControl {
             return Messages.t("msg.remoteplay.hostconnected",
                     frames, remotePlayHost.framesDroppedBusy());
         }
-        // L'esito negativo resta scritto qui anche dopo che l'utente ha chiuso il messaggio:
-        // il popup è l'unico posto in cui può rileggere perché non è andata.
+        // The negative outcome stays written here even after the user has closed the
+        // message: the popup is the only place where it can be read again.
         String error = remotePlayLastError;
         return error != null ? error : Messages.t("msg.remoteplay.off");
     }
@@ -882,7 +876,7 @@ public class Amija implements RemotePlayControl {
     @Override
     public String requestJoin(String address, String code) {
         if (joining || isGuest()) {
-            return null;   // già in corso o già collegati: il popup si riallinea da sé
+            return null;   // already in progress or already connected: the popup realigns by itself
         }
         if (address == null || address.isBlank()) {
             return Messages.t("msg.remoteplay.noaddress");
@@ -906,17 +900,16 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Il tentativo di collegamento, su un thread suo.
+     * The connection attempt, on its own thread.
      *
-     * <p>Fuori dall'EDT perché l'handshake può metterci secondi — connessione TCP, PBKDF2 a
-     * 120k iterazioni, e fino a dieci secondi di attesa su ogni lettura — e l'EDT è
-     * esattamente il thread che in quei secondi deve continuare a disegnare il popup e a
-     * dire «connessione in corso».
+     * <p>Off the EDT because the handshake can take seconds (TCP connection, PBKDF2 with 120k
+     * iterations, up to ten seconds of waiting on each read), and the EDT is exactly the
+     * thread that during those seconds must keep drawing the popup and saying "connecting".
      *
-     * <p><b>La macchina locale non viene toccata.</b> Resta montata e in pausa: se il
-     * collegamento fallisce non c'è niente da ricostruire, e se riesce il video arriva già
-     * mentre il popup è ancora aperto — che è il modo più diretto di far vedere che la cosa
-     * funziona. A smontarla si arriva solo con l'OK dell'utente.
+     * <p><b>The local machine is not touched.</b> It stays mounted and paused: if the
+     * connection fails there is nothing to rebuild, and if it succeeds the video arrives
+     * while the popup is still open, the most direct way to show that it works. Unmounting
+     * it happens only with the user's OK.
      */
     private void connectToHost(String address, String joinCode) {
         int colon = address.lastIndexOf(':');
@@ -940,18 +933,18 @@ public class Amija implements RemotePlayControl {
 
         synchronized (this) {
             if (guest != null && joinCancelled) {
-                // L'utente ha annullato mentre eravamo in volo (popup chiuso senza OK, o
-                // «Disconnetti» premuto subito): la sessione appena aperta si chiude e non
-                // se ne parla più. Senza questo resterebbe viva una sessione che nessuno
-                // ha più modo di vedere né di fermare.
+                // The user cancelled while we were in flight (popup closed without OK, or
+                // "Disconnect" pressed at once): the session just opened is closed and that is
+                // the end of it. Otherwise a session would stay alive that nobody can see or
+                // stop any more.
                 guest.close();
                 guest = null;
                 failure = null;
             }
             if (guest != null) {
-                // La sessione si pubblica per ULTIMA: è il campo volatile su cui l'EDT si
-                // sincronizza, quindi tutto ciò che dovrà leggere dopo averlo visto pieno
-                // — a partire dai parametri di sessione — dev'essere già stato scritto.
+                // The session is published LAST: it is the volatile field the EDT
+                // synchronises on, so everything it will read after seeing it set, starting
+                // with the session parameters, must already be written.
                 remotePlaySettings = settings;
                 config.setRemotePlayLastHost(address);
                 remotePlayGuest = guest;
@@ -971,8 +964,8 @@ public class Amija implements RemotePlayControl {
     @Override
     public boolean requestLeave() {
         if (!guestMode) {
-            // La macchina locale non è mai stata smontata: basta chiudere la sessione, e il
-            // popup può restare aperto com'era.
+            // The local machine was never unmounted: closing the session is enough, and the
+            // popup can stay open as it was.
             cancelGuestSession();
             return false;
         }
@@ -980,7 +973,7 @@ public class Amija implements RemotePlayControl {
         return true;
     }
 
-    /** Chiude la sessione verso l'host, compresa quella che si sta ancora aprendo. */
+    /** Closes the session to the host, including one still being opened. */
     private void cancelGuestSession() {
         synchronized (this) {
             joinCancelled = true;
@@ -990,10 +983,10 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Aggancia la spia "NET" dell'overscan allo stato della sessione.
+     * Hooks the "NET" light of the overscan to the state of the session.
      *
-     * <p>Va rifatto a ogni ricreazione del display, perché le sorgenti stanno sul display
-     * e quello di prima è stato buttato via.
+     * <p>Must be redone at every re-creation of the display, because the sources live on the
+     * display and the previous one was thrown away.
      */
     private void attachRemotePlayLed() {
         if (display == null) return;
@@ -1001,14 +994,14 @@ public class Amija implements RemotePlayControl {
                 () -> isHosting() || isGuest() || joining,
                 () -> {
                     if (hasGuest()) return true;
-                    // Una lettura sola del campo: fra "c'è una sessione" e "è in pausa" può
-                    // essercene stata una chiusura, e la seconda lettura sarebbe un null.
+                    // A single read of the field: between "there is a session" and "it is
+                    // paused" it may have been closed, and a second read would be null.
                     RemotePlayGuest guest = remotePlayGuest;
                     return guest != null && guest.isAlive() && !guest.hostPaused();
                 });
     }
 
-    /** Formato audio dalla configurazione, nella forma che il protocollo usa. */
+    /** Audio format from the configuration, in the form the protocol uses. */
     private int audioFormatFromConfig() {
         return switch (config.remotePlayAudioMode()) {
             case "pcm16", "pcm" -> AudioBlockHeader.FORMAT_PCM16;
@@ -1018,12 +1011,13 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * L'indirizzo di questa macchina sulla rete locale.
+     * The address of this machine on the local network.
      *
-     * <p>Il trucco della {@code connect} su un indirizzo esterno (§7.2): non manda un solo
-     * byte — UDP non stabilisce niente — ma costringe il sistema a scegliere l'interfaccia
-     * con cui uscirebbe, che è quella giusta da mostrare. {@code InetAddress.getLocalHost()}
-     * su una macchina con più schede restituisce spesso quella sbagliata.
+     * <p>The trick of {@code connect} on an external address (section 7.2): it sends not a
+     * single byte (UDP establishes nothing) but forces the system to choose the interface it
+     * would go out through, which is the right one to show.
+     * {@code InetAddress.getLocalHost()} on a machine with several adapters often returns
+     * the wrong one.
      */
     private String localAddress() {
         try (java.net.DatagramSocket probe = new java.net.DatagramSocket()) {
@@ -1035,11 +1029,11 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Esegue la transizione a ospite (o il ritorno a macchina) decisa nel popup.
+     * Performs the transition to guest (or the return to machine) decided in the popup.
      *
-     * <p>Fuori dal dialog, e non per pignoleria: un ospite non emula niente, quindi unirsi
-     * vuol dire <b>smontare la macchina</b>, e farlo sull'EDT dentro una finestra modale
-     * mentre il thread di emulazione gira è il modo di collezionare guasti intermittenti.
+     * <p>Outside the dialog, and not out of pedantry: a guest emulates nothing, so joining
+     * means <b>unmounting the machine</b>, and doing that on the EDT inside a modal window
+     * while the emulation thread runs is a way to collect intermittent failures.
      */
     private boolean applyPendingRemotePlayTransition() {
         if (pendingLeave) {
@@ -1048,12 +1042,12 @@ public class Amija implements RemotePlayControl {
             return true;
         }
         if (guestMode || !isGuest()) {
-            // Niente da smontare: o lo si è già, oppure la sessione è caduta fra l'OK e
-            // adesso, e allora la macchina locale — mai smontata — deve ripartire.
+            // Nothing to unmount: either it already is, or the session dropped between the OK
+            // and now, and then the local machine, never unmounted, must restart.
             return false;
         }
-        // La sessione è già aperta e sta già disegnando (connectToHost). Qui resta la sola
-        // cosa che da dentro il popup non si poteva fare: smontare la macchina.
+        // The session is already open and already drawing (connectToHost). What is left is
+        // the one thing that could not be done from inside the popup: unmounting the machine.
         shutdownMachine();
         guestMode = true;
         installGuestInput();
@@ -1062,12 +1056,12 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Torna a essere una macchina normale dopo essere stato un ospite.
+     * Becomes a normal machine again after having been a guest.
      *
-     * <p>{@link #shutdownMachine()} va chiamato anche se di macchina non ce n'è: i campi
-     * degli adapter di input sono occupati da quelli dell'ospite, che sono agganciati al
-     * componente di input e vanno staccati. Senza, il boot ne aggiungerebbe una seconda
-     * serie sopra la prima e ogni tasto verrebbe consegnato due volte.
+     * <p>{@link #shutdownMachine()} must be called even if there is no machine: the input
+     * adapter fields hold the guest's adapters, which are attached to the input component
+     * and must be detached. Otherwise the boot would add a second set on top of the first
+     * and every key would be delivered twice.
      */
     private void leaveGuestMode() {
         shutdownGuestSession();
@@ -1079,30 +1073,30 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Riallinea macchina e sessione dopo la chiusura del popup, per tutti i casi che non
-     * sono la transizione confermata.
+     * Realigns machine and session after the popup closes, for every case that is not the
+     * confirmed transition.
      *
-     * @return {@code true} se ha già rimesso in piedi la macchina e il chiamante non deve
-     *         fare altro
+     * @return {@code true} if it has already brought the machine back up and the caller has
+     *         nothing more to do
      */
     private boolean settleRemotePlayAfterConfig(ConfigDialog.Result result) {
         if (result == ConfigDialog.Result.REMOTE_PLAY_TRANSITION) {
-            return false;   // se ne occupa il ramo dedicato dello switch
+            return false;   // handled by the dedicated branch of the switch
         }
         if (guestMode) {
             if (!isGuest()) {
-                // La sessione è caduta mentre il popup era aperto: l'avviso l'utente l'ha
-                // già visto (onRemoteSessionLost), ma la macchina va ricostruita qui, che è
-                // fuori dal dialog modale.
+                // The session dropped while the popup was open: the user has already seen the
+                // warning (onRemoteSessionLost), but the machine must be rebuilt here,
+                // outside the modal dialog.
                 leaveGuestMode();
                 return true;
             }
             return false;
         }
         if (joining || isGuest()) {
-            // Ci si è collegati dal popup ma non si è confermato con OK. Confermare è
-            // l'atto che smonta la macchina locale: senza, la sessione va chiusa, o si
-            // resterebbe con l'emulazione locale e il video dell'host sullo stesso schermo.
+            // Connected from the popup but not confirmed with OK. Confirming is the act that
+            // unmounts the local machine: without it the session must be closed, or local
+            // emulation and the host's video would share the same screen.
             cancelGuestSession();
         }
         return false;
@@ -1117,13 +1111,13 @@ public class Amija implements RemotePlayControl {
         }
     }
 
-    /** Chiude la sessione di gioco a distanza, da qualunque lato la si stia tenendo. */
+    /** Closes the remote play session, whichever side it is held from. */
     private void shutdownRemotePlay() {
         shutdownHostSession();
         shutdownGuestSession();
     }
 
-    /** Smette di ospitare e stacca video e audio dalla rete. */
+    /** Stops hosting and detaches video and audio from the network. */
     private void shutdownHostSession() {
         closeRouterPort();
         if (remotePlayHost == null) return;
@@ -1135,32 +1129,32 @@ public class Amija implements RemotePlayControl {
         }
         remotePlayHost.close();
         remotePlayHost = null;
-        // La porta ceduta all'ospite torna a chi possiede la macchina, con la periferica
-        // che la sua configurazione le assegna: senza questo resterebbe vuota, e chi ha
-        // appena smesso di ospitare si ritroverebbe una game port morta.
+        // The port given to the guest goes back to the machine's owner, with the device its
+        // configuration assigns: otherwise it would stay empty, and whoever has just stopped
+        // hosting would find a dead game port.
         applyPortAssignments();
     }
 
     /**
-     * Chiude la sessione verso l'host, e <b>solo</b> quella: i due ruoli si spengono
-     * separatamente perché annullare un collegamento non deve smettere di ospitare.
+     * Closes the session to the host, and <b>only</b> that: the two roles are switched off
+     * separately because cancelling a connection must not stop hosting.
      */
     private void shutdownGuestSession() {
         RemotePlayGuest guest = remotePlayGuest;
         if (guest == null) return;
-        // Il campo si azzera PRIMA della chiusura: il sorvegliante confronta la sessione che
-        // ha visto morire con quella corrente, e deve trovarla già sostituita per sapere che
-        // a chiuderla siamo stati noi e che non c'è niente da annunciare.
+        // The field is cleared BEFORE closing: the watcher compares the session it saw die
+        // with the current one, and must find it already replaced to know that we closed it
+        // and there is nothing to announce.
         remotePlayGuest = null;
         guest.close();
     }
 
-    /** Registra la hotkey globale F12 (apre il popup di configurazione). */
+    /** Registers the global F12 hotkey (opens the configuration popup). */
     private void installConfigHotkey() {
         if (inputComponent == null) return;
-        // Aggiunto PRIMA degli adapter di macchina: consuma F12 prima che raggiunga
-        // la tastiera Amiga (dove sarebbe HELP). Va sul componente di input (canvas GL in
-        // OpenGL): gli eventi tastiera del canvas heavyweight non risalgono al frame.
+        // Added BEFORE the machine's adapters: it consumes F12 before it reaches the Amiga
+        // keyboard (where it would be HELP). It goes on the input component (the GL canvas
+        // in OpenGL): the heavyweight canvas's key events do not bubble up to the frame.
         inputComponent.addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent e) {
@@ -1172,8 +1166,8 @@ public class Amija implements RemotePlayControl {
 
             @Override
             public void keyReleased(KeyEvent e) {
-                // Va consumato anche il rilascio: senza, alla tastiera Amiga arriverebbe
-                // il solo key-up di HELP (F12 è mappato lì) senza la pressione.
+                // The release must be consumed too: otherwise the Amiga keyboard would get
+                // only the key-up of HELP (F12 is mapped there) without the press.
                 if (e.getKeyCode() == KeyEvent.VK_F12) {
                     e.consume();
                 }
@@ -1182,25 +1176,25 @@ public class Amija implements RemotePlayControl {
     }
 
     // =========================================================================
-    // Popup di configurazione (F12)
+    // Configuration popup (F12)
     // =========================================================================
 
     /**
-     * Mette in pausa l'emulazione, rilascia il mouse e mostra il popup. In base alla
-     * scelta dell'utente salva/riavvia, riavvia a freddo, esegue un soft reset o
-     * riprende l'esecuzione; infine ricattura il mouse.
+     * Pauses the emulation, releases the mouse and shows the popup. Depending on the user's
+     * choice it saves/restarts, cold restarts, performs a soft reset or resumes; finally it
+     * captures the mouse again.
      */
     private void openConfig() {
         boolean wasRunning = clock != null && clock.isRunning();
         if (clock != null) clock.pause();
-        // Il popup è modale e mette in pausa: senza avvisarlo, l'ospite vedrebbe lo
-        // schermo fermo e crederebbe di aver perso il collegamento (§9).
+        // The popup is modal and pauses: without being told, the guest would see a frozen
+        // screen and think the connection was lost (section 9).
         if (remotePlayHost != null) remotePlayHost.notifyPaused(true);
         if (mouseAdapter != null) mouseAdapter.release();
         boolean exclusiveFullScreenSuspended = display != null && display.suspendExclusiveFullScreen();
 
-        // Stato dei floppy prima della modifica: serve a calcolare il diff da applicare
-        // a caldo (inserimento/sostituzione/espulsione) quando l'utente conferma con OK.
+        // State of the floppies before the change: used to compute the diff to apply live
+        // (insert/replace/eject) when the user confirms with OK.
         String[] oldDisks = new String[4];
         boolean[] oldEnabled = new boolean[4];
         boolean[] oldReadOnly = new boolean[4];
@@ -1211,8 +1205,8 @@ public class Amija implements RemotePlayControl {
         }
         boolean oldOverscan = config.overscanEnabled();
         int oldIntegerScaling = config.integerScaling();
-        // Scala dell'interfaccia: e' l'unica impostazione rimasta che richiede di
-        // rilanciare il processo, perche' flatlaf.uiScale si legge all'init del LAF.
+        // Interface scale: the only setting left that requires relaunching the process,
+        // because flatlaf.uiScale is read when the LAF initialises.
         String oldUiScale = config.uiScaleValue();
         AmigaWindowMode oldWindowMode = config.windowMode();
         int oldMonitorIndex = config.monitorIndex();
@@ -1220,10 +1214,10 @@ public class Amija implements RemotePlayControl {
         Chipset oldChipset = config.chipset();
         RendererType oldRenderer = config.renderer();
         String oldShader = config.shader();
-        // Parametri della macchina che hanno effetto solo alla costruzione: se cambiano
-        // il riavvio a freddo lo fa l'emulatore da sé. Serve soprattutto alla modalità
-        // Auto, dove a cambiarli non è l'utente ma la spunta di un hard disk o di
-        // WHDLoad: pretendere che sia lui a premere "Riavvia" sarebbe un tranello.
+        // Machine parameters that take effect only at construction: if they change, the
+        // emulator cold restarts by itself. It matters above all in Auto mode, where they are
+        // changed not by the user but by ticking a hard disk or WHDLoad: expecting the user
+        // to press "Restart" would be a trap.
         String oldKickstart = config.kickstartPath();
         int oldChipRam = config.chipRamKb();
         int oldSlowRam = config.slowRamKb();
@@ -1235,9 +1229,9 @@ public class Amija implements RemotePlayControl {
                 this::takeScreenshotFile, this::updateShaderParam,
                 this::saveState, this::loadState, this, activeHardware);
 
-        // Mentre il popup era aperto una sessione di gioco a distanza può essersi aperta
-        // (il pulsante «Collega» agisce subito) o essere caduta. Montare e smontare
-        // macchine è roba da qui, non da dentro un dialog modale.
+        // While the popup was open a remote play session may have opened (the "Connect"
+        // button acts at once) or dropped. Mounting and unmounting machines belongs here,
+        // not inside a modal dialog.
         if (settleRemotePlayAfterConfig(result)) {
             if (exclusiveFullScreenSuspended && display != null) {
                 display.resumeExclusiveFullScreen();
@@ -1248,12 +1242,11 @@ public class Amija implements RemotePlayControl {
         boolean displayRecreated = false;
         switch (result) {
             case OK -> {
-                // OK applica a caldo input/floppy; le impostazioni display e quelle
-                // della macchina richiedono la ricreazione di finestra e componenti,
-                // quindi un cold restart.
+                // OK applies input/floppies live; the display and machine settings require
+                // re-creating the window and components, hence a cold restart.
                 saveConfig();
                 if (!oldUiScale.equals(config.uiScaleValue())) {
-                    relaunchApplication(); // non ritorna se il rilancio riesce
+                    relaunchApplication(); // does not return if the relaunch succeeds
                 }
                 applyRuntimeInputConfig();
                 boolean windowChanged =
@@ -1261,15 +1254,14 @@ public class Amija implements RemotePlayControl {
                                 oldMonitorIndex)
                         || oldVideoMode != config.videoMode()
                         || oldRenderer != config.renderer();
-                // Fuori da Expert i parametri della macchina non li sceglie l'utente: li
-                // deduce l'emulatore dalla lista dei supporti. Cambiarli subito
-                // vorrebbe dire spegnere e riaccendere l'Amiga perché è stato aggiunto
-                // un drive, cioè buttare via la partita in corso per una modifica che
-                // l'utente credeva innocua. Restano quindi scritti in configurazione e
-                // diventano effettivi al prossimo avvio; la lista li marca con un
-                // asterisco perché si sappia che stanno aspettando. Il ragionamento vale
-                // finché si resta nella stessa modalità: accendere o spegnere Expert
-                // ridefinisce la macchina da capo, e lì il riavvio è il punto.
+                // Outside Expert the machine parameters are not chosen by the user: the
+                // emulator derives them from the media list. Changing them at once would mean
+                // switching the Amiga off and on because a drive was added, i.e. throwing
+                // away the game in progress for a change the user thought harmless. They are
+                // therefore written to the configuration and take effect at the next start;
+                // the list marks them with an asterisk so it is clear they are waiting. This
+                // holds while the mode stays the same: switching Expert on or off redefines
+                // the machine from scratch, and there the restart is the point.
                 boolean deferHardware = oldAuto && config.autoEnabled();
                 boolean needsColdRestart = windowChanged
                         || (!deferHardware
@@ -1279,11 +1271,11 @@ public class Amija implements RemotePlayControl {
                                 || oldSlowRam != config.slowRamKb()
                                 || oldFastRam != config.fastRamKb()));
                 if (guestMode) {
-                    // Un ospite non ha macchina da riavviare: dei parametri qui sopra gli
-                    // riguardano solo quelli della finestra, e la sola cosa che va rifatta
-                    // è quella. Il resto — Kickstart, memorie, chipset — descrive una
-                    // macchina che qui non esiste, e riavviarla per applicarli vorrebbe
-                    // dire costruirla mentre si sta guardando quella di qualcun altro.
+                    // A guest has no machine to restart: of the parameters above only the
+                    // window's concern it, and that is the only thing to redo. The rest
+                    // (Kickstart, memory, chipset) describes a machine that does not exist
+                    // here, and restarting it to apply them would mean building one while
+                    // watching someone else's.
                     if (windowChanged) {
                         recreateGuestDisplay();
                         displayRecreated = true;
@@ -1292,15 +1284,14 @@ public class Amija implements RemotePlayControl {
                         display.setShaderPreset(resolveShaderPath(config.shader()));
                     }
                 } else if (needsColdRestart) {
-                    // Nessun rilancio della JVM: da quando lo scaling e' applicato da
-                    // AmigaDisplay e non da sun.java2d.uiScale, integer scaling e
-                    // renderer si applicano ricreando finestra e macchina, che resta
-                    // dentro lo stesso processo (piu' rapido).
+                    // No JVM relaunch: scaling is applied by AmigaDisplay, not by
+                    // sun.java2d.uiScale, so integer scaling and renderer are applied by
+                    // re-creating window and machine, which stay in the same process (faster).
                     coldRestart();
                     displayRecreated = true;
                 } else {
-                    // Nessun cold restart: se è cambiato solo lo shader (renderer OpenGL),
-                    // applicalo a caldo alla superficie GL.
+                    // No cold restart: if only the shader changed (OpenGL renderer), apply it
+                    // live to the GL surface.
                     if (config.renderer() == RendererType.OPENGL
                             && !oldShader.equals(config.shader())) {
                         display.setShaderPreset(resolveShaderPath(config.shader()));
@@ -1315,17 +1306,16 @@ public class Amija implements RemotePlayControl {
             }
             case RESTART -> {
                 saveConfig();
-                // La scala dell'interfaccia e' l'unica impostazione che richiede di
-                // rilanciare il processo: flatlaf.uiScale si legge all'init del Look and
-                // Feel e non e' modificabile a caldo. L'integer scaling invece lo applica
-                // AmigaDisplay alla presentazione, quindi gli basta il cold restart —
-                // stesso processo, molto piu' rapido.
+                // The interface scale is the only setting that requires relaunching the
+                // process: flatlaf.uiScale is read when the Look and Feel initialises and
+                // cannot be changed live. Integer scaling instead is applied by AmigaDisplay
+                // at presentation, so a cold restart is enough: same process, much faster.
                 if (!oldUiScale.equals(config.uiScaleValue())) {
-                    relaunchApplication(); // non ritorna se il rilancio riesce
+                    relaunchApplication(); // does not return if the relaunch succeeds
                 }
-                // Da ospite il pulsante «Riavvia» non c'è nemmeno (non c'è la macchina che
-                // riavvierebbe); se ci si arrivasse lo stesso, si rifà la sola finestra —
-                // costruire un'Amiga qui vorrebbe dire metterla sotto il video dell'host.
+                // As a guest the "Restart" button does not even exist (there is no machine to
+                // restart); should we get here anyway, only the window is redone: building an
+                // Amiga here would put it under the host's video.
                 if (guestMode) {
                     recreateGuestDisplay();
                 } else {
@@ -1340,33 +1330,33 @@ public class Amija implements RemotePlayControl {
                 resumeOrStart();
             }
             case STATE_RESTORE -> {
-                // "Load State" su uno stato preso con un'altra macchina: la si ricostruisce
-                // com'era e si ritenta. Il popup si è chiuso senza applicare le proprie
-                // modifiche, quindi qui non c'è nessun applyConfig da fare.
+                // "Load State" on a state taken with another machine: it is rebuilt as it was
+                // and the load retried. The popup closed without applying its own changes,
+                // so there is no applyConfig to do here.
                 String msg = restoreStateAfterRebuild();
-                displayRecreated = true; // coldRestart ha già rifatto finestra e display
+                displayRecreated = true; // coldRestart has already redone window and display
                 resumeOrStart();
                 JOptionPane.showMessageDialog(frame, msg, Messages.t("app.title"),
                         JOptionPane.INFORMATION_MESSAGE);
             }
             case REMOTE_PLAY_TRANSITION -> {
-                // Confermare un collegamento smonta la macchina; lasciare la sessione la
-                // rimonta. Il popup non fa né l'una né l'altra: qui c'è il posto giusto,
-                // fuori dal dialog modale e sullo stesso percorso del riavvio a freddo.
+                // Confirming a connection unmounts the machine; leaving the session mounts it
+                // again. The popup does neither: this is the right place, outside the modal
+                // dialog and on the same path as the cold restart.
                 saveConfig();
                 if (!applyPendingRemotePlayTransition()) {
-                    // Non c'era più niente da applicare (la sessione è caduta fra l'OK e
-                    // adesso): la macchina locale è ancora lì, in pausa, e va ripresa.
+                    // Nothing left to apply (the session dropped between the OK and now): the
+                    // local machine is still there, paused, and must resume.
                     resumeOrStart();
                 }
                 if (exclusiveFullScreenSuspended && display != null) {
                     display.resumeExclusiveFullScreen();
                 }
                 recaptureMouse();
-                return;   // niente altro: la macchina o non c'è o è appena partita
+                return;   // nothing else: the machine is either absent or just started
             }
             case CANCEL -> resumeOrStart();
-            case QUIT -> { System.exit(0); return; } // lo shutdown hook spegne la macchina
+            case QUIT -> { System.exit(0); return; } // the shutdown hook switches the machine off
         }
         if (remotePlayHost != null) remotePlayHost.notifyPaused(false);
         if (exclusiveFullScreenSuspended && !displayRecreated && display != null) {
@@ -1376,20 +1366,20 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Applica a caldo le modifiche ai floppy decise nel popup, confrontando lo stato
-     * salvato in {@link #config} con quello precedente all'apertura. Per ogni drive:
-     * collega/scollega, espelle il disco rimosso e inserisce quello aggiunto. In caso
-     * di sostituzione espelle, attende 1500 ms (come nel drag-and-drop, così il
-     * Kickstart rileva l'espulsione) e poi inserisce il nuovo disco. Tutto su un thread
-     * daemon per non bloccare l'EDT, mentre la macchina è già in esecuzione.
+     * Applies live the floppy changes decided in the popup, comparing the state saved in
+     * {@link #config} with the one before the popup opened. For each drive: connects or
+     * disconnects it, ejects the disk removed and inserts the one added. On a replacement it
+     * ejects, waits 1500 ms (as drag-and-drop does, so the Kickstart notices the eject) and
+     * then inserts the new disk. All on a daemon thread so the EDT is not blocked, while the
+     * machine is already running.
      */
     private void applyFloppyChanges(String[] oldDisks, boolean[] oldEnabled, boolean[] oldReadOnly) {
         applyFloppyChanges(oldDisks, oldEnabled, oldReadOnly, -1, false);
     }
 
     /**
-     * @param skipIndex drive già allineato dal chiamante (es. quello appena ricevuto
-     *                  via drag-and-drop), da escludere dal diff; -1 = nessuno
+     * @param skipIndex drive already aligned by the caller (e.g. the one that just received
+     *                  a drag-and-drop), to be left out of the diff; -1 = none
      */
     private void applyFloppyChanges(String[] oldDisks, boolean[] oldEnabled,
                                     boolean[] oldReadOnly, int skipIndex) {
@@ -1397,26 +1387,24 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * @param deferHardware collegare e scollegare un drive è una modifica all'hardware:
-     *                      con {@code true} non si tocca, e i drive restano quelli con
-     *                      cui la macchina è stata accesa fino al prossimo avvio. Il
-     *                      disco dentro un drive collegato continua a cambiare a caldo,
-     *                      compreso il drive che la configurazione considera ormai
-     *                      staccato: lì il disco viene espulso e il lettore resta,
-     *                      vuoto, pronto a riceverne un altro.
+     * @param deferHardware connecting and disconnecting a drive is a hardware change: with
+     *                      {@code true} it is left alone, and the drives stay those the
+     *                      machine was started with until the next start. The disk inside a
+     *                      connected drive still changes live, including the drive the
+     *                      configuration now considers detached: there the disk is ejected
+     *                      and the drive stays, empty, ready for another.
      */
     private void applyFloppyChanges(String[] oldDisks, boolean[] oldEnabled,
                                     boolean[] oldReadOnly, int skipIndex,
                                     boolean deferHardware) {
         if (agnus == null) return;
-        // Prima del diff: propaga agli altri drive i dischi dello zip multi-disco
-        // eventualmente inserito in DF0 (o rimuove quelli dello zip precedente).
+        // Before the diff: spread to the other drives the disks of a multi-disk zip that may
+        // have been inserted in DF0 (or remove those of the previous zip).
         //
-        // In modalità Auto la ridistribuzione va forzata (oldDf0 = null). Lì la lista dei
-        // supporti è ricostruita da capo a ogni conferma, quindi i dischi estratti dallo
-        // zip non ci sono più e non esiste uno stato "l'utente ha espulso il disco 2 a
-        // mano" da rispettare: senza la forzatura, uno zip multi-disco lasciato com'era
-        // perderebbe tutti i dischi tranne il primo.
+        // In Auto mode the redistribution is forced (oldDf0 = null). There the media list is
+        // rebuilt from scratch at every confirmation, so the disks extracted from the zip are
+        // gone and there is no "the user ejected disk 2 by hand" state to respect: without
+        // forcing, a multi-disk zip left as it was would lose every disk but the first.
         syncZipDiskSet(config.autoEnabled() ? null : oldDisks[0]);
         final FloppyDrive[] dfs = {
                 agnus.getDf0(), agnus.getDf1(), agnus.getDf2(), agnus.getDf3() };
@@ -1437,10 +1425,10 @@ public class Amija implements RemotePlayControl {
                     drive.setConnected(newEnabled[i]);
                 }
                 applyFloppySound(drive, i);
-                // Rimandando l'hardware conta il drive che c'è, non quello che la
-                // configurazione descrive: è ancora lì e il suo disco si cambia.
+                // When the hardware is deferred, what counts is the drive that is there, not
+                // the one the configuration describes: it is still there and its disk changes.
                 if (!(deferHardware ? drive.isConnected() : newEnabled[i])) {
-                    // Drive scollegato: niente disco dentro.
+                    // Drive disconnected: no disk inside.
                     if (drive.isDiskInserted()) {
                         System.out.println("[CONFIG] DF" + i + ": espulsione (drive scollegato)");
                         drive.ejectDisk();
@@ -1450,7 +1438,7 @@ public class Amija implements RemotePlayControl {
                 String oldPath = norm(oldDisks[i]);
                 String newPath = norm(newDisks[i]);
                 boolean readOnlyChanged = oldReadOnly != null && oldReadOnly[i] != newReadOnly[i];
-                if (oldPath.equals(newPath) && !readOnlyChanged) continue; // nessuna modifica per questo drive
+                if (oldPath.equals(newPath) && !readOnlyChanged) continue; // no change for this drive
                 try {
                     if (drive.isDiskInserted()) {
                         System.out.println("[CONFIG] DF" + i + ": espulsione disco corrente...");
@@ -1471,31 +1459,29 @@ public class Amija implements RemotePlayControl {
         t.start();
     }
 
-    /** Normalizza un percorso disco: null/spazi -> stringa vuota. */
+    /** Normalises a disk path: null/blank -> empty string. */
     private static String norm(String s) {
         return s == null ? "" : s.trim();
     }
 
     /**
-     * Distribuisce su DF1..DF3 i dischi di uno zip multi-disco inserito in DF0.
+     * Spreads over DF1..DF3 the disks of a multi-disk zip inserted in DF0.
      *
-     * <p>Uno zip che contiene più .adf/.ipf è un set di dischi: in DF0 va quello di
-     * <b>avvio</b> e gli altri, nell'ordine in cui compaiono nell'archivio, nei
-     * drive seguenti — ma solo se collegati e vuoti. L'ordine è quello che dà
-     * {@link DiskImage#zipDiskOrder}: dentro l'archivio i nomi mettono spesso i
-     * dischi dati prima del disco programma, e partire dal primo lascerebbe il
-     * Kickstart a chiedere un disco per sempre. I dischi
-     * così montati sono identificati dal percorso {@code <zip>!<n>}: quando lo zip
-     * di DF0 viene sostituito o espulso vengono rimossi automaticamente, mentre
-     * restano modificabili/espellibili uno a uno con la procedura normale.
+     * <p>A zip containing several .adf/.ipf is a disk set: the <b>boot</b> disk goes in DF0
+     * and the others, in the order they appear in the archive, in the following drives, but
+     * only if connected and empty. The order is the one {@link DiskImage#zipDiskOrder} gives:
+     * inside archives the names often put the data disks before the program disk, and
+     * starting from the first would leave the Kickstart asking for a disk forever. The disks
+     * mounted this way are identified by the path {@code <zip>!<n>}: when the zip in DF0 is
+     * replaced or ejected they are removed automatically, while they can still be changed or
+     * ejected one by one in the normal way.
      *
-     * <p>Agisce solo se DF0 è <i>cambiato</i>: finché lo zip resta lo stesso, DF1..DF3
-     * sono lasciati esattamente come l'utente li ha impostati (un disco espulso a mano
-     * non viene rimontato). Aggiorna la configurazione, che è la sorgente sia del diff
-     * a caldo sia del popup F12.
+     * <p>It acts only if DF0 has <i>changed</i>: while the zip stays the same, DF1..DF3 are
+     * left exactly as the user set them (a disk ejected by hand is not mounted again). It
+     * updates the configuration, the source of both the live diff and the F12 popup.
      *
-     * @param oldDf0 percorso presente in DF0 prima della modifica;
-     *               {@code null} per forzare la risincronizzazione (avvio macchina)
+     * @param oldDf0 path in DF0 before the change; {@code null} to force the
+     *               resynchronisation (machine start)
      */
     private void syncZipDiskSet(String oldDf0) {
         String df0 = norm(config.driveDisk(0));
@@ -1515,14 +1501,14 @@ public class Amija implements RemotePlayControl {
 
         for (int i = 1; i < 4; i++) {
             String disk = norm(config.driveDisk(i));
-            // 1. libera i drive che tenevano un disco dello zip (vecchio o nuovo: la
-            //    riassegnazione qui sotto è idempotente).
+            // 1. free the drives holding a disk of the zip (old or new: the reassignment below
+            //    is idempotent).
             if (isEntryOf(disk, previous) || isEntryOf(disk, df0)) {
                 disk = "";
                 config.setDriveDisk(i, "");
             }
-            // 2. l'i-esimo disco dell'ordine di inserimento (DF0 ha preso il primo)
-            //    va nell'i-esimo drive, se libero e collegato.
+            // 2. the i-th disk in insertion order (DF0 took the first) goes into the i-th
+            //    drive, if free and connected.
             if (i < order.length && disk.isEmpty() && config.driveEnabled(i)) {
                 int entry = order[i];
                 config.setDriveDisk(i, DiskImage.zipEntrySpec(df0, entry));
@@ -1533,7 +1519,7 @@ public class Amija implements RemotePlayControl {
         }
     }
 
-    /** {@code true} se {@code disk} è un disco estratto dallo zip {@code zipPath}. */
+    /** {@code true} if {@code disk} is a disk extracted from the zip {@code zipPath}. */
     private static boolean isEntryOf(String disk, String zipPath) {
         return !zipPath.isEmpty() && DiskImage.isZipDisk(zipPath)
                 && disk.regionMatches(true, 0, zipPath, 0, zipPath.length())
@@ -1552,8 +1538,8 @@ public class Amija implements RemotePlayControl {
         }
         config.setDriveDisk(index, path);
         config.setDriveReadOnly(index, isZipPath(path));
-        // Il drive che ha ricevuto il drop è già a posto: applica solo l'effetto a
-        // catena sugli altri (set multi-disco montato o rimosso).
+        // The drive that received the drop is already set: apply only the knock-on effect on
+        // the others (multi-disk set mounted or removed).
         applyFloppyChanges(oldDisks, oldEnabled, oldReadOnly, index);
     }
 
@@ -1578,22 +1564,22 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Applica (anche a caldo) le periferiche host scelte per le due game port. Per ogni
-     * porta la property {@code input.portN.device} indica se è pilotata dal mouse, da un
-     * joystick reale (GLFW), dal joystick su tastiera o se è vuota. "Port 0" corrisponde
-     * alla game port 1 (mouse/JOY0DAT), "Port 1" alla game port 2 (joystick/JOY1DAT).
+     * Applies (live too) the host devices chosen for the two game ports. For each port the
+     * property {@code input.portN.device} says whether it is driven by the mouse, by a real
+     * joystick (GLFW), by the keyboard joystick, or is empty. "Port 0" is game port 1
+     * (mouse/JOY0DAT), "Port 1" game port 2 (joystick/JOY1DAT).
      *
-     * <p>Idempotente e sicuro a caldo: reindirizza gli adapter mouse/tastiera sulla porta
-     * corretta (abilitandoli/disabilitandoli) e comunica al servizio GLFW l'elenco delle
-     * porte che usano un joystick reale.
+     * <p>Idempotent and safe live: it redirects the mouse/keyboard adapters to the right port
+     * (enabling or disabling them) and tells the GLFW service which ports use a real
+     * joystick.
      *
-     * <p><b>La porta dell'ospite non è dell'host.</b> Mentre si ospita, la game port
-     * assegnata all'ospite è fuori da questa funzione: cosa ci sia collegato lo decide lui
-     * dal <i>suo</i> popup, e arriva nel pacchetto di feedback ({@code RemoteInputApplier}).
-     * L'host non le assegna una periferica, non ci punta il mouse e non ci manda il joystick
-     * — altrimenti la prima conferma dell'F12 locale scavalcherebbe la scelta dell'ospite,
-     * e i due si contenderebbero la stessa porta a colpi di configurazione. La porta resta
-     * riservata anche mentre l'ospite non c'è: sta per arrivare, o è appena caduto.
+     * <p><b>The guest's port is not the host's.</b> While hosting, the game port assigned to
+     * the guest is outside this function: what is plugged into it is decided by the guest
+     * from <i>its</i> popup, and arrives in the feedback packet ({@code RemoteInputApplier}).
+     * The host assigns it no device, points no mouse at it and sends no joystick to it;
+     * otherwise the first confirmation of the local F12 would override the guest's choice,
+     * and the two would fight over the same port through configuration. The port stays
+     * reserved even while the guest is absent: it is about to arrive, or has just dropped.
      */
     private void applyPortAssignments() {
         if (gamePort1 == null || gamePort2 == null) return;
@@ -1601,16 +1587,16 @@ public class Amija implements RemotePlayControl {
         PortDevice d0 = config.portDevice(0); // "Port 0" -> game port 1 (mouse/JOY0DAT)
         PortDevice d1 = config.portDevice(1); // "Port 1" -> game port 2 (joystick/JOY1DAT)
 
-        // La porta ceduta all'ospite esce di scena qui: per l'host è come se non ci fosse.
+        // The port given to the guest leaves the scene here: for the host it does not exist.
         int guestPort = hostedGuestPort();
         if (guestPort == 0) d0 = null;
         if (guestPort == 1) d1 = null;
 
-        // Periferica hardware riportata da ciascuna porta (per le letture JOYxDAT/POTINP).
+        // Hardware device reported by each port (for the JOYxDAT/POTINP reads).
         if (d0 != null) gamePort1.setDevice(d0.hardwareDevice());
         if (d1 != null) gamePort2.setDevice(d1.hardwareDevice());
 
-        // Mouse host -> porta impostata su MOUSE (priorità a "Port 0" in caso di doppia).
+        // Host mouse -> the port set to MOUSE ("Port 0" first if both are).
         GamePort mousePort = (d0 == PortDevice.MOUSE) ? gamePort1
                            : (d1 == PortDevice.MOUSE) ? gamePort2 : null;
         if (mouseAdapter != null) {
@@ -1618,8 +1604,8 @@ public class Amija implements RemotePlayControl {
             mouseAdapter.setEnabled(mousePort != null);
         }
 
-        // Joystick da tastiera: ciascuna porta ha i propri tasti (input.portN.joystick.*),
-        // quindi entrambe possono essere pilotate insieme dalla stessa tastiera.
+        // Keyboard joystick: each port has its own keys (input.portN.joystick.*), so both
+        // can be driven together from the same keyboard.
         if (joystickAdapter != null) {
             joystickAdapter.configure(0,
                     d0 == PortDevice.JOYSTICK_KEYBOARD ? gamePort1 : null,
@@ -1629,21 +1615,21 @@ public class Amija implements RemotePlayControl {
                     config.joystickKeyMap(1));
         }
 
-        // Joystick reale (GLFW) -> tutte le porte impostate su di esso, in ordine.
+        // Real joystick (GLFW) -> every port set to it, in order.
         java.util.List<GamePort> realPorts = new java.util.ArrayList<>(2);
         if (d0 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort1);
         if (d1 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort2);
         joystickService.setPorts(realPorts);
 
-        // La porta ceduta si dichiara vuota, e per ULTIMA. Staccare da lì gli adapter
-        // dell'host li fa rilasciare quel che tenevano premuto — cosa giusta e necessaria —
-        // ma ogni rilascio fa dedurre alla GamePort una periferica, e resterebbe un
-        // joystick fermo su una porta in cui non c'è collegato niente.
+        // The port given away is declared empty, and LAST. Detaching the host's adapters from
+        // it makes them release what they held pressed (right and necessary), but every
+        // release makes the GamePort infer a device, and a stationary joystick would remain
+        // on a port with nothing plugged in.
         //
-        // Solo però se l'ospite NON è collegato. Se sta giocando, quella porta è già sua e
-        // ciò che c'è dentro lo dice lui a ogni pacchetto: azzerarla qui — perché l'host ha
-        // confermato il proprio popup per tutt'altro motivo — gli toglierebbe il joystick di
-        // sotto per il tempo di un fotogramma, in mezzo a una partita.
+        // Only if the guest is NOT connected, though. If it is playing, that port is already
+        // its own and what is in it is stated in every packet: clearing it here, because the
+        // host confirmed its own popup for some other reason, would pull the joystick from
+        // under the guest for one frame, in the middle of a game.
         if (!hasGuest()) {
             if (guestPort == 0) gamePort1.setDevice(GamePortDevice.NONE);
             if (guestPort == 1) gamePort2.setDevice(GamePortDevice.NONE);
@@ -1651,18 +1637,18 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Lato ospite: cabla i propri adapter alla porta che l'host gli ha assegnato, secondo
-     * la periferica che <b>lui</b> ha scelto nella tendina di quella porta.
+     * Guest side: wires its own adapters to the port the host assigned to it, according to
+     * the device <b>it</b> chose in that port's drop-down.
      *
-     * <p>È il gemello di {@link #applyPortAssignments()} per una macchina che non emula
-     * niente: al posto della {@code GamePort} c'è {@link RemoteInputSender}, e i gesti
-     * finiscono in un pacchetto invece che in un registro. Tutto il resto è identico, e
-     * volutamente — il joystick da tastiera legge la mappa tasti <b>locale</b>
-     * ({@code input.portN.joystick.*} di questa macchina), che è il punto di tutta la
-     * faccenda: i tasti con cui si gioca sono i propri, non quelli di chi ospita.
+     * <p>The twin of {@link #applyPortAssignments()} for a machine that emulates nothing:
+     * instead of the {@code GamePort} there is {@link RemoteInputSender}, and the gestures go
+     * into a packet instead of a register. Everything else is identical on purpose: the
+     * keyboard joystick reads the <b>local</b> key map ({@code input.portN.joystick.*} of
+     * this machine), which is the point: the keys one plays with are one's own, not the
+     * host's.
      *
-     * <p>L'altra porta viene sconfigurata: è la porta dell'host, e non c'è nessun modo
-     * sensato di pilotarla da qui.
+     * <p>The other port is unconfigured: it is the host's port, and there is no sensible way
+     * to drive it from here.
      */
     private void applyGuestPortAssignment() {
         RemotePlayGuest guest = remotePlayGuest;
@@ -1675,8 +1661,8 @@ public class Amija implements RemotePlayControl {
             mouseAdapter.setEnabled(device == PortDevice.MOUSE);
         }
         if (joystickAdapter != null) {
-            // L'altra porta esiste sulla macchina dell'host e non è raggiungibile da qui:
-            // configurarla vorrebbe dire consumare i tasti dell'utente per niente.
+            // The other port exists on the host's machine and cannot be reached from here:
+            // configuring it would consume the user's keys for nothing.
             joystickAdapter.configure(1 - mine, null, config.joystickKeyMap(1 - mine));
             joystickAdapter.configure(mine,
                     device == PortDevice.JOYSTICK_KEYBOARD ? remoteInputSender : null,
@@ -1685,18 +1671,18 @@ public class Amija implements RemotePlayControl {
         joystickService.setPorts(device == PortDevice.JOYSTICK_REAL
                 ? java.util.List.of(remoteInputSender) : java.util.List.of());
 
-        // Per ULTIMA: sconfigurare gli adapter qui sopra li fa rilasciare quel che tenevano
-        // premuto, e ogni rilascio fa dedurre al sender una periferica. Se la scelta la
-        // dichiarasse prima, un passaggio a «Vuota» si riscriverebbe da sé in «Joystick».
+        // LAST: unconfiguring the adapters above makes them release what they held pressed,
+        // and every release makes the sender infer a device. If the choice were declared
+        // before, a switch to "Empty" would rewrite itself as "Joystick".
         remoteInputSender.setDevice(device.hardwareDevice());
     }
 
     /**
-     * La game port che questa macchina ha ceduto a un ospite, o {@code -1} se non ospita.
+     * The game port this machine has given to a guest, or {@code -1} if it is not hosting.
      *
-     * <p>Volutamente indipendente dal fatto che un ospite ci sia <i>adesso</i>: la porta è
-     * assegnata dal momento in cui si comincia ad ascoltare, e restituirla all'host fra un
-     * ospite e il successivo vorrebbe dire vedersela sfilare da sotto a metà partita.
+     * <p>Deliberately independent of whether a guest is there <i>now</i>: the port is
+     * assigned from the moment listening starts, and handing it back to the host between one
+     * guest and the next would mean having it pulled away in the middle of a game.
      */
     private int hostedGuestPort() {
         return remotePlayHost == null ? -1 : remotePlaySettings.guestGamePort();
@@ -1711,8 +1697,8 @@ public class Amija implements RemotePlayControl {
     private void applyFloppySound(FloppyDrive drive, int index) {
         if (drive == null || index < 0 || index >= floppySounds.length) return;
 
-        // Conta il lettore che c'è, non quello che la configurazione descrive: un drive
-        // rimasto vuoto sopravvive fino al prossimo avvio, e finché c'è fa rumore.
+        // What counts is the drive that is there, not the one the configuration describes: a
+        // drive left empty survives until the next start, and while it is there it makes noise.
         boolean enabled = config.floppySoundEnabled()
                 && (drive.isConnected() || config.driveEnabled(index));
         float gainDb = config.floppySoundGainDb();
@@ -1757,16 +1743,16 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Riavvia l'intero processo JVM (non il solo power-cycle della macchina): rilancia
-     * un nuovo processo java con lo stesso classpath e working dir, poi esce. Serve per
-     * le impostazioni che il toolkit fissa una sola volta all'avvio e che non sono
-     * modificabili a caldo. Se il rilancio fallisce non esce: il chiamante prosegue con
-     * un cold restart della sola macchina.
+     * Restarts the whole JVM process (not just the machine's power cycle): launches a new
+     * java process with the same class path and working dir, then exits. Needed for the
+     * settings the toolkit fixes once at start-up and that cannot be changed live. If the
+     * relaunch fails it does not exit: the caller goes on with a cold restart of the machine
+     * alone.
      *
-     * <p>L'unico cliente e' il cambio di {@code ui.scale}: {@code flatlaf.uiScale} viene
-     * letta all'init del Look and Feel, una volta sola. L'integer scaling della finestra
-     * emulata NON passa piu' di qui — lo applica {@code AmigaDisplay} alla presentazione,
-     * e gli basta ricreare la finestra.
+     * <p>The only client is a change of {@code ui.scale}: {@code flatlaf.uiScale} is read
+     * when the Look and Feel initialises, once. The integer scaling of the emulated window
+     * does not go through here: {@code AmigaDisplay} applies it at presentation, and
+     * re-creating the window is enough.
      */
     private void relaunchApplication() {
         try {
@@ -1774,12 +1760,12 @@ public class Amija implements RemotePlayControl {
                     + File.separator + "bin" + File.separator + "java";
             List<String> command = new ArrayList<>();
             command.add(javaBin);
-            // La home va RIPASSATA esplicitamente: qui si rilancia "java -cp ...", non il
-            // launcher nativo, quindi le --java-options impostate da jpackage (fra cui
-            // -Damija.home=$ROOTDIR) andrebbero perse e il nuovo processo ripiegherebbe
-            // sulla cartella del jar, che dentro un'app-image e' <root>/app.
-            // inheritIO: il nuovo processo riusa console/stdio correnti. La working dir
-            // viene ereditata, quindi amiga.properties (gia' salvata) e' la stessa.
+            // The home must be passed AGAIN explicitly: this relaunches "java -cp ...", not the
+            // native launcher, so the --java-options set by jpackage (among them
+            // -Damija.home=$ROOTDIR) would be lost and the new process would fall back on the
+            // jar's folder, which inside an app-image is <root>/app.
+            // inheritIO: the new process reuses the current console/stdio. The working dir is
+            // inherited, so amiga.properties (already saved) is the same.
             command.add("-D" + AppHome.PROPERTY + "=" + AppHome.home());
             command.add("--enable-native-access=ALL-UNNAMED");
             command.addAll(Arrays.asList(JIT_OPTIONS));
@@ -1789,7 +1775,7 @@ public class Amija implements RemotePlayControl {
             new ProcessBuilder(command)
                     .inheritIO()
                     .start();
-            System.exit(0); // lo shutdown hook spegne la macchina corrente
+            System.exit(0); // the shutdown hook switches the current machine off
         } catch (IOException ex) {
             System.err.println("[UI] Riavvio del processo non riuscito, eseguo un cold "
                     + "restart (il nuovo integer scaling sara' effettivo al prossimo "
@@ -1797,7 +1783,7 @@ public class Amija implements RemotePlayControl {
         }
     }
 
-    /** Spegne e riaccende la macchina da zero (power-cycle) con la config corrente. */
+    /** Switches the machine off and on from scratch (power cycle) with the current config. */
     private void coldRestart() {
         shutdownMachine();
         recreateDisplay();
@@ -1806,15 +1792,15 @@ public class Amija implements RemotePlayControl {
         }
     }
 
-    /** Ricrea finestra e display, necessario per impostazioni applicate solo al riavvio. */
+    /** Recreates window and display, needed for the settings applied only at restart. */
     private void recreateDisplay() {
         if (display != null) {
             display.dispose();
         } else if (frame != null) {
             frame.dispose();
         }
-        // Modalità video letta da config (non dal campo videoMode, ancora fermo al boot
-        // precedente: in coldRestart recreateDisplay precede bootMachine).
+        // Video mode read from the config (not from the videoMode field, still at the
+        // previous boot: in coldRestart recreateDisplay precedes bootMachine).
         boolean overscan = config.overscanEnabled();
         int fw = config.videoMode().displayWidth(overscan);
         int fh = config.videoMode().displayHeight(overscan);
@@ -1828,18 +1814,18 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Risolve il nome dello shader configurato nel percorso del preset ({@code .slangp} o
-     * {@code .glslp}) sotto {@code shaders/}, anche in sottocartelle.
-     * {@code "none"}/vuoto o file assente -&gt; {@code null} (passthrough).
+     * Resolves the configured shader name to the path of the preset ({@code .slangp} or
+     * {@code .glslp}) under {@code shaders/}, subfolders included.
+     * {@code "none"}/empty or missing file -&gt; {@code null} (passthrough).
      */
     private static java.nio.file.Path resolveShaderPath(String name) {
         return io.github.zolfrik.amija.display.render.gl.ShaderCatalog.resolve(name);
     }
 
     /**
-     * Salva uno screenshot della finestra di gioco in {@code screenshots/} (software:
-     * composizione Java2D; OpenGL: {@code glReadPixels}). Ritorna il file salvato o
-     * {@code null} in caso di errore. Usato dal pulsante F12 "Take Screenshot".
+     * Saves a screenshot of the game window in {@code screenshots/} (software: Java2D
+     * composition; OpenGL: {@code glReadPixels}). Returns the file saved or {@code null} on
+     * error. Used by the F12 "Take Screenshot" button.
      */
     private File takeScreenshotFile() {
         if (display == null) return null;
@@ -1856,7 +1842,7 @@ public class Amija implements RemotePlayControl {
         }
     }
 
-    /** Applica a caldo un parametro dello shader OpenGL (dal popup "..."). */
+    /** Applies an OpenGL shader parameter live (from the "..." popup). */
     private void updateShaderParam(String name, Float value) {
         if (display != null && value != null) {
             display.setShaderParam(name, value);
@@ -1864,10 +1850,10 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Salva l'intero stato della macchina nello slot attivo
-     * ({@code savestate/Slot<N>/state.a5s}, con N da {@code savestate.slot}). Invocato dal
-     * pulsante F12 "Save State" a macchina in pausa (il popup è aperto). Ritorna il
-     * messaggio di esito localizzato da mostrare all'utente.
+     * Saves the whole machine state in the active slot
+     * ({@code savestate/Slot<N>/state.a5s}, N from {@code savestate.slot}). Called by the F12
+     * "Save State" button with the machine paused (the popup is open). Returns the localised
+     * outcome message to show the user.
      */
     private String saveState() {
         int slot = config.saveStateSlot();
@@ -1887,10 +1873,10 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Salva accanto allo stato uno screenshot dello schermo
-     * ({@code savestate/Slot<N>/state.png}), a nome fisso: ogni salvataggio sovrascrive
-     * l'immagine precedente di quello slot. Un errore qui non invalida lo stato già
-     * scritto, quindi viene solo segnalato a console.
+     * Saves a screenshot of the screen next to the state
+     * ({@code savestate/Slot<N>/state.png}), under a fixed name: every save overwrites that
+     * slot's previous image. An error here does not invalidate the state already written, so
+     * it is only reported on the console.
      */
     private void saveStateScreenshot(int slot) {
         if (display == null) return;
@@ -1904,16 +1890,15 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Ripristina lo stato della macchina dallo slot attivo, sovrascrivendo i componenti
-     * correnti (macchina in pausa). Invocato dal pulsante F12 "Load State".
+     * Restores the machine state from the active slot, overwriting the current components
+     * (machine paused). Called by the F12 "Load State" button.
      *
-     * <p>Se lo stato è stato preso su una macchina diversa da quella accesa — altra
-     * memoria, altro Kickstart, altri dischi — non si dice semplicemente di no: dentro
-     * lo slot c'è anche la configurazione di allora, quindi la macchina giusta si può
-     * ricostruire. Quello però vuol dire spegnerla e riaccenderla, e non si può fare da
-     * qui: il popup è aperto ed è figlio della finestra che il riavvio distrugge. Si
-     * ritorna allora {@link ConfigDialog.LoadStateOutcome#restart()}, il popup si chiude
-     * e il seguito è in {@link #restoreStateAfterRebuild()}.
+     * <p>If the state was taken on a machine different from the running one (other memory,
+     * other Kickstart, other disks) it does not simply say no: the slot also holds the
+     * configuration of the time, so the right machine can be rebuilt. That means switching
+     * it off and on, which cannot be done from here: the popup is open and is a child of the
+     * window the restart destroys. So {@link ConfigDialog.LoadStateOutcome#restart()} is
+     * returned, the popup closes, and the rest is in {@link #restoreStateAfterRebuild()}.
      */
     private ConfigDialog.LoadStateOutcome loadState() {
         int slot = config.saveStateSlot();
@@ -1946,10 +1931,10 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * {@code true} se lo slot descrive una macchina diversa da quella accesa e quindi
-     * ricostruibile. Falso quando la configurazione salvata è già quella corrente: in
-     * quel caso il rifiuto viene da altro (formato, struttura) e riavviare non
-     * servirebbe a nulla se non a buttare via la sessione in corso.
+     * {@code true} if the slot describes a machine different from the running one, and so
+     * rebuildable. False when the saved configuration is already the current one: then the
+     * refusal comes from something else (format, structure) and restarting would only throw
+     * away the session in progress.
      */
     private boolean canRebuildMachineFor(File slot) {
         try {
@@ -1960,20 +1945,19 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Seconda metà di "Load State" quando lo stato pretende un'altra macchina: rimette
-     * in vigore la configurazione conservata nello slot, ricostruisce la macchina e
-     * ritenta il caricamento. Ritorna il messaggio da mostrare all'utente.
+     * Second half of "Load State" when the state requires another machine: puts back in
+     * force the configuration kept in the slot, rebuilds the machine and retries the load.
+     * Returns the message to show the user.
      *
-     * <p>Le impostazioni ripristinate sono le sole che descrivono la macchina (Kickstart,
-     * memorie, chipset, modo video, supporti): lingua, finestra, monitor, renderer e
-     * shader restano quelli scelti dall'utente — vedi
-     * {@link AmigaConfig#restoreMachineSettings}.
+     * <p>The settings restored are only those that describe the machine (Kickstart, memory,
+     * chipset, video mode, media): language, window, monitor, renderer and shader stay as
+     * the user chose; see {@link AmigaConfig#restoreMachineSettings}.
      */
     private String restoreStateAfterRebuild() {
-        // Lo slot è quello scelto nel popup: la scelta ha effetto subito, quindi è ancora
-        // in configurazione anche se il popup si è chiuso senza applicare il resto. Lo si
-        // legge PRIMA di restoreMachineSettings — che rimette in vigore le sole chiavi di
-        // macchina, e savestate.slot non è una di quelle.
+        // The slot is the one chosen in the popup: the choice takes effect at once, so it is
+        // still in the configuration even if the popup closed without applying the rest. It
+        // is read BEFORE restoreMachineSettings, which puts back only the machine keys, and
+        // savestate.slot is not one of them.
         int slot = config.saveStateSlot();
         File file = SaveStateManager.slotFile(slot);
         try {
@@ -1985,8 +1969,8 @@ public class Amija implements RemotePlayControl {
             if (cpu == null || agnus == null) {
                 return Messages.t("savestate.load.fail", Messages.t("savestate.nomachine"));
             }
-            // La macchina è appena partita e sta emulando: va fermata davvero (non solo
-            // segnata come in pausa) prima di sovrascriverle sotto i componenti.
+            // The machine has just started and is emulating: it must really be stopped (not
+            // just marked as paused) before the components are overwritten under it.
             if (clock != null) clock.pauseAndWait(500);
             SaveStateManager.load(file, cpu, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] caricato " + file.getAbsolutePath());
@@ -2000,15 +1984,13 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Riprende l'emulazione dopo il popup, o la avvia se non era mai partita.
+     * Resumes the emulation after the popup, or starts it if it never started.
      *
-     * <p><b>Da ospite non fa niente, ed è la parte che conta.</b> Un ospite non emula (§3):
-     * non ha un {@code MasterClock} da riprendere, e il ramo «allora avviala» costruirebbe
-     * una macchina locale <i>sotto</i> il video che continua ad arrivare dall'host — due
-     * Amiga che disegnano sulla stessa finestra. Ci si arrivava da ogni chiusura del popup,
-     * OK e Annulla comprese, perché per un ospite {@code clock} è sempre {@code null}. È
-     * diventato un percorso di tutti i giorni da quando l'ospite ha nel popup qualcosa che
-     * gli serve davvero: la tendina della propria game port.
+     * <p><b>As a guest it does nothing, and that is the part that matters.</b> A guest does
+     * not emulate (section 3): it has no {@code MasterClock} to resume, and the "then start
+     * it" branch would build a local machine <i>under</i> the video still arriving from the
+     * host, two Amigas drawing on the same window. Every close of the popup, OK and Cancel
+     * included, gets here, because for a guest {@code clock} is always {@code null}.
      */
     private void resumeOrStart() {
         if (guestMode) {
@@ -2024,15 +2006,14 @@ public class Amija implements RemotePlayControl {
     private void recaptureMouse() {
         if (mouseAdapter == null || frame == null) return;
         final AmigaMouseAdapter target = mouseAdapter;
-        // Subito dopo la chiusura di un dialog modale la finestra non è ancora la
-        // "active window": requestFocusInWindow() è un no-op e il robot.mouseMove
-        // viene scartato durante la transizione di focus (il cursore risulta nascosto
-        // ma non agganciato al centro). Rinviamo brevemente la cattura, portando prima
-        // la finestra in primo piano e forzando il focus.
+        // Right after a modal dialog closes, the window is not yet the "active window":
+        // requestFocusInWindow() is a no-op and robot.mouseMove is discarded during the focus
+        // transition (the cursor ends up hidden but not centred). The capture is briefly
+        // deferred, bringing the window to the front and forcing the focus first.
         javax.swing.Timer timer = new javax.swing.Timer(150, e -> {
             frame.toFront();
             frame.requestFocus();
-            // In OpenGL il fuoco tastiera deve tornare sul canvas (l'input è lì).
+            // In OpenGL the keyboard focus must go back to the canvas (the input is there).
             if (inputComponent != null) inputComponent.requestFocusInWindow();
             target.captureMouse();
         });
@@ -2041,37 +2022,36 @@ public class Amija implements RemotePlayControl {
     }
 
     // =========================================================================
-    // Costruzione / distruzione della macchina
+    // Building / tearing down the machine
     // =========================================================================
 
-    /** Costruisce e avvia un'intera macchina A500 a partire da {@link #config}. */
+    /** Builds and starts a whole A500 machine from {@link #config}. */
     private void bootMachine() {
         try {
-            // Applica la lingua corrente: il rebuild del display (setDrives) rigenera
-            // l'overlay drag-and-drop con le stringhe localizzate aggiornate.
+            // Apply the current language: rebuilding the display (setDrives) regenerates the
+            // drag-and-drop overlay with the updated localised strings.
             Messages.setLanguage(config.language());
-            // Modalita' video (PAL/NTSC): determina clock, righe per frame e ID Agnus.
-            // Letta qui così un cold restart dopo il cambio nel popup F12 la applica.
+            // Video mode (PAL/NTSC): decides the clock, lines per frame and Agnus ID. Read
+            // here so a cold restart after a change in the F12 popup applies it.
             videoMode = config.videoMode();
             final String kickstartPath = config.kickstartPath();
 
-            // 1. Decodifica indirizzi (Gary) e memoria.
+            // 1. Address decoding (Gary) and memory.
             Gary gary = Gary.defaultA500();
             RAM chipRam = new RAM(config.chipRamKb() * 1024);
-            // La Region CHIP_RAM di defaultA500() ha physicalSize cablato a 512 KB:
-            // allineala alla configurazione, altrimenti gli indirizzi sopra $07FFFF
-            // wrappano sui primi 512 KB e il Kickstart rileva solo 512 KB di chip
-            // (es. WHDLoad richiede chip contigua fino a $A0000 / 640 KB).
+            // The CHIP_RAM Region of defaultA500() has physicalSize fixed at 512 KB: align it
+            // with the configuration, or the addresses above $07FFFF wrap onto the first
+            // 512 KB and the Kickstart finds only 512 KB of chip (e.g. WHDLoad needs
+            // contiguous chip up to $A0000 / 640 KB).
             gary.setChipRamSize(config.chipRamKb() * 1024);
             RAM slowRam = config.slowRamKb() > 0 ? new RAM(config.slowRamKb() * 1024) : null;
 
-            // L'immagine viene normalizzata (header scartati, code troncate, overdump
-            // collassati) prima di finire nel socket: Gary mappa per maschere di bit e
-            // pretende una potenza di due. Vedi KickstartImage.
-            // Senza un Kickstart utilizzabile si monta la ROM AmiJa inclusa nel jar:
-            // e' firmware originale di questo progetto, quindi ridistribuibile, e
-            // permette di avviare i giochi su floppy senza possedere una ROM
-            // Commodore. Vedi BuiltinRom per cosa NON copre.
+            // The image is normalised (headers dropped, tails truncated, overdumps collapsed)
+            // before it reaches the socket: Gary maps by bit masks and needs a power of two.
+            // See KickstartImage.
+            // Without a usable Kickstart the AmiJa ROM bundled in the jar is mounted: it is
+            // original firmware of this project, hence redistributable, and boots floppy
+            // games without owning a Commodore ROM. See BuiltinRom for what it does NOT cover.
             ROM kickstart;
             if (usingBuiltinRom(kickstartPath)) {
                 byte[] builtin = BuiltinRom.load();
@@ -2084,17 +2064,16 @@ public class Amija implements RemotePlayControl {
                 kickstart = new ROM(romImage.data());
             }
 
-            // 2. CPU e bus.
+            // 2. CPU and bus.
             cpu = new Motorola68000(new BusRequest(), new BusResponse());
 
-            // 3. Custom chips. Il chipset (OCS/ECS) seleziona la variante di Agnus/Denise.
-            // Si rispetta SEMPRE la scelta dell'utente: l'address counter DMA di
-            // AbstractAgnus deriva la maschera dei puntatori dalla dimensione della Chip
-            // RAM (su OCS lo spazio DMA segue una Chip oltre i 512 KB), quindi OcsAgnus indirizza la
-            // Chip RAM fino a 2 MB. NON si forza più ECS quando la Chip RAM supera i
-            // 512 KB: oltre a non essere necessario, manderebbe la selezione OCS sul path
-            // ECS+Kickstart 3.1 (non ancora validato) provocando un guru all'avvio
-            // (regressione: p.es. Agony via WHDLoad con Chip RAM 1 MB).
+            // 3. Custom chips. The chipset (OCS/ECS) selects the Agnus/Denise variant. The
+            // user's choice is ALWAYS respected: AbstractAgnus's DMA address counter derives
+            // the pointer mask from the Chip RAM size (on OCS the DMA space follows a Chip RAM
+            // beyond 512 KB), so OcsAgnus addresses Chip RAM up to 2 MB. ECS is NOT forced
+            // when Chip RAM exceeds 512 KB: besides being unnecessary, it would send an OCS
+            // selection down the ECS + Kickstart 3.1 path (not validated yet), with a guru at
+            // start-up (e.g. Agony through WHDLoad with 1 MB of Chip RAM).
             Chipset chipset = config.chipset();
             final boolean ecs = chipset.isEcs();
             System.out.println("[CONFIG] Chipset: " + chipset);
@@ -2106,10 +2085,10 @@ public class Amija implements RemotePlayControl {
             MOS8520 ciaA = new MOS8520(ciaAPins, true);
             MOS8520 ciaB = new MOS8520(new CIAPinSet(), false);
 
-            // Game port 1 (JOY0DAT, "Port 0") e port 2 (JOY1DAT, "Port 1"). La periferica
-            // host di ciascuna (mouse / joystick reale / joystick da tastiera / vuota) è
-            // decisa da applyPortAssignments in base alla configurazione (property
-            // input.port0.device / input.port1.device, tendine del popup F12).
+            // Game port 1 (JOY0DAT, "Port 0") and port 2 (JOY1DAT, "Port 1"). The host device
+            // of each (mouse / real joystick / keyboard joystick / empty) is decided by
+            // applyPortAssignments from the configuration (input.port0.device /
+            // input.port1.device, the F12 popup's drop-downs).
             GamePort port1 = new GamePort(1);
             GamePort port2 = new GamePort(2);
             gamePort1 = port1;
@@ -2125,25 +2104,25 @@ public class Amija implements RemotePlayControl {
                     ? new EcsAgnus(cpu, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode)
                     : new OcsAgnus(cpu, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode);
 
-            // Fast RAM (espansione Zorro II con AutoConfig). Assente di default (0):
-            // la prima scheda di RAM Zorro II viene mappata dal Kickstart tipicamente
-            // a $200000 e aggiunta alla memoria di sistema, rendendola disponibile a
-            // programmi e WHDLoad. Va collegata PRIMA del reset della CPU.
+            // Fast RAM (Zorro II expansion with AutoConfig). Absent by default (0): the first
+            // Zorro II RAM board is usually mapped by the Kickstart at $200000 and added to the
+            // system memory, available to programs and WHDLoad. Must be connected BEFORE the
+            // CPU reset.
             agnus.setFastRam(new FastRam(config.fastRamKb() * 1024));
 
-            // Immediate blit: completa ogni blit istantaneamente (non cycle-exact).
-            // Solo da amiga.properties (blitter.immediate), default false, non da F12.
+            // Immediate blit: completes every blit at once (not cycle-exact). Only from
+            // amiga.properties (blitter.immediate), default false, not from F12.
             agnus.getBlitter().setImmediateMode(config.blitterImmediate());
 
-            // Hard disk (master/slave): ogni unità abilitata con un .hdf valido diventa
-            // un controller Zorro II con boot ROM. La numerazione delle partizioni DH
-            // è progressiva fra le unità. Va collegato PRIMA del reset della CPU.
+            // Hard disks (master/slave): every enabled unit with a valid .hdf becomes a Zorro
+            // II controller with a boot ROM. The DH partitions are numbered across the units.
+            // Must be connected BEFORE the CPU reset.
             setupHardDisks(agnus);
 
             virtualCRT = new VirtualCRT(agnus, denise, display);
-            // La sessione di gioco a distanza sopravvive ai riavvii della macchina:
-            // l'ospite vede semplicemente il reboot, invece di perdere il collegamento.
-            // I suoi controlli vanno però riagganciati: game port e tastiera sono nuove.
+            // The remote play session survives the machine's restarts: the guest just sees
+            // the reboot instead of losing the connection. Its controls must be reattached,
+            // though: game ports and keyboard are new.
             if (remotePlayHost != null) {
                 virtualCRT.setRemotePlayHost(remotePlayHost);
             }
@@ -2152,22 +2131,22 @@ public class Amija implements RemotePlayControl {
             agnus.setKeyboard(keyboard);
             this.keyboard = keyboard;
 
-            // Adapter di input (ricreati a ogni avvio: legano i nuovi port/keyboard).
-            // La porta di destinazione e lo stato abilitato di mouse/joystick-tastiera
-            // sono impostati subito dopo da applyPortAssignments (idem per il joystick reale).
+            // Input adapters (recreated at every start: they bind the new ports/keyboard).
+            // The target port and the enabled state of mouse/keyboard joystick are set right
+            // after by applyPortAssignments (likewise for the real joystick).
             joystickAdapter = new AmigaJoystickKeyAdapter();
             keyAdapter = new AmigaKeyAdapter(keyboard, frame);
-            // Il fattore di scala viene dal display, non dalla config: è quello davvero
-            // applicato alla finestra (già normalizzato a >= 1). Serve a riportare i
-            // delta del mouse, che arrivano in pixel dello schermo, a pixel Amiga.
+            // The scale factor comes from the display, not from the config: it is the one
+            // really applied to the window (already normalised to >= 1). It brings the mouse
+            // deltas, which arrive in screen pixels, back to Amiga pixels.
             mouseAdapter = new AmigaMouseAdapter(port1, frame,
                     display != null ? display.getVideoScale() : 1);
-            // I listener vanno sul componente di input (il frame in software, il canvas GL
-            // heavyweight in OpenGL: i suoi eventi non risalgono al frame). Gli adapter
-            // continuano a ricevere il frame per fuoco/cursore/ricentraggio del mouse.
+            // The listeners go on the input component (the frame in software, the
+            // heavyweight GL canvas in OpenGL: its events do not bubble up to the frame). The
+            // adapters still receive the frame for focus/cursor/mouse recentring.
             if (inputComponent != null) {
-                // Il joystick adapter deve venire prima: consuma i tasti mappati sulle
-                // direzioni e sul fuoco, che non vanno inoltrati alla tastiera Amiga.
+                // The joystick adapter must come first: it consumes the keys mapped to the
+                // directions and fire, which must not be forwarded to the Amiga keyboard.
                 inputComponent.addKeyListener(joystickAdapter);
                 inputComponent.addKeyListener(keyAdapter);
                 inputComponent.addMouseListener(mouseAdapter);
@@ -2176,16 +2155,16 @@ public class Amija implements RemotePlayControl {
                 inputComponent.requestFocusInWindow();
             }
 
-            // Assegna le periferiche host alle due game port (mouse / joystick reale /
-            // joystick da tastiera / vuota) secondo la configurazione.
+            // Assign the host devices to the two game ports (mouse / real joystick / keyboard
+            // joystick / empty) according to the configuration.
             applyPortAssignments();
 
-            // I controlli dell'ospite vanno riagganciati alle nuove game port e tastiera:
-            // quelle della macchina precedente non esistono più.
+            // The guest's controls must be reattached to the new game ports and keyboard:
+            // those of the previous machine no longer exist.
             attachRemoteInput();
 
-            // Drive (DF0..DF3): collegamento e disco da inserire all'avvio. Se DF0 ha
-            // uno zip multi-disco, i dischi successivi popolano i drive liberi.
+            // Drives (DF0..DF3): connection and disk to insert at start-up. If DF0 holds a
+            // multi-disk zip, the following disks fill the free drives.
             syncZipDiskSet(null);
             FloppyDrive df0 = agnus.getDf0();
             FloppyDrive[] dfs = { df0, agnus.getDf1(), agnus.getDf2(), agnus.getDf3() };
@@ -2202,27 +2181,27 @@ public class Amija implements RemotePlayControl {
                 }
             }
             display.setDrives(dfs[0], dfs[1], dfs[2], dfs[3]);
-            // Da qui in poi questo è l'hardware in vigore: quello che il popup non può
-            // più cambiare senza un riavvio.
+            // From here on this is the hardware in force: what the popup can no longer change
+            // without a restart.
             activeHardware = captureDriveHardware();
 
-            // LED di stato + suoni estetici del floppy (entrambi da configurazione).
-            // Il LED HD riflette gli hard disk presenti (WHDLoad e/o master/slave, in ordine).
+            // Status LEDs + cosmetic floppy sounds (both from the configuration). The HD LED
+            // reflects the hard disks present (WHDLoad and/or master/slave, in order).
             display.setStatusLedSource(ciaA::isPowerLedOn);
             display.setHdLedSources(hdLedSources.toArray(new java.util.function.BooleanSupplier[0]));
             attachRemotePlayLed();
             display.setStatusLedsEnabled(config.ledsVisible());
 
-            // Overlay diagnostici opzionali (solo da amiga.properties, non nel popup F12).
+            // Optional diagnostic overlays (only from amiga.properties, not in the F12 popup).
             display.setFpsOverlayEnabled(config.fpsOverlayEnabled());
             display.setFrameCounterOverlayEnabled(config.frameCounterOverlayEnabled());
             applyFloppySounds(dfs);
 
             // 4. Master clock + reset + avvio.
             clock = new MasterClock(agnus, videoMode, virtualCRT);
-            // Se il thread di emulazione muore per un'eccezione, senza questo aggancio
-            // il display si limiterebbe a congelarsi (o a restare nero, se il guasto
-            // arriva prima del primo frame) senza dire una parola.
+            // If the emulation thread dies of an exception, without this hook the display
+            // would just freeze (or stay black, if the failure comes before the first frame)
+            // without a word.
             clock.setFailureHandler(t -> SwingUtilities.invokeLater(
                     () -> error(Messages.t("error.boot", describeFailure(t)))));
             // Power-on: RESET cascades to CIAs and floppies; the CPU starts after a random delay.
@@ -2235,24 +2214,23 @@ public class Amija implements RemotePlayControl {
         } catch (IOException e) {
             error(Messages.t("error.boot", e.getMessage()));
         } catch (RuntimeException | LinkageError e) {
-            // Qualunque altro guasto durante il boot. Senza questo ramo l'eccezione
-            // risalirebbe al chiamante: quando bootMachine() parte da openConfig() quel
-            // chiamante e' l'EDT, dove AWT si limita a stampare su stderr e prosegue.
-            // La finestra resta viva e reattiva (F12 continua ad aprire il popup) ma
-            // clock.start() non e' mai stato raggiunto, quindi non arriva alcun frame:
-            // schermo nero permanente, senza nemmeno i LED power/drive — che sono
-            // disegnati DENTRO il frame emulato e spariscono con esso. Il sintomo e'
-            // indistinguibile da un guasto video, e in una app lanciata col doppio clic
-            // lo stack trace su stderr non lo vede nessuno. Meglio dirlo a schermo.
+            // Any other failure during the boot. Without this branch the exception would
+            // reach the caller: when bootMachine() starts from openConfig() that caller is the
+            // EDT, where AWT only prints to stderr and carries on. The window stays alive and
+            // responsive (F12 still opens the popup) but clock.start() was never reached, so
+            // no frame arrives: a permanent black screen, without even the power/drive LEDs,
+            // which are drawn INSIDE the emulated frame and vanish with it. The symptom is
+            // indistinguishable from a video failure, and in an app launched by double click
+            // nobody sees the stack trace on stderr. Better to say it on screen.
             e.printStackTrace();
             error(Messages.t("error.boot", describeFailure(e)));
         }
     }
 
     /**
-     * Descrizione compatta di un guasto per il messaggio a video: tipo dell'eccezione
-     * (spesso l'unica informazione presente, p.es. per una NullPointerException) seguito
-     * dal messaggio, quando c'è. Lo stack trace completo resta su stderr.
+     * Compact description of a failure for the on-screen message: the exception type (often
+     * the only information, e.g. for a NullPointerException) followed by the message, when
+     * there is one. The full stack trace stays on stderr.
      */
     private static String describeFailure(Throwable t) {
         String msg = t.getMessage();
@@ -2262,9 +2240,9 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Costruisce i controller hard disk dalle unità configurate (master/slave) e li
-     * collega ad {@link AbstractAgnus}. Ogni file {@code .hdf} valido produce un controller;
-     * le partizioni sono numerate progressivamente (DH0, DH1, …) fra le unità.
+     * Builds the hard disk controllers from the configured units (master/slave) and connects
+     * them to {@link AbstractAgnus}. Every valid {@code .hdf} file produces a controller; the
+     * partitions are numbered across the units (DH0, DH1, ...).
      */
     private void setupHardDisks(AbstractAgnus agnus) {
         hardFiles.clear();
@@ -2272,16 +2250,16 @@ public class Amija implements RemotePlayControl {
         java.util.List<HdController> controllers = new java.util.ArrayList<>();
         int partitionBase = 0;
 
-        // WHDLoad: l'archivio .lha viene estratto e impacchettato in un hard disk FFS
-        // avviabile (vedi WhdLoadManager), montato come PRIMA unità così da diventare
-        // il volume di boot (DH0) ed eseguire automaticamente lo slave WHDLoad.
+        // WHDLoad: the .lha archive is extracted and packed into a bootable FFS hard disk
+        // (see WhdLoadManager), mounted as the FIRST unit so it becomes the boot volume (DH0)
+        // and runs the WHDLoad slave automatically.
         if (config.whdloadEnabled() && config.whdloadFile() != null) {
             try {
                 WhdLoadManager whd = new WhdLoadManager();
-                // WHDLoad.prefs generata dalla sezione whdload.prefs.* di amiga.properties.
+                // WHDLoad.prefs generated from the whdload.prefs.* section of amiga.properties.
                 whd.withPrefs(config.whdloadPrefsContent());
-                // Fornisci a WHDLoad i ROM Kickstart presenti accanto a quello in uso
-                // (molti slave OCS richiedono p.es. KS 1.3): associati per CRC32.
+                // Give WHDLoad the Kickstart ROMs found next to the one in use (many OCS
+                // slaves need e.g. KS 1.3): matched by CRC32.
                 String ksPath = config.kickstartPath();
                 if (!ksPath.isEmpty()) {
                     java.nio.file.Path ksParent = java.nio.file.Paths.get(ksPath).getParent();
@@ -2297,8 +2275,8 @@ public class Amija implements RemotePlayControl {
                 System.out.println("[WHDLOAD] " + config.whdloadFile() + " -> " + hdf
                         + " (" + hf.cylinders() + "/" + hf.heads() + "/" + hf.sectors() + " C/H/S)");
 
-                // Volume persistente dei salvataggi WHDLoad (Saves: → WHDSaves:),
-                // montato come unità NON avviabile così non interferisce col boot.
+                // Persistent volume for the WHDLoad saves (Saves: -> WHDSaves:), mounted as a
+                // NON-bootable unit so it does not interfere with the boot.
                 java.nio.file.Path savesHdf = whd.prepareSaves();
                 HardFile shf = HardFile.load(savesHdf.toString(), false);
                 shf.setBootable(false);
@@ -2308,7 +2286,7 @@ public class Amija implements RemotePlayControl {
                 controllers.add(savesHd);
                 partitionBase += shf.numPartitions();
 
-                // Un solo LED HD per WHDLoad: boot + salvataggi sono la stessa unità logica.
+                // A single HD LED for WHDLoad: boot and saves are the same logical unit.
                 hdLedSources.add(() -> hd.ledActive() || savesHd.ledActive());
             } catch (IOException ioe) {
                 System.err.println("[WHDLOAD] Avvio WHDLoad fallito (" + config.whdloadFile()
@@ -2326,7 +2304,7 @@ public class Amija implements RemotePlayControl {
                 HdController hd = new HdController(controllers.size(), hf, partitionBase,
                         () -> { FloppyDrive d = agnus.getDf0(); return d != null && d.isDiskInserted(); });
                 controllers.add(hd);
-                hdLedSources.add(hd::ledActive); // master (unit 0) prima, slave (unit 1) dopo
+                hdLedSources.add(hd::ledActive); // master (unit 0) first, slave (unit 1) after
                 partitionBase += hf.numPartitions();
                 System.out.println("[HDF] " + AmigaConfig.HD_UNITS[unit] + ": montato " + diskPath
                         + " (" + hf.numPartitions() + " part., "
@@ -2340,7 +2318,7 @@ public class Amija implements RemotePlayControl {
         agnus.setHdControllers(controllers);
     }
 
-    /** Ferma la macchina corrente: clock, audio, render e listener di input. */
+    /** Stops the current machine: clock, audio, render and input listeners. */
     private void shutdownMachine() {
         if (clock != null) {
             clock.stop();
@@ -2359,20 +2337,19 @@ public class Amija implements RemotePlayControl {
             agnus.getDf1().setFloppySound(null);
             agnus.getDf2().setFloppySound(null);
             agnus.getDf3().setFloppySound(null);
-            // ⛔ I dischi vanno ESPULSI, non solo dimenticati. ejectDisk() riversa la
-            // traccia in corso di scrittura, fa il flush finale e chiude la DiskImage —
-            // che è anche l'unico punto in cui il suo shutdown hook viene rimosso.
-            // Senza questo, ogni macchina smontata e ricostruita nello stesso processo
-            // (cambio ROM, cambio configurazione, load di uno stato incompatibile, e il
-            // game sweep che boota un'istanza per file) lasciava dietro fino a quattro
-            // hook, ciascuno radice GC dell'intera immagine.
+            // The disks must be EJECTED, not just forgotten. ejectDisk() writes back the track
+            // being written, does the final flush and closes the DiskImage, which is also the
+            // only place where its shutdown hook is removed. Otherwise every machine unmounted
+            // and rebuilt in the same process (ROM change, configuration change, loading an
+            // incompatible state, and the game sweep that boots one instance per file) would
+            // leave up to four hooks behind, each a GC root of the whole image.
             agnus.getDf0().ejectDisk();
             agnus.getDf1().ejectDisk();
             agnus.getDf2().ejectDisk();
             agnus.getDf3().ejectDisk();
         }
         closeFloppySounds();
-        // Salva su disco le eventuali scritture agli hard disk montati.
+        // Save to disk any writes to the mounted hard disks.
         for (HardFile hf : hardFiles) {
             hf.flush();
         }
@@ -2386,10 +2363,10 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Fotografa i supporti appena montati sulla macchina: quanti drive per floppy sono
-     * collegati, le immagini degli hard disk in ordine di unità e l'archivio WHDLoad in
-     * esecuzione. È il metro con cui il popup distingue una modifica immediata (il disco
-     * dentro un drive che c'è già) da una che pretende hardware nuovo.
+     * Takes the media just mounted on the machine: how many floppy drives are connected, the
+     * hard disk images in unit order and the WHDLoad archive running. It is the yardstick
+     * with which the popup tells an immediate change (the disk inside a drive that already
+     * exists) from one that needs new hardware.
      */
     private ConfigDialog.DriveHardware captureDriveHardware() {
         int floppies = 0;
@@ -2405,29 +2382,30 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Stacca gli adapter di input dal componente e li smonta.
+     * Detaches the input adapters from the component and disposes of them.
      *
-     * <p>Non basta lasciarli andare: {@code keyAdapter} tiene un <b>poller fisico</b> della
-     * tastiera e {@code mouseAdapter} un listener di focus sul frame. Rimpiazzarli senza
-     * fermarli lascerebbe in giro un thread per ogni volta che li si è rifatti, e i tasti
-     * verrebbero consegnati due volte.
+     * <p>Letting them go is not enough: {@code keyAdapter} holds a <b>physical poller</b> of
+     * the keyboard and {@code mouseAdapter} a focus listener on the frame. Replacing them
+     * without stopping them would leave a thread behind for every time they were remade,
+     * and keys would be delivered twice.
      *
-     * <p>Serve a chi smonta la macchina e a chi rifà la sola finestra ({@code recreateGuestDisplay}):
-     * l'ospite non ha macchina da smontare, ma ha gli stessi adapter.
+     * <p>Used by whoever unmounts the machine and by whoever redoes only the window
+     * ({@code recreateGuestDisplay}): the guest has no machine to unmount, but has the same
+     * adapters.
      */
     private void detachInputAdapters() {
         if (inputComponent != null) {
             if (mouseAdapter != null) {
                 inputComponent.removeMouseListener(mouseAdapter);
                 inputComponent.removeMouseMotionListener(mouseAdapter);
-                mouseAdapter.dispose(); // rimuove anche il window focus listener
+                mouseAdapter.dispose(); // also removes the window focus listener
             }
             if (keyAdapter != null) inputComponent.removeKeyListener(keyAdapter);
             if (joystickAdapter != null) inputComponent.removeKeyListener(joystickAdapter);
         }
-        if (keyAdapter != null) keyAdapter.dispose(); // ferma il poller shift
-        // Il servizio joystick reale (GLFW) resta vivo tra un boot e l'altro (idle):
-        // basta staccare le porte, che verranno ricollegate al prossimo boot.
+        if (keyAdapter != null) keyAdapter.dispose(); // stops the shift poller
+        // The real joystick service (GLFW) stays alive between boots (idle): detaching the
+        // ports is enough, they are reattached at the next boot.
         joystickService.setPorts(java.util.List.of());
         mouseAdapter = null;
         keyAdapter = null;
@@ -2435,20 +2413,19 @@ public class Amija implements RemotePlayControl {
     }
 
     // =========================================================================
-    // Validazione / utilità
+    // Validation / utilities
     // =========================================================================
 
     /**
-     * Verifica che il Kickstart configurato esista e sia utilizzabile su un A500; in
-     * caso negativo avvisa l'utente dicendo cosa c'è che non va. Il controllo va oltre
-     * l'esistenza del file perché la collezione tipica di ROM è piena di immagini che
-     * non sono Kickstart da socket (extended ROM del CDTV, immagini per ReKick,
-     * cartucce freezer): senza questo messaggio l'unico sintomo sarebbe uno schermo
-     * nero. Vedi {@link KickstartImage}.
+     * Checks that the configured Kickstart exists and is usable on an A500; if not, tells
+     * the user what is wrong. The check goes beyond the file's existence because the typical
+     * ROM collection is full of images that are not socket Kickstarts (CDTV extended ROMs,
+     * ReKick images, freezer cartridges): without this message the only symptom would be a
+     * black screen. See {@link KickstartImage}.
      */
     /**
-     * Vero se si deve montare la ROM AmiJa invece di un Kickstart: quando non
-     * ne e' stato scelto nessuno, o quando il file indicato non c'e' piu'.
+     * True if the AmiJa ROM must be mounted instead of a Kickstart: when none was chosen, or
+     * when the file named is gone.
      */
     private static boolean usingBuiltinRom(String kickstartPath) {
         if (!BuiltinRom.isAvailable()) return false;
@@ -2458,9 +2435,8 @@ public class Amija implements RemotePlayControl {
     private boolean validateRom(AmigaConfig cfg) {
         String path = cfg.kickstartPath();
 
-        // Nessun Kickstart, o file sparito: si parte lo stesso con la ROM
-        // integrata. Si avvisa una volta sola, perche' non e' un errore ma una
-        // scelta di ripiego che l'utente deve sapere di star usando.
+        // No Kickstart, or the file is gone: start anyway with the built-in ROM. The user is
+        // told once, because it is not an error but a fallback they must know they are using.
         if ((path.isEmpty() || !new File(path).isFile()) && BuiltinRom.isAvailable()) {
             if (!welcomeShown) {
                 welcomeShown = true;
@@ -2471,16 +2447,16 @@ public class Amija implements RemotePlayControl {
         }
 
         if (path.isEmpty()) {
-            // Nessun Kickstart impostato: quasi sempre è il primo avvio in assoluto.
-            // Un errore che dice "imposta kickstart.path" non aiuta chi non sa nemmeno
-            // cos'è un Kickstart né perché l'emulatore non ne abbia uno: la prima volta
-            // si spiega la situazione per intero, poi basta ricordare cosa manca.
+            // No Kickstart set: almost always the very first start. An error saying "set
+            // kickstart.path" does not help someone who does not even know what a Kickstart
+            // is or why the emulator has none: the first time the situation is explained in
+            // full, after that a reminder of what is missing is enough.
             if (!welcomeShown) {
                 welcomeShown = true;
                 info(Messages.t("welcome.title"), Messages.t("welcome.rom"));
             } else if (cfg.autoEnabled()) {
-                // Con la modalità Auto il percorso non viene da 'kickstart.path' ma da
-                // una delle due caselle del popup: dire quale manca è l'unica cosa utile.
+                // In Auto mode the path does not come from 'kickstart.path' but from one of
+                // the two boxes of the popup: saying which one is missing is the useful part.
                 error(Messages.t("error.rom.missing.auto",
                         Messages.t(cfg.autoProfile().expanded()
                                 ? "label.kickstart31" : "label.kickstart13").replace(":", "")));
@@ -2525,9 +2501,9 @@ public class Amija implements RemotePlayControl {
     }
 
     /**
-     * Messaggio informativo a schermo. A differenza di {@link #error} il testo passa per
-     * l'HTML, che manda a capo da sé entro una larghezza fissa: questi messaggi sono
-     * discorsivi e in un JLabel resterebbero su un'unica riga larga quanto lo schermo.
+     * On-screen information message. Unlike {@link #error} the text goes through HTML, which
+     * wraps by itself within a fixed width: these messages are discursive and in a JLabel
+     * would stay on a single line as wide as the screen.
      */
     private void info(String title, String message) {
         System.out.println("[CONFIG] " + message.replace('\n', ' '));

@@ -66,38 +66,37 @@ import java.util.function.BooleanSupplier;
 import java.util.function.ObjIntConsumer;
 
 /**
- * View sul raster raw prodotto da VirtualCRT.
+ * View on the raw raster produced by VirtualCRT.
  *
- * Il JFrame ha dimensioni fisse (frameWidth x frameHeight).
- * L'area DIW (Display Window) dell'Amiga è sempre centrata nel JFrame.
- * In modalità lores ogni pixel raw viene duplicato orizzontalmente.
- * In modalità non-interlacciata il line doubling è sempre attivo.
- * L'immagine non viene mai croppata: la finestra fa da viewport naturale.
+ * The JFrame has a fixed size (frameWidth x frameHeight). The Amiga's display window (DIW)
+ * is always centred in the JFrame. In lores every raw pixel is doubled horizontally. In
+ * non-interlaced mode line doubling is always on. The image is never cropped: the window
+ * is the natural viewport.
  */
 public class AmigaDisplay {
 
     private static final long DUMP_INTERVAL_MS = 5000;
 
-    // Imposta a true per disegnare il rettangolo bianco di debug dell'area visibile DIW.
+    // Set to true to draw the white debug rectangle of the visible DIW area.
     private static final boolean DEBUG_VISIBLE_AREA = false;
     private static final int DEBUG_COLOR = 0xFFFFFF;
 
-    // Interruttore per i LED di stato (power/drive) in sovraimpressione nell'overscan.
-    // A false la feature è completamente disattivata (nessun disegno, costo zero).
-    // Configurabile da amiga.properties (leds.visible) via setStatusLedsEnabled.
+    // Switch for the status LEDs (power/drive) overlaid in the overscan. When false the
+    // feature is entirely off (no drawing, zero cost). Set from amiga.properties
+    // (leds.visible) through setStatusLedsEnabled.
     private volatile boolean statusLedsEnabled = true;
 
-    // Overlay diagnostici opzionali, OFF di default (nessun disegno né calcolo quando off):
-    //  - fpsOverlayEnabled: FPS reali di presentazione (basso a sinistra), misurano la
-    //    velocità effettiva dell'emulatore sull'host.
-    //  - frameCounterOverlayEnabled: contatore dei fotogrammi emulati (basso al centro),
-    //    indipendente dalla velocità di emulazione, da usare come riferimento temporale
-    //    riproducibile ("a quale frame avviene l'evento").
-    // Configurabili solo da amiga.properties (NON presenti nel popup F12).
+    // Optional diagnostic overlays, OFF by default (no drawing nor computation when off):
+    //  - fpsOverlayEnabled: real presentation FPS (bottom left), the emulator's actual
+    //    speed on the host.
+    //  - frameCounterOverlayEnabled: counter of emulated frames (bottom centre),
+    //    independent of the emulation speed, a reproducible time reference ("at which
+    //    frame does the event happen").
+    // Set only from amiga.properties (NOT in the F12 popup).
     private volatile boolean fpsOverlayEnabled = false;
     private volatile boolean frameCounterOverlayEnabled = false;
 
-    // Stato del calcolo FPS (aggiornato solo quando l'overlay FPS è attivo).
+    // State of the FPS computation (updated only while the FPS overlay is on).
     private int  fpsFrameAccum;
     private long fpsWindowStartNs;
     private volatile int fpsValue;
@@ -114,23 +113,23 @@ public class AmigaDisplay {
     private final JFrame frame;
     private final DisplayPanel label;
 
-    // Backend di rendering. In SOFTWARE il display compone via Java2D sul {@code label}
-    // (comportamento storico, invariato). In OPENGL il framebuffer RAW è presentato dalla
-    // GPU tramite {@code glSurface} (LWJGL), ospitata nella stessa finestra: {@code label}
-    // è null e renderFrame() delega alla mailbox GL. Tutto il codice GL è confinato in
-    // {@code display.render.gl}; il core non ne è a conoscenza.
+    // Rendering backend. In SOFTWARE the display composes through Java2D on the
+    // {@code label}. In OPENGL the RAW framebuffer is presented by the GPU through
+    // {@code glSurface} (LWJGL), hosted in the same window: {@code label} is null and
+    // renderFrame() delegates to the GL mailbox. All the GL code is confined to
+    // {@code display.render.gl}; the core knows nothing about it.
     private final RendererType renderer;
-    private final GlDisplaySurface glSurface;   // null: software o headless
-    // Componente a cui il chiamante aggancia i listener di input: il frame in software
-    // (comportamento storico), il canvas GL (heavyweight) in OpenGL.
+    private final GlDisplaySurface glSurface;   // null: software or headless
+    // Component the caller attaches the input listeners to: the frame in software, the GL
+    // canvas (heavyweight) in OpenGL.
     private final Component inputComponent;
-    // Componente bersaglio del drag-and-drop floppy: il label in software, il canvas GL
-    // in OpenGL (in GL l'overlay del drag è assente, ma il drop resta funzionale).
+    // Target component of the floppy drag-and-drop: the label in software, the GL canvas in
+    // OpenGL (in GL the drag overlay is absent, but the drop still works).
     private final Component dndComponent;
 
-    // Overlay (LED/FPS/contatore) per il backend OpenGL: composto qui con Java2D in una
-    // immagine ARGB e consegnato al backend GL, che lo fonde in alpha-blend sull'immagine.
-    // Riusa lo STESSO disegno del path software (drawStatusLeds/drawCounters).
+    // Overlay (LEDs/FPS/counter) for the OpenGL backend: composed here with Java2D in an
+    // ARGB image and handed to the GL backend, which alpha-blends it over the image. It
+    // reuses the SAME drawing as the software path (drawStatusLeds/drawCounters).
     private BufferedImage glOverlayImage;
     private int[] glOverlayPixels;
     private volatile BufferedImage pendingLiveCanvas;
@@ -141,142 +140,142 @@ public class AmigaDisplay {
         }
     };
 
-    // Dimensioni fisse del contenuto del JFrame.
+    // Fixed size of the JFrame's content.
     private final int frameWidth;
     private final int frameHeight;
 
-    // Prima riga raster visibile (fine VBlank). L'immagine è ancorata in alto a
-    // questa riga, senza centratura verticale, come WinUAE (VBLANK_ENDLINE_PAL /
-    // minfirstline = 26). Coincide con VirtualCRT.REGRESSION_CROP_Y (qui ridichiarata
-    // per non accoppiare il package display a common).
+    // First visible raster line (end of VBlank). The image is anchored at the top on this
+    // line, with no vertical centring (minimum first line = 26). Same as
+    // VirtualCRT.REGRESSION_CROP_Y (declared again here so the display package does not
+    // depend on common).
     private static final int DISPLAY_TOP_LINE = 26;
-    // Taglia di COMPOSIZIONE: quella a cui Java2D compone immagine + LED + contatori,
-    // sempre pari al frame nativo. Non cresce mai con l'integer scaling — l'ingrandimento
-    // è l'ultimo blit e basta (vedi videoScale).
+    // COMPOSITION size: the one at which Java2D composes image + LEDs + counters, always
+    // the native frame. It never grows with integer scaling: the enlargement is the last
+    // blit and nothing else (see videoScale).
     private final int windowWidth;
     private final int windowHeight;
     private final AmigaWindowMode windowMode;
-    /** Fattore di integer scaling della finestra emulata ({@code video.integerScaling}), ≥ 1. */
+    /** Integer scaling factor of the emulated window ({@code video.integerScaling}), at least 1. */
     private final int videoScale;
     private GraphicsDevice fullScreenDevice;
     /** Monitor scelto in configurazione ({@code video.monitor}); null in headless. */
     private final GraphicsDevice screenDevice;
 
-    // Buffer persistente per interlace: accumula i due campi alternati.
+    // Persistent buffer for interlace: accumulates the two alternating fields.
     private int[] interlaceBuffer;
     private int   interlaceBufferWidth = -1;
 
-    // STEP 10 (PERFORMANCE_REPORT_FINAL): double buffering. renderFrame() allocava
-    // un nuovo int[] e un nuovo BufferedImage ad OGNI frame (50-60/s). Si mantiene
-    // un back buffer persistente in cui comporre il frame; al termine si scambia
-    // con la front (image/pixels). Riallocato solo se cambiano le dimensioni
-    // (di fatto mai, dato che VirtualCRT usa RAW_WIDTH/RAW_HEIGHT costanti).
-    // È sicuro perché buildFrameCanvas() copia sincronamente l'immagine su un canvas
-    // separato per l'EDT, quindi il back riusato non viene mai letto concorrentemente.
+    // Double buffering: a persistent back buffer in which the frame is composed, swapped
+    // with the front (image/pixels) at the end, instead of a new int[] and BufferedImage at
+    // every frame (50-60/s). Reallocated only if the size changes (in practice never, since
+    // VirtualCRT uses the constants RAW_WIDTH/RAW_HEIGHT). Safe because buildFrameCanvas()
+    // copies the image synchronously onto a separate canvas for the EDT, so the reused back
+    // buffer is never read concurrently.
     private BufferedImage backImage;
     private int[]         backPixels;
 
-    // Drive DF0-DF3 (indice 0..3) bersaglio del drag-and-drop. Impostati via setDrives().
-    // La disponibilità di ciascuno si legge a runtime da FloppyDrive.isConnected().
+    // Drives DF0-DF3 (index 0..3) targeted by drag-and-drop. Set through setDrives(). The
+    // availability of each is read at run time from FloppyDrive.isConnected().
     private volatile FloppyDrive[] drives = new FloppyDrive[4];
 
-    // Stato dell'overlay di drop: attivo durante il trascinamento di un file sul frame.
+    // State of the drop overlay: active while a file is dragged over the frame.
     private volatile boolean dragOverlayActive = false;
-    // Quadrante attualmente sotto il cursore (0=NO/DF0, 1=NE/DF1, 2=SO/DF2, 3=SE/DF3), -1 = nessuno.
+    // Quadrant currently under the cursor (0=NW/DF0, 1=NE/DF1, 2=SW/DF2, 3=SE/DF3), -1 = none.
     private volatile int hoverQuadrant = -1;
-    // Snapshot in scala di grigi del frame, congelato all'avvio del drag come sfondo dell'overlay.
+    // Greyscale snapshot of the frame, frozen when the drag starts as the overlay background.
     private BufferedImage dragBgSnapshot;
-    // Font base dell'overlay (Segoe UI su Windows, fallback automatico altrove).
+    // Base font of the overlay (Segoe UI on Windows, automatic fallback elsewhere).
     private final Font overlayFont = new Font("Segoe UI", Font.PLAIN, 12);
     private final Font ledLabelFont = overlayFont.deriveFont(Font.BOLD, 11f);
 
-    // Foreground dell'overlay pre-renderizzato (velo scuro + griglia + 4 quadranti).
-    // I drive non cambiano a runtime, quindi l'unica variabile è il quadrante in hover:
-    // si pre-rende un layer ARGB per ciascuno stato, indicizzato da (hoverQuadrant+1),
-    // così ogni frame del drag si riduce a due drawImage (sfondo grigio + foreground).
+    // Pre-rendered foreground of the overlay (dark veil + grid + 4 quadrants). The drives
+    // do not change at run time, so the only variable is the quadrant under hover: one
+    // ARGB layer is pre-rendered per state, indexed by (hoverQuadrant+1), so every frame of
+    // the drag comes down to two drawImage calls (grey background + foreground).
     private volatile BufferedImage[] overlayFgCache;
 
-    // Sorgenti di stato dei LED (lette una volta per frame nel path di compose, costo
-    // trascurabile). powerLedBright: true = LED alimentazione luminoso (filtro audio on).
-    // Lo stato dei floppy è letto direttamente dai FloppyDrive (vedi setDrives), quello
-    // degli hard disk dai relativi HdController (vedi setHardDisks): nessun polling extra.
+    // Sources of the LED states (read once per frame in the compose path, negligible cost).
+    // powerLedBright: true = bright power LED (audio filter on). The floppy state is read
+    // straight from the FloppyDrives (see setDrives), the hard disks' from their
+    // HdControllers (see setHardDisks): no extra polling.
     private volatile BooleanSupplier powerLedBright;
 
-    // Sorgenti di attività dei LED "HD", una per unità (in ordine, da sinistra a destra:
-    // WHDLoad, master, slave). Ogni supplier è true quando quel disco sta leggendo/scrivendo.
-    // Vuoto/null = nessun hard disk → il LED HD e la sua etichetta non vengono disegnati.
+    // Activity sources of the "HD" LEDs, one per unit (in order, left to right: WHDLoad,
+    // master, slave). Each supplier is true while that disk is reading/writing. Empty/null =
+    // no hard disk: the HD LED and its label are not drawn.
     private volatile BooleanSupplier[] hdLedSources;
 
-    // Spia del gioco a distanza: visibile solo durante una sessione, accesa quando l'altro
-    // capo c'è davvero. Entrambe null = funzione spenta, e la riga non viene disegnata.
+    // Remote play light: visible only during a session, lit when the other end is really
+    // there. Both null = feature off, and the row is not drawn.
     private volatile BooleanSupplier remotePlayLedVisible;
     private volatile BooleanSupplier remotePlayLedActive;
 
-    // Notifica (percorso assoluto, indice drive 0..3) quando un disco viene inserito via
-    // drag-and-drop, così il chiamante puo' aggiornare la configurazione (vedi F12).
+    // Notification (absolute path, drive index 0..3) when a disk is inserted by
+    // drag-and-drop, so the caller can update the configuration (see F12).
     private volatile ObjIntConsumer<String> diskDropListener;
 
-    /** Registra il listener notificato quando un disco viene droppato in un drive. */
+    /** Registers the listener notified when a disk is dropped on a drive. */
     public void setDiskDropListener(ObjIntConsumer<String> listener) {
         this.diskDropListener = listener;
     }
 
-    /** Collega la sorgente di stato del LED di alimentazione (vedi statusLedsEnabled). */
+    /** Connects the state source of the power LED (see statusLedsEnabled). */
     public void setStatusLedSource(BooleanSupplier powerLedBright) {
         this.powerLedBright = powerLedBright;
     }
 
     /**
-     * Collega le sorgenti di attività usate dal LED "HD", una per unità hard disk
-     * (es. WHDLoad, master, slave). L'ordine è significativo: la prima è disegnata a
-     * sinistra. Ogni supplier deve essere {@code true} quando quel disco sta leggendo o
-     * scrivendo. Passare {@code null}/vuoto se non c'è alcun hard disk: in tal caso il LED
-     * HD e la sua etichetta non vengono disegnati.
+     * Connects the activity sources used by the "HD" LED, one per hard disk unit (e.g.
+     * WHDLoad, master, slave). The order matters: the first is drawn on the left. Each
+     * supplier must be {@code true} while that disk is reading or writing. Pass
+     * {@code null}/empty if there is no hard disk: then the HD LED and its label are not
+     * drawn.
      */
     public void setHdLedSources(BooleanSupplier... sources) {
         this.hdLedSources = sources;
     }
 
     /**
-     * Collega la spia del gioco a distanza (docs/remote-play-plan.md §9).
+     * Connects the remote play light (docs/remote-play-plan.md section 9).
      *
-     * <p>Risponde alla domanda "sono ancora collegato?" senza aprire F12 — che è
-     * l'unico modo attuale di controllare, ed è <b>distruttivo</b>: aprire il popup mette
-     * in pausa la macchina, e su un host in pausa lo schermo dell'ospite si ferma. Una spia
-     * costa un rettangolo per frame e toglie di mezzo il problema.
+     * <p>It answers "am I still connected?" without opening F12, which is the only other way
+     * to check and a <b>destructive</b> one: opening the popup pauses the machine, and on a
+     * paused host the guest's screen freezes. A light costs one rectangle per frame and
+     * removes the problem.
      *
-     * @param visible {@code true} quando c'è una sessione (si ospita o si è ospiti):
-     *                altrimenti la riga non viene disegnata affatto
-     * @param active  {@code true} quando l'altro capo c'è davvero; a {@code false} la spia
-     *                resta accesa fioca, che è la differenza fra "in ascolto" e "collegato"
+     * @param visible {@code true} while there is a session (hosting or guest): otherwise the
+     *                row is not drawn at all
+     * @param active  {@code true} when the other end is really there; with {@code false} the
+     *                light stays dimly lit, the difference between "listening" and
+     *                "connected"
      */
     public void setRemotePlayLedSource(BooleanSupplier visible, BooleanSupplier active) {
         this.remotePlayLedVisible = visible;
         this.remotePlayLedActive = active;
     }
 
-    /** Mostra o nasconde il pannello dei LED power/drive (a false: nessun disegno). */
+    /** Shows or hides the power/drive LED panel (false: nothing drawn). */
     public void setStatusLedsEnabled(boolean enabled) {
         this.statusLedsEnabled = enabled;
     }
 
-    /** Mostra/nasconde l'overlay degli FPS reali in basso a sinistra (a false: costo zero). */
+    /** Shows/hides the real FPS overlay at the bottom left (false: zero cost). */
     public void setFpsOverlayEnabled(boolean enabled) {
         this.fpsOverlayEnabled = enabled;
     }
 
-    /** Mostra/nasconde l'overlay del contatore fotogrammi emulati in basso al centro. */
+    /** Shows/hides the emulated frame counter overlay at the bottom centre. */
     public void setFrameCounterOverlayEnabled(boolean enabled) {
         this.frameCounterOverlayEnabled = enabled;
     }
 
-    /** Imposta i quattro drive (DF0..DF3) bersaglio del drag-and-drop. */
+    /** Sets the four drives (DF0..DF3) targeted by drag-and-drop. */
     public void setDrives(FloppyDrive df0, FloppyDrive df1, FloppyDrive df2, FloppyDrive df3) {
         this.drives = new FloppyDrive[]{df0, df1, df2, df3};
         prebuildOverlayCacheAsync();
     }
 
-    /** Comodità: imposta il solo DF0 lasciando invariati gli altri drive. */
+    /** Convenience: sets DF0 only, leaving the other drives unchanged. */
     public void setDf0(FloppyDrive df0) {
         FloppyDrive[] d = this.drives;
         this.drives = new FloppyDrive[]{df0, d[1], d[2], d[3]};
@@ -296,16 +295,15 @@ public class AmigaDisplay {
         this(frameWidth, frameHeight, windowMode, renderer, 1);
     }
 
-    // Integer scaling: lo fa AmiJa, di un fattore INTERO, uguale per i due renderer.
-    // Java2D non scala nulla (Amija spegne sun.java2d.uiScale), così 1 pixel Java = 1
-    // pixel fisico e la finestra riceve pixel esatti.
-    //  - SOFTWARE: la finestra è creata a frame×videoScale e DisplayPanel disegna il
-    //    canvas composto ingrandito ×videoScale con NEAREST_NEIGHBOR.
-    //  - OPENGL: idem per la finestra, ma la magnificazione la fa la GPU e lo shader
-    //    renderizza a quella risoluzione (decisivo per shader ad alta risoluzione come
-    //    crt-royale).
-    // In fullscreen/borderless la finestra è grande quanto lo schermo e il frame
-    // ingrandito ci viene centrato dentro, con bordi neri.
+    // Integer scaling: done by AmiJa, by an INTEGER factor, the same for both renderers.
+    // Java2D scales nothing (Amija switches sun.java2d.uiScale off), so 1 Java pixel = 1
+    // physical pixel and the window receives exact pixels.
+    //  - SOFTWARE: the window is created at frame x videoScale and DisplayPanel draws the
+    //    composed canvas enlarged x videoScale with NEAREST_NEIGHBOR.
+    //  - OPENGL: the same for the window, but the GPU magnifies and the shader renders at
+    //    that resolution (decisive for high-resolution shaders like crt-royale).
+    // In fullscreen/borderless the window is as large as the screen and the enlarged frame
+    // is centred in it, with black borders.
     public AmigaDisplay(int frameWidth, int frameHeight, AmigaWindowMode windowMode,
                         RendererType renderer, int videoScale) {
         this(frameWidth, frameHeight, windowMode, renderer, videoScale, 0);
@@ -350,8 +348,8 @@ public class AmigaDisplay {
         Component dnd;
 
         if (surface != null) {
-            // OpenGL: il canvas GL heavyweight sostituisce il pannello Swing. L'input e il
-            // drag-and-drop vanno agganciati al canvas (gli eventi non risalgono al frame).
+            // OpenGL: the heavyweight GL canvas replaces the Swing panel. Input and
+            // drag-and-drop are attached to the canvas (its events do not reach the frame).
             Component canvas = surface.getComponent();
             canvas.setBackground(Color.BLACK);
             JPanel host = new JPanel(new BorderLayout());
@@ -363,13 +361,13 @@ public class AmigaDisplay {
             input = canvas;
             dnd = canvas;
         } else {
-            // Software (o fallback se il backend GL non è disponibile): path storico.
+            // Software (or fallback if the GL backend is not available).
             lbl = new DisplayPanel(this.videoScale);
             lbl.setPreferredSize(contentSize);
             lbl.setOpaque(true);
             lbl.setBackground(Color.BLACK);
             f.setContentPane(lbl);
-            input = f;   // i listener restano sul frame (comportamento invariato)
+            input = f;   // the listeners stay on the frame
             dnd = lbl;
         }
 
@@ -383,14 +381,14 @@ public class AmigaDisplay {
         this.inputComponent = input;
         this.dndComponent = dnd;
 
-        applyWindowMode();     // rende visibile la finestra
+        applyWindowMode();     // makes the window visible
         setupDragAndDrop();
         if (surface != null) {
-            surface.start();   // avvia il thread GL dopo che la finestra è visibile
+            surface.start();   // start the GL thread after the window is visible
         }
     }
 
-    /** Istanzia il backend GL, ripiegando su software (null) se non disponibile. */
+    /** Creates the GL backend, falling back on software (null) if not available. */
     private static GlDisplaySurface createGlSurface(int frameWidth, int frameHeight) {
         try {
             return new GlDisplaySurface(frameWidth, frameHeight);
@@ -401,23 +399,23 @@ public class AmigaDisplay {
         }
     }
 
-    /** Componente a cui agganciare i listener di input (canvas GL o frame software). */
+    /** Component to attach the input listeners to (GL canvas or software frame). */
     public Component getInputComponent() {
         return inputComponent;
     }
 
     /**
-     * Fattore di ingrandimento della finestra emulata, ≥ 1. Serve a chi lavora in pixel
-     * dello schermo e deve tornare a pixel Amiga — il mouse su tutti.
+     * Enlargement factor of the emulated window, at least 1. Needed by whoever works in
+     * screen pixels and must go back to Amiga pixels: the mouse above all.
      */
     public int getVideoScale() {
         return videoScale;
     }
 
     /**
-     * Seleziona (a caldo) il preset shader RetroArch, se il backend è OpenGL. No-op in
-     * software/headless. {@code preset} = percorso del {@code .glslp}, o {@code null} per
-     * nessuno shader (passthrough).
+     * Selects (live) the RetroArch shader preset, if the backend is OpenGL. No-op in
+     * software/headless. {@code preset} = path of the preset, or {@code null} for no shader
+     * (passthrough).
      */
     public void setShaderPreset(java.nio.file.Path preset) {
         if (glSurface != null) {
@@ -425,7 +423,7 @@ public class AmigaDisplay {
         }
     }
 
-    /** Aggiorna a caldo un parametro dello shader OpenGL attivo. No-op in software. */
+    /** Updates a parameter of the active OpenGL shader live. No-op in software. */
     public void setShaderParam(String name, float value) {
         if (glSurface != null) {
             glSurface.setShaderParam(name, value);
@@ -442,10 +440,9 @@ public class AmigaDisplay {
     }
 
     /**
-     * Monitor su cui aprire la finestra, per indice di configurazione
-     * ({@code video.monitor}): 0 = schermo principale, 1..n = altri monitor collegati
-     * nell'ordine restituito dal toolkit. Indice fuori range (o headless) -&gt; principale
-     * (o {@code null} in headless).
+     * Monitor on which to open the window, by configuration index ({@code video.monitor}):
+     * 0 = primary screen, 1..n = other connected monitors in the order returned by the
+     * toolkit. Index out of range (or headless) -&gt; primary (or {@code null} in headless).
      */
     public static GraphicsDevice screenDeviceFor(int monitorIndex) {
         if (GraphicsEnvironment.isHeadless()) return null;
@@ -456,8 +453,8 @@ public class AmigaDisplay {
     }
 
     /**
-     * Monitor collegati con lo schermo principale forzato in posizione 0 (l'ordine
-     * restituito da AWT non garantisce che il primo sia il principale).
+     * Connected monitors with the primary screen forced to position 0 (the order returned
+     * by AWT does not guarantee the first is the primary).
      */
     public static GraphicsDevice[] screenDevices() {
         if (GraphicsEnvironment.isHeadless()) return new GraphicsDevice[0];
@@ -475,10 +472,10 @@ public class AmigaDisplay {
     }
 
     /**
-     * Il pannello su cui vive la finestra emulata nel path software. È qui — e solo qui —
-     * che avviene l'ingrandimento: il canvas composto arriva alla risoluzione del frame e
-     * viene disegnato ×{@code scale} con NEAREST_NEIGHBOR, centrato, col resto a nero.
-     * Nessun buffer intermedio cresce con lo scaling.
+     * The panel the emulated window lives on in the software path. Here, and only here, the
+     * enlargement happens: the composed canvas arrives at the frame's resolution and is
+     * drawn x{@code scale} with NEAREST_NEIGHBOR, centred, with black around. No
+     * intermediate buffer grows with the scaling.
      */
     private static final class DisplayPanel extends JComponent {
         private volatile BufferedImage image;
@@ -499,8 +496,8 @@ public class AmigaDisplay {
         }
 
         /**
-         * Disegna il canvas corrente ingrandito. Estratto da {@link #paintComponent} perché
-         * lo usa anche l'active rendering dell'overlay di drag, che non passa dal repaint.
+         * Draws the current canvas enlarged. Extracted from {@link #paintComponent} because
+         * the active rendering of the drag overlay uses it too, without going through repaint.
          */
         void paintScaled(Graphics g) {
             g.setColor(getBackground());
@@ -511,25 +508,25 @@ public class AmigaDisplay {
             }
             int dw = current.getWidth() * scale;
             int dh = current.getHeight() * scale;
-            // Orizzontale: centrato. Se l'immagine è più larga della finestra il taglio è
-            // simmetrico, coerente con la centratura sulla DIW fatta in composizione.
+            // Horizontal: centred. If the image is wider than the window the cut is
+            // symmetric, consistent with the centring on the DIW done in composition.
             int dx = (getWidth() - dw) / 2;
-            // Verticale: centrato finché ci sta, ancorato in ALTO quando non ci sta.
-            // Centrare un'immagine più alta della finestra taglierebbe le prime righe, e
-            // quelle non si toccano: la composizione ancora apposta il quadro alla prima
-            // riga visibile (vedi composeFrameCanvas) perché il contenuto in alto non
-            // venga mai spinto giù né tagliato. Succede per davvero: una finestra decorata
-            // non può superare lo schermo — Windows la limita e nemmeno setSize la forza —
-            // quindi PAL overscan a 2x (1152 px) su un pannello da 1080 finisce qui.
+            // Vertical: centred while it fits, anchored at the TOP when it does not.
+            // Centring an image taller than the window would cut the first lines, and those
+            // are not to be touched: the composition anchors the picture on the first
+            // visible line on purpose (see composeFrameCanvas) so the content at the top is
+            // never pushed down or cut. It really happens: a decorated window cannot exceed
+            // the screen (Windows limits it and not even setSize forces it), so PAL overscan
+            // at 2x (1152 px) on a 1080 panel ends up here.
             int dy = Math.max(0, (getHeight() - dh) / 2);
             if (scale == 1) {
-                g.drawImage(current, dx, dy, null); // nessuna trasformazione: path storico
+                g.drawImage(current, dx, dy, null); // no transformation: historical path
                 return;
             }
             Graphics2D g2 = (Graphics2D) g;
             Object old = g2.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
-            // Integer scaling: nearest neighbour, altrimenti Java2D interpolerebbe e i
-            // pixel Amiga sfocherebbero — che è esattamente ciò che l'opzione evita.
+            // Integer scaling: nearest neighbour, otherwise Java2D would interpolate and the
+            // Amiga pixels would blur, exactly what the option avoids.
             g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
                     RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
             g2.drawImage(current, dx, dy, dx + dw, dy + dh,
@@ -541,8 +538,8 @@ public class AmigaDisplay {
     }
 
     /**
-     * Centra la finestra sul monitor configurato ({@code setLocationRelativeTo(null)}
-     * userebbe sempre lo schermo principale).
+     * Centres the window on the configured monitor ({@code setLocationRelativeTo(null)}
+     * would always use the primary screen).
      */
     private void centerOnScreenDevice() {
         if (screenDevice == null) {
@@ -579,9 +576,9 @@ public class AmigaDisplay {
     }
 
     /**
-     * Sospende il fullscreen esclusivo prima di aprire dialog Swing modali.
-     * Su Windows un JDialog sopra una finestra esclusiva puo' far tornare il desktop
-     * in primo piano; lasciamo quindi il frame come borderless fullscreen normale.
+     * Suspends exclusive fullscreen before opening modal Swing dialogs. On Windows a
+     * JDialog above an exclusive window can bring the desktop to the front, so the frame is
+     * left as a normal borderless fullscreen.
      */
     public boolean suspendExclusiveFullScreen() {
         if (frame == null || windowMode != AmigaWindowMode.FULLSCREEN
@@ -597,7 +594,7 @@ public class AmigaDisplay {
         return true;
     }
 
-    /** Ripristina il fullscreen esclusivo dopo la chiusura del popup F12. */
+    /** Restores exclusive fullscreen after the F12 popup closes. */
     public void resumeExclusiveFullScreen() {
         if (frame == null || windowMode != AmigaWindowMode.FULLSCREEN
                 || fullScreenDevice == null
@@ -609,10 +606,10 @@ public class AmigaDisplay {
         frame.requestFocus();
     }
 
-    /** Rilascia eventuale fullscreen esclusivo e chiude la finestra. */
+    /** Releases any exclusive fullscreen and closes the window. */
     public void dispose() {
         if (glSurface != null) {
-            glSurface.dispose(); // ferma il thread GL prima di distruggere la finestra
+            glSurface.dispose(); // stop the GL thread before destroying the window
         }
         if (fullScreenDevice != null && fullScreenDevice.getFullScreenWindow() == frame) {
             fullScreenDevice.setFullScreenWindow(null);
@@ -631,17 +628,17 @@ public class AmigaDisplay {
     }
 
     /**
-     * Riceve il framebuffer raw da VirtualCRT e produce l'immagine da visualizzare.
+     * Receives the raw framebuffer from VirtualCRT and produces the image to show.
      *
-     * <p>Pixel doubling: in modalità lores (non-hires) ogni pixel lores occupa 2 colonne
-     * raw in Denise; la colonna destra viene scritta identica alla sinistra, così
-     * displayWidth == rawWidth in tutti i casi (912 pixel).
+     * <p>Pixel doubling: in lores (non-hires) every lores pixel takes 2 raw columns in
+     * Denise; the right column is written identical to the left, so displayWidth ==
+     * rawWidth in every case (912 pixels).
      *
-     * <p>Line doubling: in modalità non-interlacciata ogni riga raw viene scritta due
-     * volte consecutive, portando displayHeight a rawHeight * 2 (624 righe).
+     * <p>Line doubling: in non-interlaced mode every raw line is written twice in a row,
+     * bringing displayHeight to rawHeight * 2 (624 lines).
      *
-     * <p>Interlace: le 312 righe del campo corrente vengono interleave a quelle del
-     * campo precedente nel buffer persistente {@code interlaceBuffer} (righe pari/dispari).
+     * <p>Interlace: the 312 lines of the current field are interleaved with those of the
+     * previous field in the persistent {@code interlaceBuffer} (even/odd lines).
      */
     public void renderFrame(int[] rawBuffer, int rawWidth, int rawHeight, FrameInfo frameInfo) {
         if (rawBuffer == null) {
@@ -652,9 +649,9 @@ public class AmigaDisplay {
         }
         this.lastFrameInfo = frameInfo;
 
-        // OpenGL: consegna il RAW (e l'overlay LED/FPS/contatore) alla mailbox GPU e
-        // ritorna. La composizione dell'immagine (crop, line doubling, shader) è sulla GPU;
-        // qui si disegna solo l'overlay in una piccola immagine ARGB (come nel software).
+        // OpenGL: hand the RAW (and the LED/FPS/counter overlay) to the GPU mailbox and
+        // return. The composition of the image (crop, line doubling, shader) is on the GPU;
+        // here only the overlay is drawn in a small ARGB image (as in software).
         if (glSurface != null) {
             glSurface.present(rawBuffer, rawWidth, rawHeight, frameInfo, renderGlOverlay());
             return;
@@ -664,8 +661,8 @@ public class AmigaDisplay {
         boolean interlaced = frameInfo != null && frameInfo.interlaced();
         boolean evenField  = frameInfo == null || !interlaced || frameInfo.evenField();
 
-        // Pixel doubling è automatico in lores; line doubling automatico se non interlacciato.
-        // In entrambi i casi displayWidth = rawWidth e displayHeight = rawHeight * 2.
+        // Pixel doubling is automatic in lores; line doubling automatic if not interlaced.
+        // Either way displayWidth = rawWidth and displayHeight = rawHeight * 2.
         int displayWidth  = rawWidth;
         int displayHeight = rawHeight * 2;
 
@@ -680,7 +677,7 @@ public class AmigaDisplay {
             interlaceBufferWidth = -1;
         }
 
-        // STEP 10: back buffer persistente, riallocato solo al variare delle dimensioni.
+        // Persistent back buffer, reallocated only when the size changes.
         if (backImage == null || backImage.getWidth() != displayWidth
                               || backImage.getHeight() != displayHeight) {
             backImage  = new BufferedImage(displayWidth, displayHeight, BufferedImage.TYPE_INT_RGB);
@@ -688,8 +685,8 @@ public class AmigaDisplay {
         }
         int[] outPixels = backPixels;
 
-        // Per interlace si compone nel buffer persistente (accumula i campi) e poi
-        // si copia nel back; in modalità normale si scrive direttamente nel back.
+        // With interlace the frame is composed in the persistent buffer (which accumulates
+        // the fields) and then copied to the back; otherwise it is written straight to back.
         int[] target = interlaced ? interlaceBuffer : outPixels;
 
         for (int srcY = 0; srcY < rawHeight; srcY++) {
@@ -697,7 +694,7 @@ public class AmigaDisplay {
                 copyRow(rawBuffer, rawWidth, srcY, target, displayWidth,
                         srcY * 2 + (evenField ? 0 : 1), hires);
             } else {
-                // Line doubling: ogni riga raw scritto due volte consecutive
+                // Line doubling: every raw line written twice in a row
                 int dstY = srcY * 2;
                 copyRow(rawBuffer, rawWidth, srcY, target, displayWidth, dstY, hires);
                 System.arraycopy(target, dstY * displayWidth,
@@ -710,7 +707,7 @@ public class AmigaDisplay {
         }
 
         if (DEBUG_VISIBLE_AREA && frameInfo != null) {
-            // vScale è sempre 2: interlace o line doubling coprono entrambi i casi.
+            // vScale is always 2: interlace or line doubling cover both cases.
             drawVisibleAreaRect(outPixels, displayWidth, displayHeight,
                     frameInfo.visibleX(),
                     frameInfo.visibleY()      * 2,
@@ -719,9 +716,9 @@ public class AmigaDisplay {
         }
 
         synchronized (imageLock) {
-            // Swap front/back: il frame appena composto (back) diventa quello mostrato;
-            // la vecchia front viene riciclata come prossimo back (zero allocazioni a
-            // regime, una volta che entrambi i buffer hanno le dimensioni stabili).
+            // Swap front/back: the frame just composed (back) becomes the one shown; the old
+            // front is recycled as the next back (zero allocations in steady state, once
+            // both buffers have their stable size).
             BufferedImage shown    = backImage;
             int[]         shownPix = backPixels;
             backImage  = image;
@@ -735,10 +732,9 @@ public class AmigaDisplay {
     }
 
     /**
-     * Copia una riga dal buffer raw al buffer di destinazione.
-     * In modalità hires copia direttamente. In modalità lores duplica ogni pixel
-     * (pixel doubling): il pixel lores all'indice x occupa raw[x*2] e viene
-     * scritto in dst[x*2] e dst[x*2+1].
+     * Copies a line from the raw buffer to the destination buffer. In hires it copies
+     * straight. In lores it doubles every pixel (pixel doubling): the lores pixel at index
+     * x is at raw[x*2] and is written to dst[x*2] and dst[x*2+1].
      */
     private static void copyRow(int[] src, int srcW, int srcY,
                                 int[] dst, int dstW, int dstY, boolean hires) {
@@ -774,21 +770,21 @@ public class AmigaDisplay {
         }
     }
 
-    // PERF: pool di canvas riutilizzati per il path live (refresh). Prima ogni frame
-    // allocava una nuova BufferedImage frameWidth×frameHeight (~1.6-3MB) → era la
-    // principale sorgente di garbage (pause GC = micro-cali). Triple-buffering: il
-    // render thread compone nel canvas corrente e lo passa all'EDT; quando si torna
-    // su quel canvas (3 frame dopo) l'EDT l'ha già disegnato.
+    // PERF: pool of reused canvases for the live path (refresh). Allocating a new
+    // frameWidth x frameHeight BufferedImage (~1.6-3 MB) every frame was the main source of
+    // garbage (GC pauses = micro-stutters). Triple buffering: the render thread composes in
+    // the current canvas and passes it to the EDT; when it comes back to that canvas (3
+    // frames later) the EDT has already drawn it.
     private BufferedImage[] livePool;
     private int livePoolIdx;
 
     public void refresh() {
-        // In OpenGL la presentazione è sulla GPU: nessuna composizione Swing qui.
+        // In OpenGL presentation is on the GPU: no Swing composition here.
         if (label == null) {
             return;
         }
-        // Durante il drag l'overlay possiede il label: il render thread non deve
-        // sovrascriverne l'icona con il frame live (resta congelato sotto l'overlay).
+        // During a drag the overlay owns the label: the render thread must not overwrite
+        // its icon with the live frame (it stays frozen under the overlay).
         if (frame != null && !dragOverlayActive) {
             if (livePool == null || livePool[0].getWidth() != windowWidth
                                  || livePool[0].getHeight() != windowHeight) {
@@ -827,16 +823,15 @@ public class AmigaDisplay {
     }
 
     /**
-     * Compone l'immagine corrente, centrata sull'area DIW, dentro il canvas dato — che è
-     * sempre delle dimensioni del frame nativo, in OGNI modalità finestra. Il canvas viene
-     * prima azzerato a nero perché può essere riusato dal pool e contenere il frame
-     * precedente.
+     * Composes the current image, centred on the DIW area, into the given canvas, which is
+     * always the size of the native frame, in EVERY window mode. The canvas is first
+     * cleared to black because it may be reused from the pool and hold the previous frame.
      *
-     * <p>Qui non si ingrandisce e non si centra nella finestra: l'integer scaling e la
-     * centratura (con i bordi neri del fullscreen) sono l'ultimo blit, in
-     * {@link DisplayPanel#paintScaled}. Tenere la composizione alla risoluzione del frame
-     * è ciò che impedisce al traffico di memoria per fotogramma di crescere con lo
-     * scaling o con la risoluzione dello schermo.
+     * <p>Nothing is enlarged or centred in the window here: integer scaling and centring
+     * (with the black borders of fullscreen) are the last blit, in
+     * {@link DisplayPanel#paintScaled}. Keeping the composition at the frame's resolution
+     * is what stops the per-frame memory traffic from growing with the scaling or the
+     * screen resolution.
      */
     private void composeFrameCanvas(BufferedImage canvas) {
         synchronized (imageLock) {
@@ -844,14 +839,13 @@ public class AmigaDisplay {
 
             int imgX, imgY;
             FrameInfo fi = lastFrameInfo;
-            // VERTICALE: nessuna centratura. L'immagine è ancorata in alto alla prima
-            // riga visibile (fine VBlank = riga 26, come WinUAE: VBLANK_ENDLINE_PAL
-            // / minfirstline). Il pennello parte da lì e scende; quel che eccede in basso
-            // resta fuori (overscan), ma il contenuto in alto non viene mai spinto giù né
-            // tagliato. Centrare verticalmente sulla DIW spingeva in alto i giochi che
-            // aprono la DIW su tutto l'overscan ma disegnano una sotto-regione (It Came
-            // From The Desert) e poteva tagliare il bordo inferiore.
-            // ORIZZONTALE: centratura invariata, basata sul centro DIW.
+            // VERTICAL: no centring. The image is anchored at the top on the first visible
+            // line (end of VBlank = line 26). The beam starts there and goes down; what
+            // exceeds at the bottom stays out (overscan), but the content at the top is
+            // never pushed down or cut. Centring vertically on the DIW pushed up the games
+            // that open the DIW over the whole overscan but draw a sub-region (It Came From
+            // The Desert) and could cut the bottom edge.
+            // HORIZONTAL: centred on the DIW centre.
             imgY = -(DISPLAY_TOP_LINE * 2);
             if (fi != null && fi.visibleWidth() > 0) {
                 int visCenterX = fi.visibleX() + fi.visibleWidth() / 2;
@@ -874,10 +868,10 @@ public class AmigaDisplay {
     }
 
     /**
-     * Compone l'overlay per il backend OpenGL (LED/FPS/contatore) in un'immagine ARGB
-     * trasparente delle dimensioni del frame, riusando lo stesso disegno del path software
-     * ({@link #drawStatusLeds}/{@link #drawCounters}). Ritorna {@code null} se nessun
-     * overlay è attivo (così il backend GL non fa alcun upload).
+     * Composes the overlay for the OpenGL backend (LEDs/FPS/counter) in a transparent ARGB
+     * image of the frame's size, reusing the same drawing as the software path
+     * ({@link #drawStatusLeds}/{@link #drawCounters}). Returns {@code null} if no overlay is
+     * on (so the GL backend uploads nothing).
      */
     private int[] renderGlOverlay() {
         if (!(statusLedsEnabled || fpsOverlayEnabled || frameCounterOverlayEnabled)) {
@@ -900,14 +894,14 @@ public class AmigaDisplay {
     }
 
     // -------------------------------------------------------------------------
-    // Overlay FPS / contatore fotogrammi (diagnostici, OFF di default)
+    // FPS / frame counter overlays (diagnostics, OFF by default)
     // -------------------------------------------------------------------------
 
     private static final Font   COUNTER_FONT   = new Font("Monospaced", Font.BOLD, 16);
-    private static final Color  COUNTER_COLOR  = new Color(0xFF, 0xE0, 0x40); // giallo leggibile
+    private static final Color  COUNTER_COLOR  = new Color(0xFF, 0xE0, 0x40); // readable yellow
     private static final Color  COUNTER_SHADOW = new Color(0, 0, 0, 190);
 
-    /** Aggiorna la stima degli FPS reali su finestra mobile di 1 secondo (solo se overlay attivo). */
+    /** Updates the real FPS estimate over a moving 1-second window (only if the overlay is on). */
     private void updateFps() {
         long now = System.nanoTime();
         if (fpsWindowStartNs == 0L) {
@@ -924,7 +918,7 @@ public class AmigaDisplay {
         }
     }
 
-    /** Disegna gli overlay attivi: FPS (basso a sinistra) e contatore fotogrammi (basso al centro). */
+    /** Draws the active overlays: FPS (bottom left) and frame counter (bottom centre). */
     private void drawCounters(Graphics2D g) {
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
                 RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
@@ -945,7 +939,7 @@ public class AmigaDisplay {
         }
     }
 
-    /** Disegna una stringa con un'ombra di 1px per la leggibilità su qualsiasi sfondo. */
+    /** Draws a string with a 1px shadow, readable on any background. */
     private void drawTextShadowed(Graphics2D g, String s, int x, int y) {
         g.setColor(COUNTER_SHADOW);
         g.drawString(s, x + 1, y + 1);
@@ -954,12 +948,12 @@ public class AmigaDisplay {
     }
 
     // -------------------------------------------------------------------------
-    // LED di stato (power / drive) — sovraimpressione estetica nell'overscan
+    // Status LEDs (power / drive): cosmetic overlay in the overscan
     // -------------------------------------------------------------------------
 
-    // Colori dei LED come sull'A500 reale: POWER rosso, DRIVE verde.
+    // LED colours as on the real A500: POWER red, DRIVE green.
     private static final Color LED_POWER = new Color(0xFF, 0x20, 0x40); // rosso alimentazione
-    private static final Color LED_DRIVE = new Color(0x5A, 0xFF, 0x2A); // verde attività floppy
+    private static final Color LED_DRIVE = new Color(0x5A, 0xFF, 0x2A); // green floppy activity
     private static final Color LED_REFLECTION_OFF = new Color(255, 255, 255, 0);
     private static final Color LED_BORDER = new Color(0, 0, 0, 130);
     private static final Color LED_LABEL = new Color(210, 210, 210, 180);
@@ -1006,12 +1000,12 @@ public class AmigaDisplay {
 
     private static final boolean[] NO_LED_STATES = new boolean[0];
 
-    /** Una riga del pannello LED: etichetta + uno o più LED con lo stesso stile. */
+    /** A row of the LED panel: label + one or more LEDs with the same style. */
     private static final class LedRow {
         final String label;
-        final boolean[] states;      // uno stato per LED (true = acceso/attivo)
-        final LedStyle activeStyle;  // stile quando lo stato è true
-        final LedStyle idleStyle;    // stile quando lo stato è false
+        final boolean[] states;      // one state per LED (true = lit/active)
+        final LedStyle activeStyle;  // style when the state is true
+        final LedStyle idleStyle;    // style when the state is false
 
         LedRow(String label, boolean[] states, LedStyle activeStyle, LedStyle idleStyle) {
             this.label = label;
@@ -1022,12 +1016,12 @@ public class AmigaDisplay {
     }
 
     /**
-     * Disegna i LED come sull'A500: barre rettangolari sottili impilate con l'etichetta a
-     * sinistra di ciascuna, in basso a destra nell'overscan. POWER è sempre presente; la
-     * riga DRIVE compare solo se almeno un floppy è collegato e la riga HD solo se almeno
-     * un hard disk è collegato (master a sinistra, slave a destra). Ogni riga è suddivisa
-     * in tanti LED quante sono le unità collegate. Disegno vettoriale di pochi rettangoli
-     * pieni: costo trascurabile, eseguito una volta per frame nel compose.
+     * Draws the LEDs as on the A500: thin stacked rectangular bars with the label on the
+     * left of each, bottom right in the overscan. POWER is always there; the DRIVE row
+     * appears only if at least one floppy is connected and the HD row only if at least one
+     * hard disk is connected (master on the left, slave on the right). Each row is split
+     * into as many LEDs as there are connected units. Vector drawing of a few filled
+     * rectangles: negligible cost, run once per frame in the compose.
      */
     private void drawStatusLeds(Graphics2D g) {
         boolean powerBright = powerLedBright != null && powerLedBright.getAsBoolean();
@@ -1037,8 +1031,8 @@ public class AmigaDisplay {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
-        // Righe visibili: POWER sempre; DRIVE e HD solo se le rispettive unità sono collegate.
-        // L'HD condivide il verde del floppy (stessi stili) ma con etichetta "HD".
+        // Visible rows: POWER always; DRIVE and HD only if their units are connected. HD
+        // shares the floppy's green (same styles) but with the label "HD".
         java.util.List<LedRow> rows = new java.util.ArrayList<>(3);
         rows.add(new LedRow("POWER", new boolean[]{powerBright}, POWER_BRIGHT_STYLE, POWER_DIM_STYLE));
         if (floppyStates.length > 0) {
@@ -1050,25 +1044,25 @@ public class AmigaDisplay {
         BooleanSupplier netVisible = remotePlayLedVisible;
         if (netVisible != null && netVisible.getAsBoolean()) {
             BooleanSupplier netActive = remotePlayLedActive;
-            // Verde come DRIVE e HD, non rosso come POWER: qui si dice "sta succedendo",
-            // e il rosso su questo pannello vuol già dire un'altra cosa. Se a video non
-            // convince, è una costante (piano §15.4, decisione da prendere guardando).
+            // Green like DRIVE and HD, not red like POWER: it says "it is happening", and red
+            // on this panel already means something else. If it does not look right on
+            // screen, it is a constant (plan section 15.4).
             rows.add(new LedRow("NET",
                     new boolean[]{ netActive != null && netActive.getAsBoolean() },
                     DRIVE_ACTIVE_STYLE, DRIVE_IDLE_STYLE));
         }
 
-        final int baseLedW = 59, ledH = 10; // barre sottili come quelle reali (84 ridotto del 30%)
+        final int baseLedW = 59, ledH = 10; // thin bars like the real ones (84 reduced by 30%)
         final int smallLedGap = 3;
-        final int labelGap = 10;         // distanza etichetta -> LED
-        final int rowGap = 11;           // distanza verticale tra le righe
-        final int padX = 14, padY = 12;  // padding interno
+        final int labelGap = 10;         // label -> LED distance
+        final int rowGap = 11;           // vertical distance between the rows
+        final int padX = 14, padY = 12;  // inner padding
 
         g.setFont(ledLabelFont);
         FontMetrics fm = g.getFontMetrics();
 
-        // Larghezza del LED group allineata sul massimo numero di LED fra le righe, così
-        // le colonne restano allineate (POWER è sempre un singolo LED a tutta larghezza).
+        // Width of the LED group aligned on the largest number of LEDs among the rows, so
+        // the columns stay aligned (POWER is always a single full-width LED).
         int maxLeds = 1;
         int labelColW = 0;
         for (LedRow r : rows) {
@@ -1083,11 +1077,11 @@ public class AmigaDisplay {
         int housingW = contentW + padX * 2;
         int housingH = contentH + padY * 2;
 
-        // Nessun alloggiamento: LED ed etichette sono disegnati direttamente sull'overscan.
+        // No housing: LEDs and labels are drawn straight on the overscan.
         int contentX = frameWidth - housingW + padX;
         int contentY = frameHeight - housingH + padY;
         int ledX = contentX + labelColW + labelGap;
-        int labelRight = contentX + labelColW; // colonna di allineamento a destra delle scritte
+        int labelRight = contentX + labelColW; // right-alignment column of the labels
 
         for (int i = 0; i < rows.size(); i++) {
             LedRow r = rows.get(i);
@@ -1097,7 +1091,7 @@ public class AmigaDisplay {
         }
     }
 
-    /** Stati del LED floppy: uno per drive collegato, vuoto se non c'è alcun drive. */
+    /** States of the floppy LED: one per connected drive, empty if there is no drive. */
     private boolean[] connectedFloppyLedStates() {
         FloppyDrive[] snapshot = drives;
         if (snapshot == null) return NO_LED_STATES;
@@ -1114,7 +1108,7 @@ public class AmigaDisplay {
         return states;
     }
 
-    /** Stati del LED HD: uno per hard disk collegato, vuoto se non ce n'è nessuno. */
+    /** States of the HD LED: one per connected hard disk, empty if there is none. */
     private boolean[] connectedHdLedStates() {
         BooleanSupplier[] snapshot = hdLedSources;
         if (snapshot == null) return NO_LED_STATES;
@@ -1139,7 +1133,7 @@ public class AmigaDisplay {
         return remainder == 0 ? baseWidth : baseWidth + (ledCount - remainder);
     }
 
-    /** Disegna la riga di LED suddivisa in {@code states.length} barre uguali. */
+    /** Draws the LED row split into {@code states.length} equal bars. */
     private void drawLedGroup(Graphics2D g, int x, int y, int totalW, int h,
                               int gap, LedRow row) {
         int count = Math.max(1, row.states.length);
@@ -1150,7 +1144,7 @@ public class AmigaDisplay {
         }
     }
 
-    /** Disegna un LED rettangolare (spigoli vivi): alone, corpo, riflesso e bordo. */
+    /** Draws a rectangular LED (sharp corners): halo, body, highlight and border. */
     private void drawLedBar(Graphics2D g, int x, int y, int w, int h, LedStyle style) {
         if (style.glow) {
             g.setColor(style.glowOuter);
@@ -1162,17 +1156,17 @@ public class AmigaDisplay {
         g.setColor(style.core);
         g.fillRect(x, y, w, h);
 
-        // Riflesso speculare nella metà superiore.
+        // Specular reflection in the upper half.
         g.setColor(style.reflection);
         g.fillRect(x + 1, y + 1, w - 2, Math.max(1, h / 3));
 
-        // Bordo scuro per staccare dal fondo.
+        // Dark border to stand out from the background.
         g.setColor(LED_BORDER);
         g.setStroke(LED_BORDER_STROKE);
         g.drawRect(x, y, w - 1, h - 1);
     }
 
-    /** Disegna una stringa allineata a destra a {@code rightX}, centrata verticalmente su {@code cy}. */
+    /** Draws a string right-aligned at {@code rightX}, vertically centred on {@code cy}. */
     private void drawLabelRight(Graphics2D g, FontMetrics fm, String s, int rightX, int cy) {
         g.setColor(LED_LABEL);
         int x = rightX - fm.stringWidth(s);
@@ -1181,7 +1175,7 @@ public class AmigaDisplay {
     }
 
     /**
-     * Compone un nuovo canvas (allocato) per screenshot/dump (path non hot).
+     * Composes a new (allocated) canvas for a screenshot/dump (not a hot path).
      */
     private BufferedImage buildFrameCanvas() {
         BufferedImage canvas = new BufferedImage(windowWidth, windowHeight,
@@ -1213,9 +1207,9 @@ public class AmigaDisplay {
     }
 
     /**
-     * Immagine da salvare per screenshot/dump: in OpenGL è il backbuffer letto con
-     * {@code glReadPixels} sul thread GL; in software (o se la cattura GL non è
-     * disponibile) è la composizione Java2D.
+     * Image to save for a screenshot/dump: in OpenGL the back buffer read with
+     * {@code glReadPixels} on the GL thread; in software (or if the GL capture is not
+     * available) the Java2D composition.
      */
     private BufferedImage captureForScreenshot() {
         if (glSurface != null) {
@@ -1250,22 +1244,21 @@ public class AmigaDisplay {
     }
 
     // -------------------------------------------------------------------------
-    // Drag-and-drop floppy — overlay a quattro quadranti (DF0-DF3)
+    // Floppy drag-and-drop: four-quadrant overlay (DF0-DF3)
     // -------------------------------------------------------------------------
 
     // Palette dell'overlay.
     private static final Color OK_ACCENT     = new Color(0x3D, 0xDC, 0x84); // verde (drive disponibile)
     private static final Color OK_ACCENT_HI  = new Color(0x6B, 0xFF, 0xA8); // verde acceso (hover)
-    private static final Color BAD_ACCENT    = new Color(0xFF, 0x52, 0x63); // rosso (drive assente)
+    private static final Color BAD_ACCENT    = new Color(0xFF, 0x52, 0x63); // red (drive missing)
     private static final Color DIM_VEIL      = new Color(0, 0, 0, 130);     // velo scuro sullo sfondo
     private static final Color GRID_LINE     = new Color(255, 255, 255, 38);
 
     /**
-     * Installa un DropTarget sul label (contentPane). Rispetto a un semplice
-     * TransferHandler, il DropTargetListener fornisce la posizione del cursore
-     * durante il drag, così da: (1) disegnare l'overlay a quadranti, (2) accettare
-     * o rifiutare il drop per-quadrante (il rifiuto mostra il cursore "no-drop"),
-     * (3) recapitare il file al drive corretto.
+     * Installs a DropTarget on the label (contentPane). Unlike a plain TransferHandler, the
+     * DropTargetListener gives the cursor position during the drag, so that it can: (1)
+     * draw the quadrant overlay, (2) accept or refuse the drop per quadrant (refusing shows
+     * the "no-drop" cursor), (3) deliver the file to the right drive.
      */
     private void setupDragAndDrop() {
         DropTargetListener dtl = new DropTargetListener() {
@@ -1281,12 +1274,11 @@ public class AmigaDisplay {
             @Override
             public void dragOver(DropTargetDragEvent e) {
                 if (!dragOverlayActive) { e.rejectDrag(); return; }
-                // Ridipingiamo a OGNI dragOver, non solo al cambio di quadrante: il disegno
-                // diretto (getGraphics + sync) attecchisce in modo affidabile durante il
-                // dragOver, mentre il paint di dragEnter può andare perso. Così qualunque
-                // micro-movimento fa comparire e mantenere l'overlay, anche restando fermi
-                // sullo stesso drive (incluso un drive disabilitato). Costo minimo: il
-                // foreground è in cache, sono due drawImage + un sync.
+                // Repaint at EVERY dragOver, not only when the quadrant changes: direct
+                // drawing (getGraphics + sync) takes reliably during dragOver, while the paint
+                // of dragEnter can be lost. So any micro-movement makes the overlay appear and
+                // stay, even when resting on the same drive (a disabled drive included).
+                // Minimal cost: the foreground is cached, two drawImage calls + a sync.
                 hoverQuadrant = quadrantAt(e.getLocation());
                 paintDragOverlay();
                 updateDragAcceptance(e);
@@ -1314,13 +1306,13 @@ public class AmigaDisplay {
         return e.isDataFlavorSupported(DataFlavor.javaFileListFlavor);
     }
 
-    /** Accetta il drag (cursore di copia) solo se il quadrante punta a un drive connesso. */
+    /** Accepts the drag (copy cursor) only if the quadrant points to a connected drive. */
     private void updateDragAcceptance(DropTargetDragEvent e) {
         FloppyDrive d = driveAt(hoverQuadrant);
         if (d != null && d.isConnected()) {
             e.acceptDrag(DnDConstants.ACTION_COPY);
         } else {
-            e.rejectDrag(); // mostra il cursore "no-drop" sui drive non disponibili
+            e.rejectDrag(); // show the "no-drop" cursor on the drives not available
         }
     }
 
@@ -1330,7 +1322,7 @@ public class AmigaDisplay {
         return d[quadrant];
     }
 
-    /** Mappa una posizione (relativa al componente DnD) sul quadrante: 0=NO,1=NE,2=SO,3=SE. */
+    /** Maps a position (relative to the DnD component) to a quadrant: 0=NW,1=NE,2=SW,3=SE. */
     private int quadrantAt(Point p) {
         int w = dndComponent.getWidth(), h = dndComponent.getHeight();
         if (w <= 0 || h <= 0 || p == null) return -1;
@@ -1339,11 +1331,11 @@ public class AmigaDisplay {
         return row * 2 + col;
     }
 
-    /** Congela il frame corrente come sfondo grigio e attiva l'overlay. */
+    /** Freezes the current frame as a grey background and activates the overlay. */
     private void beginDragOverlay() {
         dragOverlayActive = true;
         if (glSurface != null) {
-            // OpenGL: lo sfondo grigio è lo snapshot del backbuffer (glReadPixels).
+            // OpenGL: the grey background is the snapshot of the back buffer (glReadPixels).
             BufferedImage snap = glSurface.snapshot();
             dragBgSnapshot = (snap != null) ? toGreyscale(snap) : null;
             return;
@@ -1354,19 +1346,19 @@ public class AmigaDisplay {
         dragBgSnapshot = toGreyscale(buildFrameCanvas());
     }
 
-    /** Disattiva l'overlay e ripristina il rendering live. */
+    /** Deactivates the overlay and restores live rendering. */
     private void endDragOverlay() {
         dragOverlayActive = false;
         hoverQuadrant = -1;
         dragBgSnapshot = null;
         if (glSurface != null) {
-            glSurface.setDragOverlay(null, 0, 0); // il thread GL riprende il frame live
+            glSurface.setDragOverlay(null, 0, 0); // the GL thread resumes the live frame
             return;
         }
-        refresh(); // ricompone subito il frame live sul label
+        refresh(); // recomposes the live frame on the label at once
     }
 
-    /** Versione scurita e desaturata del canvas, usata come sfondo dell'overlay. */
+    /** Darkened, desaturated version of the canvas, used as the overlay's background. */
     private BufferedImage toGreyscale(BufferedImage src) {
         BufferedImage out = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_INT_RGB);
         int[] in  = ((DataBufferInt) src.getRaster().getDataBuffer()).getData();
@@ -1375,23 +1367,24 @@ public class AmigaDisplay {
             int rgb = in[i];
             int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
             int lum = (r * 77 + g * 150 + b * 29) >> 8;   // luminanza ~Rec.601
-            lum = (lum * 90) / 255;                        // scurisce per dare risalto all'overlay
+            lum = (lum * 90) / 255;                        // darkens to make the overlay stand out
             dst[i] = (lum << 16) | (lum << 8) | lum;
         }
         return out;
     }
 
     /**
-     * Compone l'overlay e lo mostra sul label. Lo sfondo grigio è dinamico (cambia
-     * a ogni drag), mentre il foreground (velo + griglia + quadranti) è pre-renderizzato
-     * per ogni stato di hover: comporre un frame del drag costa quindi due soli drawImage.
+     * Composes the overlay and shows it on the label. The grey background is dynamic
+     * (changes at every drag), while the foreground (veil + grid + quadrants) is
+     * pre-rendered for every hover state: composing a frame of the drag costs two
+     * drawImage calls.
      */
     private void paintDragOverlay() {
         BufferedImage bg = dragBgSnapshot;
         if (bg == null || frame == null) return;
 
         BufferedImage[] cache = overlayFgCache;
-        if (cache == null) {                 // fallback se il pre-render non è ancora pronto
+        if (cache == null) {                 // fallback if the pre-render is not ready yet
             cache = buildOverlayCache();
             overlayFgCache = cache;
         }
@@ -1405,7 +1398,7 @@ public class AmigaDisplay {
         g.dispose();
 
         if (glSurface != null) {
-            // OpenGL: l'overlay statico viene disegnato dalla GPU a tutta finestra.
+            // OpenGL: the static overlay is drawn by the GPU over the whole window.
             int[] px = ((DataBufferInt) canvas.getRaster().getDataBuffer()).getData();
             glSurface.setDragOverlay(px, windowWidth, windowHeight);
         } else {
@@ -1414,13 +1407,12 @@ public class AmigaDisplay {
     }
 
     /**
-     * Costruisce in background i layer di foreground dell'overlay, così il primo drag
-     * non paga il costo di font/antialiasing/path dei glifi. Nessun effetto in headless.
+     * Builds the overlay's foreground layers in the background, so the first drag does not
+     * pay the cost of fonts/antialiasing/glyph paths. No effect in headless.
      *
-     * <p>Oltre alla cache, "scalda" il percorso di compose usato a ogni frame del drag
-     * (toGreyscale + drawImage) e il sottosistema di trasferimento dati AWT:
-     * sono tutti costi di primo utilizzo (class-loading/JIT/Java2D) che altrimenti
-     * verrebbero pagati interamente al primo drag.
+     * <p>Besides the cache, it "warms up" the compose path used at every frame of the drag
+     * (toGreyscale + drawImage) and AWT's data transfer subsystem: all first-use costs
+     * (class loading/JIT/Java2D) that would otherwise be paid entirely at the first drag.
      */
     private void prebuildOverlayCacheAsync() {
         if (frame == null) return;
@@ -1434,7 +1426,7 @@ public class AmigaDisplay {
         t.start();
     }
 
-    /** Esegue una volta il percorso di compose del drag per pagarne i costi di primo uso. */
+    /** Runs the drag's compose path once to pay its first-use costs. */
     private void warmupDragPaintPath(BufferedImage[] cache) {
         try {
             BufferedImage grey = toGreyscale(buildFrameCanvas());
@@ -1444,13 +1436,13 @@ public class AmigaDisplay {
             g.drawImage(grey, 0, 0, windowWidth, windowHeight, null);
             g.drawImage(cache[0], 0, 0, null);
             g.dispose();
-            canvas.getWidth(); // mantiene esplicito il warmup best-effort del canvas
+            canvas.getWidth(); // keeps the best-effort canvas warm-up explicit
         } catch (Throwable ignore) {
-            // Warmup best-effort: un errore qui non deve impattare il funzionamento.
+            // Best-effort warm-up: an error here must not affect anything.
         }
     }
 
-    /** Tocca il sottosistema di trasferimento dati AWT per anticiparne il class-loading. */
+    /** Touches AWT's data transfer subsystem to bring its class loading forward. */
     private void warmupDndSubsystem() {
         try {
             DataFlavor.javaFileListFlavor.getHumanPresentableName();
@@ -1461,23 +1453,23 @@ public class AmigaDisplay {
     }
 
     /**
-     * Pre-renderizza il foreground dell'overlay (ARGB trasparente) per ogni stato di
-     * hover. Indice = hoverQuadrant+1 (0 = nessun hover). Gli stati che non cambiano
-     * aspetto (hover su un drive non connesso) riusano lo stesso layer di "nessun hover".
+     * Pre-renders the overlay's foreground (transparent ARGB) for every hover state.
+     * Index = hoverQuadrant+1 (0 = no hover). States that do not change appearance (hover on
+     * a drive not connected) reuse the "no hover" layer.
      */
     private BufferedImage[] buildOverlayCache() {
         BufferedImage[] cache = new BufferedImage[5];
-        cache[0] = renderOverlayForeground(-1);          // nessun quadrante in hover
+        cache[0] = renderOverlayForeground(-1);          // no quadrant hovered
         for (int i = 0; i < 4; i++) {
             FloppyDrive d = driveAt(i);
             boolean connected = d != null && d.isConnected();
-            // Solo i drive connessi cambiano aspetto in hover: gli altri riusano cache[0].
+            // Only connected drives change appearance on hover: the others reuse cache[0].
             cache[i + 1] = connected ? renderOverlayForeground(i) : cache[0];
         }
         return cache;
     }
 
-    /** Renderizza il foreground completo (velo + griglia + 4 quadranti) per uno stato di hover. */
+    /** Renders the complete foreground (veil + grid + 4 quadrants) for a hover state. */
     private BufferedImage renderOverlayForeground(int hover) {
         BufferedImage img = new BufferedImage(windowWidth, windowHeight,
                 BufferedImage.TYPE_INT_ARGB);
@@ -1503,7 +1495,7 @@ public class AmigaDisplay {
         return img;
     }
 
-    /** Disegna un singolo quadrante: card, glifo floppy, etichetta DFx e sottotitolo. */
+    /** Draws a single quadrant: card, floppy glyph, DFx label and subtitle. */
     private void paintQuadrant(Graphics2D g, int idx, int qx, int qy, int qw, int qh, int hover) {
         FloppyDrive d  = driveAt(idx);
         boolean connected = d != null && d.isConnected();
@@ -1517,19 +1509,19 @@ public class AmigaDisplay {
         int arc = 30;
         RoundRectangle2D card = new RoundRectangle2D.Float(cardX, cardY, cardW, cardH, arc, arc);
 
-        // Riempimento traslucido: più marcato per il drive disponibile sotto il cursore.
+        // Translucent fill: stronger for the available drive under the cursor.
         int fillA = connected ? (hovered ? 64 : 26) : 20;
         g.setColor(withAlpha(accent, fillA));
         g.fill(card);
 
-        // Alone esterno sul quadrante disponibile attivo.
+        // Outer halo on the active available quadrant.
         if (hovered && connected) {
             g.setColor(withAlpha(accentHi, 80));
             g.setStroke(new BasicStroke(11f));
             g.draw(card);
         }
 
-        // Bordo: pieno per i drive disponibili, tratteggiato per quelli assenti.
+        // Border: solid for the available drives, dashed for the missing ones.
         g.setColor(hovered ? accentHi : withAlpha(accent, 205));
         if (connected) {
             g.setStroke(new BasicStroke(hovered ? 3.5f : 2.5f));
@@ -1543,12 +1535,12 @@ public class AmigaDisplay {
 
         drawFloppyGlyph(g, cx, cy - 50, 58, accent, connected);
 
-        // Etichetta DFx.
+        // DFx label.
         g.setFont(overlayFont.deriveFont(Font.BOLD, 46f));
         g.setColor(hovered && connected ? accentHi : accent);
         drawCentered(g, "DF" + idx, cx, cy + 18);
 
-        // Sottotitolo di stato.
+        // Status subtitle.
         String sub = connected
                 ? (hovered ? io.github.zolfrik.amija.i18n.Messages.t("overlay.drop")
                            : io.github.zolfrik.amija.i18n.Messages.t("overlay.available"))
@@ -1558,14 +1550,14 @@ public class AmigaDisplay {
         drawCentered(g, sub, cx, cy + 52);
     }
 
-    /** Glifo stilizzato di un floppy 3.5" centrato in (cx,cy). */
+    /** Stylised glyph of a 3.5" floppy centred at (cx,cy). */
     private void drawFloppyGlyph(Graphics2D g, int cx, int cy, int s, Color accent, boolean connected) {
         int w = (int) (s * 0.86), h = s;
         int x = cx - w / 2, y = cy - h / 2;
         int cut = (int) (w * 0.30);
         int r = 7;
 
-        // Corpo con angolo superiore destro tagliato (tipico del 3.5").
+        // Body with the top right corner cut (typical of the 3.5").
         Path2D body = new Path2D.Float();
         body.moveTo(x, y + r);
         body.quadTo(x, y, x + r, y);
@@ -1583,16 +1575,16 @@ public class AmigaDisplay {
         g.setStroke(new BasicStroke(2.4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
         g.draw(body);
 
-        // Otturatore metallico in alto.
+        // Metal shutter at the top.
         int shW = (int) (w * 0.40), shH = (int) (h * 0.26);
         int shX = cx - shW / 2, shY = y + (int) (h * 0.07);
         g.fill(new RoundRectangle2D.Float(shX, shY, shW, shH, 4, 4));
-        // Tacca nell'otturatore.
+        // Notch in the shutter.
         g.setColor(withAlpha(Color.BLACK, 120));
         int notchW = Math.max(3, shW / 5);
         g.fillRect(shX + shW - notchW - 3, shY + 3, notchW, shH - 6);
 
-        // Area etichetta in basso.
+        // Label area at the bottom.
         int lbW = (int) (w * 0.66), lbH = (int) (h * 0.44);
         int lbX = cx - lbW / 2, lbY = y + h - lbH - (int) (h * 0.10);
         g.setColor(withAlpha(Color.WHITE, connected ? 45 : 28));
@@ -1602,7 +1594,7 @@ public class AmigaDisplay {
         g.draw(new RoundRectangle2D.Float(lbX, lbY, lbW, lbH, 4, 4));
     }
 
-    /** Disegna una stringa centrata orizzontalmente e verticalmente attorno a (cx,cy). */
+    /** Draws a string centred horizontally and vertically around (cx,cy). */
     private void drawCentered(Graphics2D g, String s, int cx, int cy) {
         FontMetrics fm = g.getFontMetrics();
         int x = cx - fm.stringWidth(s) / 2;
@@ -1615,20 +1607,20 @@ public class AmigaDisplay {
     }
 
     private void setOverlayIcon(BufferedImage canvas) {
-        // Le callback DnD girano sull'EDT, ma durante un drag nativo l'EDT è in un loop
-        // modale: i repaint asincroni e paintImmediately compaiono solo quando AWT genera
-        // il feedback "drag-under" (cioè SOLO su acceptDrag) o al successivo dragOver. Su
-        // rejectDrag (drive disabilitato, mouse fermo) l'overlay non appariva mai.
-        // Si disegna quindi DIRETTAMENTE sul Graphics del label (active rendering) e si
-        // forza il flush del pipeline con Toolkit.sync(): così i pixel raggiungono lo
-        // schermo subito, a prescindere da accept/reject e dal movimento del mouse.
-        // setDisplayImage mantiene lo stato coerente per gli eventuali repaint successivi.
+        // The DnD callbacks run on the EDT, but during a native drag the EDT is in a modal
+        // loop: asynchronous repaints and paintImmediately show only when AWT generates the
+        // "drag-under" feedback (i.e. ONLY on acceptDrag) or at the next dragOver. On
+        // rejectDrag (drive disabled, mouse still) the overlay would never appear. So the
+        // drawing goes DIRECTLY onto the label's Graphics (active rendering) and the pipeline
+        // is flushed with Toolkit.sync(): the pixels reach the screen at once, whatever
+        // accept/reject and the mouse movement. setDisplayImage keeps the state consistent
+        // for any later repaint.
         label.setDisplayImage(canvas);
         Graphics g = label.getGraphics();
         if (g != null) {
             try {
-                // Stesso blit di paintComponent (ingrandimento + centratura): disegnare
-                // qui a 1:1 lascerebbe scoperta la finestra con integer scaling > 1.
+                // Same blit as paintComponent (enlargement + centring): drawing here at 1:1
+                // would leave the window uncovered with integer scaling > 1.
                 label.paintScaled(g);
             } finally {
                 g.dispose();
@@ -1637,7 +1629,7 @@ public class AmigaDisplay {
         }
     }
 
-    /** Finalizza un drop: valida quadrante e file, poi inserisce il disco nel drive. */
+    /** Completes a drop: validates quadrant and file, then inserts the disk in the drive. */
     private void handleDrop(DropTargetDropEvent e) {
         int q = quadrantAt(e.getLocation());
         FloppyDrive drive = driveAt(q);
@@ -1666,13 +1658,12 @@ public class AmigaDisplay {
     }
 
     /**
-     * Primo file .adf/.ipf/.zip della lista trascinata, o null.
+     * First .adf/.ipf/.zip file of the dragged list, or null.
      *
-     * <p>{@code Locale.ROOT} e non la lingua del sistema: in turco {@code 'I'} minuscolo
-     * e' {@code 'i'} senza punto, quindi {@code "GIOCO.IPF"} diventerebbe
-     * {@code "gioco.ıpf"} e non corrisponderebbe a {@code ".ipf"} — un file trascinato
-     * che l'emulatore ignora in silenzio, e solo su alcune macchine. Le estensioni sono
-     * identificatori, non testo da mostrare: si confrontano nella locale neutra.
+     * <p>{@code Locale.ROOT} and not the system language: in Turkish the lower case of
+     * {@code 'I'} is a dotless i, so {@code "GIOCO.IPF"} would not match {@code ".ipf"}: a
+     * dragged file the emulator silently ignores, and only on some machines. Extensions are
+     * identifiers, not text to show: they are compared in the neutral locale.
      */
     private static File firstSupportedDisk(List<File> files) {
         if (files == null) return null;
@@ -1684,10 +1675,9 @@ public class AmigaDisplay {
     }
 
     /**
-     * Inserisce il disco droppato nel drive indicato. Se il drive contiene già un
-     * disco: espelle, attende 1500 ms per dare al Kickstart il tempo di rilevare
-     * l'espulsione, poi inserisce il nuovo. Eseguito su un thread daemon per non
-     * bloccare l'EDT.
+     * Inserts the dropped disk in the given drive. If the drive already holds a disk: ejects
+     * it, waits 1500 ms to give the Kickstart time to notice the eject, then inserts the new
+     * one. Runs on a daemon thread so the EDT is not blocked.
      */
     private void handleDiskDrop(FloppyDrive drive, int driveIndex, File file) {
         if (drive == null) return;
@@ -1702,7 +1692,7 @@ public class AmigaDisplay {
                 System.out.println("[DND] " + id + ": inserimento " + file.getName());
                 drive.loadAdf(file.getAbsolutePath(), false);
                 System.out.println("[DND] " + id + ": disco inserito.");
-                // Allinea la configurazione (popup F12) al disco appena inserito.
+                // Align the configuration (F12 popup) with the disk just inserted.
                 ObjIntConsumer<String> l = diskDropListener;
                 if (l != null) l.accept(file.getAbsolutePath(), driveIndex);
             } catch (Exception e) {

@@ -21,40 +21,40 @@
 package io.github.zolfrik.amija.net.upnp;
 
 /**
- * Che tipo di indirizzo IPv4 e' quello che il router dichiara di avere verso il mondo
- * ({@code docs/remote-play-plan.md} §7.3).
+ * What kind of IPv4 address the router declares toward the world ({@code docs/remote-play-plan.md}
+ * section 7.3).
  *
- * <h2>Perche' e' la diagnosi che conta</h2>
- * Il modo piu' comune in cui il gioco a distanza su Internet fallira' non e' un router
- * scortese: e' il <b>CGNAT</b>. L'operatore mette il cliente dietro un proprio NAT, il
- * router ottiene la sua mappatura e la dichiara riuscita, ma il suo «indirizzo esterno» e'
- * a sua volta privato e dall'esterno non arriva niente. Senza questo controllo l'utente
- * vedrebbe «porta aperta» e poi un «Collega» che va in timeout, e andrebbe a cercare il
- * problema nel posto sbagliato — di solito il firewall, che non c'entra.
+ * <h2>Why this diagnosis is what counts</h2>
+ * The most common way remote play over the Internet will fail is not a rude router: it is
+ * <b>CGNAT</b>. The operator puts the customer behind its own NAT, the router gets its mapping
+ * and declares it successful, but its "external address" is itself private and nothing arrives
+ * from outside. Without this check the user would see "port open" and then a "Connect" timing
+ * out, and would look for the problem in the wrong place (usually the firewall, which has
+ * nothing to do with it).
  *
- * <p>Si riconosce dall'indirizzo e basta, senza chiedere niente a nessun servizio esterno:
- * <b>100.64.0.0/10</b> e' lo spazio che la RFC 6598 riserva proprio a questo, e un
- * indirizzo RFC1918 al posto di quello pubblico dice la stessa cosa (router in cascata a
- * un altro router, che dal punto di vista di chi gioca e' lo stesso problema).
+ * <p>It is recognised from the address alone, without asking any external service:
+ * <b>100.64.0.0/10</b> is the space RFC 6598 reserves for exactly this, and an RFC 1918 address
+ * in place of the public one says the same (a router cascaded to another router, which from
+ * the player's point of view is the same problem).
  *
- * <h2>Il testo si analizza a mano, di proposito</h2>
- * La stringa arriva da un apparecchio di rete, quindi non la si passa a
- * {@code InetAddress.getByName}: quel metodo, davanti a qualcosa che non e' un indirizzo,
- * <b>fa una risoluzione DNS</b>. Sarebbe una richiesta di rete verso un nome scelto da
- * chi ha risposto all'M-SEARCH, per rispondere a una domanda che e' pura aritmetica.
+ * <h2>The text is parsed by hand, on purpose</h2>
+ * The string comes from a network device, so it is not passed to {@code InetAddress.getByName}:
+ * faced with something that is not an address, that method <b>does a DNS lookup</b>. It would
+ * be a network request toward a name chosen by whoever answered the M-SEARCH, to answer a
+ * question of pure arithmetic.
  */
 public final class NatAddress {
 
     private NatAddress() {
     }
 
-    /** Vero se l'indirizzo e' nello spazio del carrier-grade NAT ({@code 100.64.0.0/10}). */
+    /** True if the address is in the carrier-grade NAT space ({@code 100.64.0.0/10}). */
     public static boolean isCarrierGrade(String address) {
         int[] o = parse(address);
         return o != null && o[0] == 100 && o[1] >= 64 && o[1] <= 127;
     }
 
-    /** Vero per gli indirizzi RFC1918, il loopback, il link-local e {@code 0.0.0.0}. */
+    /** True for RFC 1918 addresses, loopback, link-local and {@code 0.0.0.0}. */
     public static boolean isPrivate(String address) {
         int[] o = parse(address);
         if (o == null) {
@@ -69,17 +69,16 @@ public final class NatAddress {
     }
 
     /**
-     * Vero se un altro giocatore, da Internet, puo' davvero arrivare a questo indirizzo.
+     * True if another player, from the Internet, can really reach this address.
      *
-     * <p>Cioe': e' un IPv4 valido, non e' privato e non e' CGNAT. Non prova che i pacchetti
-     * arrivino — quello lo impedisce ancora un firewall (§7.4) — ma prova che non arrivare
-     * sia possibile.
+     * <p>That is: a valid IPv4, not private and not CGNAT. It does not prove the packets arrive
+     * (a firewall can still stop them, section 7.4), but it proves arriving is possible.
      */
     public static boolean isReachable(String address) {
         return parse(address) != null && !isPrivate(address) && !isCarrierGrade(address);
     }
 
-    /** I quattro ottetti, o {@code null} se non e' un IPv4 in forma decimale puntata. */
+    /** The four octets, or {@code null} if it is not an IPv4 in dotted decimal form. */
     private static int[] parse(String address) {
         if (address == null) {
             return null;

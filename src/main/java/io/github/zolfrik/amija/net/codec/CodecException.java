@@ -23,12 +23,12 @@ package io.github.zolfrik.amija.net.codec;
 import java.io.IOException;
 
 /**
- * Payload video rifiutato da {@link FrameDecoder}: troncato, incoerente o ostile.
+ * Video payload refused by {@link FrameDecoder}: truncated, inconsistent or hostile.
  *
- * <p>E' una {@link IOException} <b>controllata</b> di proposito. I byte che arrivano qui
- * vengono dalla rete e possono essere qualunque cosa; il compilatore deve costringere il
- * trasporto a decidere cosa farne — che nel gioco a distanza e' sempre la stessa cosa,
- * "scarta il frame e non ACKarlo" (piano §4.1), mai propagare.
+ * <p>A <b>checked</b> {@link IOException} on purpose. The bytes arriving here come from the
+ * network and can be anything; the compiler must force the transport to decide what to do
+ * with them, which in remote play is always the same thing, "discard the frame and do not ACK
+ * it" (plan section 4.1), never propagate.
  */
 public class CodecException extends IOException {
 

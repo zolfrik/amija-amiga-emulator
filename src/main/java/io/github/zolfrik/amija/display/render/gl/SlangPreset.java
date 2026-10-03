@@ -34,34 +34,34 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * Parser di un preset shader RetroArch {@code .slangp} (formato "slang", Vulkan-GLSL).
+ * Parser of a RetroArch {@code .slangp} shader preset ("slang" format, Vulkan GLSL).
  *
- * <p>Non tocca OpenGL: legge il preset, ne estrae pass, texture LUT e override dei
- * parametri. La traduzione dei {@code .slang} è in {@link SlangSource}, l'esecuzione in
- * {@link SlangChain}.
+ * <p>It does not touch OpenGL: it reads the preset and extracts its passes, LUT textures and
+ * parameter overrides. The translation of the {@code .slang} files is in {@link SlangSource},
+ * the execution in {@link SlangChain}.
  *
- * <p>Rispetto al {@code .glslp} (vedi {@link GlslPreset}) il formato aggiunge due cose
- * che qui sono il grosso del lavoro:
+ * <p>Compared with {@code .glslp} (see {@link GlslPreset}) the format adds two things, which
+ * are the bulk of the work here:
  *
  * <ul>
- *   <li><b>{@code #reference "altro-preset"}</b> — il preset "semplice": eredita tutte le
- *       chiavi del preset referenziato e ne sovrascrive alcune. Le reference si annidano
- *       (Mega Bezel ne usa catene di 3-4 livelli) e possono puntare anche a file
- *       {@code .params}, che sono soli {@code chiave = valore}. <b>Ogni chiave ricorda la
- *       cartella del file da cui proviene</b>: i percorsi relativi di {@code shaderK} e
- *       delle texture vanno risolti rispetto a quel file, non rispetto al preset radice.</li>
- *   <li><b>Wildcard</b> nei percorsi ({@code $VID-DRV$}, {@code $CORE$},
- *       {@code $CORE-REQ-ROT$}, …). Come in RetroArch, la wildcard è sostituita e — se il
- *       file risultante non esiste — si ricade sul percorso <i>letterale</i>: nel pacchetto
- *       esistono davvero file chiamati {@code $CORE$.params}, che fanno da default.</li>
+ *   <li><b>{@code #reference "other-preset"}</b>: the "simple" preset, which inherits every key
+ *       of the referenced preset and overrides some. References nest (the Mega Bezel uses
+ *       chains of 3-4 levels) and can also point to {@code .params} files, which are only
+ *       {@code key = value}. <b>Every key remembers the folder of the file it comes from</b>:
+ *       relative paths of {@code shaderK} and of the textures are resolved against that
+ *       file, not against the root preset.</li>
+ *   <li><b>Wildcards</b> in the paths ({@code $VID-DRV$}, {@code $CORE$},
+ *       {@code $CORE-REQ-ROT$}, ...). The wildcard is replaced and, if the resulting file
+ *       does not exist, the <i>literal</i> path is used: the pack really contains files
+ *       called {@code $CORE$.params}, which act as defaults.</li>
  * </ul>
  */
 public final class SlangPreset {
 
-    /** Descrittore di un singolo pass. */
+    /** Descriptor of a single pass. */
     public static final class PassSpec {
         public Path shader;
-        /** Filtro dell'ingresso del pass. Default RetroArch: {@code video_smooth} = lineare. */
+        /** Filter of the pass input. RetroArch default: {@code video_smooth} = linear. */
         public boolean filterLinear = true;
         public String wrapMode = "clamp_to_border";
         public String scaleTypeX = "source";
@@ -70,13 +70,13 @@ public final class SlangPreset {
         public float scaleY = 1.0f;
         public boolean floatFramebuffer = false;
         public boolean srgbFramebuffer = false;
-        /** {@code mipmap_inputK}: il pass campiona il proprio ingresso con i mipmap. */
+        /** {@code mipmap_inputK}: the pass samples its input with mipmaps. */
         public boolean mipmapInput = false;
         public String alias = "";
         public int frameCountMod = 0;
     }
 
-    /** Descrittore di una texture LUT. */
+    /** Descriptor of a LUT texture. */
     public static final class TextureSpec {
         public String name;
         public Path path;
@@ -85,14 +85,14 @@ public final class SlangPreset {
         public boolean mipmap = false;
     }
 
-    /** Chiavi "strutturali": tutto il resto che è numerico è un override di parametro. */
+    /** "Structural" keys: anything else that is numeric is a parameter override. */
     private static final Pattern STRUCTURAL = Pattern.compile(
             "shaders|parameters|textures"
             + "|(shader|filter_linear|wrap_mode|scale_type|scale_type_x|scale_type_y"
             + "|scale|scale_x|scale_y|float_framebuffer|srgb_framebuffer|mipmap_input"
             + "|alias|frame_count_mod)\\d+");
 
-    /** Valore di una chiave + cartella del file che l'ha definita (per i path relativi). */
+    /** Value of a key + folder of the file that defined it (for relative paths). */
     private record Entry(String value, Path dir) { }
 
     private final Path file;
@@ -113,8 +113,8 @@ public final class SlangPreset {
     public List<TextureSpec> textures() { return textures; }
 
     /**
-     * Override numerici dei parametri dichiarati nel preset (e in tutta la catena di
-     * {@code #reference}): tutte le chiavi non strutturali il cui valore è un numero.
+     * Numeric overrides of the parameters declared in the preset (and in the whole
+     * {@code #reference} chain): every non-structural key whose value is a number.
      */
     public Map<String, Float> paramOverrides() {
         Map<String, Float> out = new LinkedHashMap<>();
@@ -125,13 +125,13 @@ public final class SlangPreset {
             try {
                 out.put(e.getKey(), Float.parseFloat(v));
             } catch (NumberFormatException ignore) {
-                // percorso di texture o flag testuale: non è un parametro
+                // texture path or text flag: not a parameter
             }
         }
         return out;
     }
 
-    /** Carica e valida un preset, risolvendo l'intera catena di {@code #reference}. */
+    /** Loads and validates a preset, resolving the whole {@code #reference} chain. */
     public static SlangPreset load(Path slangp) throws IOException {
         Path root = slangp.toAbsolutePath().normalize();
         Map<String, String> wildcards = wildcardsFor(root);
@@ -195,9 +195,9 @@ public final class SlangPreset {
     // =====================================================================================
 
     /**
-     * Fonde {@code preset} in {@code map}: prima, in ordine, i file citati dalle sue righe
-     * {@code #reference}, poi le sue proprie chiavi (che quindi vincono). {@code stack}
-     * spezza i cicli.
+     * Merges {@code preset} into {@code map}: first, in order, the files named by its
+     * {@code #reference} lines, then its own keys (which therefore win). {@code stack} breaks
+     * cycles.
      */
     private static void merge(Path preset, Map<String, Entry> map, Deque<Path> stack,
                               Map<String, String> wildcards) throws IOException {
@@ -214,23 +214,23 @@ public final class SlangPreset {
             List<String> lines = Files.readAllLines(abs, StandardCharsets.UTF_8);
             Path dir = abs.getParent();
 
-            // 1) Le reference, nell'ordine in cui compaiono.
+            // 1) The references, in the order they appear.
             for (String line : lines) {
                 String s = line.trim();
-                // '//#reference "..."' è come i pacchetti disattivano un'alternativa.
+                // '//#reference "..."' is how packs disable an alternative.
                 if (s.startsWith("//") || !s.startsWith("#reference")) continue;
                 String arg = extractValue(s.substring("#reference".length()));
                 if (arg.isEmpty()) continue;
                 Path target = resolve(dir, arg, wildcards);
                 if (!Files.isRegularFile(target)) {
-                    // Le reference con wildcard non risolvibili sono opzionali in RetroArch.
+                    // References with unresolvable wildcards are optional.
                     System.err.println("[GL] #reference saltata (assente): " + target);
                     continue;
                 }
                 merge(target, map, stack, wildcards);
             }
 
-            // 2) Le chiavi proprie, che sovrascrivono quanto ereditato.
+            // 2) Its own keys, which override what was inherited.
             for (String line : lines) {
                 String s = stripComment(line).trim();
                 if (s.isEmpty()) continue;
@@ -250,12 +250,11 @@ public final class SlangPreset {
     // =====================================================================================
 
     /**
-     * Tabella di sostituzione delle wildcard RetroArch. AmiJa non è un core libretro:
-     * i valori sono quelli coerenti con come l'emulatore presenta il frame (driver
-     * "glcore", nessuna rotazione, orientamento orizzontale). Le wildcard senza
-     * corrispondenza restano letterali e vengono intercettate dal fallback di
-     * {@link #resolve} — nel pacchetto Mega Bezel esistono file il cui nome <i>è</i> la
-     * wildcard, che fanno da default.
+     * Substitution table of the RetroArch wildcards. AmiJa is not a libretro core: the values
+     * are those consistent with how the emulator presents the frame ("glcore" driver, no
+     * rotation, landscape orientation). Wildcards with no match stay literal and are caught by
+     * the fallback of {@link #resolve}: the Mega Bezel pack contains files whose name <i>is</i>
+     * the wildcard, which act as defaults.
      */
     private static Map<String, String> wildcardsFor(Path root) {
         Map<String, String> w = new LinkedHashMap<>();
@@ -281,8 +280,9 @@ public final class SlangPreset {
     }
 
     /**
-     * Risolve un percorso relativo del preset. Se contiene wildcard prova prima la
-     * versione sostituita e, solo se quel file non esiste, ricade sul percorso letterale.
+     * Resolves a relative path of the preset. If it contains wildcards it tries the
+     * substituted version first and, only if that file does not exist, falls back on the
+     * literal path.
      */
     private static Path resolve(Path baseDir, String rel, Map<String, String> wildcards)
             throws IOException {
@@ -297,8 +297,8 @@ public final class SlangPreset {
             Path p = baseDir.resolve(subst).normalize();
             return Files.exists(p) ? p : literal;
         } catch (InvalidPathException e) {
-            // Su Windows i caratteri illegali (virgolette, ':') sono un'eccezione unchecked:
-            // senza questo salta fuori dall'EDT e chiude il popup dei parametri.
+            // On Windows illegal characters (quotes, ':') are an unchecked exception: without
+            // this it escapes from the EDT and closes the parameters popup.
             throw new IOException(
                     "Percorso non valido nel preset " + baseDir + ": \"" + rel + '"', e);
         }
@@ -338,10 +338,10 @@ public final class SlangPreset {
     }
 
     /**
-     * Come in {@link GlslPreset}, ma con in più {@code //}: un commento apre con
-     * {@code '#'}, {@code ';'} o {@code "//"} e solo <b>fuori</b> dalle virgolette — la
-     * chiave {@code textures = "a;b;c"} usa ';' come separatore e non va troncata.
-     * I pacchetti della community commentano in stile C (è tutto il preamble di TheNamec).
+     * As in {@link GlslPreset}, but with {@code //} as well: a comment opens with {@code '#'},
+     * {@code ';'} or {@code "//"} and only <b>outside</b> quotes (the key
+     * {@code textures = "a;b;c"} uses ';' as a separator and must not be truncated). Community
+     * packs comment in C style (TheNamec's whole preamble).
      */
     private static String stripComment(String line) {
         boolean inQuotes = false;
@@ -360,16 +360,15 @@ public final class SlangPreset {
     }
 
     /**
-     * Estrae il valore di una chiave — o l'argomento di {@code #reference} — con la regola
-     * di RetroArch ({@code config_file_extract_value}): <b>se è fra virgolette il valore
-     * finisce alla virgoletta di chiusura e tutto ciò che segue è ignorato</b>, altrimenti
-     * è il resto della riga meno il commento.
+     * Extracts the value of a key, or the argument of {@code #reference}: <b>if it is quoted,
+     * the value ends at the closing quote and everything after it is ignored</b>, otherwise it
+     * is the rest of the line minus the comment.
      *
-     * <p>È quel "tutto ciò che segue è ignorato" che serve: i pacchetti scrivono
-     * {@code #reference "../x/preset.params" // commento} e
-     * {@code BackgroundImage = "../assets/bg.png" // BACKGROUND texture}, e la vecchia
-     * {@code unquote} — che pretendeva la virgoletta come <i>ultimo</i> carattere — in quei
-     * casi restituiva la riga intera, virgolette e commento compresi.
+     * <p>That "everything after it is ignored" is what is needed: packs write
+     * {@code #reference "../x/preset.params" // comment} and
+     * {@code BackgroundImage = "../assets/bg.png" // BACKGROUND texture}, and requiring the
+     * quote as the <i>last</i> character would return the whole line in those cases, quotes
+     * and comment included.
      */
     private static String extractValue(String s) {
         String v = s.trim();

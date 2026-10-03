@@ -111,10 +111,9 @@ public class SubaInstruction extends AbstractM68kInstruction {
                     continue;
                 }
                 case 5 -> {
-                    // WinUAE `case i_SUBA`/`i_ADDA`: `set_ipl_pre()` e' chiamata SUBITO PRIMA di
-                    // `fill_prefetch_next_after`, quindi l'ancora e' questa prefetch e non la
-                    // lettura dell'operando (op_90d0/op_91d0/op_d0d0/op_d1d0 _14_ff:
-                    // `ipl_fetch_next_pre()` sta fra la lettura e la prefetch).
+                    // SUBA/ADDA: the `next` sample sits RIGHT BEFORE the final prefetch, so the
+                    // anchor is this prefetch and not the operand read ($90D0/$91D0/$D0D0/
+                    // $D1D0: the sample sits between the read and the prefetch).
                     cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                     refillPipeline(cpu);
                     int srcVal = getTemp(cpu, SRC_VAL);

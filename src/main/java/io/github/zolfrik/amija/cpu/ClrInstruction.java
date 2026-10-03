@@ -95,22 +95,22 @@ public class ClrInstruction extends AbstractM68kInstruction {
                         nextStep(cpu);
                         return false;
                     }
-                    // Overlapped prefetch (Phase 3): the .b/.w write is the LAST bus cycle —
+                    // Overlapped prefetch (Phase 3): the .b/.w write is the LAST bus cycle;
                     // finalize in this same step so it overlaps the write and the next
                     // instruction decodes when the write drains (seam 0). See
-                    // docs/cpu-overlapped-prefetch-rework-plan.md §Phase 3.
+                    // docs/cpu-overlapped-prefetch-rework-plan.md, Phase 3.
                     cpu.scheduleWrite(addr, 0, size);
                     return finalizeInstructionSafe(cpu);
                 }
                 case 7 -> { // Step 7: Write 2 (MSW, for .l) + finalize
-                    // .l memory: the MSW write is the LAST bus cycle → finalize with it
-                    // (overlapped prefetch, seam 0) instead of deferring to a wait-step.
+                    // .l memory: the MSW write is the LAST bus cycle -> finalize with it
+                    // (overlapped prefetch, seam 0) instead of deferring to a wait step.
                     // Matches the .b/.w path (case 6). JSON-safe: the write transaction is
-                    // captured identically. See docs/cpu-overlapped-prefetch-rework-plan.md
-                    // §Phase 3 (the .L paths were left deferred by the original rework).
+                    // captured identically. See docs/cpu-overlapped-prefetch-rework-plan.md,
+                    // Phase 3.
                     if (!cpu.isBusCycleIdle()) return false;
                     int addr = getTemp(cpu, ADDR);
-                    cpu.scheduleWriteWord(addr, 0); // MSW at N — last bus cycle
+                    cpu.scheduleWriteWord(addr, 0); // MSW at N: last bus cycle
                     return finalizeInstructionSafe(cpu);
                 }
 

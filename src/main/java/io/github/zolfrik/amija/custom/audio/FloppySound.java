@@ -36,57 +36,50 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Emulazione PURAMENTE ESTETICA dei suoni del floppy drive (click della testina,
- * ronzio del motore, avvio, "snatch" del disco), ispirata a {@code driveclick.cpp}
- * di WinUAE ma COMPLETAMENTE DISACCOPPIATA dall'emulazione e dalla pipeline audio
- * di Paula.
+ * PURELY COSMETIC emulation of the floppy drive sounds (head click, motor hum, spin-up,
+ * disk "snatch"), ENTIRELY DECOUPLED from the emulation and from Paula's audio pipeline.
  *
- * <p>Filosofia: per questa feature le PRESTAZIONI hanno priorità assoluta
- * sull'accuratezza.
+ * <p>For this feature PERFORMANCE has absolute priority over accuracy.
  * <ul>
- *   <li>I campioni WAV vengono caricati e decodificati una sola volta (cache
- *       statica) e riprodotti tramite {@link javax.sound.sampled.Clip}, gestiti
- *       dal mixer audio di sistema su thread propri: il thread di emulazione NON
- *       esegue mai mixing per-campione (a differenza di WinUAE).</li>
- *   <li>Gli eventi (motore/step/disco) vengono accodati su un singolo thread
- *       daemon dedicato tramite una ring queue preallocata, senza creare task per
- *       evento sul thread di emulazione.</li>
+ *   <li>The WAV samples are loaded and decoded once (static cache) and played through
+ *       {@link javax.sound.sampled.Clip}, handled by the system audio mixer on its own
+ *       threads: the emulation thread NEVER does per-sample mixing.</li>
+ *   <li>The events (motor/step/disk) are queued to a single dedicated daemon thread through
+ *       a preallocated ring queue, with no task created per event on the emulation
+ *       thread.</li>
  * </ul>
  *
- * <p>L'intera feature si disabilita con un singolo flag booleano: se non viene
- * creata/agganciata alcuna istanza (o se {@code enabled=false}), il
- * {@code FloppyDrive} resta silenzioso a costo zero (solo un null-check sugli
- * eventi, che sono comunque rari). Attualmente viene abilitata solo in
+ * <p>The whole feature is switched off by a single boolean flag: if no instance is created
+ * or hooked up (or if {@code enabled=false}), the {@code FloppyDrive} stays silent at zero
+ * cost (just a null check on the events, which are rare anyway). It is enabled only in
  * {@code Amija}.
  */
 public final class FloppySound {
 
-    /** Variante di campioni da usare (prefisso file: drive_<tipo>_<VARIANT>.wav). */
+    /** Sample variant to use (file prefix: drive_<type>_<VARIANT>.wav). */
     private static final String VARIANT = "A500";
 
     /**
-     * Cartella dei campioni WAV, relativa alla home dell'applicazione (la stessa in cui
-     * si trova {@code amiga.properties}). I file stanno lì e non dentro il jar, così
-     * l'utente può sostituirli con i propri tenendo i nomi. Se la cartella manca o è
-     * vuota la feature resta semplicemente inerte, come con
-     * {@code floppy.sound.volume=0}.
+     * Folder of the WAV samples, relative to the application home (where
+     * {@code amiga.properties} is). The files live there and not inside the jar, so the user
+     * can replace them with their own keeping the names. If the folder is missing or empty
+     * the feature simply stays inert, as with {@code floppy.sound.volume=0}.
      */
     private static final Path SAMPLE_DIR = AppHome.resolve("floppysounds");
 
-    // I campioni vengono normalizzati a PCM signed 16-bit mono little-endian,
-    // MANTENENDO la frequenza di campionamento NATIVA del file (i WAV WinUAE hanno
-    // rate misti: click=48 kHz, resto=44.1 kHz). Evitare la conversione di sample-rate
-    // è importante: i convertitori di default della JVM spesso NON la supportano,
-    // mentre la sola normalizzazione di encoding/canali è sempre disponibile (e qui
-    // è di fatto un'identità, dato che i file sono già 16-bit mono LE).
+    // The samples are normalised to signed 16-bit mono little-endian PCM, KEEPING the file's
+    // NATIVE sample rate (the files may mix rates, e.g. click=48 kHz, others=44.1 kHz).
+    // Avoiding sample-rate conversion matters: the JVM's default converters often do NOT
+    // support it, while normalising encoding/channels alone is always available (and here it
+    // is in fact an identity, since the files are already 16-bit mono LE).
     private static final int FRAME_BYTES = 2; // mono 16-bit
 
-    /** Campione decodificato: formato (con rate nativo) + PCM grezzo. */
+    /** Decoded sample: format (with its native rate) + raw PCM. */
     private record Sample(AudioFormat fmt, byte[] pcm) {}
 
-    /** Lunghezza di un singolo click estratto dal WAV (frame). ~63 ms a 44.1 kHz. */
+    /** Length of a single click taken from the WAV (frames). ~63 ms at 44.1 kHz. */
     private static final int CLICK_FRAMES = 2800;
-    private static final int CLICK_POOL = 6;   // click sovrapponibili durante un seek
+    private static final int CLICK_POOL = 6;   // clicks that can overlap during a seek
     private static final int EVENT_QUEUE_SIZE = 128;
     private static final int EVENT_MOTOR = 1;
     private static final int EVENT_STEP = 2;
@@ -95,13 +88,13 @@ public final class FloppySound {
     private static final int EVENT_CLOSE = 5;
 
     /**
-     * Attenuazione di default applicata a tutti i clip (dB) per non sovrastare l'audio
-     * del gioco. Valore negativo = più silenzioso (ogni -6 dB ~ dimezza il volume
-     * percepito). Sovrascrivibile dal costruttore o a runtime con {@link #setGainDb}.
+     * Default attenuation applied to every clip (dB) so the game audio is not drowned. A
+     * negative value = quieter (every -6 dB roughly halves the perceived volume). Can be
+     * overridden from the constructor or at run time with {@link #setGainDb}.
      */
     public static final float DEFAULT_GAIN_DB = -18.0f;
 
-    // Cache statica dei campioni decodificati (condivisa tra istanze): caricamento una volta sola.
+    // Static cache of the decoded samples (shared between instances): loaded only once.
     private static final Map<String, Sample> SAMPLE_CACHE = new HashMap<>();
 
     private final boolean active;          // false => istanza inerte (no audio / disabilitata)
@@ -118,30 +111,29 @@ public final class FloppySound {
 
     private Clip startupClip;
     private Clip snatchClip;
-    private Clip spinClip;                  // motore con disco
-    private Clip spinNdClip;                // motore senza disco (fallback a spinClip se assente)
+    private Clip spinClip;                  // motor with a disk
+    private Clip spinNdClip;                // motor without a disk (falls back to spinClip if absent)
     private Clip[] clickPool;
     private int clickIdx;
 
-    // Stato interno (mutato solo sul thread worker).
+    // Internal state (mutated only on the worker thread).
     private boolean spinning;
     private boolean hasDisk;
     private Clip currentSpin;
 
     /**
-     * @param enabled se {@code false} l'istanza non carica nulla e tutti i metodi
-     *                sono no-op (feature disabilitata in toto).
+     * @param enabled if {@code false} the instance loads nothing and every method is a no-op
+     *                (feature off entirely).
      */
     public FloppySound(boolean enabled) {
         this(enabled, DEFAULT_GAIN_DB);
     }
 
     /**
-     * @param enabled se {@code false} l'istanza non carica nulla e tutti i metodi
-     *                sono no-op (feature disabilitata in toto).
-     * @param gainDb  attenuazione in dB applicata a tutti i suoni del drive
-     *                (negativo = più silenzioso). Modificabile a runtime con
-     *                {@link #setGainDb}.
+     * @param enabled if {@code false} the instance loads nothing and every method is a no-op
+     *                (feature off entirely).
+     * @param gainDb  attenuation in dB applied to every drive sound (negative = quieter).
+     *                Can be changed at run time with {@link #setGainDb}.
      */
     public FloppySound(boolean enabled, float gainDb) {
         this.gainDb = gainDb;
@@ -150,7 +142,7 @@ public final class FloppySound {
             try {
                 Sample click   = loadSample("drive_click_"   + VARIANT);
                 Sample spin     = loadSample("drive_spin_"    + VARIANT);
-                Sample spinNd   = loadSample("drive_spinnd_"  + VARIANT); // spesso assente per A500
+                Sample spinNd   = loadSample("drive_spinnd_"  + VARIANT); // often absent for the A500
                 Sample startup  = loadSample("drive_startup_" + VARIANT);
                 Sample snatch   = loadSample("drive_snatch_"  + VARIANT);
 
@@ -165,7 +157,7 @@ public final class FloppySound {
                     for (int i = 0; i < CLICK_POOL; i++) clickPool[i] = makeClip(oneClick);
                 }
 
-                // Almeno un campione caricato => feature operativa.
+                // At least one sample loaded: the feature is active.
                 ok = (startupClip != null || spinClip != null || clickPool != null);
                 if (ok) {
                     workerRunning = true;
@@ -179,7 +171,7 @@ public final class FloppySound {
                     worker.start();
                 }
             } catch (Throwable t) {
-                // Nessun dispositivo audio, risorse mancanti, ecc.: feature silenziosamente inattiva.
+                // No audio device, missing resources, etc.: the feature is silently inactive.
                 System.out.println("[FLOPPYSND] disabilitato (init fallita): " + t);
                 ok = false;
             }
@@ -187,30 +179,30 @@ public final class FloppySound {
         this.active = ok;
     }
 
-    // ── API eventi (chiamata dal thread di emulazione: enqueue su ring buffer) ──
+    // -- Event API (called by the emulation thread: enqueue on the ring buffer) --
 
-    /** Motore acceso/spento. {@code hasDisk} = disco presente nel drive. */
+    /** Motor on/off. {@code hasDisk} = a disk is in the drive. */
     public void onMotor(boolean running, boolean hasDisk) {
         if (!active) return;
         enqueueEvent(EVENT_MOTOR, (running ? 1 : 0) | (hasDisk ? 2 : 0), 0.0f);
     }
 
-    /** Impulso di step della testina (un click). */
+    /** Head step pulse (one click). */
     public void onStep() {
         if (!active) return;
         enqueueEvent(EVENT_STEP, 0, 0.0f);
     }
 
-    /** Inserimento/espulsione del disco. */
+    /** Disk insertion/ejection. */
     public void onDiskChange(boolean inserted) {
         if (!active) return;
         enqueueEvent(EVENT_DISK, inserted ? 1 : 0, 0.0f);
     }
 
     /**
-     * Imposta a runtime il volume dei suoni del drive (dB, negativo = più silenzioso).
-     * Applicato a tutti i clip sul thread audio; valori fuori dal range del controllo
-     * vengono automaticamente limitati.
+     * Sets the volume of the drive sounds at run time (dB, negative = quieter). Applied to
+     * every clip on the audio thread; values outside the control's range are clamped
+     * automatically.
      */
     public void setGainDb(float db) {
         if (!active) return;
@@ -220,7 +212,7 @@ public final class FloppySound {
     /** Volume corrente in dB. */
     public float getGainDb() { return gainDb; }
 
-    /** Rilascia thread e linee audio. */
+    /** Releases the thread and the audio lines. */
     public void close() {
         if (!active) return;
         enqueueEvent(EVENT_CLOSE, 0, 0.0f);
@@ -233,7 +225,7 @@ public final class FloppySound {
         }
     }
 
-    // ── Logica (eseguita sul thread worker) ────────────────────────────────────
+    // -- Logic (run on the worker thread) ---------------------------------------------
 
     private void enqueueEvent(int type, int flags, float value) {
         synchronized (eventLock) {
@@ -333,7 +325,7 @@ public final class FloppySound {
         boolean wasDisk = this.hasDisk;
         this.hasDisk = inserted;
         if (inserted && !wasDisk) playOnce(snatchClip);
-        if (spinning) startSpin(); // passa al loop corretto (con/senza disco)
+        if (spinning) startSpin(); // switch to the right loop (with/without disk)
     }
 
     private void startSpin() {
@@ -368,7 +360,7 @@ public final class FloppySound {
         try { c.stop(); c.close(); } catch (RuntimeException ignored) {}
     }
 
-    // ── Caricamento campioni ────────────────────────────────────────────────────
+    // -- Sample loading -----------------------------------------------------------
 
     private Clip makeClip(Sample s) {
         if (s == null || s.pcm() == null || s.pcm().length == 0) return null;
@@ -392,7 +384,7 @@ public final class FloppySound {
         } catch (RuntimeException ignored) {}
     }
 
-    /** Riapplica il gain corrente a tutti i clip aperti. */
+    /** Reapplies the current gain to every open clip. */
     private void applyGainAll() {
         applyGain(startupClip);
         applyGain(snatchClip);
@@ -402,9 +394,9 @@ public final class FloppySound {
     }
 
     /**
-     * Carica un WAV da {@link #SAMPLE_DIR} e lo normalizza a PCM signed 16-bit
-     * mono little-endian MANTENENDO il sample-rate nativo. Risultato cached.
-     * {@code null} se il file è assente o non decodificabile.
+     * Loads a WAV from {@link #SAMPLE_DIR} and normalises it to signed 16-bit mono
+     * little-endian PCM KEEPING the native sample rate. The result is cached. {@code null} if
+     * the file is missing or cannot be decoded.
      */
     private static synchronized Sample loadSample(String name) {
         if (SAMPLE_CACHE.containsKey(name)) return SAMPLE_CACHE.get(name);
@@ -414,7 +406,7 @@ public final class FloppySound {
             if (res != null) {
                 try (AudioInputStream in = AudioSystem.getAudioInputStream(new BufferedInputStream(res))) {
                     AudioFormat src = in.getFormat();
-                    // Target: stesso rate, ma encoding/canali normalizzati (identità se già conforme).
+                    // Target: same rate, but encoding/channels normalised (identity if already conforming).
                     AudioFormat target = new AudioFormat(src.getSampleRate(), 16, 1, true, false);
                     AudioInputStream conv = src.matches(target) ? in
                             : AudioSystem.getAudioInputStream(target, in);
@@ -433,10 +425,9 @@ public final class FloppySound {
     }
 
     /**
-     * Estrae un singolo "click" dal WAV (che ne contiene molti, uno per traccia),
-     * prendendo una finestra di {@link #CLICK_FRAMES} frame centrata sul picco di
-     * ampiezza. Euristica equivalente in spirito a {@code processclicks()} di WinUAE,
-     * ma ne serve uno solo (resa puramente estetica).
+     * Extracts a single "click" from the WAV (which holds many, one per track), taking a
+     * window of {@link #CLICK_FRAMES} frames centred on the amplitude peak. Only one is needed
+     * (a purely cosmetic rendition).
      */
     private static Sample extractClick(Sample s) {
         if (s == null || s.pcm() == null || s.pcm().length < FRAME_BYTES) return null;

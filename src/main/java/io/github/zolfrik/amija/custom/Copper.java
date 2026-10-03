@@ -24,103 +24,80 @@ import io.github.zolfrik.amija.common.BusRequest;
 import io.github.zolfrik.amija.common.BusResponse;
 
 /**
- * Copper (Co-Processor) dell'Amiga 500.
+ * Copper (co-processor) of the Amiga 500.
  *
- * Il Copper è un co-processore sincronizzato con il fascio video (beam).
- * Esegue una lista di istruzioni (Copper List) che possono:
- *   1. MOVE: scrivere un valore in un registro custom
- *   2. WAIT: attendere che il beam raggiunga una posizione (V, H)
- *   3. SKIP: saltare l'istruzione successiva se il beam ha già raggiunto (V, H)
+ * The Copper is a co-processor synchronised with the video beam. It runs a list of
+ * instructions (the Copper list) that can:
+ *   1. MOVE: write a value to a custom register
+ *   2. WAIT: wait for the beam to reach a position (V, H)
+ *   3. SKIP: skip the next instruction if the beam has already reached (V, H)
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * MODELLO A STATI (Fase 2 del refactoring timing — modello vAmiga)
- * ═══════════════════════════════════════════════════════════════════════════
+ * STATE MACHINE
  *
- * Questa FSM è il porting diretto di vAmiga (`CopperEvents.cpp`,
- * `Copper.cpp`) sul nostro loop per-CCK. In vAmiga il Copper è un evento
- * (`SLOT_COP`) schedulato con un delay ESPLICITO:
- *   `schedule(next, delay = 2)`  → azione riuscita: prossimo stato a +2 CCK
- *   `reschedule(delay = 1)`      → bus negato: RITENTA a +1 CCK
- * e il vincolo "niente wakeup su CCK dispari" (`IS_ODD(pos.h) → reschedule`)
- * esiste SOLO negli stati di wakeup (`COP_REQ_DMA`/`COP_WAKEUP`/`COP_WAKEUP_BLIT`),
- * in NESSUN altro: `COP_FETCH` &c. non hanno alcun vincolo di parità.
+ * The Copper is ticked by {@link AbstractAgnus} at EVERY CCK and receives `evenCck`. Each
+ * action is followed by an explicit delay, kept in {@link #tickDelay}:
+ *   action completed -> next state 2 CCKs later
+ *   bus denied       -> the same state RETRIES 1 CCK later
+ * The rule "no wakeup on an odd CCK" applies ONLY to the wakeup states (REQ_DMA and
+ * WAKEUP), to no other: FETCH and the other read states have no parity constraint. The
+ * even cadence of the fetches is therefore a consequence of the 2-CCK delay, NOT a rule:
+ * it breaks on purpose when a denial ($E0, refresh, DMA) inserts a +1. A fetch refused at
+ * the BLOCKED cycle $E0 = 224 retries at 225 rather than sliding to the next even CCK
+ * (226 = refresh, then 0 of the next line), which would steal 2 CCKs from the CPU
+ * (docs/vamigats-cpu-timing-plan.md, S2).
  *
- * Qui il Copper è tickato da {@link AbstractAgnus} a OGNI CCK e riceve `evenCck`;
- * la cadenza +2 è resa esplicita da {@link #tickDelay}. La cadenza pari dei fetch
- * è quindi un'EMERGENZA del delay 2, NON una regola: si rompe di proposito quando
- * un diniego ($E0/refresh/DMA) inserisce un +1.
- *
- * ⚠️ FIX #23: fino al 2026-07-17 il Copper era tickato SOLO sui CCK pari (gate
- * `(cck & 1) == 0`, Fase 1). Era troppo forte: un fetch rifiutato dal BLOCKED di
- * $E0=224 slittava al pari successivo (226=refresh → 0 della riga dopo) invece di
- * ritentare a 225, rubando 2 CCK alla CPU. Root di §S2 in
- * docs/vamigats-cpu-timing-plan.md.
- *
- * Mappatura stati vAmiga → nostri:
- *   COP_REQ_DMA        → REQ_DMA        (dopo restart/COPJMP/VBlank: attende slot → FETCH)
- *   COP_FETCH          → FETCH          (legge IR1, avanza PC, → MOVE o WAIT_OR_SKIP)
- *   COP_MOVE           → MOVE           (legge IR2, esegue MOVE/COPJMP/illegal)
- *   COP_WAIT_OR_SKIP   → WAIT_OR_SKIP   (legge IR2, → WAIT1 o SKIP1)
- *   COP_WAIT1          → WAIT1          (ciclo idle bus-gated)
- *   COP_WAIT2          → WAIT2          (valuta: match immediato → FETCH, altrimenti → WAKEUP)
- *   COP_WAKEUP(_BLIT)  → WAKEUP         (polling del comparatore ad ogni CCK pari libero)
- *   COP_SKIP1/2        → SKIP1/SKIP2    (cicli idle bus-gated)
+ * States:
+ *   REQ_DMA        after a restart, COPJMP or the VBlank: waits for a slot, then FETCH
+ *   FETCH          reads IR1, advances the PC, then MOVE or WAIT_OR_SKIP
+ *   MOVE           reads IR2, performs MOVE / COPJMP / illegal
+ *   WAIT_OR_SKIP   reads IR2, then WAIT1 or SKIP1
+ *   WAIT1          bus-gated idle cycle
+ *   WAIT2          evaluates: immediate match -> FETCH, otherwise -> WAKEUP
+ *   WAKEUP         polls the comparator at every free even CCK
+ *   SKIP1/SKIP2    bus-gated idle cycles
  *   COPJMPx (CPU or Copper MOVE) enters the strobe pipeline; see armStrobe()/advanceStrobe()
- *   frame restart      → armFrameStrobe() (list 1, through the same pipeline)
- *   cancel<SLOT_COP>   → DORMANT        (Copper fermo: MOVE illegale, fino a VBlank/COPJMP)
+ *   frame restart  -> armFrameStrobe() (list 1, through the same pipeline)
+ *   DORMANT        Copper stopped (illegal MOVE), until the VBlank or a COPJMP
  *
- * Il WAIT non usa uno scheduler assoluto: il polling del comparatore (stato
- * WAKEUP) è equivalente al `scheduleWaitWakeup` di vAmiga (che salta alla prima
- * posizione di match e ri-verifica): entrambi si svegliano al primo CCK PARI con
- * bus libero in cui il comparatore è vero (il WAKEUP è uno stato di wakeup, quindi
- * il vincolo di parità vale).
+ * The WAIT uses no absolute scheduler: the comparator is polled in the WAKEUP state, which
+ * wakes at the first EVEN CCK with a free bus at which the comparator is true (WAKEUP is a
+ * wakeup state, so the parity constraint applies).
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * COMPARATORE (vAmiga runComparator / runHorizontalComparator)
- * ═══════════════════════════════════════════════════════════════════════════
+ * COMPARATOR
  *
- *   waitpos = IR1 & 0xFFFE                 (VPHP; bit0=0)
- *   mask    = (IR2 & 0x7FFE) | 0x8001      (VMHM; VP7 e bit0 forzati a 1)
+ *   waitpos = IR1 & 0xFFFE                 (VPHP; bit0 = 0)
+ *   mask    = (IR2 & 0x7FFE) | 0x8001      (VMHM; VP7 and bit0 forced to 1)
  *
- *   Verticale:  bvHi = vpos & (mask>>8);  wpHi = (waitpos & mask) >> 8
- *     bvHi <  wpHi → false
- *     bvHi >  wpHi → true  (il blitter è comunque valutato dal gate finale)
- *     bvHi == wpHi → confronto orizzontale
- *   Orizzontale: bh = hpos>>1 (CCK)
- *     hRaw = (bh < 0xE0) ? bh+2 : bh-0xE0        ← offset +2 con wrap sugli
- *                                                  ultimi 3 cicli di riga
+ *   Vertical:   bvHi = vpos & (mask>>8);  wpHi = (waitpos & mask) >> 8
+ *     bvHi <  wpHi -> false
+ *     bvHi >  wpHi -> true  (the Blitter is still checked by the final gate)
+ *     bvHi == wpHi -> horizontal comparison
+ *   Horizontal: bh = hpos>>1 (CCK)
+ *     hRaw = (bh < 0xE0) ? bh+2 : bh-0xE0        offset +2, wrapping over the last
+ *                                                  3 cycles of the line
  *     beamReady = (hRaw & (mask&0xFF)) >= ((waitpos & 0xFF) & (mask&0xFF))
  *
- * L'offset +2 e il modello a pipeline (FETCH→WAIT_OR_SKIP→WAIT1→WAIT2 prima
- * della prima valutazione) fanno funzionare l'idioma di attesa oltre la riga
- * 256 ("WAIT VP=255,HP alto" + "WAIT VP basso") SENZA alcuna guardia ad-hoc:
- * quando WAIT2 valuta, il fascio ha già superato il confine di riga e vpos è
- * wrappato a 256 (bvHi=0 < target). Il comparatore verticale a 8 bit
- * (vpos & mask con mask≤0xFF) realizza il wrap automaticamente.
+ * The +2 offset and the pipeline (FETCH -> WAIT_OR_SKIP -> WAIT1 -> WAIT2 before the first
+ * evaluation) make the idiom for waiting past line 256 ("WAIT VP=255, high HP" followed by
+ * "WAIT low VP") work WITHOUT any ad-hoc guard: when WAIT2 evaluates, the beam has already
+ * crossed the line boundary and vpos has wrapped to 256 (bvHi = 0 < target). The 8-bit
+ * vertical comparator (vpos & mask with mask <= 0xFF) wraps by itself.
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * BFD (bit 15 di IR2)
- * ═══════════════════════════════════════════════════════════════════════════
- *   1 → ignora lo stato del Blitter.
- *   0 → attendi anche il completamento del Blitter (gate finale sempre valutato).
+ * BFD (bit 15 of IR2)
+ *   1 -> ignore the Blitter.
+ *   0 -> also wait for the Blitter to finish (the final gate is always evaluated).
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * PROTEZIONE REGISTRI
- * ═══════════════════════════════════════════════════════════════════════════
- *   $000–$03F: sempre vietati (OCS: anche con CDANG; ECS: liberi con CDANG=1)
- *   $040–$07F: vietati se CDANG=0
- * Una MOVE a registro vietato ferma il Copper (DORMANT), come vAmiga
- * (`cancel<SLOT_COP>`) e WinUAE (copper_enabled_thisline=0).
+ * REGISTER PROTECTION
+ *   $000-$03F: always forbidden (OCS: even with CDANG; ECS: allowed with CDANG = 1)
+ *   $040-$07F: forbidden when CDANG = 0
+ * A MOVE to a forbidden register stops the Copper (DORMANT).
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * PC-FOLLOWING (C7)
- * ═══════════════════════════════════════════════════════════════════════════
- * Una scrittura di COP1LC/COP2LC aggiorna SUBITO il PC solo quando il Copper
- * non è ancora attivo nel frame (`!activeInThisFrame`) e la lista scritta è
- * quella corrente. `activeInThisFrame` è settato da onVBlank() (con copper DMA
- * on) e dalla riaccensione di COPEN (setDmaEnabled(true)). Quando il Copper è
- * attivo, le scritture di COPxLC non toccano il PC (servono COPJMP o il VBlank
- * per ricaricarlo): questo è il comportamento vAmiga (`CopperRegs.cpp`).
+ * PC FOLLOWING
+ * A write to COP1LC/COP2LC updates the PC AT ONCE only while the Copper has not yet been
+ * active in the frame (`!activeInThisFrame`) and the list written is the current one.
+ * `activeInThisFrame` is set by onVBlank() (with Copper DMA on) and by COPEN being switched
+ * back on (setDmaEnabled(true)). While the Copper is active, COPxLC writes leave the PC
+ * alone: a COPJMP or the VBlank is needed to reload it.
  *
  * @author alessio.carotenuto
  */
@@ -135,107 +112,103 @@ public final class Copper {
     private final AbstractAgnus agnus;
 
     // =========================================================================
-    // Registri
+    // Registers
     // =========================================================================
 
-    /** COP1LC — puntatore alla prima Copper List (20 bit, forzato pari). */
+    /** COP1LC: pointer to the first Copper list (20 bits, forced even). */
     private int cop1lc = 0;
 
-    /** COP2LC — puntatore alla seconda Copper List. */
+    /** COP2LC: pointer to the second Copper list. */
     private int cop2lc = 0;
 
-    /** COPCON — bit 1 (CDANG): 1 = il Copper può accedere ai registri $040–$07F. */
+    /** COPCON: bit 1 (CDANG), 1 = the Copper may access registers $040-$07F. */
     private int copcon = 0;
 
-    /** Program Counter interno: prossima word da leggere nella Copper List. */
+    /** Internal Program Counter: next word to read from the Copper list. */
     private int pc = 0;
 
-    /** Indice della Copper List corrente (1 o 2). */
+    /** Index of the current Copper list (1 or 2). */
     private int copList = 1;
 
     // =========================================================================
     // Registro istruzioni
     // =========================================================================
 
-    /** IR1 (cop1ins): prima word dell'istruzione (address o VPHP). */
+    /** IR1 (cop1ins): first word of the instruction (address or VPHP). */
     private int ir1 = 0;
 
-    /** IR2 (cop2ins): seconda word dell'istruzione (data o VMHM/BFD). */
+    /** IR2 (cop2ins): second word of the instruction (data or VMHM/BFD). */
     private int ir2 = 0;
 
     // =========================================================================
-    // Stato
+    // State
     // =========================================================================
 
-    /** CDANG: true → il Copper può accedere ai registri $040–$07F. */
+    /** CDANG: true if the Copper may access registers $040-$07F. */
     private boolean danger = false;
 
     /**
-     * Flag `skip` (vAmiga): true se l'istruzione corrente va saltata perché la
-     * precedente era una SKIP con condizione soddisfatta. Sopprime solo la
-     * scrittura di una MOVE (i fetch avvengono comunque). Valutato al FETCH
-     * dell'istruzione successiva alla SKIP; azzerato in MOVE (se applicato) e
-     * in WAIT2.
+     * True if the current instruction is to be skipped because the previous one was a
+     * SKIP whose condition held. It suppresses only the write of a MOVE (the fetches happen
+     * anyway). Evaluated at the FETCH of the instruction after the SKIP; cleared in MOVE
+     * (when applied) and in WAIT2.
      */
     private boolean skip = false;
 
     /**
-     * Flag diagnostico: true se il Copper ha tentato una MOVE a un registro
-     * vietato. Azzerato a ogni restart/VBlank.
+     * Diagnostic flag: true if the Copper attempted a MOVE to a forbidden register.
+     * Cleared at every restart and VBlank.
      */
     private boolean forbiddenMoveDetected = false;
 
     /**
-     * true se il Copper è stato attivo nel frame corrente (vAmiga
-     * `activeInThisFrame`). Governa il PC-following (C7). Settato da onVBlank()
-     * con copper DMA on e da setDmaEnabled(true); azzerato da onVBlank() con
-     * copper DMA off.
+     * True if the Copper has been active in the current frame. Governs PC following. Set by
+     * onVBlank() with Copper DMA on and by setDmaEnabled(true); cleared by onVBlank() with
+     * Copper DMA off.
      */
     private boolean activeInThisFrame = false;
 
-    /** Copia locale del bit COPEN (per rilevare il fronte OFF→ON). */
+    /** Local copy of the COPEN bit (to detect the OFF -> ON edge). */
     private boolean dmaEnabled = false;
 
-    /** Indirizzo/valore della MOVE in corso (per debugger/save state). */
+    /** Address/value of the MOVE in progress (for the debugger/save state). */
     private int pendingWriteAddr = 0;
     private int pendingWriteData = 0;
 
     // =========================================================================
-    // State machine (modello vAmiga)
+    // State machine
     // =========================================================================
 
     public enum State {
-        DORMANT,        // Copper fermo (MOVE illegale / non ancora avviato) — cancel<SLOT_COP>
-        STROBE,         // "Initial DMA request" post-strobe (WinUAE): slot ALLOCATO, dato scartato
-        REQ_DMA,        // COP_REQ_DMA: attende slot pari libero → FETCH
-        FETCH,          // COP_FETCH: legge IR1
-        MOVE,           // COP_MOVE: legge IR2 + esegue MOVE
-        WAIT_OR_SKIP,   // COP_WAIT_OR_SKIP: legge IR2 dell'istruzione WAIT/SKIP
-        WAIT1,          // COP_WAIT1: ciclo idle
+        DORMANT,        // Copper stopped (illegal MOVE, or not started yet)
+        STROBE,         // initial DMA request after the strobe: the slot is ALLOCATED, the data discarded
+        REQ_DMA,        // waits for a free even slot, then FETCH
+        FETCH,          // COP_FETCH: reads IR1
+        MOVE,           // COP_MOVE: reads IR2 + executes the MOVE
+        WAIT_OR_SKIP,   // COP_WAIT_OR_SKIP: reads IR2 of the WAIT/SKIP instruction
+        WAIT1,          // COP_WAIT1: idle cycle
         WAIT2,          // COP_WAIT2: valuta condizione
-        WAKEUP,         // COP_WAKEUP: polling del comparatore
-        SKIP1,          // COP_SKIP1: ciclo idle
-        SKIP2           // COP_SKIP2: ciclo idle
+        WAKEUP,         // COP_WAKEUP: polls the comparator
+        SKIP1,          // COP_SKIP1: idle cycle
+        SKIP2           // COP_SKIP2: idle cycle
     }
 
     private State state = State.DORMANT;
 
     /**
-     * CCK ancora da saltare prima della prossima azione della FSM — traduzione
-     * esplicita di `schedule(next, delay)` / `reschedule(delay)` di vAmiga
-     * (Copper.h: `schedule(EventID, int delay = 2)`, `reschedule(int delay = 1)`).
+     * CCKs still to skip before the next action of the state machine.
      *
-     * <p>Il Copper viene ora tickato a OGNI CCK (prima solo sui pari). La cadenza:
+     * <p>The Copper is ticked at EVERY CCK. The cadence:
      * <ul>
-     *   <li><b>azione riuscita</b> → `tickDelay = 1` = prossima azione a <b>+2</b> CCK
-     *       (vAmiga `schedule(..., 2)`): è la cadenza normale, che di norma cade sui pari;</li>
-     *   <li><b>diniego del bus</b> → `tickDelay = 0` = ritentata a <b>+1</b> CCK,
-     *       <b>qualunque parità</b> (vAmiga `reschedule(..., 1)`).</li>
+     *   <li><b>action completed</b>: `tickDelay = 1`, next action <b>+2</b> CCKs later; the
+     *       normal cadence, which usually falls on even CCKs;</li>
+     *   <li><b>bus denied</b>: `tickDelay = 0`, retried <b>+1</b> CCK later, <b>whatever
+     *       the parity</b>.</li>
      * </ul>
      *
-     * <p>La cadenza pari dei fetch è quindi un'EMERGENZA del delay 2, <b>non una regola</b>:
-     * si rompe di proposito quando un diniego ($E0/refresh/DMA) inserisce un +1. Il vincolo
-     * di parità vero vale SOLO sugli stati di wakeup (vedi {@link #risingEdge}).
+     * <p>The even cadence of the fetches is therefore a consequence of the 2-CCK delay,
+     * <b>not a rule</b>: it breaks on purpose when a denial ($E0, refresh, DMA) inserts a +1.
+     * The true parity constraint applies ONLY to the wakeup states (see {@link #risingEdge}).
      */
     private int tickDelay = 0;
 
@@ -279,45 +252,45 @@ public final class Copper {
     }
 
     // =========================================================================
-    // Scrittura registri (dalla CPU o da DMA)
+    // Register writes (from the CPU or from DMA)
     // =========================================================================
 
     /**
-     * Aggiorna i registri Copper in risposta a una scrittura sul bus custom.
+     * Updates the Copper registers on a write on the custom bus.
      *
-     * COP1LCH/L e COP2LCH/L: aggiornano i puntatori LC; il PC segue solo se il
-     *   Copper non è attivo nel frame e la lista è quella corrente (C7).
-     * COPJMP1/COPJMP2: strobe — riavviano il Copper dalla lista relativa.
-     * COPCON: aggiorna CDANG.
+     * COP1LCH/L and COP2LCH/L: update the LC pointers; the PC follows only if the Copper is
+     *   not active in the frame and the list is the current one.
+     * COPJMP1/COPJMP2: strobes, restart the Copper from their list.
+     * COPCON: updates CDANG.
      */
     public void writeRegister(int address, int value) {
         address &= 0x1FE;
 
         switch (address) {
 
-            // ── COP1LC ──────────────────────────────────────────────────────
-            case 0x080: // COP1LCH — bit 19-16
+            // -- COP1LC --------------------------------------------------------
+            case 0x080: // COP1LCH: bits 19-16
                 cop1lc = (cop1lc & 0x0000FFFF) | ((value << 16) & agnus.getDmaPtrHiMask());
                 if (!activeInThisFrame && copList == 1) setPC(cop1lc);
                 break;
 
-            case 0x082: // COP1LCL — bit 15-0 (forzato pari)
+            case 0x082: // COP1LCL: bits 15-0 (forced even)
                 cop1lc = (cop1lc & agnus.getDmaPtrHiMask()) | (value & 0xFFFE);
                 if (!activeInThisFrame && copList == 1) setPC(cop1lc);
                 break;
 
-            // ── COP2LC ──────────────────────────────────────────────────────
-            case 0x084: // COP2LCH — bit 19-16
+            // -- COP2LC --------------------------------------------------------
+            case 0x084: // COP2LCH: bits 19-16
                 cop2lc = (cop2lc & 0x0000FFFF) | ((value << 16) & agnus.getDmaPtrHiMask());
                 if (!activeInThisFrame && copList == 2) setPC(cop2lc);
                 break;
 
-            case 0x086: // COP2LCL — bit 15-0 (forzato pari)
+            case 0x086: // COP2LCL: bits 15-0 (forced even)
                 cop2lc = (cop2lc & agnus.getDmaPtrHiMask()) | (value & 0xFFFE);
                 if (!activeInThisFrame && copList == 2) setPC(cop2lc);
                 break;
 
-            // ── COPJMP (strobe) ─────────────────────────────────────────────
+            // -- COPJMP (strobe) -----------------------------------------------
             case 0x088: // COPJMP1
                 armStrobe(1);
                 break;
@@ -326,15 +299,15 @@ public final class Copper {
                 armStrobe(2);
                 break;
 
-            // ── COPCON ──────────────────────────────────────────────────────
-            case 0x02E: // COPCON — bit 1 = CDANG
+            // -- COPCON --------------------------------------------------------
+            case 0x02E: // COPCON: bit 1 = CDANG
                 copcon = value & 0x0002;
                 danger = (copcon & 0x0002) != 0;
                 break;
         }
     }
 
-    /** Imposta il PC del Copper (vAmiga setPC). */
+    /** Sets the Copper's PC. */
     private void setPC(int address) {
         pc = address & (agnus.getDmaPtrMask() & ~1);
     }
@@ -427,20 +400,18 @@ public final class Copper {
     }
 
     /**
-     * Chiamato da Agnus ad ogni cambio del bit COPEN in DMACON.
+     * Called by Agnus at every change of the COPEN bit in DMACON.
      *
-     * COPEN off/on = pure resume (vAmiga): il Copper mantiene stato/PC e riprende
-     * dove si era fermato. La riaccensione NON riavvia la lista (nessun FIX #16):
-     * l'unico effetto è marcare activeInThisFrame=true (vAmiga setCOPEN(true)).
-     * Il "tick" del Copper è gated dall'arbitraggio su isCopperEnabled(): a COPEN
-     * off il Copper semplicemente non viene tickato (equivale al reschedule di
-     * vAmiga quando busIsFree&lt;COPPER&gt; nega il bus a DMA off).
+     * COPEN off/on is a pure pause: the Copper keeps its state and PC and resumes where it
+     * stopped. Switching it back on does NOT restart the list: the only effect is to mark
+     * activeInThisFrame = true. The Copper's tick is gated by the arbitration on
+     * isCopperEnabled(): with COPEN off the Copper is simply not ticked.
      */
     public void setDmaEnabled(boolean enabled) {
         boolean old = this.dmaEnabled;
         this.dmaEnabled = enabled;
         if (enabled) {
-            // vAmiga Agnus::setCOPEN(true): copper.activeInThisFrame = true.
+            // Switching COPEN on makes the Copper active in this frame.
             activeInThisFrame = true;
         } else if (old) {
             busReq.clear();
@@ -448,29 +419,20 @@ public final class Copper {
     }
 
     // =========================================================================
-    // Tick — fronti di clock (chiamati solo sui CCK pari da AbstractAgnus)
+    // Tick: clock edges
     // =========================================================================
 
     /**
-     * Fronte di salita: serve l'evento corrente (una transizione di stato).
+     * Rising edge, called at EVERY CCK: serves the current state (one transition).
      *
-     * @param busFree true se il bus è libero per il Copper in questo CCK
-     *                (nessun DMA a priorità superiore e non è il ciclo $E0).
-     *                Equivale a vAmiga `busIsFree&lt;COPPER&gt;()`.
+     * The memory-read states (FETCH/MOVE/WAIT_OR_SKIP) assert the bus request: the grant is
+     * decided by Agnus's arbitration and the word read is consumed in {@link #fallingEdge()}.
+     * The idle states (REQ_DMA/WAIT1/WAIT2/WAKEUP/SKIP1/SKIP2) advance here according to
+     * busFree, with no bus transaction.
      *
-     * Gli stati di lettura memoria (FETCH/MOVE/WAIT_OR_SKIP) assertano la
-     * richiesta bus: la concessione è decisa dall'arbitraggio di Agnus e la
-     * word letta viene consumata in {@link #fallingEdge()}. Gli stati idle
-     * (REQ_DMA/WAIT1/WAIT2/WAKEUP/SKIP1/SKIP2/JMP*) avanzano qui in base a
-     * busFree (nessuna transazione bus).
-     */
-    /**
-     * Fronte di salita, chiamato a OGNI CCK.
-     *
-     * @param busFree  slot libero per il Copper (nessun DMA a priorità superiore e non $E0)
-     * @param evenCck  CCK pari — vincola SOLO gli stati di wakeup (vAmiga `IS_ODD(pos.h)`
-     *                 è testato in `COP_REQ_DMA`/`COP_WAKEUP`/`COP_WAKEUP_BLIT` e in
-     *                 NESSUN altro stato: `COP_FETCH` &c. non hanno vincolo di parità)
+     * @param busFree  slot free for the Copper (no higher-priority DMA and not $E0)
+     * @param evenCck  even CCK: constrains ONLY the wakeup states (REQ_DMA and WAKEUP); the
+     *                 read states have no parity constraint
      */
     public void risingEdge(boolean busFree, boolean evenCck) {
         risingEdge(busFree, evenCck, false);
@@ -500,7 +462,7 @@ public final class Copper {
         final boolean evenCck = slot;
         if (state == State.DORMANT) return;
 
-        // schedule/reschedule di vAmiga: salta i CCK di attesa.
+        // Skip the waiting CCKs.
         if (tickDelay > 0) {
             tickDelay--;
             return;
@@ -518,8 +480,8 @@ public final class Copper {
                 return;
 
             case REQ_DMA:
-                // COP_REQ_DMA. Diniego → reschedule(+1). h dispari → reschedule(+1)
-                // ("Don't wake up in an odd cycle"). Altrimenti schedule(COP_FETCH) = +2.
+                // Denied -> retry at +1. Odd h -> retry at +1 (no wakeup on an odd cycle).
+                // Otherwise FETCH at +2.
                 if (!busFree) return;
                 if (!evenCck) return;
                 state = State.FETCH;
@@ -527,21 +489,19 @@ public final class Copper {
                 return;
 
             case STROBE:
-                // "Initial DMA request" dopo lo strobe di restart (WinUAE
-                // generate_copper: `if (cop_state.strobe) { if (ena_odd)
-                // alloc_copper_cycle(); }`): uno slot copper ALLOCATO (blocca la
-                // CPU) prima del primo fetch reale, solo su CCK pari; il dato
-                // fetchato è scartato e il PC non avanza. Misurato sul restart
-                // VBL di bbusy0: blocco di v0 = 33 slot (1 strobe + 16 istruzioni),
-                // il nostro vecchio restart diretto in FETCH ne faceva 32 → CPU
-                // libera 1 slot presto → fase synccpu −1 (banda top).
+                // Initial DMA request after the restart strobe: one Copper slot ALLOCATED
+                // (it blocks the CPU) before the first real fetch, on even CCKs only; the
+                // data fetched is discarded and the PC does not advance. Measured on the
+                // VBL restart of bbusy0: the block of v0 is 33 slots (1 strobe + 16
+                // instructions); a restart straight into FETCH made 32, freeing the CPU one
+                // slot early.
                 if (!evenCck) return;
                 requestFetch();
                 return;
 
             case WAKEUP:
-                // COP_WAKEUP: primo slot libero PARI in cui il comparatore (beam +
-                // blitter) è vero → riprende il fetch.
+                // First free EVEN slot at which the comparator (beam + Blitter) is true:
+                // the fetch resumes.
                 if (!busFree) return;
                 if (!evenCck) return;
                 if (isConditionMet()) {
@@ -557,14 +517,14 @@ public final class Copper {
                 return;
 
             case WAIT2:
-                // vAmiga COP_WAIT2: azzera skip, poi (bus libero) valuta.
+                // WAIT2: clears skip, then (bus free) evaluates.
                 skip = false;
                 if (!busFree) return;
                 if (isConditionMet()) {
-                    // delay==0 in scheduleWaitWakeup → COP_FETCH diretto.
+                    // Immediate match: straight to FETCH.
                     state = State.FETCH;
                 } else {
-                    // Altrimenti attende (polling nel WAKEUP).
+                    // Otherwise wait (polling in WAKEUP).
                     state = State.WAKEUP;
                 }
                 tickDelay = 1;
@@ -585,18 +545,18 @@ public final class Copper {
             case FETCH:
             case MOVE:
             case WAIT_OR_SKIP:
-                // Stati di lettura memoria: assertano la richiesta bus. Nessun vincolo di
-                // parità. Se il grant non arriva (bus occupato / $E0), `tickDelay` resta 0
-                // → si ri-asserta al CCK SUCCESSIVO (reschedule +1), anche se DISPARI.
-                // Il +2 fra due fetch riusciti lo mette fallingEdge().
+                // Memory-read states: they assert the bus request, with no parity
+                // constraint. If the grant does not come (bus busy / $E0), `tickDelay` stays
+                // 0 and the request is asserted again at the NEXT CCK (+1), even an ODD one.
+                // fallingEdge() puts the +2 between two completed fetches.
                 requestFetch();
                 return;
         }
     }
 
     /**
-     * Fronte di discesa: consuma la word letta e avanza gli stati di lettura.
-     * Gli altri stati sono già avanzati in {@link #risingEdge(boolean)}.
+     * Falling edge: consumes the word read and advances the read states. The other states
+     * have already advanced in {@link #risingEdge(boolean)}.
      */
     public void fallingEdge() {
         // A cycle requested just before the machine stopped is read without effect.
@@ -619,15 +579,13 @@ public final class Copper {
                     case WAIT_OR_SKIP: onWaitOrSkip(data); break;
                     default: break;
                 }
-                // Ciclo bus RIUSCITO: lo stato successivo parte a +2 CCK
-                // (vAmiga `schedule(COP_FETCH/COP_MOVE/...)` con delay 2 di default).
+                // Bus cycle COMPLETED: the next state starts 2 CCKs later.
                 tickDelay = 1;
             }
-            // Se NON c'è stato ack (bus occupato / $E0), lo stato resta invariato e
-            // `tickDelay` resta 0: si ritenta al CCK SUCCESSIVO, anche dispari
-            // (vAmiga `reschedule(1)`). È il caso del BLOCKED di $E0=224, dove vAmiga
-            // rifà il fetch a 225: col vecchio tick solo-pari slittavamo a 226/0
-            // rubando 2 CCK alla CPU (root di §S2, docs/vamigats-cpu-timing-plan.md).
+            // With NO ack (bus busy / $E0) the state is unchanged and `tickDelay` stays 0:
+            // the access is retried at the NEXT CCK, even an odd one. That is the BLOCKED
+            // case of $E0 = 224, where the fetch is redone at 225 rather than at 226/0,
+            // which would steal 2 CCKs from the CPU (docs/vamigats-cpu-timing-plan.md, S2).
         }
         busReq.clear();
     }
@@ -646,14 +604,13 @@ public final class Copper {
     }
 
     // =========================================================================
-    // Handler degli stati di lettura
+    // Handlers of the read states
     // =========================================================================
 
-    /** COP_FETCH: valuta il flag skip (istruzione precedente), legge IR1. */
+    /** COP_FETCH: evaluates the skip flag (previous instruction), reads IR1. */
     private void onFetch(int data) {
-        // Se l'istruzione ATTUALMENTE nei registri era una SKIP, il flag skip
-        // va calcolato ora, alla posizione di fetch dell'istruzione seguente
-        // (vAmiga COP_FETCH: `if (isSkipCmd()) skip = runComparator() [&blit]`).
+        // If the instruction CURRENTLY in the registers was a SKIP, the skip flag is
+        // computed now, at the fetch position of the next instruction.
         if (isSkipCmd()) {
             skip = isConditionMet();
         }
@@ -661,29 +618,29 @@ public final class Copper {
         ir1 = data;
         pc += 2;
 
-        // Fork sul tipo di istruzione: MOVE (IR1 pari) oppure WAIT/SKIP.
+        // Fork on the instruction type: MOVE (IR1 even) or WAIT/SKIP.
         state = isMoveCmd() ? State.MOVE : State.WAIT_OR_SKIP;
     }
 
-    /** COP_MOVE: legge IR2 ed esegue la MOVE (o COPJMP / illegal). */
+    /** COP_MOVE: reads IR2 and executes the MOVE (or COPJMP / illegal). */
     private void onMove(int data) {
         ir2 = data;
         pc += 2;
 
         int reg = ir1 & 0x1FE;
 
-        // Registro illegale → il Copper si ferma (vAmiga cancel<SLOT_COP>).
+        // Illegal register: the Copper stops.
         if (isIllegalAddress(reg)) {
             forbiddenMoveDetected = true;
             state = State.DORMANT;
             return;
         }
 
-        // Prossima istruzione per default.
+        // Next instruction by default.
         state = State.FETCH;
 
-        // Se questa MOVE era saltata da una SKIP precedente: sopprime la
-        // scrittura (i fetch sono già avvenuti). vAmiga: `if (skip){skip=false;break;}`.
+        // If this MOVE was skipped by a previous SKIP, the write is suppressed (the
+        // fetches have already happened).
         if (skip) {
             skip = false;
             return;
@@ -694,13 +651,13 @@ public final class Copper {
         if (reg == 0x088) { armStrobe(1); return; }
         if (reg == 0x08A) { armStrobe(2); return; }
 
-        // Scrittura del registro custom (interna ad Agnus, nessun ciclo bus extra).
+        // Custom register write (inside Agnus, no extra bus cycle).
         pendingWriteAddr = reg;
         pendingWriteData = ir2;
         agnus.copperWrite(reg, ir2);
     }
 
-    /** COP_WAIT_OR_SKIP: legge IR2, poi fork WAIT1 / SKIP1. */
+    /** COP_WAIT_OR_SKIP: reads IR2, then forks to WAIT1 / SKIP1. */
     private void onWaitOrSkip(int data) {
         ir2 = data;
         pc += 2;
@@ -712,7 +669,7 @@ public final class Copper {
     }
 
     // =========================================================================
-    // Decodifica tipo istruzione
+    // Instruction type decoding
     // =========================================================================
 
     private boolean isMoveCmd() { return (ir1 & 1) == 0; }
@@ -720,9 +677,9 @@ public final class Copper {
     private boolean isSkipCmd() { return (ir1 & 1) != 0 && (ir2 & 1) != 0; }
 
     /**
-     * true se l'indirizzo è vietato al Copper (vAmiga isIllegalAddress):
-     *   OCS: CDANG → addr<$40 vietato; !CDANG → addr<$80 vietato.
-     *   ECS: CDANG → nulla vietato; !CDANG → addr<$80 vietato.
+     * True if the address is forbidden to the Copper:
+     *   OCS: CDANG -> addr < $40 forbidden; !CDANG -> addr < $80 forbidden.
+     *   ECS: CDANG -> nothing forbidden;     !CDANG -> addr < $80 forbidden.
      */
     private boolean isIllegalAddress(int addr) {
         if (agnus.isOCS()) {
@@ -733,22 +690,22 @@ public final class Copper {
     }
 
     // =========================================================================
-    // Comparatore WAIT / SKIP (vAmiga runComparator)
+    // WAIT / SKIP comparator
     // =========================================================================
 
-    /** Comparatore beam (verticale + orizzontale con offset +2 e wrap $E0). */
+    /** Beam comparator (vertical + horizontal with +2 offset and $E0 wrap). */
     private boolean beamComparator() {
         int waitpos = ir1 & 0xFFFE;              // VPHP
-        int mask    = (ir2 & 0x7FFE) | 0x8001;   // VMHM (VP7 e bit0 forzati)
+        int mask    = (ir2 & 0x7FFE) | 0x8001;   // VMHM (VP7 and bit0 forced)
 
-        // ── Verticale ────────────────────────────────────────────────────────
+        // -- Vertical ----------------------------------------------------------
         int hi   = (mask >> 8) & 0xFF;           // 0x80 | VM
         int bvHi = agnus.getVpos() & hi;         // vpos & mask (wrap 8-bit implicito)
         int wpHi = ((waitpos & mask) >> 8) & 0xFF;
         if (bvHi < wpHi) return false;
         if (bvHi > wpHi) return true;
 
-        // ── Orizzontale (bvHi == wpHi) ────────────────────────────────────────
+        // -- Horizontal (bvHi == wpHi) -----------------------------------------
         int lo   = mask & 0xFF;                  // (HM) | 0x01
         int bh   = (agnus.getHpos() >> 1) & 0xFF; // beam.h in CCK
         int hRaw = (bh < 0xE0) ? (bh + 0x02) : (bh - 0xE0);
@@ -777,7 +734,7 @@ public final class Copper {
     public boolean isDanger()            { return danger; }
     public boolean isActiveInThisFrame() { return activeInThisFrame; }
 
-    // Getter necessari per debugger e save state
+    // Getters needed by the debugger and save state
     public int getCop1lc()           { return cop1lc; }
     public int getCop2lc()           { return cop2lc; }
     public int getCopcon()           { return copcon; }

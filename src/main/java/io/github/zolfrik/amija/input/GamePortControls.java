@@ -21,36 +21,35 @@
 package io.github.zolfrik.amija.input;
 
 /**
- * Cio' che si puo' <b>fare</b> a una game port: muovere il mouse, premere i suoi pulsanti,
- * spingere il joystick, premere i suoi.
+ * What can be <b>done</b> to a game port: move the mouse, press its buttons, push the joystick,
+ * press its buttons.
  *
- * <p>E' la superficie che gli adapter di input pilotano, estratta da {@link GamePort} per il
- * gioco a distanza: sull'ospite non c'e' nessuna game port da pilotare — non c'e' nessuna
- * macchina — e gli stessi gesti devono finire in un pacchetto invece che in un registro.
- * {@code GamePort} la implementa cosi' com'era; gli adapter non si sono accorti di niente.
+ * <p>It is the surface the input adapters drive, extracted from {@link GamePort} for remote
+ * play: on the guest there is no game port to drive (there is no machine) and the same
+ * gestures must end up in a packet instead of a register. {@code GamePort} implements it as it
+ * was; the adapters noticed nothing.
  *
- * <p>Nota su {@link #moveMouse}: e' l'unico metodo <b>incrementale</b> di questa interfaccia,
- * e non e' un caso — il mouse Amiga e' una coppia di contatori di quadratura, non una
- * posizione. E' anche la ragione per cui sul filo il movimento viaggia come contatore
- * cumulativo e non come delta: un delta perso e' perso per sempre, un contatore si recupera
- * da solo al pacchetto dopo (piano §4.3).
+ * <p>Note on {@link #moveMouse}: the only <b>incremental</b> method of this interface, and not
+ * by chance: the Amiga mouse is a pair of quadrature counters, not a position. That is also
+ * why on the wire the movement travels as a cumulative counter and not as a delta: a lost
+ * delta is lost forever, a counter recovers by itself at the next packet (plan section 4.3).
  */
 public interface GamePortControls {
 
     /**
-     * Dichiara <b>cosa risulta collegato</b> alla porta: e' quel che decide se le letture di
-     * {@code JOYxDAT} e delle linee POT parlano di un mouse, di un joystick o di niente.
+     * Declares <b>what is plugged into</b> the port: it decides whether the reads of
+     * {@code JOYxDAT} and of the POT lines talk about a mouse, a joystick or nothing.
      *
-     * <p>Sta in questa interfaccia — e non nella sola {@link GamePort} — perche' nel gioco a
-     * distanza la porta la riempie l'<b>ospite</b>, e la sua scelta deve poter arrivare fino
-     * alla macchina dell'host. {@code RemoteInputSender} la implementa mettendola nel
-     * pacchetto; {@code RemoteInputApplier} la rilegge di la' e la posa sulla porta vera.
+     * <p>It is in this interface (and not only in {@link GamePort}) because in remote play the
+     * port is filled by the <b>guest</b>, and its choice must reach the host's machine.
+     * {@code RemoteInputSender} implements it by putting it in the packet;
+     * {@code RemoteInputApplier} reads it back on the other side and puts it on the real port.
      *
-     * <p>Chi la implementa deve <b>anche</b> dedurla dai gesti, come fa {@link GamePort}: un
-     * {@link #moveMouse} dice mouse, un {@link #setJoystickAxes} dice joystick. Le due strade
-     * non si contraddicono, perche' i gesti possono arrivare solo dalla periferica che e'
-     * stata dichiarata; questo metodo serve a rendere vero anche il caso in cui di gesti non
-     * ne arriva nessuno — porta vuota, o appena cambiata.
+     * <p>Implementations must <b>also</b> infer it from the gestures, as {@link GamePort} does:
+     * a {@link #moveMouse} says mouse, a {@link #setJoystickAxes} says joystick. The two ways do
+     * not contradict each other, because gestures can come only from the device declared; this
+     * method makes true also the case in which no gestures arrive at all (empty port, or just
+     * changed).
      */
     void setDevice(GamePortDevice device);
 
@@ -62,7 +61,7 @@ public interface GamePortControls {
 
     void pressMouseMiddle(boolean pressed);
 
-    /** @param x -1 sinistra, 0 centro, +1 destra; {@code y} idem su su/giu' */
+    /** @param x -1 left, 0 centre, +1 right; {@code y} likewise for up/down */
     void setJoystickAxes(int x, int y);
 
     void pressJoystickFire(boolean pressed);

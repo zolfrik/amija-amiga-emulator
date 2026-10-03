@@ -99,16 +99,12 @@ public class TasInstruction extends AbstractM68kInstruction {
                     return false;
                 }
                 case 5 -> {
-                    // TAS su target chip-bus: il ciclo RMW indivisibile del 68000
-                    // (AS tenuto alto attraverso read+write) NON può attendere il
-                    // bus. Se nel cck in cui la write dovrebbe partire lo slot è
-                    // occupato da un DMA, la fase WRITE viene PERSA (4 clock di
-                    // idle, memoria intatta); se lo slot è libero la write avviene
-                    // normalmente. WinUAE gencpu i_TAS 68000-ce: `if
-                    // (is_cycle_ce(srca)) do_cycles(4); else put_byte(...)`, dove
-                    // is_cycle_ce = target chip/custom && `read_rga_out()->alloc`.
-                    // Root G3/TAS1-TAS2: noi scrivevamo SEMPRE → $080 (verde) su
-                    // COLOR00 anche dove WinUAE perde la write sotto contesa.
+                    // TAS on a chip-bus target: the 68000's indivisible RMW cycle (AS held
+                    // through read+write) CANNOT wait for the bus. If the slot is taken by a DMA
+                    // in the CCK in which the write should start, the WRITE phase is LOST (4
+                    // idle clocks, memory untouched); if the slot is free the write happens
+                    // normally. Writing ALWAYS would put $080 (green) in COLOR00 in TAS1/TAS2
+                    // even where the write is lost under contention.
                     if (cpu.isChipBusTarget(getTemp(cpu, ADDR)) && cpu.isChipBusBusyNow()) {
                         cpu.releaseRmwLock();
                         cpu.idleCycles(4);

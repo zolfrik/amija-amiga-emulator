@@ -21,134 +21,130 @@
 package io.github.zolfrik.amija.net;
 
 /**
- * Quel che il popup F12 puo' fare al gioco a distanza
- * ({@code docs/remote-play-plan.md} §9).
+ * What the F12 popup can do to remote play ({@code docs/remote-play-plan.md} section 9).
  *
- * <h2>Il dialog comanda, non possiede</h2>
- * Server e sessione vivono in {@code Amija} e <b>sopravvivono alla chiusura del popup</b>:
- * il dialog li accende, li spegne e ne legge lo stato. Se li possedesse, chiudere la
- * finestra chiuderebbe la partita — e il popup, essendo modale, e' anche la cosa che l'host
- * apre e chiude di continuo.
+ * <h2>The dialog commands, it does not own</h2>
+ * Server and session live in {@code Amija} and <b>survive the closing of the popup</b>: the
+ * dialog switches them on and off and reads their state. If it owned them, closing the
+ * window would close the game, and the popup, being modal, is exactly what the host keeps
+ * opening and closing.
  *
- * <h2>Collegarsi si', smontare la macchina no</h2>
- * {@link #startHosting()} e {@link #stopHosting()} agiscono <b>subito</b>, col popup ancora
- * aperto: ospitare non tocca la macchina, che continua a esistere e a girare.
+ * <h2>Connecting yes, unmounting the machine no</h2>
+ * {@link #startHosting()} and {@link #stopHosting()} act <b>at once</b>, with the popup still
+ * open: hosting does not touch the machine, which keeps existing and running.
  *
- * <p>Anche {@link #requestJoin} agisce subito — apre davvero il collegamento — ma quel che
- * <b>non</b> fa e' smontare la macchina: un ospite non emula niente (§3), e smontare una
- * macchina da dentro un dialog modale, sull'EDT, mentre il thread di emulazione gira, e' il
- * modo di scoprire una serie di guasti intermittenti. Percio' la sessione si apre col popup
- * ancora aperto, il video comincia ad arrivare, e la macchina locale viene smontata solo
- * quando l'utente <b>conferma con OK</b>: quella transizione la fa chi possiede la macchina,
- * dove la fa gia' per il riavvio a freddo.
+ * <p>{@link #requestJoin} acts at once too (it really opens the connection), but what it does
+ * <b>not</b> do is unmount the machine: a guest emulates nothing (section 3), and unmounting
+ * a machine from inside a modal dialog, on the EDT, while the emulation thread runs, is the
+ * way to discover a series of intermittent failures. So the session opens with the popup
+ * still open, the video starts arriving, and the local machine is unmounted only when the
+ * user <b>confirms with OK</b>: that transition is done by whoever owns the machine, where
+ * it already does it for the cold restart.
  *
- * <p>Il perche' di questa forma sta in un difetto vero del flusso precedente: il pulsante
- * chiudeva il popup e il collegamento avveniva dopo, cosicche' <b>un fallimento non aveva
- * piu' nessuna finestra in cui essere raccontato</b>. Ora il tentativo si vede in
- * {@link #status()} mentre e' in corso, e il suo esito resta li' anche dopo.
+ * <p>The reason for this shape: if the button closed the popup and the connection happened
+ * afterwards, <b>a failure would have no window left in which to be told</b>. Here the
+ * attempt shows in {@link #status()} while it is in progress, and its outcome stays there
+ * afterwards.
  */
 public interface RemotePlayControl {
 
-    /** Vero se questa macchina sta servendo (o aspettando) un ospite. */
+    /** True if this machine is serving (or waiting for) a guest. */
     boolean isHosting();
 
-    /** Vero se un ospite e' collegato adesso. */
+    /** True if a guest is connected now. */
     boolean hasGuest();
 
-    /** Vero se c'e' una sessione aperta verso un host: questa macchina ne e' l'ospite. */
+    /** True if a session to a host is open: this machine is its guest. */
     boolean isGuest();
 
     /**
-     * La game port coinvolta nel gioco a distanza (0 o 1), o {@code -1} se non c'e' nessun
-     * ruolo attivo.
+     * The game port involved in remote play (0 or 1), or {@code -1} if no role is active.
      *
-     * <p>Chi la sta riempiendo lo dicono {@link #isHosting()} e {@link #isGuest()}, e il
-     * senso cambia di conseguenza: <b>ospitando</b> e' la porta che si e' ceduta, e la sua
-     * tendina nel popup va spenta perche' a riempirla e' l'altro; da <b>ospite</b> e' l'unica
-     * porta che si puo' riempire, e sono le <i>altre</i> tendine a non voler dire niente.
+     * <p>Who fills it is said by {@link #isHosting()} and {@link #isGuest()}, and the meaning
+     * changes accordingly: <b>hosting</b> it is the port given away, and its drop-down in the
+     * popup must be off because the other side fills it; as a <b>guest</b> it is the only port
+     * that can be filled, and it is the <i>other</i> drop-downs that mean nothing.
      *
-     * <p>Due domande, una risposta sola, ed e' voluto: l'assegnazione e' <b>una</b> — l'host
-     * la decide, l'ospite la riceve nel WELCOME — e due metodi separati sarebbero due
-     * verita' che possono divergere.
+     * <p>Two questions, one answer, on purpose: the assignment is <b>one</b> (the host decides
+     * it, the guest receives it in the WELCOME), and two separate methods would be two truths
+     * that can diverge.
      */
     int remoteGamePort();
 
     /**
-     * Vero mentre un tentativo di collegamento e' <b>in volo</b>.
+     * True while a connection attempt is <b>in flight</b>.
      *
-     * <p>L'handshake puo' metterci secondi (connessione TCP, PBKDF2 a 120k iterazioni, e
-     * fino a {@code Handshake.HANDSHAKE_TIMEOUT_MS} di attesa su ogni lettura), quindi non
-     * puo' avvenire sull'EDT: il popup si pianterebbe proprio nel momento in cui deve dire
-     * cosa sta succedendo. Questo e' quel che il popup guarda per disabilitare il pulsante
-     * e mostrare «connessione in corso».
+     * <p>The handshake can take seconds (TCP connection, PBKDF2 with 120k iterations, and up
+     * to {@code Handshake.HANDSHAKE_TIMEOUT_MS} of waiting on every read), so it cannot happen
+     * on the EDT: the popup would freeze exactly when it must say what is happening. This is
+     * what the popup looks at to disable the button and show "connecting".
      */
     boolean isJoining();
 
-    /** Il codice da comunicare all'altro giocatore, o {@code null} se non si ospita. */
+    /** The code to pass to the other player, or {@code null} if not hosting. */
     String joinCode();
 
-    /** Indirizzo da dare a chi sta sulla stessa rete, es. {@code 192.168.1.20:7788}. */
+    /** Address to give to someone on the same network, e.g. {@code 192.168.1.20:7788}. */
     String lanAddress();
 
     /**
-     * Indirizzo pubblico, o {@code null} se non e' noto <b>o non e' utilizzabile</b>.
+     * Public address, or {@code null} if not known <b>or not usable</b>.
      *
-     * <p>Lo dice il router via UPnP (§7.1). Finche' non ha risposto, o se ha risposto con un
-     * indirizzo dietro il NAT dell'operatore, la riga non si mostra: meglio nessuna
-     * informazione che un indirizzo a cui l'altro giocatore non arriverebbe, perche' un
-     * indirizzo sbagliato manda a cercare il problema dove non c'e'.
+     * <p>The router tells it through UPnP (section 7.1). Until it has answered, or if it
+     * answered with an address behind the operator's NAT, the row is not shown: better no
+     * information than an address the other player could not reach, because a wrong address
+     * sends people looking for the problem where it is not.
      */
     String internetAddress();
 
     /**
-     * Come e' andata l'apertura della porta sul router, in una riga leggibile, oppure
-     * {@code null} se non c'e' niente da dire.
+     * How the port opening on the router went, as a readable line, or {@code null} if there
+     * is nothing to say.
      *
-     * <p>E' separata da {@link #status()} perche' risponde a un'altra domanda: quella dice
-     * se c'e' qualcuno collegato, questa se qualcuno <b>potrebbe</b> collegarsi da fuori. E
-     * soprattutto perche' la diagnosi piu' importante — il CGNAT del §7.3 — e' una cattiva
-     * notizia che arriva quando ancora non e' successo niente, e va detta li', non tenuta
-     * per il momento in cui un «Collega» dall'altra parte andra' in timeout.
+     * <p>Separate from {@link #status()} because it answers another question: that one says
+     * whether someone is connected, this one whether someone <b>could</b> connect from
+     * outside. Above all, the most important diagnosis (the CGNAT of section 7.3) is bad news
+     * that arrives before anything has happened, and it must be said there, not kept for the
+     * moment a "Connect" on the other side times out.
      */
     String routerStatus();
 
-    /** Una riga di stato leggibile: collegato, RTT, banda, perdite. */
+    /** A readable status line: connected, RTT, bandwidth, losses. */
     String status();
 
     /**
-     * Comincia a ospitare, subito.
+     * Starts hosting, at once.
      *
-     * @return {@code null} se e' partito, altrimenti il messaggio da mostrare all'utente
+     * @return {@code null} if it started, otherwise the message to show the user
      */
     String startHosting();
 
-    /** Smette di ospitare, subito. Un ospite collegato viene salutato e scollegato. */
+    /** Stops hosting, at once. A connected guest is said goodbye to and disconnected. */
     void stopHosting();
 
     /**
-     * Comincia a collegarsi a un host, <b>in sottofondo</b>: ritorna subito, e il popup
-     * resta aperto a raccontare come va.
+     * Starts connecting to a host, <b>in the background</b>: returns at once, and the popup
+     * stays open to tell how it goes.
      *
-     * <p>L'esito arriva per due strade, e servono tutt'e due: {@link #status()} lo dice
-     * mentre l'utente guarda, e un fallimento fa comparire anche un messaggio d'errore —
-     * perche' l'utente potrebbe aver premuto e distolto lo sguardo, e una riga di stato che
-     * nessuno guarda non ha avvisato nessuno.
+     * <p>The outcome arrives two ways, and both are needed: {@link #status()} says it while the
+     * user watches, and a failure also makes an error message appear, because the user may
+     * have pressed and looked away, and a status line nobody watches has warned nobody.
      *
-     * @return {@code null} se il tentativo e' partito, altrimenti cosa c'e' che non va nei
-     *         parametri (indirizzo vuoto, codice malformato): quello si sa subito e non
-     *         vale la pena aprire un socket per scoprirlo
+     * @return {@code null} if the attempt started, otherwise what is wrong with the
+     *         parameters (empty address, malformed code): that is known at once and is not
+     *         worth opening a socket to find out
      */
     String requestJoin(String address, String joinCode);
 
     /**
-     * Lascia la sessione.
+     * Leaves the session.
      *
-     * @return {@code true} se per tornare a essere una macchina serve <b>chiudere il
-     *         popup</b>: questa macchina e' un ospite a tutti gli effetti e non ha piu'
-     *         niente da emulare, quindi va ricostruita, e ricostruirla da dentro un dialog
-     *         modale e' proprio cio' che si evita. {@code false} se invece la sessione era
-     *         stata aperta dal popup e la macchina locale non e' mai stata smontata: li'
-     *         non c'e' niente da ricostruire e il popup puo' restare aperto.
+     * @return {@code true} if getting back to being a machine requires <b>closing the
+     *         popup</b>: this machine is a full guest with nothing left to emulate, so it
+     *         must be rebuilt, and rebuilding it from inside a modal dialog is exactly what
+     *         is avoided. {@code false} if instead the session had been opened from the
+     *         popup and the local machine was never unmounted: there is nothing to rebuild
+     *         and the popup can stay open.
      */
     boolean requestLeave();
 }

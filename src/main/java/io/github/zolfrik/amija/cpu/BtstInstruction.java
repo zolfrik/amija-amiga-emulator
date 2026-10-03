@@ -38,10 +38,10 @@ public class BtstInstruction extends AbstractM68kInstruction {
     }
 
     /**
-     * WinUAE {@code op_0800_14_ff} (BTST {@code #imm,Dn}): {@code ipl_fetch_now()} è la prima
-     * riga della funzione, <b>prima</b> della prefetch dell'immediato — 10 clock dalla fine,
-     * dove il default ancorerebbe la prefetch finale a 6. Vale solo per la forma statica con
-     * destinazione {@code Dn}: le altre non hanno ancora dichiarata e passano dal default.
+     * BTST {@code #imm,Dn} ($0800): the {@code now} sample is the very first thing, <b>before</b>
+     * the prefetch of the immediate, 10 clocks from the end, where the default would anchor the
+     * final prefetch at 6. It holds only for the static form with a {@code Dn} destination: the
+     * others have no declared anchor and go through the default.
      */
     @Override
     public void prepareInstruction(Motorola68000 cpu) {

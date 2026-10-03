@@ -59,7 +59,7 @@ public class BccInstruction extends AbstractM68kInstruction {
                         if ((targetPC & 1) != 0) {
                             cpu.idleCycles(2); // 'n' gap
                             setTemp(cpu, 15, targetPC);
-                            // PC salvato nel frame di Group 0: vedi step 30.
+                            // PC saved in the Group 0 frame: see step 30.
                             setTemp(cpu, 14, cpu.getOpcodeAddress() + 2);
                             setStep(cpu, 30);
                             return false;
@@ -107,21 +107,14 @@ public class BccInstruction extends AbstractM68kInstruction {
                 case 30 -> { // Address Error handler
                     if (cpu.internalCyclesRemaining > 0) return false;
                     int targetPC = getTemp(cpu, 15);
-                    // PC del frame = indirizzo dell'opcode + 2 (il PC interno al
-                    // momento in cui il branch calcola la destinazione), NON
-                    // target-4. Concordano i due riferimenti:
-                    //   WinUAE op_6000_12_ff/op_6001_12_ff (cpuemu_11.cpp) e _14_ff (cpuemu_13.cpp),
-                    //   cioe' le varianti 68000: ramo `src & 1`
-                    //     -> m68k_setpci_j(oldpc); m68k_incpci(2);
-                    //        exception3_read_prefetch(...) usa m68k_getpc()
-                    //   Moira MoiraExec_cpp.h execBra/execBcc:
-                    //     `throw AddressError(makeFrame(newpc))` con pc = reg.pc,
-                    //     che vale ancora opcodeAddress+2
-                    // I vettori JSON di SingleStepTests danno invece target-4 su
-                    // tutti i 2200 casi (byte e word): sono i due riferimenti a
-                    // vincere, come per ASR (§1 castle-master-copylock-investigation).
-                    // Il Copylock di 3D Pool usa questo PC come estremo del proprio
-                    // checksum di integrità: con target-4 salta nel vuoto.
+                    // Frame PC = opcode address + 2 (the internal PC at the moment the branch
+                    // computes the destination), NOT target-4: the 68000 restores the old PC,
+                    // adds 2 and raises the read address error from there.
+                    // The SingleStepTests JSON vectors give target-4 on all 2200 cases (byte and
+                    // word) instead: the hardware behaviour wins, as for ASR (section 1 of
+                    // castle-master-copylock-investigation). 3D Pool's Copylock uses this PC as
+                    // the bound of its own integrity checksum: with target-4 it jumps into the
+                    // void.
                     cpu.triggerAddressError(targetPC, false, cpu.currentFCForInstruction(), true,
                                             getTemp(cpu, 14));
                     return finalizeInstruction(cpu);

@@ -32,25 +32,25 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Estrattore di archivi LHA/LZH (il formato usato dai pacchetti WHDLoad).
+ * Extractor of LHA/LZH archives (the format of WHDLoad packages).
  *
- * <p>Supporta le intestazioni di livello 0, 1 e 2 e i metodi di compressione
- * {@code -lh0-}/{@code -lhd-} (stored / directory), {@code -lh4-}, {@code -lh5-},
- * {@code -lh6-} e {@code -lh7-} (LZSS + Huffman dinamico, finestra 4/8/32/64 KB).
- * È l'insieme che copre di fatto tutti gli archivi della collezione WHDLoad.
+ * <p>Supports header levels 0, 1 and 2 and the compression methods {@code -lh0-}/
+ * {@code -lhd-} (stored / directory), {@code -lh4-}, {@code -lh5-}, {@code -lh6-} and
+ * {@code -lh7-} (LZSS + dynamic Huffman, 4/8/32/64 KB window): in practice the set that
+ * covers every archive of the WHDLoad collection.
  *
- * <p>L'algoritmo di decodifica è il classico di Haruhiko Okumura / Haruyasu
- * Yoshizaki (LHa): bit-stream MSB-first, tre alberi di Huffman (lunghezze dei
- * codici, codici letterali/match, posizioni) ricostruiti a ogni blocco.
+ * <p>The decoding algorithm is the classic one by Haruhiko Okumura / Haruyasu Yoshizaki
+ * (LHa): MSB-first bit stream, three Huffman trees (code lengths, literal/match codes,
+ * positions) rebuilt at every block.
  *
- * <p>Estrae mantenendo la struttura di directory interna dell'archivio.
+ * <p>Extracts keeping the archive's internal directory structure.
  */
 public final class LhaExtractor {
 
-    /** Una voce estratta (file regolare o directory). */
+    /** One extracted entry (regular file or directory). */
     public static final class Entry {
-        public final String path;     // percorso relativo con separatore '/', nome Amiga
-        /** Stesso percorso come sta sul disco host (vedi {@link #windowsSafePath}). */
+        public final String path;     // relative path with '/' separator, Amiga name
+        /** The same path as stored on the host disk (see {@link #windowsSafePath}). */
         public final String diskPath;
         public final boolean directory;
         public final long size;
@@ -62,25 +62,25 @@ public final class LhaExtractor {
 
     private final byte[] archive;
     private final List<Entry> entries = new ArrayList<>();
-    // Mappa percorso-su-disco (codificato) -> nome Amiga originale, per i nomi che
-    // Windows non può rappresentare (punti/spazi finali). Vedi {@link #windowsSafeLeaf}.
+    // Map on-disk path (encoded) -> original Amiga name, for the names Windows cannot
+    // represent (trailing dots/spaces). See {@link #windowsSafeLeaf}.
     private final Map<String, String> nameOverrides = new LinkedHashMap<>();
 
-    /** Nome del file sidecar che trasporta i nomi Amiga originali a {@link FfsBuilder}. */
+    /** Name of the sidecar file carrying the original Amiga names to {@link FfsBuilder}. */
     static final String AMIGA_NAMES_SIDECAR = ".amiganames";
 
     /**
-     * Tetto alla dimensione dichiarata di una singola voce (256 MB). Un gioco WHDLoad
-     * intero sta in poche decine di MB; oltre questa soglia il numero non descrive un
-     * file, descrive un'intestazione corrotta.
+     * Cap on the declared size of a single entry (256 MB). A whole WHDLoad game fits in a few
+     * tens of MB; beyond this threshold the number describes not a file but a corrupt
+     * header.
      */
     private static final long MAX_ENTRY_BYTES = 256L << 20;
 
     private LhaExtractor(byte[] archive) { this.archive = archive; }
 
     /**
-     * Estrae l'archivio {@code lhaPath} dentro la directory {@code destDir},
-     * ricreando la struttura interna. Restituisce l'elenco delle voci estratte.
+     * Extracts the archive {@code lhaPath} into the directory {@code destDir}, recreating the
+     * internal structure. Returns the list of entries extracted.
      */
     public static List<Entry> extract(String lhaPath, Path destDir) throws IOException {
         byte[] data = Files.readAllBytes(Paths.get(lhaPath));
@@ -90,12 +90,12 @@ public final class LhaExtractor {
     }
 
     /**
-     * Decodifica le sole icone ({@code .info}) dell'archivio, senza scrivere nulla su
-     * disco e senza decomprimere il resto. Serve a leggere le tooltype con cui
-     * l'installazione si descrive (vedi {@link AmigaIcon}) prima ancora di costruire
-     * la macchina: le icone sono pochi KB, il gioco decine di MB.
+     * Decodes only the archive's icons ({@code .info}), without writing anything to disk
+     * and without decompressing the rest. Used to read the tooltypes the installation
+     * describes itself with (see {@link AmigaIcon}) even before building the machine: the
+     * icons are a few KB, the game tens of MB.
      *
-     * @return percorso Amiga dell'icona → contenuto
+     * @return Amiga path of the icon -> content
      */
     static Map<String, byte[]> extractIcons(String lhaPath) throws IOException {
         byte[] data = Files.readAllBytes(Paths.get(lhaPath));
@@ -122,7 +122,7 @@ public final class LhaExtractor {
         int off = 0;
         while (off + 1 < archive.length) {
             int headerSize = archive[off] & 0xFF;
-            if (headerSize == 0) break;             // marcatore di fine archivio
+            if (headerSize == 0) break;             // end-of-archive marker
             Header h = parseHeader(off);
             if (h == null) break;
 
@@ -148,28 +148,26 @@ public final class LhaExtractor {
     }
 
     /**
-     * Risolve una voce dentro {@code base}, rifiutando tutto ciò che ne uscirebbe.
+     * Resolves an entry inside {@code base}, refusing anything that would leave it.
      *
-     * <p>Il percorso di una voce lo dichiara l'<b>archivio</b>, e un archivio viene da
-     * fuori: quello di un gioco WHDLoad lo si scarica da Internet e lo si indica in F12, e
-     * {@code AssetInstaller} ne scompatta uno appena sceso dalla rete. Che nessuna voce
-     * possa scrivere fuori dalla cartella di lavoro non può quindi dipendere dalla buona
-     * fede di chi ha confezionato l'archivio.
+     * <p>An entry's path is declared by the <b>archive</b>, and an archive comes from
+     * outside: a WHDLoad game's is downloaded from the Internet and named in F12, and
+     * {@code AssetInstaller} unpacks one just arrived from the network. That no entry can
+     * write outside the work folder therefore cannot depend on the good faith of whoever
+     * packed the archive.
      *
-     * <p><b>Oggi nessun nome ci riesce, ma per un caso.</b> I {@code ..} li neutralizza
-     * {@link #windowsSafePath}: un componente fatto di soli punti finisce tutto nel
-     * percent-encoding dei punti finali e diventa il nome letterale {@code %2E%2E}. È un
-     * effetto collaterale di una funzione scritta per tutt'altro motivo — i nomi che
-     * Windows non sa rappresentare — e basterebbe restringerne il raggio d'azione (p.es.
-     * applicarla al solo Windows, che sarebbe una modifica ragionevole) per riaprire la
-     * strada senza che nulla lo segnali. Una garanzia va detta dove serve, non dedotta
-     * altrove.
+     * <p><b>No name manages it today, but by chance.</b> {@code ..} is neutralised by
+     * {@link #windowsSafePath}: a component made only of dots ends up entirely in the
+     * percent-encoding of trailing dots and becomes the literal name {@code %2E%2E}. That is
+     * a side effect of a function written for a different reason (the names Windows cannot
+     * represent), and narrowing its scope (e.g. applying it on Windows only, a reasonable
+     * change) would reopen the way with nothing to signal it. A guarantee is stated where it
+     * is needed, not inferred elsewhere.
      *
-     * <p>Un caso invece si chiude davvero qui: su Windows un nome con il prefisso di
-     * unità ({@code C:\...}) è un percorso <b>assoluto</b>, e {@code Path.resolve}
-     * restituisce l'argomento tale e quale invece di risolverlo dentro {@code base}. Lo
-     * toglie già {@link #sanitize}; se dovesse sfuggirgli in qualche forma inattesa, è
-     * questo controllo a fermarlo.
+     * <p>One case is really closed here: on Windows a name with a drive prefix
+     * ({@code C:\...}) is an <b>absolute</b> path, and {@code Path.resolve} returns the
+     * argument as it is instead of resolving it inside {@code base}. {@link #sanitize}
+     * already removes it; should it escape in some unexpected form, this check stops it.
      */
     private static Path resolveInside(Path base, String relPath) throws IOException {
         Path resolved = base.resolve(relPath).normalize();
@@ -181,15 +179,15 @@ public final class LhaExtractor {
     }
 
     /**
-     * Restituisce un percorso scrivibile su disco Windows equivalente a {@code relPath}.
+     * Returns a path writable on a Windows disk equivalent to {@code relPath}.
      *
-     * <p>Windows elimina silenziosamente i punti e gli spazi finali da ogni componente
-     * del nome (es. il file Amiga {@code ruptile.} diventerebbe {@code ruptile}): un
-     * gioco che apre {@code ruptile.} non lo troverebbe più. Su AmigaDOS quei caratteri
-     * sono invece legali. Per preservarli, ogni carattere finale problematico viene
-     * codificato in percent-encoding ({@code .}=%2E, spazio=%20) — innocuo per Windows —
-     * e il nome Amiga originale viene registrato in {@link #nameOverrides}, così
-     * {@link FfsBuilder} può riscriverlo esatto nel file system FFS.
+     * <p>Windows silently drops trailing dots and spaces from every name component (e.g. the
+     * Amiga file {@code ruptile.} would become {@code ruptile}): a game opening
+     * {@code ruptile.} would no longer find it. On AmigaDOS those characters are legal. To
+     * keep them, every problematic trailing character is percent-encoded ({@code .}=%2E,
+     * space=%20), harmless for Windows, and the original Amiga name is recorded in
+     * {@link #nameOverrides}, so {@link FfsBuilder} can write it back exactly in the FFS
+     * file system.
      */
     private String windowsSafePath(String relPath) {
         String[] parts = relPath.split("/");
@@ -206,7 +204,7 @@ public final class LhaExtractor {
         return encodedPath.toString();
     }
 
-    /** Percent-encode dei soli punti/spazi finali di un componente di nome. */
+    /** Percent-encodes only the trailing dots/spaces of a name component. */
     private static String windowsSafeLeaf(String leaf) {
         int end = leaf.length();
         while (end > 0 && (leaf.charAt(end - 1) == '.' || leaf.charAt(end - 1) == ' ')) end--;
@@ -233,22 +231,22 @@ public final class LhaExtractor {
 
     private static final class Header {
         String method;
-        long compSize;     // dimensione del payload compresso (byte)
-        long origSize;     // dimensione originale (byte)
+        long compSize;     // size of the compressed payload (bytes)
+        long origSize;     // original size (bytes)
         String name;
         boolean isDirectory;
-        int dataStart;     // offset del primo byte di dati compressi
-        int nextOffset;    // offset della voce successiva
+        int dataStart;     // offset of the first byte of compressed data
+        int nextOffset;    // offset of the next entry
 
         /**
-         * Byte di payload di QUESTA voce, cioè {@code nextOffset - dataStart}.
+         * Payload bytes of THIS entry, i.e. {@code nextOffset - dataStart}.
          *
-         * <p>⛔ <b>Non è {@code compSize}</b>, e confonderli è quel che ha rotto WHDLoad. Al
-         * livello 1 il campo a offset 7 è una <b>skip size</b> misurata da dopo la prima
-         * word di lunghezza degli header estesi: comprende <i>anche</i> i corpi degli
-         * header estesi, mentre {@code dataStart} cade dopo di essi. Sommare la skip size a
-         * {@code dataStart} sfora quindi la voce di tanti byte quanti sono gli header
-         * estesi — e sull'ultima voce dell'archivio sfora l'archivio.
+         * <p><b>It is not {@code compSize}</b>, and confusing the two broke WHDLoad. At level
+         * 1 the field at offset 7 is a <b>skip size</b> measured from after the first length
+         * word of the extended headers: it <i>also</i> includes the bodies of the extended
+         * headers, while {@code dataStart} falls after them. Adding the skip size to
+         * {@code dataStart} overruns the entry by as many bytes as the extended headers, and
+         * on the archive's last entry it overruns the archive.
          */
         int payloadSize;
     }
@@ -265,45 +263,45 @@ public final class LhaExtractor {
             int fnlen = archive[off + 21] & 0xFF;
             String base = ascii(off + 22, fnlen);
             if (level == 0) {
-                // Header di base = 2 + headerSize byte; nessuna intestazione estesa.
+                // Base header = 2 + headerSize bytes; no extended header.
                 h.name = base;
                 h.dataStart = off + 2 + headerSize;
                 h.nextOffset = h.dataStart + (int) h.compSize;
             } else {
-                // Livello 1: la catena di header estesi inizia a off+headerSize, i
-                // dati compressi subito dopo. Le directory provengono dagli header
-                // estesi di tipo 0x02; il nome di base è il file foglia. compSize è la
-                // dimensione del solo payload compresso → next = dataStart + compSize.
+                // Level 1: the chain of extended headers starts at off+headerSize, the
+                // compressed data right after. Directories come from extended headers of type
+                // 0x02; the base name is the leaf file. compSize is the size of the
+                // compressed payload alone -> next = dataStart + compSize.
                 int p = off + headerSize;
                 String dir = "";
                 String fname = base;
                 int ext = le16(p); p += 2;
                 while (ext != 0) {
                     int type = archive[p] & 0xFF;
-                    int bodyLen = ext - 3;          // ext = tipo(1) + corpo + word(2)
+                    int bodyLen = ext - 3;          // ext = type(1) + body + word(2)
                     if (type == 0x01) {
                         fname = ascii(p + 1, bodyLen);
                     } else if (type == 0x02) {
                         dir = extDir(p + 1, bodyLen);
                     }
-                    p += ext - 2;                   // avanza al prossimo word di lunghezza
+                    p += ext - 2;                   // advance to the next length word
                     ext = le16(p); p += 2;
                 }
                 h.dataStart = p;
-                // compSize è la "skip size" misurata da dopo la prima word di
-                // lunghezza degli header estesi (off+headerSize+2): include i corpi
-                // degli header estesi e il payload compresso fino alla voce seguente.
+                // compSize is the "skip size" measured from after the first length word of
+                // the extended headers (off+headerSize+2): it includes the bodies of the
+                // extended headers and the compressed payload up to the next entry.
                 h.nextOffset = off + headerSize + 2 + (int) h.compSize;
                 h.name = dir + fname;
             }
         } else { // livello 2
-            int total = le16(off);                  // dimensione totale header (word LE)
+            int total = le16(off);                  // total header size (LE word)
             int crcPos = off + 21;                   // crc(2) + os(1) ...
-            // Header estesi a partire da off+24.
+            // Extended headers starting at off+24.
             String dir = "", fname = "";
             int p = off + 24;
             int ext = le16(off + 22);
-            // Per il livello 2 la prima word di lunghezza è a off+22.
+            // For level 2 the first length word is at off+22.
             p = off + 24;
             int extLen = ext;
             int q = off + 22;
@@ -320,13 +318,13 @@ public final class LhaExtractor {
             h.dataStart = off + total;
             h.nextOffset = h.dataStart + (int) h.compSize;
         }
-        // Una sola derivazione per tutti e tre i livelli: il payload è ciò che sta fra
-        // l'inizio dei dati e la voce successiva. Vedi Header.payloadSize.
+        // A single derivation for all three levels: the payload is what lies between the
+        // start of the data and the next entry. See Header.payloadSize.
         h.payloadSize = h.nextOffset - h.dataStart;
         return h;
     }
 
-    /** Header esteso 0x02: componenti separate da 0xFF, ritorna "a/b/" con trailing '/'. */
+    /** Extended header 0x02: components separated by 0xFF, returns "a/b/" with a trailing '/'. */
     private String extDir(int off, int len) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < len; i++) {
@@ -338,23 +336,23 @@ public final class LhaExtractor {
     }
 
     private static String sanitize(String name) {
-        // Le LhA Amiga memorizzano "nome\0filenota" nel campo del nome (la fnlen
-        // conta entrambi); il NUL e il commento che segue non fanno parte del
-        // percorso e sono caratteri illegali su Windows. Tronca al primo NUL.
+        // Amiga LhAs store "name\0filenote" in the name field (fnlen counts both); the NUL
+        // and the comment after it are not part of the path and are illegal characters on
+        // Windows. Truncate at the first NUL.
         int nul = name.indexOf('\0');
         if (nul >= 0) name = name.substring(0, nul);
         String s = name.replace('\\', '/');
-        // Alcuni archivi (livello 0) separano le directory con 0xFF.
+        // Some archives (level 0) separate directories with 0xFF.
         StringBuilder sb = new StringBuilder(s.length());
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
             sb.append(c == 0xFF ? '/' : c);
         }
         s = sb.toString();
-        // Prefisso di unita' Windows (C:, D:, ...): va tolto, o su Windows il percorso
-        // sarebbe ASSOLUTO e Path.resolve restituirebbe l'argomento invece di risolverlo
-        // dentro la cartella di lavoro. Si toglie su tutte le piattaforme, cosi' cosa fa
-        // l'estrattore non dipende da dove gira.
+        // Windows drive prefix (C:, D:, ...): removed, or on Windows the path would be
+        // ABSOLUTE and Path.resolve would return the argument instead of resolving it inside
+        // the work folder. Removed on every platform, so what the extractor does does not
+        // depend on where it runs.
         if (s.length() >= 2 && s.charAt(1) == ':' && isDriveLetter(s.charAt(0))) {
             s = s.substring(2);
         }
@@ -367,19 +365,19 @@ public final class LhaExtractor {
     }
 
     // =========================================================================
-    // Decodifica
+    // Decoding
     // =========================================================================
 
     /**
-     * Il payload di una voce, decompresso.
+     * The payload of an entry, decompressed.
      *
-     * <p>{@code origSize} e {@code dataStart} vengono dall'<b>intestazione</b>, cioe' dal
-     * file: un archivio troncato a meta' download, o semplicemente non un archivio, dava
-     * {@code ArrayIndexOutOfBoundsException} dalla {@code arraycopy} oppure
-     * {@code OutOfMemoryError} dalla {@code new byte[]}. Nessuna delle due e' una
-     * {@code IOException}, quindi non le prendeva il {@code catch} di chi monta l'hard
-     * disk WHDLoad e l'errore risaliva fino all'avvio della macchina, invece di diventare
-     * la riga «archivio illeggibile» che l'utente puo' capire.
+     * <p>{@code origSize} and {@code dataStart} come from the <b>header</b>, i.e. from the
+     * file: an archive truncated halfway through a download, or not an archive at all,
+     * would give {@code ArrayIndexOutOfBoundsException} from {@code arraycopy} or
+     * {@code OutOfMemoryError} from {@code new byte[]}. Neither is an {@code IOException},
+     * so the {@code catch} of whoever mounts the WHDLoad hard disk would not take them and
+     * the error would reach the machine start-up, instead of becoming the "unreadable
+     * archive" line the user can understand.
      */
     private byte[] decode(Header h) throws IOException {
         checkPayload(h);
@@ -399,7 +397,7 @@ public final class LhaExtractor {
         return new Lh5Decoder(archive, h.dataStart, (int) h.origSize, dicbit).decode();
     }
 
-    /** Le dimensioni dichiarate devono stare dentro l'archivio che le dichiara. */
+    /** The declared sizes must fit inside the archive that declares them. */
     private void checkPayload(Header h) throws IOException {
         if (h.origSize < 0 || h.origSize > MAX_ENTRY_BYTES) {
             throw new IOException("voce di " + h.origSize + " byte dichiarati in '"
@@ -409,13 +407,12 @@ public final class LhaExtractor {
             throw new IOException("voce '" + h.name + "': i dati iniziano fuori "
                     + "dall'archivio, che e' troncato");
         }
-        // Per i metodi memorizzati il payload e' lungo quanto l'originale, ed e' quel che
-        // decode() copia; per gli altri e' payloadSize. ⛔ NON compSize: al livello 1
-        // quel campo e' una skip size che comprende anche gli header estesi, quindi
-        // sommarla a dataStart sfora la voce — e sull'ultima voce sfora l'archivio,
-        // facendo dichiarare troncato un .lha sano. Vedi Header.payloadSize: e' il difetto
-        // che ha rotto l'installazione di WHDLoad e l'avvio dei giochi .lha, che sono
-        // tutti -lh5- di livello 1.
+        // For the stored methods the payload is as long as the original, and that is what
+        // decode() copies; for the others it is payloadSize. NOT compSize: at level 1 that
+        // field is a skip size that includes the extended headers too, so adding it to
+        // dataStart overruns the entry, and on the last entry it overruns the archive,
+        // declaring a sound .lha truncated. See Header.payloadSize: that is the defect that
+        // broke the WHDLoad installation and the start of .lha games, all -lh5- level 1.
         long needed = h.method.equals("-lh0-") || h.method.equals("-lhd-")
                 || h.method.equals("-lz4-") ? h.origSize : h.payloadSize;
         if (needed < 0 || h.dataStart + needed > archive.length) {
@@ -426,7 +423,7 @@ public final class LhaExtractor {
     }
 
     // =========================================================================
-    // Lettura interi (little-endian) e ASCII
+    // Reading integers (little-endian) and ASCII
     // =========================================================================
 
     private int le16(int off) {
@@ -461,15 +458,15 @@ public final class LhaExtractor {
         private final byte[] in;
         private final int end;
         private final int origSize;
-        private final int np;        // numero codici di posizione = dicbit + 1
-        private final int pbit;      // bit per leggere il conteggio dell'albero posizioni
+        private final int np;        // number of position codes = dicbit + 1
+        private final int pbit;      // bits to read the count of the position tree
 
         // Bit reader MSB-first.
         private int pos;
         private long buf;
         private int bits;
 
-        // Tabelle di Huffman.
+        // Huffman tables.
         private final int[] cLen = new int[NC];
         private final int[] cTable = new int[1 << 12];
         private final int[] ptLen = new int[NT > 256 ? NT : 256];
@@ -603,9 +600,9 @@ public final class LhaExtractor {
             }
             blocksize--;
             int w = peek(16);
-            int j = cTable[w >>> 4];          // primi 12 bit della finestra a 16 bit
+            int j = cTable[w >>> 4];          // first 12 bits of the 16-bit window
             if (j >= NC) {
-                int mask = 1 << 3;            // bit successivi: 1<<(15-12)
+                int mask = 1 << 3;            // following bits: 1<<(15-12)
                 do {
                     j = ((w & mask) != 0 ? right[j] : left[j]);
                     mask >>= 1;
@@ -619,7 +616,7 @@ public final class LhaExtractor {
             int w = peek(16);
             int j = ptTable[w >>> 8];         // primi 8 bit
             if (j >= np) {
-                int mask = 1 << 7;            // bit successivi: 1<<(15-8)
+                int mask = 1 << 7;            // following bits: 1<<(15-8)
                 do {
                     j = ((w & mask) != 0 ? right[j] : left[j]);
                     mask >>= 1;
@@ -633,9 +630,9 @@ public final class LhaExtractor {
         }
 
         /**
-         * Costruisce una tabella di decodifica Huffman a {@code tablebits} bit dalle
-         * lunghezze {@code bitlen}; i codici più lunghi di {@code tablebits} usano gli
-         * array {@code left}/{@code right} come albero. Porta del make_table di LHa.
+         * Builds a {@code tablebits}-bit Huffman decoding table from the lengths
+         * {@code bitlen}; codes longer than {@code tablebits} use the {@code left}/
+         * {@code right} arrays as a tree. Port of LHa's make_table.
          */
         private void makeTable(int nchar, int[] bitlen, int tablebits, int[] table) {
             int[] count = new int[17];
@@ -643,8 +640,8 @@ public final class LhaExtractor {
             int[] start = new int[18];
             for (int i = 1; i <= 16; i++) count[i] = 0;
             for (int i = 0; i < nchar; i++) count[bitlen[i]]++;
-            // start[] è a 16 bit (ushort in LHa): l'accumulo va troncato a 0xFFFF a
-            // ogni passo per riprodurre il wrap di un unsigned short.
+            // start[] is 16-bit (ushort in LHa): the accumulation is truncated to 0xFFFF at
+            // every step to reproduce the wrap of an unsigned short.
             start[1] = 0;
             for (int i = 1; i <= 16; i++) {
                 start[i + 1] = (start[i] + (count[i] << (16 - i))) & 0xFFFF;
@@ -679,7 +676,7 @@ public final class LhaExtractor {
                     if (e > table.length) e = table.length;
                     for (int i = s; i < e; i++) table[i] = ch;
                 } else {
-                    // Codice più lungo di tablebits: percorso nell'albero left/right.
+                    // Code longer than tablebits: a path in the left/right tree.
                     avail = buildLong(table, ch, len, start[len] & 0xFFFF,
                                       tablebits, jutbits, mask, avail);
                 }
@@ -688,16 +685,16 @@ public final class LhaExtractor {
         }
 
         /**
-         * Inserisce un codice più lungo di {@code tablebits} nell'albero left/right.
-         * Porta del ramo "len > tablebits" di make_table (LHa), dove un puntatore C
-         * {@code *p} naviga fra {@code table}, {@code right} e {@code left}: qui è
-         * rappresentato da (slot, isTable, isRight). Ritorna il nuovo {@code avail}.
+         * Inserts a code longer than {@code tablebits} into the left/right tree. Port of the
+         * "len > tablebits" branch of LHa's make_table, where a C pointer {@code *p} moves
+         * among {@code table}, {@code right} and {@code left}: here it is represented by
+         * (slot, isTable, isRight). Returns the new {@code avail}.
          */
         private int buildLong(int[] table, int ch, int len, int k, int tablebits,
                               int jutbits, int mask, int avail) {
-            int slot = k >>> jutbits;     // indice corrente nel contenitore puntato
-            boolean inTable = true;       // il puntatore punta in 'table'?
-            boolean right = false;        // (se non in table) ramo destro o sinistro?
+            int slot = k >>> jutbits;     // current index in the container pointed to
+            boolean inTable = true;       // does the pointer point into 'table'?
+            boolean right = false;        // (if not in table) right or left branch?
             int kk = k;
             int i = len - tablebits;
             while (i != 0) {

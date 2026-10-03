@@ -28,56 +28,55 @@ import java.nio.file.Paths;
 import java.security.CodeSource;
 
 /**
- * La <b>home</b> di AmiJa: la cartella accanto a cui vivono tutti i file che
- * l'emulatore legge e scrive a runtime — {@code amiga.properties}, {@code shaders/},
- * {@code blurs/}, {@code screenshots/}, {@code savestate/}, {@code floppysounds/},
- * {@code whdload/}, {@code whdload-cache/}, {@code whdload-saves/}.
+ * AmiJa's <b>home</b>: the folder next to which live all the files the emulator reads and
+ * writes at run time ({@code amiga.properties}, {@code shaders/}, {@code blurs/},
+ * {@code screenshots/}, {@code savestate/}, {@code floppysounds/}, {@code whdload/},
+ * {@code whdload-cache/}, {@code whdload-saves/}).
  *
- * <p>AmiJa è <b>portable by design</b>: scrive accanto a sé, non in una cartella dati
- * di sistema. Finché lo si lancia con {@code java -jar} dalla cartella scompattata la
- * working directory basta, ma con un launcher nativo prodotto da {@code jpackage} no:
- * su Linux la CWD è la home dell'utente, su macOS è {@code /}. Questa classe risolve
- * la home una volta sola, all'inizializzazione, con questa catena:
+ * <p>AmiJa is <b>portable by design</b>: it writes next to itself, not in a system data
+ * folder. Launched with {@code java -jar} from the unpacked folder the working directory is
+ * enough, but with a native launcher produced by {@code jpackage} it is not: on Linux the CWD
+ * is the user's home, on macOS it is {@code /}. This class resolves the home once, at
+ * initialisation, with this chain:
  *
  * <ol>
- *   <li>la system property {@code amija.home}, se valorizzata — è ciò che passa il
- *       launcher jpackage tramite {@code --java-options -Damija.home=$ROOTDIR};</li>
- *   <li>altrimenti, se il codice gira <b>da un jar</b>, la cartella che contiene il
- *       jar (con l'aggiustamento per il bundle {@code .app} di macOS, sotto);</li>
- *   <li>altrimenti la <b>working directory</b> — il comportamento storico, che resta
- *       invariato quando si lancia dall'IDE, da {@code mvn exec} o dai test.</li>
+ *   <li>the system property {@code amija.home}, if set: what the jpackage launcher passes
+ *       through {@code --java-options -Damija.home=$ROOTDIR};</li>
+ *   <li>otherwise, if the code runs <b>from a jar</b>, the folder containing the jar (with
+ *       the adjustment for the macOS {@code .app} bundle, below);</li>
+ *   <li>otherwise the <b>working directory</b>, which is what launches from the IDE, from
+ *       {@code mvn exec} or from the tests get.</li>
  * </ol>
  *
- * <p>Il gradino 2 vale solo per un jar vero: quando il code source è una cartella di
- * classi ({@code target/classes}) si scende al gradino 3, perché quella cartella non è
- * la home di nessuno.
+ * <p>Step 2 holds only for a real jar: when the code source is a folder of classes
+ * ({@code target/classes}) it falls to step 3, because that folder is nobody's home.
  *
- * <p><b>Nessuna inizializzazione preventiva.</b> {@code AmigaConfig.load()} viene
- * invocata da {@code Amija.main} prima di qualunque altra cosa (AWT compreso): la
- * risoluzione qui dentro non deve dipendere da altri componenti, e infatti non lo fa.
- * Se qualcosa va storto si ripiega sulla working directory senza mai lanciare.
+ * <p><b>No early initialisation.</b> {@code AmigaConfig.load()} is called by
+ * {@code Amija.main} before anything else (AWT included): the resolution here must not depend
+ * on other components, and it does not. If something goes wrong it falls back on the working
+ * directory without ever throwing.
  */
 public final class AppHome {
 
-    /** System property che impone la home; la passa il launcher nativo (jpackage). */
+    /** System property that imposes the home; the native launcher (jpackage) passes it. */
     public static final String PROPERTY = "amija.home";
 
-    /** La home risolta una volta per JVM. Mai {@code null}. */
+    /** The home resolved once per JVM. Never {@code null}. */
     private static final Path HOME = discover();
 
     private AppHome() {}
 
-    /** La cartella home di AmiJa, assoluta e normalizzata. Per diagnostica e log. */
+    /** The AmiJa home folder, absolute and normalised. For diagnostics and logs. */
     public static Path home() {
         return HOME;
     }
 
-    /** Risolve un percorso relativo alla home, come {@code Path.resolve}. */
+    /** Resolves a path relative to the home, like {@code Path.resolve}. */
     public static Path resolve(String first, String... more) {
         return HOME.resolve(Paths.get(first, more));
     }
 
-    /** Come {@link #resolve}, per le API che vogliono un {@link File}. */
+    /** Like {@link #resolve}, for the APIs that want a {@link File}. */
     public static File file(String first, String... more) {
         return resolve(first, more).toFile();
     }
@@ -112,9 +111,8 @@ public final class AppHome {
     }
 
     /**
-     * La cartella che contiene il jar da cui gira questa classe, oppure {@code null}
-     * se non si sta girando da un jar (IDE, {@code mvn exec}, test) o se il code source
-     * non è ispezionabile.
+     * The folder containing the jar this class runs from, or {@code null} if not running from
+     * a jar (IDE, {@code mvn exec}, tests) or if the code source cannot be inspected.
      */
     private static Path fromCodeSource() {
         try {
@@ -127,25 +125,24 @@ public final class AppHome {
                 return null;
             }
             Path location = Paths.get(uri);
-            // Solo un jar vero identifica una home; una cartella di classi no.
+            // Only a real jar identifies a home; a folder of classes does not.
             if (!location.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")) {
                 return null;
             }
             Path dir = location.getParent();
             return dir == null ? null : unwrapMacBundle(dir);
         } catch (Exception e) {
-            // Qualsiasi problema (URI malformato, SecurityManager, path non locale):
-            // si ripiega sul gradino successivo della catena.
+            // Any problem (malformed URI, SecurityManager, non-local path): fall back on the
+            // next step of the chain.
             return null;
         }
     }
 
     /**
-     * Aggiustamento macOS: dentro un'app-image jpackage il jar sta in
-     * {@code AmiJa.app/Contents/app}. La home non è quella cartella — sarebbe dentro
-     * il bundle, dove l'utente non guarda e che può essere di sola lettura — ma la
-     * cartella che <b>contiene</b> {@code AmiJa.app}, dove il packaging deposita
-     * {@code shaders/}, {@code blurs/} e i documenti.
+     * macOS adjustment: inside a jpackage app image the jar is in {@code AmiJa.app/Contents/app}.
+     * The home is not that folder (it would be inside the bundle, where the user does not look
+     * and which may be read-only) but the folder that <b>contains</b> {@code AmiJa.app}, where
+     * the packaging puts {@code shaders/}, {@code blurs/} and the documents.
      */
     private static Path unwrapMacBundle(Path jarDir) {
         Path contents = jarDir.getParent();
@@ -166,7 +163,7 @@ public final class AppHome {
         return name == null ? "" : name.toString();
     }
 
-    /** Rende la home assoluta e normalizzata, e la stampa una volta sola. */
+    /** Makes the home absolute and normalised, and prints it once. */
     private static Path announce(Path candidate, String origin) {
         Path resolved;
         try {

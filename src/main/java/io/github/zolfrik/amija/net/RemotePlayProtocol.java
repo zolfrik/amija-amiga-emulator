@@ -24,90 +24,90 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Costanti e struttura del protocollo di gioco a distanza
- * ({@code docs/remote-play-plan.md} §4).
+ * Constants and structure of the remote play protocol ({@code docs/remote-play-plan.md}
+ * section 4).
  *
- * <h2>Due canali, una porta</h2>
- * <b>TCP</b> per il controllo (handshake, pausa, disconnessione: pochi byte al secondo,
- * dove l'ordine e la consegna garantita sono comodi e gratis) e <b>UDP</b> per il media e
- * l'input. Stessa <i>numerazione</i> per entrambi, cosi' UPnP dovra' creare una sola coppia
- * di mapping e l'utente ha un solo numero da comunicare.
+ * <h2>Two channels, one port</h2>
+ * <b>TCP</b> for control (handshake, pause, disconnection: a few bytes per second, where
+ * ordering and guaranteed delivery are handy and free) and <b>UDP</b> for media and input.
+ * The same <i>number</i> for both, so UPnP has to create a single pair of mappings and the
+ * user has a single number to pass on.
  *
- * <p>Perche' UDP per il media: con TCP una ritrasmissione blocca tutto per un RTT e poi lo
- * stream rincorre. Su un gioco in tempo reale <b>un frame perso e' preferibile a un frame in
- * ritardo</b>, e il codec e' costruito apposta per riprendersi da solo da una perdita (§4.1:
- * l'host comprime contro l'ultimo frame che l'ospite ha confermato, quindi un frame perso
- * allarga il delta successivo invece di corrompere lo schermo).
+ * <p>Why UDP for the media: with TCP a retransmission blocks everything for an RTT and then
+ * the stream chases. In a real-time game <b>a lost frame is better than a late frame</b>, and
+ * the codec is built to recover from a loss by itself (section 4.1: the host compresses against
+ * the last frame the guest confirmed, so a lost frame widens the next delta instead of
+ * corrupting the screen).
  *
- * <h2>Datagramma</h2>
+ * <h2>Datagram</h2>
  * <pre>
  *   u16 magic      'AJ'
  *   u8  type       VIDEO | AUDIO | FEEDBACK
- *   u8  flags      riservati, devono essere 0
- *   u32 seq        contatore per direzione, monotono, MAI riusato nella sessione
- *   ...            payload sigillato AES-GCM (tag di 16 byte incluso)
+ *   u8  flags      reserved, must be 0
+ *   u32 seq        per-direction counter, monotonic, NEVER reused in the session
+ *   ...            AES-GCM sealed payload (16-byte tag included)
  * </pre>
- * L'intestazione viaggia in chiaro — serve per instradare e per costruire il nonce — ma e'
- * <b>autenticata come AAD</b>: chi la altera invalida il tag e il pacchetto viene scartato.
+ * The header travels in clear (it is needed for routing and to build the nonce) but is
+ * <b>authenticated as AAD</b>: whoever alters it invalidates the tag and the packet is
+ * discarded.
  *
- * <h2>Perche' 1200 byte</h2>
- * Sotto qualunque MTU reale: 1500 Ethernet meno l'incapsulamento peggiore che si incontra
- * in pratica (PPPoE 8, IPv6 40, un tunnel VPN 60+). Frammentare a livello IP significa che
- * la perdita di <i>un</i> frammento IP butta via l'intero datagramma, il che raddoppierebbe
- * l'effetto di ogni perdita.
+ * <h2>Why 1200 bytes</h2>
+ * Below any real MTU: 1500 Ethernet minus the worst encapsulation met in practice (PPPoE 8,
+ * IPv6 40, a VPN tunnel 60+). Fragmenting at the IP level means the loss of <i>one</i> IP
+ * fragment throws away the whole datagram, which would double the effect of every loss.
  */
 public final class RemotePlayProtocol {
 
     /**
-     * Versione del protocollo. Un mismatch e' un REJECT esplicito, non un errore oscuro.
+     * Protocol version. A mismatch is an explicit REJECT, not an obscure error.
      *
-     * <p>La 2 ha dato un significato al primo byte riservato del pacchetto di feedback: la
-     * periferica che l'ospite ha collegato alla propria porta ({@link FeedbackPacket}). Un
-     * peer alla versione 1 lo manderebbe a zero, cioe' <i>porta vuota</i>, e si ritroverebbe
-     * i comandi ignorati senza un errore da nessuna parte: e' esattamente il guasto muto che
-     * il controllo di versione esiste per trasformare in una frase leggibile.
+     * <p>Version 2 gave a meaning to the first reserved byte of the feedback packet: the device
+     * the guest plugged into its port ({@link FeedbackPacket}). A version-1 peer would send it
+     * as zero, i.e. <i>empty port</i>, and would find its commands ignored with no error
+     * anywhere: exactly the silent failure the version check exists to turn into a readable
+     * sentence.
      */
     public static final int VERSION = 2;
 
-    /** 'A','J' — filtro a costo zero contro il traffico che non ci riguarda. */
+    /** 'A','J': a zero-cost filter against traffic that does not concern us. */
     public static final int MAGIC = 0x414A;
 
     public static final int TYPE_VIDEO = 1;
     public static final int TYPE_AUDIO = 2;      // Fase 4
     public static final int TYPE_FEEDBACK = 3;
 
-    /** Intestazione del datagramma: magic, type, flags, seq. */
+    /** Datagram header: magic, type, flags, seq. */
     public static final int DATAGRAM_HEADER = 8;
 
-    /** Tetto del datagramma completo, intestazione e tag GCM inclusi. */
+    /** Ceiling of the whole datagram, header and GCM tag included. */
     public static final int MAX_DATAGRAM = 1200;
 
-    /** Tag di autenticazione AES-GCM. */
+    /** AES-GCM authentication tag. */
     public static final int GCM_TAG = 16;
 
-    /** Byte di payload in chiaro che entrano in un datagramma. */
+    /** Plaintext payload bytes that fit in one datagram. */
     public static final int MAX_PLAINTEXT = MAX_DATAGRAM - DATAGRAM_HEADER - GCM_TAG;
 
-    /** Intestazione di frammento: frameId, fragIdx, fragCount. */
+    /** Fragment header: frameId, fragIdx, fragCount. */
     public static final int FRAGMENT_HEADER = 8;
 
-    /** Byte utili di blob per frammento. */
+    /** Useful blob bytes per fragment. */
     public static final int FRAGMENT_DATA = MAX_PLAINTEXT - FRAGMENT_HEADER;
 
     /**
-     * Tetto sui frammenti di un frame: 64 x 1168 = 74 KB. Il keyframe piu' caro misurato in
-     * Fase 0/1 e' 22 KB, quindi c'e' tre volte il margine — ed e' un tetto <b>costante</b>,
-     * il che e' il punto: un {@code fragCount} malevolo non deve poter chiedere memoria.
+     * Cap on the fragments of a frame: 64 x 1168 = 74 KB. The most expensive keyframe measured
+     * is 22 KB, so there is three times the margin, and it is a <b>constant</b> cap, which is
+     * the point: a malicious {@code fragCount} must not be able to ask for memory.
      */
     public static final int MAX_FRAGMENTS = 64;
 
-    /** Identificatore di codec nel blob di frame. Un byte, per poter cambiare idea (§15.1). */
+    /** Codec identifier in the frame blob. One byte, to be able to change course (section 15.1). */
     public static final int CODEC_AJV1 = 1;
 
-    /** {@code refFrameId} che significa "nessun riferimento": il frame e' un keyframe. */
+    /** {@code refFrameId} meaning "no reference": the frame is a keyframe. */
     public static final long NO_REFERENCE = 0xFFFFFFFFL;
 
-    // --- canale di controllo (TCP) ---------------------------------------------------
+    // --- control channel (TCP) -------------------------------------------------------
 
     public static final int CTRL_HELLO = 1;
     public static final int CTRL_CHALLENGE = 2;
@@ -120,16 +120,16 @@ public final class RemotePlayProtocol {
     public static final int CTRL_PONG = 9;
     public static final int CTRL_BYE = 10;
 
-    /** Tetto su un messaggio di controllo. Nessuno di quelli definiti arriva a 200 byte. */
+    /** Ceiling on a control message. None of the defined ones reaches 200 bytes. */
     public static final int MAX_CONTROL_MESSAGE = 4096;
 
-    // --- motivi di REJECT --------------------------------------------------------------
+    // --- REJECT reasons ----------------------------------------------------------------
 
     public static final int REJECT_AUTH = 1;
     public static final int REJECT_BUSY = 2;
     public static final int REJECT_PROTOCOL = 3;
     public static final int REJECT_SHUTDOWN = 4;
-    /** L'host accetta solo la propria rete locale (§8.5) e questo peer non ci sta. */
+    /** The host accepts only its own local network (section 8.5) and this peer is not on it. */
     public static final int REJECT_LAN_ONLY = 5;
 
     private RemotePlayProtocol() {
@@ -146,7 +146,7 @@ public final class RemotePlayProtocol {
         };
     }
 
-    /** Buffer little-endian, come tutto il protocollo. */
+    /** Little-endian buffer, like the whole protocol. */
     public static ByteBuffer buffer(int capacity) {
         return ByteBuffer.allocate(capacity).order(ByteOrder.LITTLE_ENDIAN);
     }
@@ -155,7 +155,7 @@ public final class RemotePlayProtocol {
         return ByteBuffer.wrap(array, offset, length).order(ByteOrder.LITTLE_ENDIAN);
     }
 
-    /** Scrive l'intestazione del datagramma in testa a {@code dst}. */
+    /** Writes the datagram header at the start of {@code dst}. */
     public static void writeHeader(byte[] dst, int type, int flags, int seq) {
         dst[0] = (byte) MAGIC;
         dst[1] = (byte) (MAGIC >>> 8);
@@ -168,13 +168,13 @@ public final class RemotePlayProtocol {
     }
 
     /**
-     * Verifica magic, tipo e flag di un datagramma ricevuto.
+     * Checks magic, type and flags of a received datagram.
      *
-     * <p>Si fa <b>prima</b> di qualunque lavoro crittografico: e' il filtro che rende
-     * gratuito ignorare il traffico che non ci appartiene. L'autenticazione vera resta il
-     * tag GCM — questo scarta soltanto cio' che non merita nemmeno un tentativo.
+     * <p>Done <b>before</b> any cryptographic work: it is the filter that makes ignoring traffic
+     * that is not ours free. The real authentication remains the GCM tag: this only discards
+     * what does not even deserve an attempt.
      *
-     * @throws ProtocolException se l'intestazione non e' nostra o non e' pulita
+     * @throws ProtocolException if the header is not ours or not clean
      */
     public static void checkHeader(byte[] src, int length) throws ProtocolException {
         if (length < DATAGRAM_HEADER) {

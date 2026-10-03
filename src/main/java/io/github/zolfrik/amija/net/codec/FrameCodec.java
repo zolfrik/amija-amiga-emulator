@@ -21,63 +21,63 @@
 package io.github.zolfrik.amija.net.codec;
 
 /**
- * Formato del codec video <b>AJV1</b> del gioco a distanza: costanti e geometria dei tile,
- * condivise da {@link FrameEncoder} e {@link FrameDecoder}.
+ * Format of the <b>AJV1</b> video codec of remote play: constants and tile geometry, shared by
+ * {@link FrameEncoder} and {@link FrameDecoder}.
  *
- * <h2>Come e' fatto un payload</h2>
+ * <h2>What a payload looks like</h2>
  * <pre>
- *   u8   mode                 'P' | 'X' | 'R'      (fuori dal deflate: serve per inflarlo)
- *   ...  deflate-raw(corpo)                        (nowrap, cioe' senza intestazione zlib)
+ *   u8   mode                 'P' | 'X' | 'R'      (outside the deflate: needed to inflate it)
+ *   ...  deflate-raw(body)                         (nowrap, i.e. without the zlib header)
  * </pre>
  *
- * Il corpo comincia sempre con la <b>bitmap dei tile sporchi</b>: il raster e' diviso in
- * tile {@value #TILE}x{@value #TILE} e un tile e' sporco se almeno un pixel differisce dal
- * riferimento. Un bit per tile, ordine per righe, bit meno significativo per primo.
+ * The body always starts with the <b>dirty-tile bitmap</b>: the raster is divided into
+ * {@value #TILE}x{@value #TILE} tiles and a tile is dirty if at least one pixel differs from the
+ * reference. One bit per tile, row order, least significant bit first.
  *
  * <pre>
- *   corpo(P) := bitmap | u8 indexed | u16 palCount | pixel[] | palette[palCount]
- *   corpo(X) := bitmap | pixel[]
- *   corpo(R) := bitmap | pixel[]
+ *   body(P) := bitmap | u8 indexed | u16 palCount | pixel[] | palette[palCount]
+ *   body(X) := bitmap | pixel[]
+ *   body(R) := bitmap | pixel[]
  * </pre>
  *
  * <ul>
- *   <li><b>Modo P (palette)</b> — i pixel dei tile sporchi sono <i>indici a 1 byte</i> in
- *       una palette per-frame (i colori distinti che compaiono nei tile sporchi). Se
- *       superano {@value #MAX_PALETTE}, {@code indexed} vale 0 e i pixel diventano valori
- *       assoluti a 12 bit su 2 byte, senza tabella.
- *       <p><b>La palette sta in fondo, non in testa</b>, ed e' voluto: cosi' l'encoder
- *       emette gli indici mentre scopre i colori, in <i>una</i> passata sui pixel sporchi.
- *       Metterla in testa costringerebbe a una passata in piu' o a uno spostamento di
- *       memoria di centinaia di KB, per zero byte risparmiati sul filo.</li>
- *   <li><b>Modo X (xor)</b> — i pixel dei tile sporchi sono lo XOR a 12 bit col riferimento,
- *       2 byte per pixel, little-endian.</li>
- *   <li><b>Modo R (rgb)</b> — ripiego per il pixel non rappresentabile a 12 bit (§
- *       {@link AmigaColor#fromRgb}): valori RGB <i>assoluti</i>, 3 byte per pixel, ordine
- *       b, g, r. Non dipende dal riferimento per i pixel che spedisce, quindi resta
- *       corretto anche se e' il riferimento a contenere colori fuori tavolozza.</li>
+ *   <li><b>Mode P (palette)</b>: the pixels of the dirty tiles are <i>1-byte indices</i> into a
+ *       per-frame palette (the distinct colours appearing in the dirty tiles). If they exceed
+ *       {@value #MAX_PALETTE}, {@code indexed} is 0 and the pixels become absolute 12-bit
+ *       values on 2 bytes, with no table.
+ *       <p><b>The palette is at the end, not at the start</b>, on purpose: so the encoder
+ *       emits the indices while discovering the colours, in <i>one</i> pass over the dirty
+ *       pixels. Putting it first would force one more pass or a memory move of hundreds of
+ *       KB, for zero bytes saved on the wire.</li>
+ *   <li><b>Mode X (xor)</b>: the pixels of the dirty tiles are the 12-bit XOR with the
+ *       reference, 2 bytes per pixel, little-endian.</li>
+ *   <li><b>Mode R (rgb)</b>: fallback for a pixel not representable in 12 bits (see
+ *       {@link AmigaColor#fromRgb}): <i>absolute</i> RGB values, 3 bytes per pixel, order b,
+ *       g, r. It does not depend on the reference for the pixels it sends, so it stays right
+ *       even if the reference contains colours outside the palette.</li>
  * </ul>
  *
- * <h2>Perche' due modi e non uno</h2>
- * La Fase 0 (vedi {@code docs/remote-play-plan.md} §4.1) ha misurato che <b>nessuno dei due
- * domina l'altro</b>, e non di poco: P vince fino a 1,75x quando i tile sporchi cambiano
- * davvero tutti (1 byte/pixel contro 2, e con pochi colori gli indici formano ripetizioni
- * lunghe che LZ77 divora), X vince fino a 1,95x quando i tile sporchi sono larghi ma
- * <i>dentro</i> cambiano poco, perche' li' lo XOR produce zeri mentre P spedisce comunque
- * il valore assoluto di ogni pixel. Quindi si codifica con entrambi e si spedisce il piu'
- * piccolo: per costruzione il risultato non e' mai peggiore del migliore dei due.
+ * <h2>Why two modes and not one</h2>
+ * Measured ({@code docs/remote-play-plan.md} section 4.1): <b>neither dominates the other</b>,
+ * and not by a little: P wins by up to 1.75x when the dirty tiles really all change (1
+ * byte/pixel against 2, and with few colours the indices form long repetitions LZ77 devours),
+ * X wins by up to 1.95x when the dirty tiles are wide but change little <i>inside</i>,
+ * because there the XOR produces zeros while P still sends the absolute value of every pixel.
+ * So both are encoded and the smaller is sent: by construction the result is never worse than
+ * the better of the two.
  */
 public final class FrameCodec {
 
     /**
-     * Lato del tile. 16 misurato contro 32 in Fase 0: equivalenti come banda, 32 piu' lento.
-     * Sul raster 912x312 danno 57x20 = 1140 tile, cioe' una bitmap da 143 byte.
+     * Side of the tile. 16 measured against 32: equivalent in bandwidth, 32 slower. On the
+     * 912x312 raster they give 57x20 = 1140 tiles, i.e. a 143-byte bitmap.
      */
     public static final int TILE = 16;
 
-    /** Colori distinti oltre i quali il modo P rinuncia agli indici e passa ai 12 bit grezzi. */
+    /** Distinct colours beyond which mode P gives up on indices and switches to raw 12 bits. */
     public static final int MAX_PALETTE = 256;
 
-    /** Lascia scegliere all'encoder il modo piu' piccolo (comportamento normale). */
+    /** Lets the encoder pick the smallest mode (normal behaviour). */
     public static final int MODE_AUTO = 0;
     /** Indici in palette per-frame, 1 byte/pixel. */
     public static final int MODE_PALETTE = 'P';
@@ -89,7 +89,7 @@ public final class FrameCodec {
     private FrameCodec() {
     }
 
-    /** Nome leggibile di un modo, per log e messaggi d'errore. */
+    /** Readable name of a mode, for logs and error messages. */
     public static String modeName(int mode) {
         return switch (mode) {
             case MODE_AUTO -> "auto";
@@ -113,19 +113,19 @@ public final class FrameCodec {
     }
 
     /**
-     * Tetto di sicurezza sul corpo inflato, per la geometria data: il modo piu' voluminoso
-     * (R, 3 byte/pixel) con tutti i tile sporchi. {@link FrameDecoder} rifiuta qualunque
-     * stream che produca piu' di questo <b>senza allocare</b>, cosi' un {@code frameSize}
-     * malevolo non puo' chiedere memoria arbitraria (piano §4, §8.2).
+     * Safety cap on the inflated body, for the given geometry: the bulkiest mode (R, 3
+     * bytes/pixel) with every tile dirty. {@link FrameDecoder} refuses any stream that produces
+     * more than this <b>without allocating</b>, so a malicious {@code frameSize} cannot ask
+     * for arbitrary memory (plan sections 4, 8.2).
      */
     static int maxBodyBytes(int width, int height) {
         return bitmapBytes(width, height) + 3 + 3 * width * height + 2 * MAX_PALETTE;
     }
 
     /**
-     * Tetto sull'uscita di Deflate per un ingresso di {@code n} byte. Deflate puo'
-     * <i>espandere</i> un ingresso incomprimibile; il margine di zlib e' ~0,03%, qui si usa
-     * il 12,5% piu' 128 byte perche' costa memoria virtuale e basta.
+     * Cap on Deflate's output for an input of {@code n} bytes. Deflate can <i>expand</i> an
+     * incompressible input; zlib's margin is ~0.03%, here 12.5% plus 128 bytes is used
+     * because it costs only virtual memory.
      */
     static int deflateBound(int n) {
         return n + (n >> 3) + 128;

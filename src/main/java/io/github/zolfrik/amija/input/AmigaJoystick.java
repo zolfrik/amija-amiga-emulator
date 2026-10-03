@@ -21,25 +21,25 @@
 package io.github.zolfrik.amija.input;
 
 /**
- * Stato del joystick collegato a una game port Amiga.
+ * State of the joystick plugged into an Amiga game port.
  *
- * La codifica del registro JOYxDAT per il joystick segue lo schema hardware OCS:
+ * The encoding of the JOYxDAT register for the joystick follows the OCS hardware scheme:
  *
- *   Bit  9 (Y1): sinistra attiva quando 1
- *   Bit  1 (X1): destra   attiva quando 1
- *   Bit  8 (Y0): su        attivo quando Y0 XOR Y1 = 1
- *   Bit  0 (X0): giù       attivo quando X0 XOR X1 = 1
+ *   Bit  9 (Y1): left  active when 1
+ *   Bit  1 (X1): right active when 1
+ *   Bit  8 (Y0): up    active when Y0 XOR Y1 = 1
+ *   Bit  0 (X0): down  active when X0 XOR X1 = 1
  *
- * ⛔ Sono i <b>due bit bassi</b> dei contatori della porta, non un registro separato:
- * il joystick li impone, il mouse li fa girare, e i 6 bit alti sono gli stessi per
- * entrambi. Vedi {@link GamePort} e {@link #quadX()}.
+ * These are the <b>two low bits</b> of the port's counters, not a separate register: the
+ * joystick imposes them, the mouse turns them, and the 6 high bits are the same for both. See
+ * {@link GamePort} and {@link #quadX()}.
  *
- * Rif: Amiga Hardware Reference Manual, JOY0DAT/JOY1DAT.
+ * Ref: Amiga Hardware Reference Manual, JOY0DAT/JOY1DAT.
  */
 public class AmigaJoystick {
 
     private int axisX = 0;  // -1 = sinistra, 0 = centro, +1 = destra
-    private int axisY = 0;  // -1 = su,        0 = centro, +1 = giù
+    private int axisY = 0;  // -1 = up,        0 = centre, +1 = down
 
     private boolean fireButton = false;
     private boolean button2    = false;
@@ -56,12 +56,11 @@ public class AmigaJoystick {
     public boolean isButton3Pressed() { return button3;    }
 
     /**
-     * Codice di quadratura a 2 bit dell'asse X — i bit 1:0 di JOYxDAT.
+     * 2-bit quadrature code of the X axis: bits 1:0 of JOYxDAT.
      *
-     * <p>⛔ Il joystick non produce un valore di JOYxDAT: produce solo questi due bit, che
-     * {@link GamePort} innesta in fondo al contatore della porta. Porta letterale di
-     * {@code joymousecounter()} (WinUAE {@code inputdevice.cpp}), dove i segnali sono
-     * <b>attivi bassi</b> ({@code right = 0} se la leva è a destra):
+     * <p>The joystick does not produce a JOYxDAT value: it produces only these two bits, which
+     * {@link GamePort} plugs into the bottom of the port's counter. The signals are <b>active
+     * low</b> ({@code right = 0} if the stick is to the right):
      * <pre>
      *   b0 = (bot ^ right) ? 1 : 0;    b1 = (right ^ 1) ? 2 : 0;    cntx = b0 | b1;
      * </pre>
@@ -73,8 +72,8 @@ public class AmigaJoystick {
     }
 
     /**
-     * Codice di quadratura a 2 bit dell'asse Y — i bit 9:8 di JOYxDAT.
-     * Oracolo: {@code b8 = (top ^ left) ? 1 : 0; b9 = (left ^ 1) ? 2 : 0; cnty = b8 | b9;}
+     * 2-bit quadrature code of the Y axis: bits 9:8 of JOYxDAT.
+     * {@code b8 = (top ^ left) ? 1 : 0; b9 = (left ^ 1) ? 2 : 0; cnty = b8 | b9;}
      */
     public int quadY() {
         final int left = (axisX == -1) ? 0 : 1;

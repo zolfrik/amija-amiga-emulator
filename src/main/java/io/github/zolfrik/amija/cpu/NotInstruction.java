@@ -121,14 +121,14 @@ public class NotInstruction extends AbstractM68kInstruction {
                         nextStep(cpu);
                         return false;
                     }
-                    // Overlapped prefetch (Phase 3): the .b/.w write is the LAST bus cycle —
+                    // Overlapped prefetch (Phase 3): the .b/.w write is the LAST bus cycle;
                     // finalize in this same step so it overlaps the write (seam 0) instead of
                     // deferring to step 11 (which wasted 1 mc). See
-                    // docs/cpu-overlapped-prefetch-rework-plan.md §Phase 3.
+                    // docs/cpu-overlapped-prefetch-rework-plan.md, Phase 3.
                     cpu.scheduleWrite(getTemp(cpu, ADDR), getTemp(cpu, VAL), size);
                     return finalizeInstructionSafe(cpu);
                 }
-                case 7 -> { // .L memory MSW write + finalize (last bus cycle → seam 0)
+                case 7 -> { // .L memory MSW write + finalize (last bus cycle: seam 0)
                     if (!cpu.isBusCycleIdle()) return false;
                     cpu.scheduleWriteWord(getTemp(cpu, ADDR), (getTemp(cpu, VAL) >>> 16) & 0xFFFF);
                     return finalizeInstructionSafe(cpu);

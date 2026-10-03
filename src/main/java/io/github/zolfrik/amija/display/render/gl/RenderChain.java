@@ -25,34 +25,34 @@ import java.nio.file.Path;
 import java.util.Locale;
 
 /**
- * Catena di post-processing eseguita sulla GPU fra il frame Amiga e il backbuffer.
+ * Post-processing chain run on the GPU between the Amiga frame and the back buffer.
  *
- * <p>Esistono due realizzazioni, una per formato di preset RetroArch:
- * {@link ShaderChain} per i {@code .glslp} (GLSL "classico") e {@link SlangChain} per i
- * {@code .slangp} (Vulkan-GLSL tradotto). {@link GlDisplaySurface} non distingue fra le
- * due: sceglie in base all'estensione con {@link #build(Path)}.
+ * <p>There are two implementations, one per RetroArch preset format: {@link ShaderChain} for
+ * {@code .glslp} ("classic" GLSL) and {@link SlangChain} for {@code .slangp} (translated Vulkan
+ * GLSL). {@link GlDisplaySurface} does not tell them apart: it chooses by extension with
+ * {@link #build(Path)}.
  *
- * <p>Tutti i metodi tranne {@link #setParam} vanno chiamati sul thread GL.
+ * <p>Every method except {@link #setParam} must be called on the GL thread.
  */
 public interface RenderChain {
 
     /**
-     * Esegue la catena: {@code origTex} (frame Amiga ad altezza nativa) attraversa i pass
-     * e l'ultimo disegna sul framebuffer di default nel rettangolo di viewport indicato.
+     * Runs the chain: {@code origTex} (Amiga frame at native height) goes through the passes and
+     * the last one draws on the default framebuffer in the given viewport rectangle.
      */
     void render(int origTex, int origW, int origH,
                 int vpX, int vpY, int vpW, int vpH, long frameCount);
 
     /**
-     * Aggiorna a caldo un parametro. Chiamabile da un thread diverso da quello GL
-     * (l'implementazione sincronizza); no-op se il parametro non esiste.
+     * Updates a parameter live. Callable from a thread other than the GL one (the
+     * implementation synchronises); no-op if the parameter does not exist.
      */
     void setParam(String name, float value);
 
-    /** Libera tutte le risorse GL. */
+    /** Releases every GL resource. */
     void dispose();
 
-    /** Compila il preset scegliendo l'implementazione dall'estensione del file. */
+    /** Compiles the preset, choosing the implementation from the file's extension. */
     static RenderChain build(Path preset) throws IOException {
         String n = preset.getFileName().toString().toLowerCase(Locale.ROOT);
         if (n.endsWith(".slangp")) {

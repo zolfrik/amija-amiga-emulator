@@ -26,38 +26,37 @@ import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 
 /**
- * Intestazione del blocco audio <b>AJA1</b> ({@code docs/remote-play-plan.md} §4.2).
+ * Header of the <b>AJA1</b> audio block ({@code docs/remote-play-plan.md} section 4.2).
  *
  * <pre>
- *   u64 sampleIndex   indice ASSOLUTO del primo campione del blocco
+ *   u64 sampleIndex   ABSOLUTE index of the block's first sample
  *   u8  format        PCM16 | ADPCM
- *   u16 frames        campioni per canale
+ *   u16 frames        samples per channel
  *   ... payload
  * </pre>
  *
- * <h2>Il contatore assoluto e' tutto il meccanismo</h2>
- * Senza, un blocco perso farebbe <b>slittare in avanti</b> tutto quello che segue: l'audio
- * resterebbe continuo ma andrebbe fuori sincrono col video, e ogni perdita successiva
- * aggiungerebbe il suo pezzetto di ritardo. Con l'indice assoluto l'ospite si accorge del
- * buco, ci mette **silenzio della lunghezza giusta** e riprende in fase.
+ * <h2>The absolute counter is the whole mechanism</h2>
+ * Without it, a lost block would <b>shift forward</b> everything that follows: the audio would
+ * stay continuous but drift out of sync with the video, and every later loss would add its bit
+ * of delay. With the absolute index the guest notices the gap, puts <b>silence of the right
+ * length</b> in it and resumes in phase.
  *
- * <p>E' la stessa idea dei contatori cumulativi del mouse (§4.3): dove la cosa naturale
- * sarebbe un delta, si spedisce una posizione — cosi' una perdita costa quel che ha perso e
- * non lascia strascichi.
+ * <p>The same idea as the cumulative mouse counters (section 4.3): where the natural thing would
+ * be a delta, a position is sent, so a loss costs what it lost and leaves no aftermath.
  */
 public record AudioBlockHeader(long sampleIndex, int format, int frames) {
 
     public static final int SIZE = 11;
 
-    /** S16LE stereo, bit-esatto: quel che sente l'host, campione per campione. */
+    /** Stereo S16LE, bit-exact: what the host hears, sample by sample. */
     public static final int FORMAT_PCM16 = 1;
-    /** IMA-ADPCM 4:1: un quarto della banda, ogni blocco indipendente (§15.5). */
+    /** 4:1 IMA ADPCM: a quarter of the bandwidth, every block independent (section 15.5). */
     public static final int FORMAT_ADPCM = 2;
 
-    /** Campioni per canale in un blocco: il chunk di {@code JavaSoundAudioOutput}. */
+    /** Samples per channel in a block: the chunk of {@code JavaSoundAudioOutput}. */
     public static final int FRAMES_PER_BLOCK = 1024;
 
-    /** Tetto di sicurezza: un blocco piu' lungo di cosi' non lo produce nessuno. */
+    /** Safety cap: nobody produces a block longer than this. */
     public static final int MAX_FRAMES = 4096;
 
     public static String formatName(int format) {
@@ -68,7 +67,7 @@ public record AudioBlockHeader(long sampleIndex, int format, int frames) {
         };
     }
 
-    /** Byte di payload che questo blocco deve avere. */
+    /** Payload bytes this block must have. */
     public int payloadBytes() {
         return format == FORMAT_ADPCM
                 ? ImaAdpcm.blockBytes(frames, 2)
@@ -82,10 +81,10 @@ public record AudioBlockHeader(long sampleIndex, int format, int frames) {
     }
 
     /**
-     * Legge e <b>valida</b> un'intestazione.
+     * Reads and <b>validates</b> a header.
      *
-     * @param blobLength lunghezza totale del blob, intestazione compresa
-     * @throws ProtocolException se il blocco e' troncato o dichiara qualcosa di impossibile
+     * @param blobLength total length of the blob, header included
+     * @throws ProtocolException if the block is truncated or declares something impossible
      */
     public static AudioBlockHeader readFrom(ByteBuffer b, int blobLength)
             throws ProtocolException {

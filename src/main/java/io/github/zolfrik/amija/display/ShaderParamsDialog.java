@@ -58,10 +58,9 @@ import java.util.Map;
 import java.util.function.BiConsumer;
 
 /**
- * Popup di modifica dei parametri ({@code #pragma parameter}) di uno shader RetroArch.
- * Uno slider per parametro; le modifiche si applicano <b>a caldo</b> (via
- * {@code liveUpdate}) e vengono salvate accanto al preset ({@code <preset>.params}) alla
- * chiusura, così sopravvivono ai riavvii.
+ * Popup editing the parameters ({@code #pragma parameter}) of a RetroArch shader. One slider
+ * per parameter; the changes apply <b>live</b> (through {@code liveUpdate}) and are saved next
+ * to the preset ({@code <preset>.params}) when it closes, so they survive restarts.
  */
 public final class ShaderParamsDialog {
 
@@ -74,8 +73,8 @@ public final class ShaderParamsDialog {
     private ShaderParamsDialog() { }
 
     /**
-     * Mostra il dialog (modale) per il preset {@code glslp}. {@code liveUpdate} riceve
-     * {@code (nome, valore)} a ogni modifica, per l'applicazione a caldo sullo shader.
+     * Shows the (modal) dialog for the preset {@code glslp}. {@code liveUpdate} receives
+     * {@code (name, value)} at every change, to apply it live to the shader.
      */
     public static void show(Window parent, Path glslp, BiConsumer<String, Float> liveUpdate) {
         List<ShaderParams.Param> params;
@@ -92,7 +91,7 @@ public final class ShaderParamsDialog {
             return;
         }
 
-        // Valori correnti: override salvati, altrimenti default del parametro.
+        // Current values: saved overrides, otherwise the parameter's default.
         Map<String, Float> saved = ShaderParams.loadOverrides(glslp);
         Map<String, Float> values = new LinkedHashMap<>();
         for (ShaderParams.Param p : params) {
@@ -107,8 +106,8 @@ public final class ShaderParamsDialog {
         content.setBackground(BG);
         content.setBorder(pad(12, 16, 12, 16));
 
-        // Un controllo (slider + valore) per parametro; l'aggiornamento delle etichette
-        // viene registrato per il "Reset predefiniti".
+        // One control (slider + value) per parameter; the label update is registered for
+        // "Reset defaults".
         Map<String, Runnable> resetters = new LinkedHashMap<>();
         int row = 0;
         for (ShaderParams.Param p : params) {
@@ -144,7 +143,7 @@ public final class ShaderParamsDialog {
         headerAndBody.add(header, BorderLayout.NORTH);
         headerAndBody.add(scroll, BorderLayout.CENTER);
 
-        // Pulsanti.
+        // Buttons.
         JButton reset = button(Messages.t("button.resetDefaults"), false);
         JButton close = button(Messages.t("button.close"), true);
         reset.addActionListener(e -> {
@@ -216,7 +215,7 @@ public final class ShaderParamsDialog {
         });
         valueLabel.setText(fmt(values.get(p.name())));
 
-        // Registratore per il reset: riposiziona lo slider (che rilancia la changeListener).
+        // Recorder for the reset: repositions the slider (which fires the changeListener again).
         resetters.put(p.name(), () -> slider.setValue(sliderPos(p, values.get(p.name()), fSteps)));
 
         GridBagConstraints gc = new GridBagConstraints();

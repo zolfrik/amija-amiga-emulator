@@ -23,63 +23,53 @@ package io.github.zolfrik.amija.memory;
 import java.util.Arrays;
 
 /**
- * ROM (Read-Only Memory) per il Kickstart e altre aree non scrivibili dell'Amiga 500.
+ * ROM (Read-Only Memory) for the Kickstart and other non-writable areas of the Amiga 500.
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * CARATTERISTICHE
- * ═══════════════════════════════════════════════════════════════════════════
+ * CHARACTERISTICS
  *
  *   - Big-endian
- *   - Bound check rigoroso su ogni accesso.
- *   - Scritture runtime IGNORATE silenziosamente (comportamento hardware reale:
- *     le ROM non reagiscono agli impulsi di scrittura sul bus, il dato va perso)
- *   - Operazioni di "programmazione" (loadImage, load) sempre permesse:
- *     rappresentano il caricamento dell'immagine ROM all'avvio dell'emulatore,
- *     non scritture runtime della CPU
+ *   - Strict bounds check on every access.
+ *   - Run-time writes silently IGNORED (as on the hardware: ROMs do not react to write
+ *     pulses on the bus, the data is lost)
+ *   - "Programming" operations (loadImage, load) always allowed: they are the loading of
+ *     the ROM image when the emulator starts, not run-time CPU writes
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * ROM KICKSTART AMIGA 500
- * ═══════════════════════════════════════════════════════════════════════════
+ * AMIGA 500 KICKSTART ROM
  *
  * Kickstart 1.3 (256 KB):
  *   ROM rom = new ROM(256 * 1024);
- *   rom.loadImage(kickstart13bytes);  // array da 262144 byte
- *   // Mappata da Gary a $FC0000–$FFFFFF e mirror a $F80000–$FBFFFF
+ *   rom.loadImage(kickstart13bytes);  // 262144-byte array
+ *   // Mapped by Gary at $FC0000-$FFFFFF and mirrored at $F80000-$FBFFFF
  *
  * Kickstart 2.x / 3.x (512 KB):
  *   ROM rom = new ROM(512 * 1024);
- *   rom.loadImage(kickstart3bytes);   // array da 524288 byte
- *   // Mappata da Gary a $F80000–$FFFFFF
+ *   rom.loadImage(kickstart3bytes);   // 524288-byte array
+ *   // Mapped by Gary at $F80000-$FFFFFF
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * NOTE SULLE SCRITTURE
- * ═══════════════════════════════════════════════════════════════════════════
+ * NOTES ON WRITES
  *
- * Sull'hardware reale, un accesso in scrittura all'area ROM semplicemente non
- * ha effetto: il chip ROM non è connesso alla linea /WE del bus. Il dato
- * scritto dalla CPU viene ignorato. Agnus/Gary prevengono già la maggior parte
- * degli accessi in scrittura alla ROM, ma le scritture durante l'overlay
- * (indirizzo $000000–$07FFFF con OVL=1) vengono reindirizzate alla Chip RAM
- * dallo stesso Gary — quindi in pratica ROM.write*() non dovrebbe mai essere
- * chiamato per scritture della CPU. Se viene chiamato, il comportamento
- * corretto è ignorare silenziosamente (IGNORE policy).
+ * On the hardware a write to the ROM area simply has no effect: the ROM chip is not wired
+ * to the bus's /WE line, and the data written by the CPU is ignored. Agnus/Gary already
+ * prevent most writes to the ROM, and writes during the overlay ($000000-$07FFFF with
+ * OVL=1) are redirected to the Chip RAM by Gary itself, so in practice ROM.write*() should
+ * never be called for CPU writes. If it is, the right behaviour is to ignore it silently.
  *
  * @author alessio.carotenuto
  */
 public final class ROM {
 
     // =========================================================================
-    // Stato interno
+    // Internal state
     // =========================================================================
 
-    /** Array di byte che costituisce il contenuto della ROM. */
+    /** Byte array holding the content of the ROM. */
     private final byte[] mem;
 
-    /** Dimensione della ROM in byte. */
+    /** Size of the ROM in bytes. */
     private final int size;
 
 
-    /** Flag: la ROM contiene dati validi (dopo loadImage). */
+    /** Flag: the ROM holds valid data (after loadImage). */
     private boolean loaded = false;
 
     // =========================================================================
@@ -87,25 +77,24 @@ public final class ROM {
     // =========================================================================
 
     /**
-     * Crea una ROM vuota della dimensione specificata.
-     * Tutti i byte sono inizializzati a 0xFF (simula ROM non programmata).
+     * Creates an empty ROM of the given size. All bytes are initialised to 0xFF (an
+     * unprogrammed ROM).
      *
-     * @param sizeBytes Dimensione in byte (deve essere > 0)
+     * @param sizeBytes size in bytes (must be > 0)
      */
     public ROM(int sizeBytes) {
         if (sizeBytes <= 0)
             throw new IllegalArgumentException("ROM size must be > 0, got: " + sizeBytes);
         this.mem  = new byte[sizeBytes];
         this.size = sizeBytes;
-        // ROM non programmata = tutti 0xFF (come flash/EPROM vergine)
+        // Unprogrammed ROM = all 0xFF (like blank flash/EPROM)
         Arrays.fill(this.mem, (byte)0xFF);
     }
 
     /**
-     * Crea la ROM caricando direttamente un'immagine.
-     * L'array viene copiato internamente.
+     * Creates the ROM loading an image directly. The array is copied internally.
      *
-     * @param image Array di byte con l'immagine ROM (non deve essere null o vuoto)
+     * @param image byte array with the ROM image (must not be null or empty)
      */
     public ROM(byte[] image) {
         if (image == null || image.length == 0)
@@ -117,17 +106,17 @@ public final class ROM {
     }
 
     // =========================================================================
-    // Caricamento immagine (operazioni di "programmazione")
+    // Image loading ("programming" operations)
     // =========================================================================
 
     /**
-     * Carica un'immagine ROM completa.
+     * Loads a complete ROM image.
      *
-     * Questa operazione rappresenta il caricamento del Kickstart ROM all'avvio
-     * dell'emulatore — NON è una scrittura runtime della CPU.
+     * This is the loading of the Kickstart ROM when the emulator starts, NOT a run-time CPU
+     * write.
      *
-     * @param src Array sorgente di dimensione esattamente uguale a {@code size}
-     * @throws IllegalArgumentException se la dimensione non corrisponde
+     * @param src source array of size exactly {@code size}
+     * @throws IllegalArgumentException if the size does not match
      */
     public void loadImage(byte[] src) {
         if (src == null)
@@ -140,12 +129,12 @@ public final class ROM {
     }
 
     /**
-     * Carica un'immagine ROM da un array più grande, specificando offset e lunghezza.
-     * Utile quando l'immagine è parte di un file più grande (es. con header).
+     * Loads a ROM image from a larger array, given offset and length. Useful when the image
+     * is part of a larger file (e.g. with a header).
      *
-     * @param src Array sorgente
-     * @param off Offset nell'array sorgente
-     * @param len Numero di byte da caricare (deve essere uguale a {@code size})
+     * @param src source array
+     * @param off offset in the source array
+     * @param len number of bytes to load (must be equal to {@code size})
      */
     public void loadImage(byte[] src, int off, int len) {
         if (src == null) throw new NullPointerException("src");
@@ -159,13 +148,13 @@ public final class ROM {
     }
 
     /**
-     * Carica un blocco di byte in una posizione specifica della ROM.
-     * Usato per aggiornamenti parziali o patch dell'immagine ROM.
+     * Loads a block of bytes at a given position of the ROM. Used for partial updates or
+     * patches of the ROM image.
      *
-     * @param address Indirizzo di destinazione nella ROM
-     * @param src     Array sorgente
-     * @param off     Offset nell'array sorgente
-     * @param len     Numero di byte
+     * @param address destination address in the ROM
+     * @param src     source array
+     * @param off     offset in the source array
+     * @param len     number of bytes
      */
     public void load(int address, byte[] src, int off, int len) {
         if (src == null) throw new NullPointerException("src");
@@ -184,28 +173,27 @@ public final class ROM {
     }
 
     // =========================================================================
-    // Accesso in lettura
+    // Read access
     // =========================================================================
 
     /**
-     * Legge 1 byte (unsigned 0–255).
+     * Reads 1 byte (unsigned 0-255).
      *
-     * @param address Indirizzo fisico (24 bit effettivi)
-     * @return Valore byte unsigned
+     * @param address physical address (24 effective bits)
+     * @return unsigned byte value
      */
     public int readByte(int address) {
         return mem[idx(address)] & 0xFF;
     }
 
     /**
-     * Legge 1 word a 16 bit in formato big-endian.
+     * Reads one 16-bit word, big-endian.
      *
-     * Il wrap della ROM garantisce il mirror hardware corretto:
-     * una ROM da 256 KB usa {@code address & 0x3FFFF} → le letture a $FC0000
-     * e a $F80000 (mirror) producono gli stessi dati.
+     * The ROM's wrap gives the hardware mirror: a 256 KB ROM uses {@code address & 0x3FFFF},
+     * so reads at $FC0000 and at $F80000 (mirror) give the same data.
      *
-     * @param address Indirizzo fisico
-     * @return Valore word unsigned a 16 bit
+     * @param address physical address
+     * @return unsigned 16-bit word value
      */
     public int readWord(int address) {
         int i0 = idx(address);
@@ -214,10 +202,10 @@ public final class ROM {
     }
 
     /**
-     * Legge 1 longword a 32 bit in formato big-endian.
+     * Reads one 32-bit longword, big-endian.
      *
-     * @param address Indirizzo fisico
-     * @return Valore longword a 32 bit
+     * @param address physical address
+     * @return 32-bit longword value
      */
     public int readLong(int address) {
         int i0 = idx(address);
@@ -231,41 +219,40 @@ public final class ROM {
     }
 
     // =========================================================================
-    // Accesso in scrittura (runtime — sempre ignorato)
+    // Write access (run time: always ignored)
     // =========================================================================
 
     /**
-     * Scrittura byte su ROM: ignorata silenziosamente.
+     * Byte write to ROM: silently ignored.
      *
-     * Sull'hardware reale le ROM non sono connesse a /WE:
-     * la scrittura non ha effetto. Non lancia eccezioni per non
-     * interrompere il normale flusso del bus durante il boot.
+     * ROMs are not wired to /WE: the write has no effect. No exception is thrown, so the
+     * normal bus flow during the boot is not interrupted.
      */
     public void writeByte(int address, int value) {
     }
 
     /**
-     * Scrittura word su ROM: ignorata silenziosamente.
+     * Word write to ROM: silently ignored.
      */
     public void writeWord(int address, int value) {
     }
 
     /**
-     * Scrittura long su ROM: ignorata silenziosamente.
+     * Long write to ROM: silently ignored.
      */
     public void writeLong(int address, int value) {
     }
 
     // =========================================================================
-    // Utilità di dump
+    // Dump utilities
     // =========================================================================
 
     /**
-     * Legge un blocco di byte dalla ROM in un nuovo array.
+     * Reads a block of bytes from the ROM into a new array.
      *
-     * @param address Indirizzo sorgente
-     * @param len     Numero di byte
-     * @return Nuovo array con i dati letti
+     * @param address source address
+     * @param len     number of bytes
+     * @return new array with the data read
      */
     public byte[] dumpBlock(int address, int len) {
         if (len < 0) throw new IllegalArgumentException("len must be >= 0");
@@ -282,12 +269,12 @@ public final class ROM {
     }
 
     /**
-     * Hex dump di una finestra di memoria ROM.
+     * Hex dump of a window of ROM.
      *
-     * @param address      Indirizzo di inizio
-     * @param len          Numero di byte
-     * @param bytesPerLine Byte per riga di output
-     * @return Stringa con il dump esadecimale
+     * @param address      start address
+     * @param len          number of bytes
+     * @param bytesPerLine bytes per output line
+     * @return string with the hex dump
      */
     public String hexDump(int address, int len, int bytesPerLine) {
         if (len < 0 || bytesPerLine <= 0)
@@ -304,13 +291,11 @@ public final class ROM {
     }
 
     /**
-     * Calcola il checksum a 16 bit dell'immagine ROM (somma di tutte le word,
-     * ignorando l'overflow). Utile per verificare l'integrità del Kickstart.
+     * Computes the checksum of the ROM image: the sum of all its longwords, ignoring the
+     * overflow. Useful to check the integrity of the Kickstart: the sum of all the
+     * longwords (the checksum longword included) must be 0xFFFFFFFF.
      *
-     * Il Kickstart Amiga usa questa formula: la somma di tutte le word (inclusa
-     * la checksum word stessa) deve dare 0xFFFFFFFF.
-     *
-     * @return Checksum a 32 bit (somma di tutte le longword)
+     * @return 32-bit checksum (sum of all the longwords)
      */
     public long checksum() {
         long sum = 0;
@@ -325,10 +310,10 @@ public final class ROM {
     }
 
     /**
-     * Verifica se l'immagine ROM è valida confrontando il checksum.
-     * Una ROM Kickstart Amiga valida ha checksum = 0xFFFFFFFF.
+     * Checks whether the ROM image is valid from its checksum. A valid Amiga Kickstart ROM
+     * has checksum = 0xFFFFFFFF.
      *
-     * @return true se il checksum è 0xFFFFFFFF
+     * @return true if the checksum is 0xFFFFFFFF
      */
     public boolean isChecksumValid() {
         return checksum() == 0xFFFFFFFFL;
@@ -338,11 +323,11 @@ public final class ROM {
     // Accessori
     // =========================================================================
 
-    /** Restituisce la dimensione della ROM in byte. */
+    /** Returns the size of the ROM in bytes. */
     public int size()            { return size; }
 
 
-    /** Restituisce true se l'immagine ROM è stata caricata. */
+    /** Returns true if the ROM image has been loaded. */
     public boolean isLoaded()    { return loaded; }
 
     // =========================================================================
@@ -350,11 +335,11 @@ public final class ROM {
     // =========================================================================
 
     /**
-     * Calcola l'indice effettivo in {@code mem} per l'indirizzo dato.
-     * Implementa il wrapping hardware della ROM.
+     * Computes the effective index into {@code mem} for the given address, with the ROM's
+     * hardware wrapping.
      *
-     * @param address Indirizzo fisico
-     * @return Indice in {@code mem[0..size-1]}
+     * @param address physical address
+     * @return index in {@code mem[0..size-1]}
      */
     private int idx(int address) {
         int i = address % size;

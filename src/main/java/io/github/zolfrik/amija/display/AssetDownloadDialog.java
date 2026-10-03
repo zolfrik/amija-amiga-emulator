@@ -57,17 +57,17 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Assistente di download del materiale di terze parti che AmiJa non può
- * ridistribuire: WHDLoad e le tabelle di rilocazione.
+ * Download assistant for the third-party material AmiJa cannot redistribute: WHDLoad and the
+ * relocation tables.
  *
- * <p>Mostra esattamente ciò che {@link AssetCatalog#packages} elenca — che non è
- * tutto ciò che il catalogo sa installare: i due pacchetti del Mega Bezel sono
- * definiti ma tenuti fuori dalla lista (vedi {@code AssetCatalog.hiddenPackages}).
+ * <p>It shows exactly what {@link AssetCatalog#packages} lists, which is not everything the
+ * catalogue can install: the two Mega Bezel packages are defined but kept out of the list (see
+ * {@code AssetCatalog.hiddenPackages}).
  *
- * <p>La finestra <b>è</b> il consenso. Niente parte da sola: ogni pacchetto va
- * spuntato a mano, e prima della spunta l'utente vede a chi appartiene, da quale
- * URL arriva e quanto pesa. Il razionale — scaricare per conto dell'utente non è
- * ridistribuire — è in {@code THIRD-PARTY-NOTICES.md} §5.
+ * <p>The window <b>is</b> the consent. Nothing starts by itself: every package must be ticked by
+ * hand, and before ticking the user sees whom it belongs to, which URL it comes from and how
+ * large it is. The rationale (downloading on the user's behalf is not redistributing) is in
+ * {@code THIRD-PARTY-NOTICES.md} section 5.
  *
  * @see AssetCatalog
  */
@@ -92,7 +92,7 @@ public final class AssetDownloadDialog {
         dialog.getContentPane().setBackground(BG);
         dialog.setLayout(new BorderLayout(0, 10));
 
-        // --- Intestazione: cosa sta per succedere, e perché è lecito. -------
+        // --- Header: what is about to happen, and why it is lawful. -------
         JPanel header = new JPanel();
         header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
         header.setBackground(BG);
@@ -102,7 +102,7 @@ public final class AssetDownloadDialog {
         header.add(wrapped(Messages.t("assets.intro.legal"), DIM, 460));
         dialog.add(header, BorderLayout.NORTH);
 
-        // --- Un riquadro per pacchetto. -------------------------------------
+        // --- One panel per package. -------------------------------------------
         JPanel list = new JPanel();
         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
         list.setBackground(BG);
@@ -126,11 +126,10 @@ public final class AssetDownloadDialog {
             box.setBackground(PANEL_BG);
             box.setForeground(FG);
             box.setAlignmentX(Component.LEFT_ALIGNMENT);
-            // Già installato ⇒ non lo si riscarica per sbaglio; resta comunque
-            // spuntabile a mano, che è il modo per aggiornarlo. Un pacchetto non
-            // preselezionato parte spento anche quando manca: è il trattamento dei
-            // pacchetti grossi e facoltativi, che vanno scelti apposta perché
-            // "Scarica" non avvii centinaia di MB non richiesti.
+            // Already installed: not downloaded again by mistake; it can still be ticked by
+            // hand, which is the way to update it. A package not preselected starts off even
+            // when missing: the treatment of the large, optional packages, which must be chosen
+            // on purpose so "Download" does not start hundreds of MB nobody asked for.
             box.setSelected(pkg.preselected() && !pkg.installed());
             card.add(box);
 
@@ -155,7 +154,7 @@ public final class AssetDownloadDialog {
         scroll.setPreferredSize(dim(520, 340));
         dialog.add(scroll, BorderLayout.CENTER);
 
-        // --- Avanzamento e comandi. -----------------------------------------
+        // --- Progress and commands. -----------------------------------------
         JPanel south = new JPanel();
         south.setLayout(new BoxLayout(south, BoxLayout.Y_AXIS));
         south.setBackground(BG);
@@ -212,7 +211,7 @@ public final class AssetDownloadDialog {
 
     // =========================================================================
 
-    /** Esegue i download fuori dall'EDT, riportando l'avanzamento sulla finestra. */
+    /** Runs the downloads off the EDT, reporting progress on the window. */
     private static final class Worker extends SwingWorker<Void, Object[]> {
 
         private final List<AssetPackage> selected;
@@ -254,8 +253,8 @@ public final class AssetDownloadDialog {
                     publish(new Object[] { "done", pkg, result.files() });
                 } catch (Exception ex) {
                     failed++;
-                    // L'utente deve poter rimediare a mano: il messaggio porta con sé
-                    // URL e destinazione (li compone AssetInstaller).
+                    // The user must be able to fix it by hand: the message carries URL and
+                    // destination (AssetInstaller composes them).
                     String reason = (ex.getMessage() != null) ? ex.getMessage() : ex.toString();
                     System.err.println("[ASSETS] " + pkg.id() + ": " + reason);
                     publish(new Object[] { "failed", pkg, reason });
@@ -316,8 +315,8 @@ public final class AssetDownloadDialog {
                 status.setText(Messages.t("assets.status.ok"));
                 status.setForeground(OK);
             }
-            // Le finestre che mostrano lo stato dei file (p.es. la config) vanno
-            // riaperte per rileggerlo: qui basta rinfrescare l'etichetta.
+            // The windows showing the files' state (e.g. the config) must be reopened to re-read
+            // it: here refreshing the label is enough.
             SwingUtilities.invokeLater(() -> status.getParent().revalidate());
         }
     }
@@ -338,7 +337,7 @@ public final class AssetDownloadDialog {
         return l;
     }
 
-    /** Etichetta multiriga: l'HTML è il modo più semplice di mandare a capo in Swing. */
+    /** Multi-line label: HTML is the simplest way to wrap text in Swing. */
     private static JLabel wrapped(String text, Color color, int widthPx) {
         JLabel l = new JLabel("<html><body style='width:" + widthPx + "px'>"
                 + escape(text) + "</body></html>");

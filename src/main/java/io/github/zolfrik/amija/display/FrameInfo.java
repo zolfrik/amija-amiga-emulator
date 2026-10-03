@@ -21,10 +21,10 @@
 package io.github.zolfrik.amija.display;
 
 /**
- * Metadati di frame passati da VirtualCRT ad AmigaDisplay insieme al framebuffer raw.
+ * Frame metadata passed by VirtualCRT to AmigaDisplay together with the raw framebuffer.
  *
- * <p>Classe mutabile e riusabile: viene aggiornata a ogni frame per evitare una
- * allocazione fissa nel path di presentazione.
+ * <p>Mutable and reusable: it is updated at every frame to avoid a fixed allocation on the
+ * presentation path.
  */
 public final class FrameInfo {
     private boolean hires;
@@ -34,8 +34,8 @@ public final class FrameInfo {
     private int visibleY;
     private int visibleWidth;
     private int visibleHeight;
-    // Contatore dei fotogrammi emulati (PAL), indipendente dalla velocità di emulazione:
-    // serve come riferimento temporale riproducibile per l'overlay "frame counter".
+    // Counter of the emulated frames (PAL), independent of the emulation speed: a reproducible
+    // time reference for the "frame counter" overlay.
     private long frameCount;
 
     public FrameInfo() {

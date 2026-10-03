@@ -26,22 +26,21 @@ import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 
 /**
- * Intestazione del <b>blob</b> di un frame video: metadati piu' la lunghezza del payload
- * codificato ({@code docs/remote-play-plan.md} §4.1).
+ * Header of a video frame's <b>blob</b>: metadata plus the length of the encoded payload
+ * ({@code docs/remote-play-plan.md} section 4.1).
  *
- * <h2>Perche' sta nel blob e non in ogni frammento</h2>
- * Il §4.1 disegnava questi campi dentro ogni datagramma. Ma un frame incompleto viene
- * <b>scartato intero</b> — mai riassemblaggi parziali a schermo — quindi ripetere i metadati
- * in ogni frammento paga per un'informazione che, se manca il frammento 0, non serve
- * comunque a nulla. Qui l'intestazione e' il prefisso del blob, il blob viene tagliato in
- * pezzi <b>tutti della stessa capacita'</b>, e il riassemblaggio diventa un semplice
- * {@code arraycopy} all'offset {@code fragIdx * FRAGMENT_DATA}: nessun caso speciale per il
- * primo frammento, nessuna aritmetica di offset che dipende dai dati ricevuti.
+ * <h2>Why it is in the blob and not in every fragment</h2>
+ * An incomplete frame is <b>discarded entirely</b> (never partial reassemblies on screen), so
+ * repeating the metadata in every fragment would pay for information that, if fragment 0 is
+ * missing, is useless anyway. Here the header is the blob's prefix, the blob is cut into pieces
+ * <b>all of the same capacity</b>, and the reassembly becomes a plain {@code arraycopy} at offset
+ * {@code fragIdx * FRAGMENT_DATA}: no special case for the first fragment, no offset arithmetic
+ * depending on the data received.
  *
- * <h2>Geometria ridondante, di proposito</h2>
- * {@code width}/{@code height} sono gia' concordati nel WELCOME. Vengono ripetuti perche'
- * il decodificatore ha buffer dimensionati su quella geometria, ed e' meglio che un frame
- * incoerente venga rifiutato dal <i>controllo</i> che dal buffer.
+ * <h2>Redundant geometry, on purpose</h2>
+ * {@code width}/{@code height} are already agreed in the WELCOME. They are repeated because the
+ * decoder's buffers are sized on that geometry, and an inconsistent frame is better refused by
+ * the <i>check</i> than by the buffer.
  */
 public record VideoFrameHeader(
         long refFrameId,      // NO_REFERENCE = keyframe
@@ -87,9 +86,9 @@ public record VideoFrameHeader(
     }
 
     /**
-     * Legge e <b>valida</b> un'intestazione contro la geometria concordata.
+     * Reads and <b>validates</b> a header against the agreed geometry.
      *
-     * @throws ProtocolException se il blob e' troncato o dichiara qualcosa di impossibile
+     * @throws ProtocolException if the blob is truncated or declares something impossible
      */
     public static VideoFrameHeader readFrom(ByteBuffer b, int expectedWidth, int expectedHeight,
                                             int blobLength) throws ProtocolException {
@@ -121,13 +120,12 @@ public record VideoFrameHeader(
                 throw new ProtocolException("payload dichiarato " + payloadLength
                         + " byte, nel blob ce ne sono " + (blobLength - SIZE));
             }
-            // La finestra visibile non dimensiona buffer, ma esce da qui e finisce dentro
-            // FrameInfo, cioe' nella catena di presentazione locale, che la usa per centrare
-            // l'immagine. Sono quattro interi arbitrari che arrivano dalla rete: sommarli
-            // senza guardarli e' come minimo un'immagine spinta fuori dallo schermo, e i
-            // valori estremi fanno avvolgere l'aritmetica di chi li combina. Il tetto e' la
-            // geometria stessa del frame, che e' l'unica cosa di cui la finestra visibile
-            // possa parlare.
+            // The visible window sizes no buffer, but it leaves here and ends up in FrameInfo,
+            // i.e. in the local presentation chain, which uses it to centre the image. They are
+            // four arbitrary integers arriving from the network: adding them up unchecked gives
+            // at least an image pushed off screen, and extreme values make the arithmetic of
+            // whoever combines them wrap. The cap is the frame's own geometry, the only thing
+            // the visible window can talk about.
             if (visX < 0 || visY < 0 || visW < 0 || visH < 0
                     || visX > width || visY > height
                     || visW > width || visH > height

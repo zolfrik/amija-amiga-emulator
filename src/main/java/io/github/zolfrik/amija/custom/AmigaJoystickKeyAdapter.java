@@ -28,22 +28,23 @@ import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 
 /**
- * Emula un joystick Amiga via tastiera host, indipendentemente per le due game port.
+ * Emulates an Amiga joystick through the host keyboard, independently for the two game
+ * ports.
  *
- * <p>Ogni porta ("Port 0" e "Port 1" del popup F12) ha la propria {@link JoystickKeyMap}:
- * di default frecce + Ctrl sinistro per Port 1 e W/A/S/D + Ctrl destro per Port 0, ma i
- * tasti sono configurabili da {@code amiga.properties} e dal popup F12. Le porte non
- * pilotate dalla tastiera restano semplicemente sconfigurate ({@code port == null}).
+ * <p>Each port ("Port 0" and "Port 1" of the F12 popup) has its own {@link JoystickKeyMap}: by
+ * default arrows + left Ctrl for Port 1 and W/A/S/D + right Ctrl for Port 0, but the keys can
+ * be configured from {@code amiga.properties} and from the F12 popup. Ports not driven by the
+ * keyboard simply stay unconfigured ({@code port == null}).
  *
- * <p>I tasti mappati vengono consumati e NON inoltrati alla tastiera Amiga: questo
- * adapter va quindi registrato PRIMA di {@code AmigaKeyAdapter} sul componente di input.
+ * <p>The mapped keys are consumed and NOT forwarded to the Amiga keyboard: this adapter must
+ * therefore be registered BEFORE {@code AmigaKeyAdapter} on the input component.
  */
 public class AmigaJoystickKeyAdapter extends KeyAdapter {
 
-    /** Numero di game port gestite: indice 0 = "Port 0", indice 1 = "Port 1". */
+    /** Number of game ports handled: index 0 = "Port 0", index 1 = "Port 1". */
     private static final int PORTS = 2;
 
-    /** Stato di una porta: destinazione, tasti associati e direzioni premute. */
+    /** State of a port: target, bound keys and pressed directions. */
     private static final class PortState {
         volatile GamePortControls port;
         volatile JoystickKeyMap keyMap;
@@ -60,18 +61,18 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
     }
 
     /**
-     * Configura (anche a caldo, dal popup F12) il joystick da tastiera di una porta.
+     * Configures (live too, from the F12 popup) the keyboard joystick of a port.
      *
      * @param portIndex 0 = "Port 0", 1 = "Port 1"
-     * @param port      game port pilotata, o {@code null} per disattivare la porta
-     * @param keyMap    tasti associati; {@code null} ripristina i default della porta
+     * @param port      game port driven, or {@code null} to disable the port
+     * @param keyMap    assigned keys; {@code null} restores the port's defaults
      */
     public void configure(int portIndex, GamePortControls port, JoystickKeyMap keyMap) {
         if (portIndex < 0 || portIndex >= PORTS) return;
         PortState s = states[portIndex];
 
-        // La porta precedente viene azzerata: i tasti eventualmente premuti al momento
-        // della riconfigurazione non devono restare "incantati" sulla vecchia porta.
+        // The previous port is reset: keys held at the moment of the reconfiguration must not
+        // stay stuck on the old port.
         release(s);
 
         s.port   = port;
@@ -82,7 +83,7 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
         }
     }
 
-    /** {@code true} se almeno una porta è pilotata dalla tastiera. */
+    /** {@code true} if at least one port is driven by the keyboard. */
     public boolean isEnabled() {
         for (PortState s : states) {
             if (s.port != null) return true;
@@ -102,8 +103,8 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
     }
 
     /**
-     * Applica il tasto a tutte le porte che lo hanno mappato. Ritorna {@code true} se
-     * almeno una lo ha usato (e l'evento va quindi consumato).
+     * Applies the key to every port that has it mapped. Returns {@code true} if at least one
+     * used it (and the event must therefore be consumed).
      */
     private boolean handleKey(KeyEvent e, boolean pressed) {
         boolean handled = false;
@@ -130,7 +131,7 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
         return handled;
     }
 
-    /** Rilascia direzioni e fuoco sulla porta attualmente configurata, se presente. */
+    /** Releases directions and fire on the currently configured port, if any. */
     private void release(PortState s) {
         s.up = s.down = s.left = s.right = false;
         GamePortControls p = s.port;

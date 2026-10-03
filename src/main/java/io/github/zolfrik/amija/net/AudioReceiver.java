@@ -26,34 +26,33 @@ import io.github.zolfrik.amija.net.codec.ImaAdpcm;
 import java.nio.ByteBuffer;
 
 /**
- * Lato ospite dell'audio: rimette insieme i blocchi, li decodifica e li consegna <b>in
- * ordine e in fase</b> ({@code docs/remote-play-plan.md} §4.2).
+ * Guest side of the audio: puts the blocks back together, decodes them and delivers them <b>in
+ * order and in phase</b> ({@code docs/remote-play-plan.md} section 4.2).
  *
- * <h2>Un buco si riempie di silenzio, non si chiude</h2>
- * E' la sola cosa che questa classe fa di non ovvio, ed e' quella che conta. Se un blocco si
- * perde e si semplicemente saltasse, l'audio resterebbe continuo ma <b>slitterebbe in avanti
- * di 23 ms</b>, e ogni perdita successiva aggiungerebbe la sua: dopo un minuto di link
- * mediocre l'audio sarebbe secondi avanti al video. Con l'indice assoluto del §4.2 il buco si
- * riconosce e si riempie di <b>silenzio della lunghezza esatta</b>: si perde quel che si e'
- * perso, e la fase resta.
+ * <h2>A gap is filled with silence, not closed</h2>
+ * The only non-obvious thing this class does, and the one that matters. If a lost block were
+ * simply skipped, the audio would stay continuous but <b>slip forward by 23 ms</b>, and every
+ * later loss would add its own: after a minute of a mediocre link the audio would be seconds
+ * ahead of the video. With the absolute index of section 4.2 the gap is recognised and filled
+ * with <b>silence of the exact length</b>: what was lost is lost, and the phase holds.
  *
- * <p>Il caso opposto — un blocco che arriva dopo che il suo posto e' gia' passato — si
- * scarta. Rimetterlo in coda vorrebbe dire riprodurlo fuori posto, cioe' un artefatto al
- * posto di un silenzio gia' avvenuto.
+ * <p>The opposite case (a block arriving after its place has passed) is discarded. Queueing it
+ * again would play it out of place, i.e. an artefact in place of a silence that already
+ * happened.
  */
 public final class AudioReceiver {
 
-    /** Riceve PCM S16LE stereo pronto da suonare. */
+    /** Receives stereo S16LE PCM ready to play. */
     public interface PcmSink {
         void onPcm(byte[] pcm, int offset, int frames);
     }
 
     /**
-     * Tetto al silenzio che si accetta di generare per un solo buco: mezzo secondo.
+     * Cap on the silence generated for a single gap: half a second.
      *
-     * <p>Oltre, non e' un buco ma una ripresa dopo un'interruzione lunga (o un indice
-     * malevolo), e riempire di silenzio proporzionalmente vorrebbe dire allocare tempo — o
-     * memoria — su richiesta di chi sta dall'altra parte. Si riparte in fase e basta.
+     * <p>Beyond that it is not a gap but a resumption after a long interruption (or a malicious
+     * index), and filling with proportional silence would mean allocating time (or memory) at
+     * the request of whoever is on the other side. It just restarts in phase.
      */
     public static final int MAX_GAP_FRAMES = 22_050;
 
@@ -69,10 +68,10 @@ public final class AudioReceiver {
     private long resyncs;
 
     /**
-     * Accoglie il payload in chiaro di un datagramma audio.
+     * Takes the plaintext payload of an audio datagram.
      *
-     * @return {@code true} se un blocco e' stato completato e consegnato
-     * @throws ProtocolException se il frammento o il blocco sono malformati
+     * @return {@code true} if a block was completed and delivered
+     * @throws ProtocolException if the fragment or the block is malformed
      */
     public boolean accept(byte[] plain, int length, PcmSink sink) throws ProtocolException {
         FragmentReassembler.Slot slot = reassembler.accept(plain, length);
@@ -88,8 +87,8 @@ public final class AudioReceiver {
         AudioBlockHeader header = AudioBlockHeader.readFrom(b, blobLength);
 
         if (expectedSampleIndex >= 0 && header.sampleIndex() < expectedSampleIndex) {
-            // Il suo posto e' gia' passato: suonarlo adesso sarebbe un artefatto al posto di
-            // un silenzio gia' avvenuto.
+            // Its place has already passed: playing it now would be an artefact in place of a
+            // silence that already happened.
             blocksLate++;
             return false;
         }
@@ -113,8 +112,8 @@ public final class AudioReceiver {
                 gapFrames += missing;
                 emitSilence(missing, sink);
             } else {
-                // Interruzione lunga: si riparte in fase invece di generare mezzo minuto
-                // di silenzio per rispettare un orologio che ha smesso di essere utile.
+                // Long interruption: restart in phase instead of generating half a minute of
+                // silence to honour a clock that stopped being useful.
                 resyncs++;
             }
         }
@@ -125,7 +124,7 @@ public final class AudioReceiver {
         return true;
     }
 
-    /** Riparte da zero: nuova sessione, nuovo orologio. */
+    /** Starts from scratch: new session, new clock. */
     public void reset() {
         reassembler.reset();
         expectedSampleIndex = -1;
@@ -135,22 +134,22 @@ public final class AudioReceiver {
         return blocksDelivered;
     }
 
-    /** Blocchi arrivati dopo il loro turno: scartati. */
+    /** Blocks arrived after their turn: discarded. */
     public long blocksLate() {
         return blocksLate;
     }
 
-    /** Quanti buchi sono stati riempiti di silenzio. */
+    /** How many gaps were filled with silence. */
     public long gaps() {
         return gaps;
     }
 
-    /** Quanti campioni di silenzio in totale: e' la misura vera di quanto audio si e' perso. */
+    /** How many silence samples in total: the true measure of how much audio was lost. */
     public long gapFrames() {
         return gapFrames;
     }
 
-    /** Riallineamenti dopo un'interruzione piu' lunga di {@link #MAX_GAP_FRAMES}. */
+    /** Realignments after an interruption longer than {@link #MAX_GAP_FRAMES}. */
     public long resyncs() {
         return resyncs;
     }

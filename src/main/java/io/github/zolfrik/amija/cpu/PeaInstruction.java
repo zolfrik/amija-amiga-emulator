@@ -44,13 +44,12 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     nextStep(cpu);
                 }
                 case 1 -> {
-                    // WinUAE op_4870/op_487b _14_ff: `do_cycles_ce000_internal(2)` e SUBITO
-                    // DOPO `ipl_fetch_now()`, prima del calcolo dell'EA. L'ancora di PEA e'
-                    // PER MODO, come in gencpu: solo i due modi INDICIZZATI ancorano NOW,
-                    // gli altri quattro NEXT alla prefetch finale (step 4).
-                    // ⚠️ Va dichiarata QUI e non allo step 0: markIplAnchor timbra il ciclo
-                    // CORRENTE, e allo step 0 i 2 cicli interni non sono ancora trascorsi —
-                    // l'ancora finirebbe 2 clock in anticipo, che si misura (PEA3/PEA6).
+                    // $4870/$487B: 2 internal cycles and RIGHT AFTER them a `now` sample, before
+                    // the EA computation. PEA's anchor is PER MODE: only the two INDEXED modes
+                    // anchor NOW, the other four NEXT at the final prefetch (step 4).
+                    // It must be declared HERE and not at step 0: markIplAnchor stamps the
+                    // CURRENT cycle, and at step 0 the 2 internal cycles have not elapsed yet,
+                    // so the anchor would be 2 clocks early, which shows (PEA3/PEA6).
                     if (eaMode == 6 || (eaMode == 7 && eaReg == 3)) {
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                     }
@@ -80,11 +79,11 @@ public class PeaInstruction extends AbstractM68kInstruction {
                 case 4 -> {
                     // Pipeline refill (np) for non-absolute modes
                     if (eaMode == 2 || eaMode == 5 || eaMode == 6 || (eaMode == 7 && eaReg == 2) || (eaMode == 7 && eaReg == 3)) {
-                        // WinUAE op_4850_14_ff: qui la prefetch finale precede le push, e
-                        // l'ancora e' lei (`ipl_fetch_next_pre()`); le push non ancorano.
-                        // ⛔ NON per i due modi INDICIZZATI: op_4870/op_487b emettono
-                        // `ipl_fetch_now()` in testa e l'hanno gia' dichiarata allo step 0.
-                        // Ri-dichiarare qui la sovrascriverebbe (markIplAnchor riazzera).
+                        // $4850: here the final prefetch precedes the pushes, and it is the
+                        // anchor (a `next` sample); the pushes do not anchor. NOT for the two
+                        // INDEXED modes: $4870/$487B sample `now` at the start and have already
+                        // declared it at step 0. Declaring again here would overwrite it
+                        // (markIplAnchor resets).
                         if (eaMode != 6 && !(eaMode == 7 && eaReg == 3)) {
                             cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         }
@@ -98,10 +97,10 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     // Push High Word (MSW) - nS
                     if (!cpu.isBusCycleIdle()) return false;
                     int addr = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);
-                    // Il guasto e' sulla PUSH, non sull'EA: PEA dichiara il proprio offset del PC
-                    // di gruppo 0 (+2 tranne i modi assoluti, op_4850/4868/4870/487a/487b contro
-                    // op_4878/4879). E per gli stessi modi la prefetch finale e' gia' passata
-                    // (case 4), quindi nel frame finisce l'opcode dell'istruzione SUCCESSIVA.
+                    // The fault is on the PUSH, not on the EA: PEA declares its own group 0 PC
+                    // offset (+2 except for the absolute modes, $4850/4868/4870/487A/487B
+                    // against $4878/4879). For the same modes the final prefetch has already
+                    // happened (case 4), so the frame gets the opcode of the NEXT instruction.
                     boolean eaIsAbsolute = eaMode == 7 && eaReg <= 1;
                     cpu.markGroup0EaDelta(eaIsAbsolute ? 0 : 2);
                     if (!eaIsAbsolute) cpu.markGroup0Ir(cpu.getIRD());
@@ -124,8 +123,8 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     // Pipeline refill (np) for absolute modes
                     if (eaMode == 7 && (eaReg == 0 || eaReg == 1)) {
-                        // WinUAE op_4878_14_ff: qui le push PRECEDONO la prefetch finale, e
-                        // `ipl_fetch_next()` sta fra le due — l'ancora e' la prefetch.
+                        // $4878: here the pushes PRECEDE the final prefetch, and the `next`
+                        // sample sits between the two: the anchor is the prefetch.
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
                         refillPipeline(cpu);
                     }

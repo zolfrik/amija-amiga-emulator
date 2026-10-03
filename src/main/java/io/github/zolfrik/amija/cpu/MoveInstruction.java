@@ -45,40 +45,39 @@ public class MoveInstruction extends AbstractM68kInstruction {
     }
 
     /**
-     * Dichiara l'ancora <b>a inizio istruzione</b>, prima di qualunque accesso. È il blocco
-     * di regole che gencpu esegue <b>prima</b> della {@code genamode} sorgente ({@code case
-     * i_MOVE}, gencpu.cpp ~6532) e che quindi finisce in cima alla funzione generata:
+     * Declares the anchor <b>at the start of the instruction</b>, before any access. The
+     * rules, decided before the source EA is evaluated:
      * <pre>
-     * if (size == sz_long) {
-     *     if (dmode == Apdi &amp;&amp; smode &lt;= Areg) set_ipl_pre();  // op_2100: ipl_fetch_next_pre()
+     * if (size == long) {
+     *     if (dmode == -(An) &amp;&amp; smode &lt;= An) anchor = next;   // $2100
      * } else {
-     *     if (dmode == Aipi &amp;&amp; smode == imm)  set_ipl();      // op_10fc: ipl_fetch_now()
-     *     if (dmode == Apdi &amp;&amp; smode == imm)  set_ipl();      // op_113c, op_313c
-     *     if (dmode == Apdi &amp;&amp; smode &lt;= Areg) set_ipl_pre();  // op_1100: ipl_fetch_next_pre()
+     *     if (dmode == (An)+ &amp;&amp; smode == imm) anchor = now;    // $10FC
+     *     if (dmode == -(An) &amp;&amp; smode == imm) anchor = now;    // $113C, $313C
+     *     if (dmode == -(An) &amp;&amp; smode &lt;= An) anchor = next;   // $1100
      * }
      * </pre>
      *
-     * <p>Il ramo lo decide la solita {@code tc - ipl_fetch_cycles > 4}: qui l'ancora sta a 12
-     * clock o piu' dalla fine, quindi {@code set_ipl()} esce sempre come {@code now};
-     * {@code set_ipl_pre()} emette per costruzione {@code ipl_fetch_next_pre()}, cioe' il
-     * ramo {@code next} (il ri-campionamento retroattivo del suffisso {@code _pre} non e'
-     * modellato, come per tutte le altre {@code set_ipl_pre} — vedi §6.1.3).
+     * <p>The branch follows the usual rule (more than 4 clocks from the end -> {@code now}):
+     * here the anchor is 12 clocks or more from the end, so the immediate cases are always
+     * {@code now}; the register-source cases to {@code -(An)} are {@code next} by
+     * construction (their retroactive resampling is not modelled; see
+     * {@code docs/vamigats-paula-audio-plan.md} section 6.1.3).
      *
-     * <p>⚠️ Senza queste quattro regole le stesse istruzioni finivano sul percorso di
-     * default, dove <b>la scrittura in coda si prendeva l'ancora</b>: la MOVE verso
-     * {@code -(An)} fa la prefetch PRIMA della scrittura, quindi l'ancora scivolava di 8
-     * clock (16 per la {@code .L}) e cambiava anche ramo.
+     * <p>Without these four rules the same instructions would fall on the default path, where
+     * <b>the trailing write would take the anchor</b>: MOVE to {@code -(An)} prefetches BEFORE
+     * the write, so the anchor would slip by 8 clocks (16 for {@code .L}) and change branch
+     * too.
      *
-     * <p>⚠️ Il {@code -(An)} con sorgente in <b>memoria</b> non ci rientra: per la {@code .B}/
-     * {@code .W} l'ancora e' sulla lettura sorgente ({@link #declareIplAnchorBeforeSourceRead}),
-     * per la {@code .L} cade in mezzo alla lettura long ({@code GF_IPL | GF_IPLMID}), che non
-     * modelliamo — vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.3.
+     * <p>{@code -(An)} with a <b>memory</b> source is not included: for {@code .B}/{@code .W}
+     * the anchor is on the source read ({@link #declareIplAnchorBeforeSourceRead}); for
+     * {@code .L} it falls in the middle of the long read, which is not modelled; see
+     * {@code docs/vamigats-paula-audio-plan.md} section 6.1.3.
      */
     private static void declareIplAnchorAtStart(Motorola68000 cpu) {
         int opcode = cpu.getIr();
         int size = (opcode >> 12) & 3;
         int destMode = (opcode >> 6) & 7;
-        if (destMode != 3 && destMode != 4) {       // solo (An)+ e -(An)
+        if (destMode != 3 && destMode != 4) {       // only (An)+ and -(An)
             return;
         }
         int srcMode = (opcode >> 3) & 7, srcReg = opcode & 7;
@@ -92,41 +91,35 @@ public class MoveInstruction extends AbstractM68kInstruction {
     }
 
     /**
-     * Dichiara l'ancora del POLL dell'IPL <b>subito dopo la scrittura</b> per le destinazioni
-     * assolute. Chiamata in cima a ogni passo post-scrittura; per gli altri modi non fa nulla
-     * e vale il percorso di default ({@code check_ipl()}, ancora sulla scrittura).
+     * Declares the IPL poll anchor <b>right after the write</b> for absolute destinations.
+     * Called at the top of every post-write step; for the other modes it does nothing and
+     * the default path applies (anchor on the write).
      *
-     * <p>In WinUAE {@code case i_MOVE} chiama {@code set_ipl()} <b>dopo</b> {@code genastore}
-     * quando la destinazione e' {@code absw}/{@code absl}, e li' l'ancora si ferma:
+     * <p>With an absolute destination the anchor is placed <b>after</b> the write:
      * <pre>
-     * // op_11c0_14_ff (MOVE.B Dn,(xxx).W, 12 cicli)
-     * x_put_byte(dsta, src);          // la scrittura
-     * ipl_fetch_next();               // &lt;-- ANCORA, 4 clock dalla fine
-     * get_word_ce000_prefetch(2);
+     * MOVE.B Dn,(xxx).W ($11C0, 12 cycles)
+     *   write; anchor (next, 4 clocks from the end); prefetch
      *
-     * // op_13d0_14_ff (MOVE.B (An),(xxx).L, 20 cicli) — caso `dualprefetch`
-     * x_put_byte(dsta, src);
-     * ipl_fetch_now();                // &lt;-- ANCORA, 8 clock dalla fine: DUE prefetch dopo
-     * get_word_ce000_prefetch(0);
-     * get_word_ce000_prefetch(2);
+     * MOVE.B (An),(xxx).L ($13D0, 20 cycles), the dual-prefetch case
+     *   write; anchor (now, 8 clocks from the end); prefetch; prefetch
      * </pre>
      *
-     * <p>⚠️ <b>Quali destinazioni</b> e' una condizione che gencpu scrive per esteso, e va
-     * trascritta com'e' invece di generalizzarla — la {@code .L} verso {@code (xxx).W} NON ci
-     * rientra, e includerla per simmetria sposta l'ancora di 4 clock su 14 opcode:
+     * <p><b>Which destinations</b> is a condition to be taken literally rather than
+     * generalised: {@code .L} to {@code (xxx).W} is NOT included, and including it for
+     * symmetry moves the anchor by 4 clocks on 14 opcodes:
      * <pre>
-     * if (size == sz_long) {
-     *     if (dmode == Aind && smode == absl) set_ipl();
-     *     if (dmode == absl)                  set_ipl();
+     * if (size == long) {
+     *     if (dmode == (An) && smode == (xxx).L) anchor after the write;
+     *     if (dmode == (xxx).L)                  anchor after the write;
      * } else {
-     *     if (dmode == absl || dmode == absw) set_ipl();
+     *     if (dmode == (xxx).L || dmode == (xxx).W) anchor after the write;
      * }
      * </pre>
      *
-     * <p>Il ramo segue la regola di codegen {@code tc - ipl_fetch_cycles > 4}: una sola
-     * prefetch finale (4 clock) ⇒ {@code next}, due (8) ⇒ {@code now}. Le due prefetch le fa
-     * il ramo {@code dualprefetch} di gencpu, anch'esso trascritto letterale:
-     * {@code dmode == absl && smode != Dreg && smode != Areg && smode != imm}.
+     * <p>The branch follows the rule "more than 4 clocks from the end -> now": a single final
+     * prefetch (4 clocks) gives {@code next}, two (8) give {@code now}. The two prefetches
+     * belong to the dual-prefetch case, also taken literally:
+     * {@code dmode == (xxx).L && smode != Dn && smode != An && smode != imm}.
      */
     private static void declareIplAnchorAfterWrite(Motorola68000 cpu,
                                                    int destMode, int destReg,
@@ -148,25 +141,21 @@ public class MoveInstruction extends AbstractM68kInstruction {
     }
 
     /**
-     * Dichiara l'ancora <b>prima della lettura sorgente</b>, che e' dove WinUAE la mette per
-     * le {@code .B}/{@code .W} con destinazione {@code (An)+}/{@code -(An)} e sorgente in
-     * memoria:
+     * Declares the anchor <b>before the source read</b>, where it sits for {@code .B}/
+     * {@code .W} with destination {@code (An)+}/{@code -(An)} and a memory source:
      * <pre>
-     * // op_10d0_14_ff (MOVE.B (An),(An)+, 12 cicli)
-     * ipl_fetch_now();                // &lt;-- ANCORA, prima di TUTTO: 12 clock dalla fine
-     * uae_s8 src = x_get_byte(srca);
-     * x_put_byte(dsta, src);
-     * get_word_ce000_prefetch(2);
+     * MOVE.B (An),(An)+ ($10D0, 12 cycles)
+     *   anchor (now, before EVERYTHING: 12 clocks from the end); read; write; prefetch
      * </pre>
-     * Con sorgente {@code Dn}/{@code An} invece l'ancora resta sulla scrittura (vedi
-     * {@link #declareIplAnchorBeforeWrite}), e la {@code .L} ha una tabella sua — l'ancora
-     * cade <b>in mezzo</b> alla lettura long ({@code GF_IPL | GF_IPLMID}), che qui non e'
-     * modellata: vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.3.
+     * With a {@code Dn}/{@code An} source the anchor stays on the write instead (see
+     * {@link #declareIplAnchorBeforeWrite}), and {@code .L} has its own table: the anchor
+     * falls <b>in the middle</b> of the long read, which is not modelled here; see
+     * {@code docs/vamigats-paula-audio-plan.md} section 6.1.3.
      */
     private static void declareIplAnchorBeforeSourceRead(Motorola68000 cpu,
                                                          int destMode, int srcMode) {
         if (((cpu.getIr() >> 12) & 3) == 2) {
-            return;                                  // .L: tabella diversa, non modellata
+            return;                                  // .L: different table, not modelled
         }
         if ((destMode != 3 && destMode != 4) || srcMode <= 1) {
             return;
@@ -175,44 +164,41 @@ public class MoveInstruction extends AbstractM68kInstruction {
     }
 
     /**
-     * Dichiara l'ancora <b>sulla (prima) scrittura</b>. Due casi distinti, entrambi letti dal
-     * codice generato:
+     * Declares the anchor <b>on the (first) write</b>. Two distinct cases:
      *
      * <ul>
-     *   <li><b>{@code .B}/{@code .W} verso {@code (An)+} con sorgente {@code Dn}/{@code An}</b>:
-     *       la posizione e' quella del default ma il <b>ramo</b> no — gencpu chiama
-     *       {@code set_ipl_pre()} ({@code dmode == Aipi && smode <= Areg}), quindi
-     *       {@code next} ({@code op_10c0}, {@code op_30c0}, {@code op_30c8});</li>
-     *   <li><b>{@code .L} verso memoria</b>: l'ancora sta prima della <b>prima delle due
-     *       word</b> scritte, non prima della seconda. Vale sempre per {@code (An)+} e, per
-     *       {@code (An)}/{@code (d16,An)}/{@code (d8,An,Xn)}, quando la sorgente e'
-     *       {@code Dn}/{@code An}/immediato — con sorgente in memoria l'oracolo torna alla
-     *       seconda word, che e' gia' il nostro default.</li>
+     *   <li><b>{@code .B}/{@code .W} to {@code (An)+} with a {@code Dn}/{@code An}
+     *       source</b>: the position is the default's but the <b>branch</b> is not: it is
+     *       {@code next} ($10C0, $30C0, $30C8);</li>
+     *   <li><b>{@code .L} to memory</b>: the anchor is before the <b>first of the two
+     *       words</b> written, not before the second. Always for {@code (An)+} and, for
+     *       {@code (An)}/{@code (d16,An)}/{@code (d8,An,Xn)}, when the source is
+     *       {@code Dn}/{@code An}/immediate; with a memory source the anchor goes back to the
+     *       second word, which is already the default.</li>
      * </ul>
      *
-     * ⚠️ Il {@code -(An)} non passa da qui, ma per due motivi diversi secondo la sorgente:
-     * con {@code Dn}/{@code An}/immediato l'ancora e' a <b>inizio istruzione</b>
-     * ({@link #declareIplAnchorAtStart}); con sorgente in <b>memoria</b> e taglia {@code .L}
-     * cade <b>in mezzo alla lettura long</b> ({@code GF_IPL | GF_IPLMID}), una posizione che
-     * non modelliamo ancora — vedi {@code docs/vamigats-paula-audio-plan.md} §6.1.3.
+     * {@code -(An)} does not come through here, for two different reasons depending on the
+     * source: with {@code Dn}/{@code An}/immediate the anchor is at the <b>start of the
+     * instruction</b> ({@link #declareIplAnchorAtStart}); with a <b>memory</b> source and
+     * size {@code .L} it falls <b>in the middle of the long read</b>, a position not yet
+     * modelled; see {@code docs/vamigats-paula-audio-plan.md} section 6.1.3.
      */
     /**
-     * MOVE dichiara il proprio offset del PC di gruppo 0 per il guasto in <b>scrittura</b>.
+     * MOVE declares its own group 0 PC offset for a fault on the <b>write</b>.
      *
-     * <p>Per le MOVE gencpu non applica il delta del modo di destinazione ma una regola
-     * sua, {@code pcextra} ({@code gencpu.cpp:3262-3269}, commento «adjust MOVE write
-     * address error stacked PC»), che dipende da <b>entrambi</b> i modi:
+     * <p>For MOVE the delta of the destination mode does not apply; MOVE has its own rule for
+     * the PC stacked by a write address error, which depends on <b>both</b> modes:
      * <pre>
-     * sorgente >= (An) e non immediata, destinazione (xxx).L  -> -2
-     * destinazione >= (d16,An)                                ->  0
-     * altrimenti (destinazione (An), (An)+, -(An))            -> +2
+     * source >= (An) and not immediate, destination (xxx).L  -> -2
+     * destination >= (d16,An)                                ->  0
+     * otherwise (destination (An), (An)+, -(An))             -> +2
      * </pre>
      *
-     * <p>Va chiamata dopo il calcolo dell'EA di destinazione e prima della scrittura.
+     * <p>Must be called after the destination EA is computed and before the write.
      */
     private static void declareGroup0WritePc(Motorola68000 cpu, int srcMode, int srcReg,
                                              int destMode, int destReg) {
-        boolean srcGeAind = srcMode >= 2;                 // da (An) in poi, immediato incluso
+        boolean srcGeAind = srcMode >= 2;                 // from (An) on, immediate included
         boolean srcImm = srcMode == 7 && srcReg == 4;
         boolean dstAbsL = destMode == 7 && destReg == 1;
         boolean dstGeAd16 = destMode == 5 || destMode == 6 || (destMode == 7 && destReg <= 1);
@@ -221,22 +207,20 @@ public class MoveInstruction extends AbstractM68kInstruction {
     }
 
     /**
-     * MOVE verso {@code -(An)} fa la <b>prefetch prima</b> della scrittura: quando quella
-     * scrittura fallisce, l'IR e' gia' stato ricaricato e nel frame di gruppo 0 finisce
-     * l'opcode dell'istruzione <b>successiva</b>, non il proprio.
+     * MOVE to {@code -(An)} does the <b>prefetch before</b> the write: when that write fails,
+     * IR has already been reloaded and the group 0 frame gets the opcode of the <b>next</b>
+     * instruction, not its own.
      *
-     * <p>Trascritto dal generato ({@code op_313c_14_ff}: {@code regs.ir = regs.irc;} prima
-     * della scrittura, poi {@code opcode = regs.ir} passato a {@code exception3_write_access}).
-     * ⚠️ La condizione va presa com'e': le 11 funzioni {@code _14_ff} che ricaricano l'IR
-     * prima del ramo di guasto sono le MOVE {@code .W}/{@code .L} verso {@code -(An)} con
-     * sorgente {@code Dn}/{@code An}/immediata — la {@code .B} non c'e' (la scrittura di un
-     * byte non fallisce mai) e con sorgente in memoria l'ordine e' diverso — piu' le cinque
-     * PEA. E' lo stesso insieme di {@link #declareIplAnchorAtStart}, non per caso: e' il
-     * ramo in cui la prefetch precede l'accesso.
+     * <p>The condition is to be taken as it is: the instructions that reload IR before the
+     * fault branch are the MOVE {@code .W}/{@code .L} to {@code -(An)} with a
+     * {@code Dn}/{@code An}/immediate source ({@code .B} is not among them: a byte write
+     * never faults; with a memory source the order differs), plus the five PEA. It is the
+     * same set as {@link #declareIplAnchorAtStart}, not by chance: it is the case in which
+     * the prefetch precedes the access.
      *
-     * <p>Osservabile: vAmigaTS {@code CPU/Exceptions/StackFrame/addrerr4}
-     * ({@code move.w #$68,-(a2)}) attende IR {@code $337C}, che e' l'opcode della
-     * {@code move.w #$7FFF,DMACON(a1)} che segue.
+     * <p>Observable: vAmigaTS {@code CPU/Exceptions/StackFrame/addrerr4}
+     * ({@code move.w #$68,-(a2)}) expects IR {@code $337C}, the opcode of the
+     * {@code move.w #$7FFF,DMACON(a1)} that follows.
      */
     private static void declareGroup0IrAfterPrefetch(Motorola68000 cpu, int srcMode, int srcReg,
                                                      int destMode) {
@@ -284,8 +268,8 @@ public class MoveInstruction extends AbstractM68kInstruction {
     public void prepareInstruction(Motorola68000 cpu) {
         // MOVE consumes opcode word from pipeline.
         cpu.consumeIRC();
-        // Prima di qualunque accesso: e' la posizione delle set_ipl*() che gencpu emette in
-        // cima al `case i_MOVE`, e questo metodo e' chiamato una volta sola per istruzione.
+        // Before any access: the position of the start-of-instruction anchor rules, and this
+        // method is called once per instruction.
         declareIplAnchorAtStart(cpu);
     }
 
@@ -1131,7 +1115,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
                     return false;
                 }
 
-                // Second write — always back-to-back with the first, no prefetch in between.
+                // Second write: always back-to-back with the first, no prefetch in between.
                 //   non-predecrement -> LSW at EA+2
                 //   predecrement     -> MSW at (An - 2) with second decrement of An
                 case 17 -> {

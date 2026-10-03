@@ -38,24 +38,18 @@ public class MOS8520 {
     private final CIAPinSet pinSet;
     private final boolean isCIAA;
     /**
-     * Baco del contatore TODMED — vedi {@link #checkTodIrq(boolean)}.
+     * Defect of the TODMED counter: see {@link #checkTodIrq(boolean)}.
      *
-     * <p><b>Acceso</b>, com'è {@code cs_ciatodbug} sull'A500 ({@code cfgfile.cpp},
-     * {@code case CP_A500: p->cs_ciatodbug = true}), che è la macchina con cui i
-     * riferimenti del banco sono generati. Con il baco, {@code CIA/TOD/todbug1} passa da
-     * 25 984 pixel diversi a <b>112</b>, {@code todbug3} da 33 784 a <b>84</b>,
-     * {@code todbug4} da 104 764 a <b>996</b>, e {@code todvice/0alarm} e {@code 1alarm}
-     * — i due che pretendono il <b>doppio</b> conteggio di allarmi, ed è il baco a
-     * darglielo — diventano <b>verdi</b>.
+     * <p><b>On</b>, as on the A500, the machine the bank's references are made with. With the
+     * defect, {@code CIA/TOD/todbug1} goes from 25 984 differing pixels to <b>112</b>,
+     * {@code todbug3} from 33 784 to <b>84</b>, {@code todbug4} from 104 764 to <b>996</b>,
+     * and {@code todvice/0alarm} and {@code 1alarm}, the two that expect a <b>double</b>
+     * count of alarms, which only the defect gives them, turn <b>green</b>.
      *
-     * <p>⚠️ <b>Accenderlo è stato possibile solo dopo aver corretto il {@code todon}</b>
-     * (vedi {@link #reset()}): finché il TOD contava già dal reset, il contatore di CIA-B
-     * arrivava a {@code $8017} <i>durante il boot</i>, passava per {@code $001000} e il
-     * ramo del baco scattava dove sull'oracolo non scatta mai — la sua sonda conta
-     * {@code BUGHITS 0} sull'intera corsa di {@code tod1}. In quello stato accendere
-     * questo flag faceva diventare rossi {@code tod1} e {@code todint4}, e l'attivazione
-     * era stata revocata. Il baco non causava quel rosso: lo <b>rivelava</b>.
-     * Vedi {@code docs/vamigats-import-order.md} §{@code CIA/TOD}.
+     * <p>It depends on the TOD being stopped after a reset (see {@link #reset()}): with the
+     * TOD counting from the reset, CIA-B's counter reached {@code $8017} during the boot,
+     * went through {@code $001000} and the defect fired where it must not.
+     * See {@code docs/vamigats-import-order.md}, {@code CIA/TOD}.
      */
     private boolean todBug = true;
     private int cachedDdra = -1;
@@ -69,7 +63,7 @@ public class MOS8520 {
     private boolean cachedSpDrive;
     private boolean specialPinCacheValid;
 
-    // ── Action flags (Delay Pipeline) ─────────────────────────────────────────
+    // -- Action flags (delay pipeline) ------------------------------------------
     // These bits represent events scheduled to happen in future cycles.
     // They are shifted left by 1 in every tick().
 
@@ -132,7 +126,7 @@ public class MOS8520 {
             | CIAReadIcr0 | CIAClearIcr0 | CIAAckIcr0 | CIASetIcr0 | CIATODInt0
             | CIASerInt0 | CIASdrToSsr0 | CIASerClk0);
 
-    // ── Diagnostics ──────────────────────────────────────────────────────────
+    // -- Diagnostics --------------------------------------------------------------
     public void setTodBug(boolean en) { this.todBug = en; }
 
     // -------------------------------------------------------------------------
@@ -146,9 +140,9 @@ public class MOS8520 {
     private int latchA, latchB;     // 16-bit latches
 
     /**
-     * Numero di underflow del timer B da inizio esecuzione. Hook di sola lettura per
-     * la regressione sul periodo in modalità cascata (vedi {@code CiaCascadeTimerTest}
-     * e la nota nel timer B di {@link #tick()}).
+     * Number of timer B underflows since the start. Read-only hook for the regression on
+     * the period in cascade mode (see {@code CiaCascadeTimerTest} and the note on timer B in
+     * {@link #tick()}).
      */
     public long diagTimerBUnderflows;
     private int cra, crb;           // Control registers
@@ -233,14 +227,11 @@ public class MOS8520 {
         todLatch = 0;
         todAlarm = 0;
         todFrozen = false;
-        // ⛔ Il TOD NON conta finché non gli si scrive TODLO. È il `todon` dell'oracolo:
-        // `CIA_reset` azzera l'intera struct (`memset(&cia, 0, sizeof(cia))`, cia.cpp) e
-        // `CIA_tod_inc` esce subito con `if (!c->todon) return;`. Solo la scrittura di
-        // TODLO in modo contatore lo accende (`case 8: ... c->todon = 1`), e TODHI lo
-        // rispegne. Qui valeva `false`, con la nota «su hardware reale il TOD conta
-        // subito dopo il reset»: era una deduzione, e la misura la smentisce — con il TOD
-        // acceso dal reset il contatore di CIA-B corre per tutto il boot e arriva a
-        // $8017, dove l'oracolo resta a 0 fino alla prima TODLO del programma.
+        // The TOD does NOT count until TODLO is written: a reset clears the whole chip
+        // state, writing TODLO in counter mode switches the TOD on and writing TODHI
+        // switches it off. A TOD counting from the reset would run through the whole boot
+        // and reach $8017 on CIA-B, where it must stay at 0 until the program's first
+        // TODLO write.
         todStopped = true;
 
         // Initialize pin directions and drives
@@ -259,7 +250,7 @@ public class MOS8520 {
         setCntDriveCached(true);
     }
 
-    // ── Timer Helpers ─────────────────────────────────────────────────────────
+    // -- Timer helpers ------------------------------------------------------------
 
     private void reloadTimerA() {
         counterA = latchA;
@@ -270,21 +261,17 @@ public class MOS8520 {
     }
 
     /**
-     * Arma l'assertion della linea /IRQ e del bit master dell'ICR <b>un clock di CIA dopo</b>
-     * l'evento che li ha causati — stadio 0 del pipeline, che diventa stadio 1 al tick
-     * successivo.
+     * Arms the assertion of the /IRQ line and of the ICR master bit <b>one CIA clock
+     * after</b> the event that caused them: stage 0 of the pipeline, which becomes stage 1
+     * at the next tick.
      *
-     * <p>È la forma di WinUAE, e vale per <b>tutte e quattro</b> le sorgenti dell'ICR, senza
-     * deroghe: il timer A/B e il seriale mettono il bit in {@code c->icr2} dentro
-     * {@code CIA_update_check}, che lo travasa in {@code c->icr1} in cima al ciclo del clock
-     * <b>successivo</b> ({@code c->icr1 |= c->icr2}); FLAG e allarme del TOD passano da
-     * {@code CIA_sync_interrupt}, che accoda l'evento a {@code DIV10 + syncdelay}, cioè anche
-     * loro un clock di CIA. Solo dopo il travaso {@code RethinkICR} alza {@code 0x80|0x40} e
-     * chiama {@code ICR()}, che è ciò che porta giù la linea.
+     * <p>This applies to <b>all four</b> ICR sources, with no exception: the timer and
+     * serial bits pass through a staging register that becomes readable at the start of the
+     * <b>next</b> clock, and the FLAG and TOD alarm are delivered one CIA clock later too.
+     * Only then are bits 7 and 6 raised and the line pulled down.
      *
-     * <p>Misura (piano §7.1.17): underflow → INTREQ bit 3 vale <b>+6 CCK</b> sull'oracolo, di
-     * cui 5 sono questo clock di CIA e 1 è l'evento {@code INTREQ_INT} dal lato di Paula.
-     * Prima di questa cura la linea scendeva nello <b>stesso</b> tick dell'evento.
+     * <p>Measured (docs/vamigats-paula-audio-plan.md section 7.1.17): underflow to INTREQ bit
+     * 3 takes <b>+6 CCK</b>, 5 of them this CIA clock and 1 the INTREQ delay on Paula's side.
      *
      * <p>Clock-driven timer underflows do not come through here: their source bit is staged
      * for one clock as well ({@link #icrStaged}) and raises /IRQ when it becomes readable,
@@ -294,7 +281,7 @@ public class MOS8520 {
         delay |= CIASetInt0 | CIASetIcr0;
     }
 
-    // ── TOD Helpers ───────────────────────────────────────────────────────────
+    // -- TOD helpers --------------------------------------------------------------
 
     public void incrementTod() {
         if (todStopped) return;
@@ -343,36 +330,29 @@ public class MOS8520 {
     }
 
     /**
-     * Confronto con l'allarme, {@code checkalarm()} di {@code cia.cpp}.
+     * Comparison with the alarm.
      *
-     * <p>⛔ Il contatore TODMED del 8520 <b>è bacato, e il baco è osservabile</b>: al riporto
-     * conta {@code .. 29 2A 2B 2C 2D 2E 2F 20 30 31 ..}, cioè passa un istante da un valore
-     * con i dodici bit bassi a zero il cui riporto non è ancora propagato. Se l'allarme è
-     * quel valore, scatta <b>una seconda volta</b>. L'oracolo lo modella come una regola sul
-     * solo confronto, e <b>solo su un incremento</b> ({@code inc}), mai su una scrittura.
+     * <p>The 8520's TODMED counter <b>has a defect, and it is observable</b>: on a carry it
+     * counts {@code .. 29 2A 2B 2C 2D 2E 2F 20 30 31 ..}, i.e. for an instant it holds a
+     * value whose low twelve bits are zero and whose carry has not propagated yet. If the
+     * alarm is that value, it fires <b>a second time</b>. Modelled as a rule on the
+     * comparison alone, and <b>only on an increment</b> ({@code inc}), never on a write.
      *
-     * <p>✅ È esattamente ciò che {@code todvice/0alarm} misura, e lo dichiara nel sorgente:
-     * disegna una banda verde solo se gli allarmi sono il <b>doppio</b> delle passate,
-     * <i>«because of the TOD bug»</i>. Con l'allarme a zero le due occasioni sono la
-     * scrittura di TODLO (contatore e allarme entrambi a 0) e l'incremento a
-     * {@code $001000}, dove {@code (tod-1) & $FFF000} vale ancora 0.
+     * <p>That is exactly what {@code todvice/0alarm} measures, as its source says: it draws
+     * a green band only if the alarms are <b>twice</b> the passes, <i>"because of the TOD
+     * bug"</i>. With the alarm at zero the two occasions are the TODLO write (counter and
+     * alarm both 0) and the increment to {@code $001000}, where {@code (tod-1) & $FFF000} is
+     * still 0. The rule is on: see {@link #todBug}.
      *
-     * <p>⚠️ Il modello precedente era un altro — due {@code checkTodIrq()} in più dentro
-     * {@link #incrementTod()}, ai riporti di nibble — e non è mai stato attivo, perché
-     * {@code todBug} era {@code false} e nessuno chiamava {@link #setTodBug(boolean)}.
-     * Sostituito dalla regola dell'oracolo, che ora è anche <b>accesa</b>: vedi
-     * {@link #todBug}.
+     * <p><b>The comparison is a LEVEL, not an edge.</b> The interrupt is raised whenever
+     * counter and alarm are equal at a comparison, even if they already were at the previous
+     * one. There are exactly two comparison points: one per increment and one at a TODLO
+     * write in counter mode.
      *
-     * <p>⛔ <b>Il confronto è di LIVELLO, non di fronte.</b> Qui c'era un rivelatore di
-     * fronte (<code>todMatching</code>): l'interrupt si alzava solo quando l'uguaglianza
-     * <i>compariva</i>, e restare uguali non ne alzava un secondo. L'oracolo non ce l'ha —
-     * {@code cia_checkalarm} confronta e basta, e i suoi due soli punti di chiamata sono i
-     * nostri: una volta per incremento e una alla scrittura di TODLO in modo contatore.
-     *
-     * <p>La misura che l'ha chiesto è {@code CIA/TOD/tod3}: il gestore rimette a mano
-     * allarme <b>e</b> contatore a zero — quindi uguali a ogni passata — e dipinge lo sfondo
-     * di giallo se l'allarme scatta. Due bande su sei erano <b>blu</b> da noi e gialle
-     * nell'oracolo: erano proprio le passate in cui l'uguaglianza c'era già e il fronte no.
+     * <p>Measured by {@code CIA/TOD/tod3}: the handler sets alarm <b>and</b> counter back to
+     * zero by hand (so they are equal at every pass) and paints the background yellow if the
+     * alarm fires. With an edge detector two of six bands came out blue: exactly the passes
+     * where the equality was already there and the edge was not.
      */
     private void checkTodIrq(boolean inc) {
         boolean match = todCounter == todAlarm;
@@ -382,12 +362,12 @@ public class MOS8520 {
             match = true;
         }
         if (match) {
-            icr |= 0x04; // TOD source bit — ROM reads this to identify the interrupt
+            icr |= 0x04; // TOD source bit; the ROM reads it to identify the interrupt
             if ((imr & 0x04) != 0) triggerIrq();
         }
     }
 
-    // ── I/O Port Logic ───────────────────────────────────────────────────────
+    // -- I/O port logic -----------------------------------------------------------
 
     private void updatePA() {
         int drivenPra = pra;
@@ -412,35 +392,30 @@ public class MOS8520 {
     }
 
     /**
-     * Rilettura di PRA ({@code $BFE001} / {@code $BFD000}).
+     * Read-back of PRA ({@code $BFE001} / {@code $BFD000}).
      *
-     * <p>⛔ <b>Sul 8520 la DDR non vale per tutti i bit.</b> Onorarla ovunque — cioè
-     * restituire il valore emesso per ogni pin configurato come uscita — è il
-     * comportamento della variante <b>391078-01</b>, che l'oracolo tiene dietro
-     * {@code currprefs.cs_ciatype[0]} e che la macchina di questo banco non attiva
-     * ({@code cia.cpp}, {@code ReadCIAA} case 0):
+     * <p>On the 8520 <b>the DDR does not apply to every bit.</b> Honouring it everywhere,
+     * i.e. returning the output value for every pin configured as an output, is the
+     * behaviour of the <b>391078-01</b> variant, not of the A500's CIA-A:
      *
      * <pre>
-     * v  = DISK_status_ciaa() &amp; 0x3c;            // bit 2..5: SEMPRE dal drive
-     * v |= handle_joystick_buttons(pra, dra);    // bit 6..7: pulsanti, ma vedi sotto
-     * v |= (pra | (dra ^ 3)) &amp; 0x03;             // bit 0..1: questi SI' seguono la DDR
+     * v  = drive status &amp; 0x3c;                 // bits 2..5: ALWAYS from the drive
+     * v |= joystick buttons(pra, dra);           // bits 6..7: buttons, but see below
+     * v |= (pra | (dra ^ 3)) &amp; 0x03;             // bits 0..1: these DO follow the DDR
      * </pre>
      *
-     * I bit 2÷5 (/CHNG, /WPRO, /TK0, /RDY) tornano il livello della linea anche a pin
-     * configurato in uscita. I bit 6÷7 sono <b>open collector</b>: il pulsante li tiene
-     * alti, ma un'uscita che pilota 0 vince — è la riga
-     * {@code if ((dra &amp; mask) &amp;&amp; !(pra &amp; mask)) but &amp;= ~mask;} di
-     * {@code handle_joystick_buttons} (inputdevice.cpp). Solo i bit 0÷1 (OVL, LED) sono
-     * uscite vere, e da input leggono 1.
+     * Bits 2-5 (/CHNG, /WPRO, /TK0, /RDY) return the level of the line even with the pin
+     * configured as an output. Bits 6-7 are <b>open collector</b>: the button holds them
+     * high, but an output driving 0 wins. Only bits 0-1 (OVL, LED) are true outputs, and
+     * read 1 as inputs.
      *
-     * <p>Su <b>CIA-B</b> la porta A è invece la formula piena
-     * {@code (pra &amp; dra) | (dra ^ 0xFF)}: da input legge 1, non un livello esterno.
+     * <p>On <b>CIA-B</b> port A is the full formula {@code (pra &amp; dra) | (dra ^ 0xFF)}:
+     * as an input it reads 1, not an external level.
      *
-     * <p>Misurato da {@code CIA/CIA/ciareg}: {@code aprab3} scrive {@code DDRA=$FF} e
-     * {@code PRA=$00}, e l'oracolo torna comunque alte le quattro linee del drive
-     * mentre noi tornavamo 0. {@code aprab4}, che scrive lo stesso {@code DDRA=$FF} ma
-     * {@code PRA=$FE}, coincideva <i>per combinazione</i>. Vedi
-     * {@code docs/vamigats-import-order.md} §Esiti {@code CIA/CIA}.
+     * <p>Measured by {@code CIA/CIA/ciareg}: {@code aprab3} writes {@code DDRA=$FF} and
+     * {@code PRA=$00}, and the four drive lines still read high. {@code aprab4}, which
+     * writes the same {@code DDRA=$FF} but {@code PRA=$FE}, cannot tell the two rules apart.
+     * See {@code docs/vamigats-import-order.md}, {@code CIA/CIA} outcomes.
      */
     private int computePA() {
         final int ext = pinSet.readExternal(0);
@@ -448,30 +423,27 @@ public class MOS8520 {
             return ((pra & ddra) | (ddra ^ 0xFF)) & 0xFF;
         }
         int v = ext & 0x3C;
-        // Pulsanti: alti se non premuti, ma un'uscita che pilota 0 li tira giu' lo stesso.
+        // Buttons: high when not pressed, but an output driving 0 pulls them low anyway.
         v |= (ext & 0xC0) & ~(ddra & ~pra);
         v |= (pra | (ddra ^ 0x03)) & 0x03;
         return v & 0xFF;
     }
 
     /**
-     * Rilettura di PRB ({@code $BFE101} / {@code $BFD100}).
+     * Read-back of PRB ({@code $BFE101} / {@code $BFD100}).
      *
-     * <p>Le due porte B non hanno la stessa regola nell'oracolo:
+     * <p>The two B ports follow different rules:
      * <ul>
-     *   <li><b>CIA-A</b>: {@code (prb & drb) | (drb ^ 0xFF)} — da input legge 1, che è
-     *       la porta parallela che flotta alta;</li>
-     *   <li>⛔ <b>CIA-B</b>: {@code tmp = c->prb} e basta — <b>la DDR è ignorata del
-     *       tutto</b>, la rilettura torna il registro di uscita anche per i bit
-     *       configurati come ingresso ({@code cia.cpp}, {@code ReadCIAB} case 1).</li>
+     *   <li><b>CIA-A</b>: {@code (prb & drb) | (drb ^ 0xFF)}; as an input it reads 1, the
+     *       parallel port floating high;</li>
+     *   <li><b>CIA-B</b>: {@code prb} alone: <b>the DDR is ignored entirely</b>, the
+     *       read-back returns the output register even for bits configured as inputs.</li>
      * </ul>
-     * Poi entrambe passano da {@code CIA_PBON}, che <b>dopo</b> la maschera di direzione
-     * forza PB6/PB7 all'uscita del timer quando il bit PBON del registro di controllo è
-     * attivo. Noi lo ripiegavamo <i>prima</i>, dentro il valore pilotato
-     * ({@link #updatePB}), dove la DDR poteva ancora mascherarlo.
+     * Both then force PB6/PB7 to the timer outputs when the PBON bit of the control
+     * register is set, <b>after</b> the direction mask, so the DDR cannot mask them.
      *
-     * <p>Misurato da {@code CIA/CIA/ciareg}: {@code bprab1} azzera PRB e DDRB di CIA-B e
-     * l'oracolo rilegge {@code $00} dove noi rileggevamo {@code $FF} — otto bit su otto.
+     * <p>Measured by {@code CIA/CIA/ciareg}: {@code bprab1} clears CIA-B's PRB and DDRB and
+     * reads back {@code $00}, not {@code $FF}: eight bits out of eight.
      */
     private int computePB() {
         int v = isCIAA ? ((prb & ddrb) | (ddrb ^ 0xFF)) : prb;
@@ -540,9 +512,9 @@ public class MOS8520 {
     }
 
     /**
-     * Lettura interna side-effect free del Port B.
-     * A differenza di {@link #readRegister(int)}, non attraversa la logica dei
-     * registri CIA e non modifica latch, pipeline o interrupt.
+     * Side-effect-free internal read of port B.
+     * Unlike {@link #readRegister(int)}, it does not go through the CIA register logic and
+     * changes no latch, pipeline or interrupt.
      */
     public byte peekPortB() {
         // Port B as the disk controller sees it: the output LATCH with the PB6/PB7 timer
@@ -558,7 +530,7 @@ public class MOS8520 {
         return (byte) ddra;
     }
 
-    // ── External Pin Events ──────────────────────────────────────────────────
+    // -- External pin events ------------------------------------------------------
 
     public void emulateFallingEdgeOnFlagPin() {
         icr |= 0x10;
@@ -571,16 +543,11 @@ public class MOS8520 {
         cnt = true;
         countOnCntEdge();
 
-        // ── Registro a scorrimento in INGRESSO ────────────────────────────────
-        // ⛔ Il travaso SSR → SDR e' IMMEDIATO, non ritardato di tre clock.
-        // Passava per il pipeline `CIASsrToSdr0→3`, e il pipeline era anche
-        // *cancellato* dal passaggio TX↔RX (`case 0xE`): in `ser/ser6`, che scorre
-        // quattro bit, commuta CRA a SP-uscita e torna in ingresso, il travaso
-        // dell'ottavo fronte veniva annullato dalla commutazione che arriva un paio
-        // di clock dopo, e SDR non si aggiornava mai. L'oracolo assegna sul posto
-        // (`c->sdr = c->sdr_buf` in `write_ciab_serial`, cia.cpp) e di pipeline non
-        // ne ha nessuno. ⚠️ L'INTERRUPT invece resta ritardato (`CIASerInt0`): quello
-        // l'oracolo lo passa a `CIA_sync_interrupt`, che non e' immediato.
+        // -- Shift register in INPUT --------------------------------------------
+        // The SSR -> SDR transfer is IMMEDIATE, not delayed by three clocks: a delayed
+        // transfer would also be cancelled by a TX/RX switch (`case 0xE`), and in
+        // `ser/ser6`, which shifts four bits, switches CRA to SP output and back to input,
+        // SDR would never be updated. The INTERRUPT stays delayed (`CIASerInt0`).
         if ((cra & 0x40) == 0) {
             if (serCounter == 0) serCounter = 8;
             ssr = ((ssr << 1) | (sp ? 1 : 0)) & 0xFF;
@@ -596,45 +563,39 @@ public class MOS8520 {
     }
 
     /**
-     * Conteggio dei fronti di CNT: avviene <b>dentro il fronte</b>, non nel pipeline.
+     * Counting of CNT edges: it happens <b>inside the edge</b>, not in the pipeline.
      *
-     * <p>⛔ Prima il fronte si limitava a iniettare {@code CIACountA1}/{@code CIACountB1}
-     * nel pipeline di Lorenz: il controllo d'underflow (che chiede {@code CIACountx2})
-     * cadeva allora <b>due clock di CIA dopo</b> il fronte, e il decremento tre. Il conto
-     * dei fronti era giusto — l'underflow arriva comunque all'ennesimo fronte — ma
-     * <b>l'istante</b> no. ⚠️ Misurato sul banco: {@code cnt/cnt1} (timer A sui fronti,
-     * IRQ sull'underflow di A) aveva la banda dell'handler in ritardo di 48 pixel = 12 CCK
-     * e {@code oldcnt/cnt4} (timer B sui fronti) di 36 pixel = 9 — cioè due clock di CIA
-     * (10 CCK) quantizzati dal confine d'istruzione a cui la CPU prende l'interrupt.
-     * Il riferimento è a 4 pixel per CCK.
+     * <p>Injecting {@code CIACountA1}/{@code CIACountB1} into the pipeline instead would put
+     * the underflow check two CIA clocks after the edge and the decrement three: the number
+     * of edges counted would be right, the <b>instant</b> wrong. Measured on the bank:
+     * {@code cnt/cnt1} (timer A on edges, IRQ on A's underflow) had the handler band 48
+     * pixels = 12 CCK late and {@code oldcnt/cnt4} (timer B on edges) 36 pixels = 9, i.e.
+     * two CIA clocks (10 CCK) quantised by the instruction boundary at which the CPU takes
+     * the interrupt. The reference has 4 pixels per CCK.
      *
-     * <p>L'oracolo conta <b>nell'accesso</b>: {@code WriteCIAB} → {@code write_ciab_serial}
-     * → {@code cia_inmode_cnt} (cia.cpp), che decrementa e ricarica sul posto, senza
-     * passare da {@code inputpipe}. Questo metodo ne è la traduzione, ordine compreso:
-     * prima A, e se A va in underflow ed è B a contarne gli underflow ({@code INMODE=1x})
-     * il decremento di B avviene <b>nello stesso fronte</b>; B in modo CNT
-     * ({@code INMODE=01}) conta comunque, e le due strade danno <b>un solo</b> decremento
-     * di B, non due.
+     * <p>Order: A first, and if A underflows and B counts A's underflows
+     * ({@code INMODE=1x}) B is decremented <b>in the same edge</b>; B in CNT mode
+     * ({@code INMODE=01}) counts anyway, and the two paths give <b>one</b> decrement of B,
+     * not two.
      *
-     * <p>⚠️ La cascata da un timer A pilotato dal <b>clock di sistema</b> resta invece nel
-     * pipeline ({@code delay |= CIACountB1} in {@link #tick()}): è la stessa asimmetria
-     * dell'oracolo, che lì passa da {@code inputpipe |= CIA_PIPE_INPUT}.
+     * <p>The cascade from a timer A driven by the <b>system clock</b> stays in the pipeline
+     * instead ({@code delay |= CIACountB1} in {@link #tick()}).
      */
     private void countOnCntEdge() {
         boolean decB = false;
 
-        // Timer A: INMODE=1 (fronti di CNT) e START.
+        // Timer A: INMODE=1 (CNT edges) and START.
         if ((cra & 0x21) == 0x21) {
             if (counterA == 0) {
                 timerAUnderflowOnCntEdge();
-                // B conta gli underflow di A (INMODE=10 o 11): sul fronte la condizione
-                // «CNT alto» dell'INMODE=11 è vera per costruzione.
+                // B counts A's underflows (INMODE=10 or 11): on the edge the "CNT high"
+                // condition of INMODE=11 holds by construction.
                 if ((crb & 0x41) == 0x41) decB = true;
             } else {
                 counterA = (counterA - 1) & 0xFFFF;
             }
         }
-        // Timer B: INMODE=01 (fronti di CNT) e START.
+        // Timer B: INMODE=01 (CNT edges) and START.
         if ((crb & 0x61) == 0x21) decB = true;
 
         if (decB) {
@@ -644,14 +605,13 @@ public class MOS8520 {
     }
 
     /**
-     * Underflow del timer A provocato da un fronte di CNT. Fa le stesse cose del blocco
-     * {@code timerAOutput} di {@link #tick()}, ma <b>subito</b>: il ricarico dal latch è
-     * immediato (l'oracolo lo fa in {@code timer_reset}) e cancella l'eventuale decremento
-     * già in canna, che è il {@code inputpipe &= ~CIA_PIPE_CLR1} dell'oracolo.
+     * Underflow of timer A caused by a CNT edge. Does what the {@code timerAOutput} block of
+     * {@link #tick()} does, but <b>at once</b>: the reload from the latch is immediate and
+     * cancels any decrement already in the pipe.
      *
-     * <p>La generazione del clock seriale non c'è perché non può esserci: con
-     * {@code CRA} bit 6 a 1 il pin CNT è un'<b>uscita</b> e nessun fronte esterno arriva
-     * qui — {@link #updatePins()} chiama questa strada solo a bit 6 azzerato.
+     * <p>There is no serial clock generation because there cannot be: with {@code CRA} bit 6
+     * set the CNT pin is an <b>output</b> and no external edge arrives here;
+     * {@link #updatePins()} takes this path only with bit 6 clear.
      */
     private void timerAUnderflowOnCntEdge() {
         icrAck &= ~0x01;
@@ -676,7 +636,7 @@ public class MOS8520 {
         if ((imr & 0x01) != 0) triggerIrq();
     }
 
-    /** Gemello di {@link #timerAUnderflowOnCntEdge()} per il timer B. */
+    /** Twin of {@link #timerAUnderflowOnCntEdge()} for timer B. */
     private void timerBUnderflowOnCntEdge() {
         icrAck &= ~0x02;
         if (((delay | feed) & CIAOneShotB0) != 0) {
@@ -714,15 +674,13 @@ public class MOS8520 {
         final int icrTransfer = icrStaged;
         icrStaged = 0;
 
-        // ── Timer A Pipeline Processing ───────────────────────────────────────
+        // -- Timer A pipeline processing ------------------------------------------
 
-        // (0) Un caricamento dal latch cancella il decremento del PROPRIO clock.
-        // È la regola di WinUAE `t->inputpipe &= ~CIA_PIPE_CLR1` (cia.cpp): il bit di
-        // uscita del pipe di conteggio viene azzerato sia dal caricamento schedulato da
-        // una scrittura (`t->loaddelay`, blocco «CIA special cases») sia dal ricarico
-        // che segue un underflow in modo continuo (blocco `ovfl`). Vale per tutti e due
-        // i timer e per tutte le modalità: non è una deroga.
-        // Vedi la nota estesa sul timer B e docs/vamigats-paula-audio-plan.md §7.1.16.
+        // (0) A load from the latch cancels the decrement of its OWN clock. The output bit
+        // of the count pipe is cleared both by the load scheduled by a write and by the
+        // reload that follows an underflow in continuous mode. It applies to both timers
+        // and to every mode: it is not an exception.
+        // See the note on timer B and docs/vamigats-paula-audio-plan.md section 7.1.16.
         boolean loadA = (delay & (CIALoadA1 | CIALoadA2)) != 0;
         if (loadA) {
             delay &= ~CIACountA3;
@@ -749,39 +707,24 @@ public class MOS8520 {
             }
             delay |= CIALoadA1;
         }
-        // (4) Delayed reload. Due stadi, come i due bit `0x00000001 << 1` e
-        // `<< 2` che WinUAE arma insieme quando il timer è fermo: il caricamento
-        // avviene al clock 2 E al clock 3 dopo la scrittura.
+        // (4) Delayed reload. Two stages, armed together when the timer is stopped: the
+        // load happens at clock 2 AND at clock 3 after the write.
         if ((delay & (CIALoadA1 | CIALoadA2)) != 0) reloadTimerA();
 
-        // ── Timer B Pipeline Processing ───────────────────────────────────────
+        // -- Timer B pipeline processing ------------------------------------------
 
-        // ⛔ Qui NON c'è (più) un ritardo d'avvio aggiuntivo. Dal 2026-06 al 2026-08 il
-        // codice aspettava 8 tick di E-clock in più prima del primo decremento
-        // (TIMER_START_DELAY): era nato nello stesso commit del detune 19/200 dei timer
-        // CIA, messo per far quadrare il test "New Test CIAs" di DiagROM. Il detune è
-        // stato revocato a favore del rate hardware CLK/10 (memoria
-        // cia-timer-eclock-5pct) e la costante è rimasta indietro, senza più il suo
-        // gemello. Non ha nessun corrispondente né in WinUAE (che al posto suo ha i due
-        // caricamenti di `t->loaddelay`, cia.cpp) né sull'8520, dove il ritardo fra la
-        // scrittura di CRA/CRB e il primo decremento è quello del pipeline
-        // CIACountB0→B1→B2→B3 qui sotto più i caricamenti.
+        // There is no extra start delay: the delay between the write of CRA/CRB and the
+        // first decrement is that of the CIACountB0 -> B1 -> B2 -> B3 pipeline below plus
+        // the loads. An extra delay counted on count EVENTS would eat the first underflows
+        // of timer A in a cascade: Dragon's Lair (latchA=7160, latchB=100, CRB=$49) uses the
+        // CASCADE (INMODE=10) as an alarm clock and checks that the wait does not exceed 53
+        // frames ($003D1E: SUB.b #$35,D0). `CiaCascadeTimerTest` is the regression.
         //
-        // ⚠️ Costava 8 E-clock a OGNI armamento, cioè lo 0,012% su un timer da 65 536
-        // tick ma l'8% su uno da 100 — ed è esattamente il bug che il ritardo aveva
-        // reso visibile: Dragon's Lair (latchA=7160, latchB=100, CRB=$49) usa la
-        // CASCATA (INMODE=10) come sveglia e verifica che l'attesa non superi 53 frame
-        // ($003D1E: SUB.b #$35,D0); con gli 8 tick contati sugli EVENTI di conteggio
-        // invece che sul clock, i primi 8 underflow del timer A venivano mangiati e i
-        // 51 frame nominali diventavano 56. `CiaCascadeTimerTest` è la regressione, e
-        // senza il ritardo l'asserzione è soddisfatta a maggior ragione.
-        //
-        // Il ritardo d'avvio è quello del pipeline `CIALoadB0→B1→B2` più la regola che
-        // un caricamento cancella il conteggio del proprio clock (vedi il timer A).
-        // Misurato contro l'oracolo (piano §7.1.16, armamento di timer.device a
-        // $FE94AC): il primo decremento cade al clock **4** dopo la scrittura di TBHI,
-        // perché il latch viene caricato ai clock 2 e 3 e ognuno dei due toglie il
-        // decremento del proprio clock. Con un caricamento solo cadeva al clock 3.
+        // The start delay is that of the `CIALoadB0 -> B1 -> B2` pipeline plus the rule that
+        // a load cancels the count of its own clock (see timer A). Measured (plan section
+        // 7.1.16, timer.device arming at $FE94AC): the first decrement falls at clock **4**
+        // after the TBHI write, because the latch is loaded at clocks 2 and 3 and each load
+        // removes the decrement of its own clock.
         boolean loadB = (delay & (CIALoadB1 | CIALoadB2)) != 0;
         if (loadB) {
             delay &= ~CIACountB3;
@@ -802,7 +745,7 @@ public class MOS8520 {
         }
         if ((delay & (CIALoadB1 | CIALoadB2)) != 0) reloadTimerB();
 
-        // ── Serial Port Processing ───────────────────────────────────────────
+        // -- Serial port processing -----------------------------------------------
 
         // Clock generation for Serial Output (using Timer A)
         if (timerAOutput && (cra & 0x40) != 0) {
@@ -828,7 +771,7 @@ public class MOS8520 {
             }
         }
 
-        // ── PB6/PB7 Pin Output ───────────────────────────────────────────────
+        // -- PB6/PB7 pin output -----------------------------------------------------
 
         if (timerAOutput) {
             pb67Toggle ^= 0x40;
@@ -858,7 +801,7 @@ public class MOS8520 {
         if ((delay & CIAPB6Low1) != 0) { pb67TimerOut &= ~0x40; }
         if ((delay & CIAPB7Low1) != 0) { pb67TimerOut &= ~0x80; }
 
-        // ── Interrupt Logic ─────────────────────────────────────────────────
+        // -- Interrupt logic --------------------------------------------------------
 
         // A timer underflow is not readable in the clock it happens: its source bit is
         // staged and reaches the ICR one clock later, together with the interrupt.
@@ -898,30 +841,23 @@ public class MOS8520 {
     }
 
     /**
-     * Collegamenti interni della sola CIA-B: PA0 &rarr; SP, PA1 &rarr; CNT.
+     * Internal connections of CIA-B only: PA0 to SP, PA1 to CNT.
      *
-     * <p>⛔ Il livello e' quello EFFETTIVAMENTE PILOTATO, {@code pra & ddra}: un pin
-     * configurato come ingresso non pilota niente, e prendere il solo {@code pra} fa
-     * comparire fronti di CNT che sulla scheda non esistono. L'oracolo apre
-     * {@code write_ciab_serial()} con {@code uae_u8 val = ndata & ndir;} e confronta il
-     * vecchio livello nello stesso modo ({@code (odata & odir) & 2}), cia.cpp.
+     * <p>The level is the one ACTUALLY DRIVEN, {@code pra & ddra}: a pin configured as an
+     * input drives nothing, and taking {@code pra} alone would create CNT edges that do not
+     * exist on the board. The old level is compared the same way.
      *
-     * <p>⛔ <b>Va valutato alla SCRITTURA, non al tick successivo.</b> In WinUAE
-     * {@code write_ciab_serial()} e' chiamata da {@code WriteCIAB} dentro l'accesso, e
-     * il fronte di CNT conta il timer li' ({@code cia_inmode_cnt}). Rimandarlo al tick
-     * successivo sposta il conteggio di un clock di CIA rispetto all'oracolo, e con
-     * {@code cnt/} il conteggio E' la misura.
+     * <p><b>Evaluated at the WRITE, not at the next tick.</b> The CNT edge counts the timer
+     * inside the access; deferring it to the next tick moves the count by one CIA clock, and
+     * in {@code cnt/} the count IS the measurement.
      *
-     * <p>⛔ <b>PA0 aggiorna anche {@link #sp}, non solo il pin.</b> Il registro a
-     * scorrimento in ingresso legge {@code sp} al fronte di CNT, e {@code sp} veniva
-     * riletto dal pin <b>solo dentro {@link #updatePins()}</b>, cioè al tick — mentre il
-     * fronte di CNT arriva qui, dentro l'accesso. Sul percorso della scrittura il livello
-     * era quindi quello vecchio: fermo a {@code true} dal reset, il che faceva entrare
-     * otto 1 e leggere {@code SDR = $FF} dove l'oracolo legge il dato vero.
-     * ⚠️ Misurato: {@code ser/ser1} riceve {@code $A5} (la sequenza 1,0,1,0,0,1,0,1
-     * scritta dal test), noi {@code $FF} — quattro barre su otto sbagliate, e lo stesso in
-     * {@code ser2÷4}, {@code ser6}, {@code ser7}. L'oracolo scorre {@code (val & 1)} del
-     * livello pilotato, senza inversioni ({@code write_ciab_serial}, cia.cpp).
+     * <p><b>PA0 also updates {@link #sp}, not just the pin.</b> The input shift register
+     * reads {@code sp} at the CNT edge, which arrives here, inside the access; if {@code sp}
+     * were refreshed only in {@link #updatePins()}, at the tick, the write path would shift
+     * in the old level. Measured: {@code ser/ser1} must receive {@code $A5} (the sequence
+     * 1,0,1,0,0,1,0,1 written by the test), not {@code $FF}, and likewise {@code ser2-4},
+     * {@code ser6}, {@code ser7}. The bit shifted in is {@code (val & 1)} of the driven
+     * level, with no inversion.
      */
     private void updateCiabSerialLinks() {
         final int drivenPa = pra & ddra;
@@ -977,14 +913,13 @@ public class MOS8520 {
         if (specialPinsUpdated) {
             if (pinSet.getFlagPin().isFallingEdge()) emulateFallingEdgeOnFlagPin();
         }
-        // ⛔ Il fronte di salita del pin TOD NON viene campionato qui, e il pin resta solo
-        // il segnale che Agnus pilota. L'istante in cui il contatore avanza lo calcola
-        // AbstractAgnus.todIncOffsetCck(), cioè il tod_inc_delay() dell'oracolo — che quel
-        // sincronizzatore lo contiene già: dentro ci sono il CCK di ritardo del pin di
-        // Agnus, i 12 E-clock di ritardo interno e l'allineamento alla griglia di quattro
-        // E-clock. Campionare il pin una seconda volta sul NOSTRO E-clock (fase CIA_ANCHOR)
-        // aggiungeva quindi un secondo sincronizzatore allo stesso filo, e con lui un
-        // ritardo costante di 3,5 CCK. Agnus chiama incrementTod() nell'istante esatto.
+        // The rising edge of the TOD pin is NOT sampled here; the pin is only the signal
+        // Agnus drives. The instant at which the counter advances is computed by
+        // AbstractAgnus.todIncOffsetCck(), which already contains the whole synchroniser:
+        // the CCK of delay of Agnus's pin, the 12 E clocks of internal delay and the
+        // alignment to the four-E-clock grid. Sampling the pin again on our E clock would add
+        // a second synchroniser to the same wire, a constant 3.5 CCK late. Agnus calls
+        // incrementTod() at the exact instant.
     }
 
     // -------------------------------------------------------------------------
@@ -992,15 +927,15 @@ public class MOS8520 {
     // -------------------------------------------------------------------------
 
     /**
-     * Lettura <b>priva di effetti collaterali</b> di un registro CIA, per il debugger e
-     * il disassemblatore.
+     * <b>Side-effect-free</b> read of a CIA register, for the debugger and the
+     * disassembler.
      *
-     * <p>⛔ Serve perché {@link #readRegister(int)} muta parecchio, ed è giusto che lo
-     * faccia: leggere l'ICR ($D) alza il bit 7, arma il pipeline di clear/ack e
-     * <b>rilascia la linea /IRQ</b>; leggere TODHI ($A) congela il latch del TOD e
-     * leggere TODLO ($8) lo scongela. Un dump di memoria che attraversi $BFExxx/$BFDxxx
-     * con {@code readRegister} cancella quindi un interrupt CIA pendente della macchina
-     * che sta osservando. Tutti gli altri registri sono già puri e passano di là.
+     * <p>Needed because {@link #readRegister(int)} changes a lot, rightly: reading the ICR
+     * ($D) sets bit 7, arms the clear/ack pipeline and <b>releases the /IRQ line</b>; reading
+     * TODHI ($A) freezes the TOD latch and reading TODLO ($8) unfreezes it. A memory dump
+     * crossing $BFExxx/$BFDxxx through {@code readRegister} would therefore cancel a pending
+     * CIA interrupt of the machine it is observing. All the other registers are already
+     * pure and go through there.
      */
     public byte peekRegister(int reg) {
         int addr = reg & 0x0F;
@@ -1069,20 +1004,18 @@ public class MOS8520 {
     }
 
     /**
-     * ⛔ Una lettura del TOD vede il contatore <b>adesso</b>, non com'era qualche clock fa.
+     * A TOD read sees the counter <b>now</b>, not as it was a few clocks ago.
      *
-     * <p>Qui c'era una «latenza di lettura» presa da vAmiga — 10 clock di CIA per CIA-A, 21
-     * per CIA-B, cioè 50 e 105 CCK — che restituiva il valore da uno storico di 64 posizioni.
-     * L'oracolo non ce l'ha: {@code ReadCIA} case 8/9/10 legge {@code c->tod} (o {@code c->tol}
-     * se latchato) e basta, {@code cia.cpp}. E i 105 CCK di CIA-B <b>sono</b> l'intervallo in
-     * cui cade {@code tod_inc_delay} (95÷114): era la stessa attesa contata due volte, in
-     * vAmiga come compensazione di un incremento modellato a inizio riga.
+     * <p>There is no read latency: cases 8/9/10 return the counter (or the latch, when
+     * latched) and nothing else. The delay between the TOD pin and the counter lives in
+     * {@code tod_inc_delay} (95-114 CCK on CIA-B); a read latency on top of it would count
+     * the same wait twice.
      *
-     * <p>La misura che l'ha smascherata: {@code CIA/TOD/todcntA1} e {@code todpulse1a}
-     * azzerano il TOD nel gestore VERTB e poi <b>girano finché TODLO cambia</b>. Con la
-     * latenza la rilettura subito dopo l'azzeramento restituiva ancora il valore vecchio,
-     * quindi il ciclo usciva <b>subito</b>: VHPOSR a {@code vpos 0} contro il {@code vpos 5}
-     * dell'oracolo — che è la riga del tick di CIA-A ({@code CIAA_TOD_VPOS}).
+     * <p>Measured by {@code CIA/TOD/todcntA1} and {@code todpulse1a}: they clear the TOD in
+     * the VERTB handler and then <b>spin until TODLO changes</b>. With a latency the read
+     * right after the clear would return the old value and the loop would exit <b>at
+     * once</b>: VHPOSR at {@code vpos 0} instead of {@code vpos 5}, the line of CIA-A's tick
+     * ({@code CIAA_TOD_VPOS}).
      */
     private int getTodLo() { return (todFrozen ? todLatch : todCounter) & 0xFF; }
     private int getTodMid() { return ((todFrozen ? todLatch : todCounter) >> 8) & 0xFF; }
@@ -1097,14 +1030,10 @@ public class MOS8520 {
         int val = value & 0xFF;
 
         switch (addr) {
-            // ⚠️ Porta A e porta B vanno trattate allo stesso modo: il valore che finisce
-            // sui pin è quello PILOTATO, non il registro grezzo. Su CIA-B updatePA()
-            // inverte i bit 6-7 (/RTS e /DTR, attivi bassi) per i soli pin configurati
-            // come uscita, quindi il valore dipende anche da DDRA: scrivere `pra` diretto
-            // — e non ricalcolare nulla alla scrittura di DDRA — lasciava il pin set col
-            // valore sbagliato fino al tick successivo, che poi correggeva da sé via
-            // updatePins(). Finestra breve e su due linee inerti nell'A500, ma era
-            // un'asimmetria gratuita rispetto a PRB/DDRB, che la forma giusta ce l'avevano.
+            // Port A and port B are handled the same way: the value on the pins is the one
+            // DRIVEN, not the raw register. On CIA-B updatePA() inverts bits 6-7 (/RTS and
+            // /DTR, active low) for the pins configured as outputs only, so the value also
+            // depends on DDRA and is recomputed at a DDRA write as well.
             case 0x0:
                 pra = val;
                 updatePA();
@@ -1133,16 +1062,12 @@ public class MOS8520 {
                 latchA = (latchA & 0x00FF) | (val << 8);
                 if ((delay & CIALoadA2) != 0) counterA = (counterA & 0x00FF) | (val << 8);
                 if ((cra & 0x01) == 0) delay |= CIALoadA0;
-                // ⛔ Scrivere TAHI su un timer ONE-SHOT ricarica il contatore ANCHE se il
-                // timer e' GIA' IN CORSA. Il blocco di avvio automatico qui sotto era
-                // condizionato a «fermo», e cosi' la seconda scrittura di TAHI — quella
-                // che `Timer/timer5` e `timer5c` fanno apposta a timer avviato — non
-                // faceva assolutamente niente. L'oracolo separa le due cose
-                // (`CIA_thi_write`, cia.cpp): il caricamento doppio e' condizionato a
-                // `!(t->cr & CR_START)`, ma il ramo `if (t->cr & CR_RUNMODE)` — che alza
-                // START e arma un altro caricamento — non ha condizioni.
-                // ⚠️ `timer5b`, che riscrive il solo TALO e non TAHI, era ed e' verde:
-                // e' il banco stesso a isolare la variabile.
+                // Writing TAHI on a ONE-SHOT timer reloads the counter EVEN IF the timer is
+                // ALREADY RUNNING: the double load is conditional on the timer being
+                // stopped, but the one-shot branch, which sets START and arms another load,
+                // has no condition. That is what `Timer/timer5` and `timer5c` measure by
+                // writing TAHI a second time on a running timer; `timer5b`, which rewrites
+                // TALO only, isolates the variable.
                 if ((cra & 0x08) != 0) {
                     boolean wasStopped = (cra & 0x01) == 0;
                     if (wasStopped) {
@@ -1164,7 +1089,7 @@ public class MOS8520 {
                 latchB = (latchB & 0x00FF) | (val << 8);
                 if ((delay & CIALoadB2) != 0) counterB = (counterB & 0x00FF) | (val << 8);
                 if ((crb & 0x01) == 0) delay |= CIALoadB0;
-                // Gemello del case 0x5: vedi la nota sul ricarico a timer gia' in corsa.
+                // Twin of case 0x5: see the note on reloading a running timer.
                 if ((crb & 0x08) != 0) {
                     boolean wasStopped = (crb & 0x01) == 0;
                     if (wasStopped) {
@@ -1178,15 +1103,13 @@ public class MOS8520 {
                     delay |= CIALoadB0;
                 }
                 break;
-            // ⛔ Il confronto con l'allarme su una SCRITTURA lo fa UN SOLO registro: TODLO.
-            // Non è una regola generale con un'eccezione, è la tabella di `cia.cpp`
-            // 1872-1900 — `case 8` chiama `cia_checkalarm(false, true, num)` subito dopo
-            // aver alzato `todon`, i `case 9` e `case 10` fanno solo `setciatod`. La stessa
-            // forma della rilettura delle porte (§"quattro registri, quattro regole").
-            // Misura: `CIA/TOD/tod/todint4` rimette a mano contatore e allarme uguali
-            // scrivendo TODMID per ultimo e conta gli scatti — l'oracolo ne dà 0 su 81
-            // passaggi, noi ne davamo 80, uno per ogni scrittura di TODMID.
-            // ⚠️ La scrittura all'ALLARME (crb bit 7) non confronta su nessuno dei tre.
+            // Only ONE register compares with the alarm on a WRITE: TODLO, right after
+            // switching the TOD on; TODMID and TODHI only set the counter. It is a table,
+            // not a general rule with an exception, the same shape as the port read-back.
+            // Measured: `CIA/TOD/tod/todint4` sets counter and alarm equal by hand writing
+            // TODMID last and counts the alarms: 0 in 81 passes, where comparing at every
+            // write would give 80, one per TODMID write.
+            // A write to the ALARM (crb bit 7) compares on none of the three.
             case 0x8:
                 if ((crb & 0x80) != 0) todAlarm = (todAlarm & 0xFFFF00) | val;
                 else { todCounter = (todCounter & 0xFFFF00) | val; todStopped = false; checkTodIrq(); }
@@ -1207,23 +1130,20 @@ public class MOS8520 {
                 if ((imr & icr & 0x1F) != 0 && irq && (delay & CIAReadIcr1) == 0) delay |= (CIASetInt1 | CIASetIcr1);
                 break;
             case 0xE:
-                // ⚠️ L'avvio esplicito (START senza LOAD) inietta DUE stadi, non uno.
-                // Il pipe dell'oracolo è lungo 2 bit e `CIA_cr_write` non lo tocca
-                // affatto quando parte: `process_pipe` ci mette il bit d'ingresso al
-                // primo clock dopo la scrittura, lo fa scendere al secondo e lo tira
-                // fuori al TERZO, che è quindi il primo decremento. Iniettando il solo
-                // stadio 0 il nostro primo decremento cadeva al QUARTO: un clock di CIA
-                // (5 CCK, un periodo di E-clock) di ritardo a ogni avvio, che restava
-                // addosso a tutti gli
-                // underflow successivi. È la stessa preparazione che l'avvio automatico
-                // da TAHI (case 0x5) già faceva — `CIACountA1 | CIACountA0` — e che
-                // nessuno aveva riportato qui.
+                // An explicit start (START without LOAD) injects TWO stages, not one. The
+                // count pipe is two bits long and is not touched when the timer starts: the
+                // input bit enters at the first clock after the write, moves down at the
+                // second and comes out at the THIRD, which is the first decrement. Injecting
+                // stage 0 alone would put the first decrement at the FOURTH clock: one CIA
+                // clock (5 CCK) late at every start, carried by every later underflow. It is
+                // the same preparation the automatic start from TAHI (case 0x5) does,
+                // `CIACountA1 | CIACountA0`.
                 //
-                // ⛔ Non tocca l'avvio con LOAD (`$11`, quello di `Timer/cont*`): lì il
-                // caricamento dello stadio 2 cancella comunque il decremento del proprio
-                // clock, quindi il primo decremento resta al quarto in entrambe le forme.
-                // Ecco perché il difetto era invisibile a `Timer` e visibile a `cnt/cnt3`,
-                // `ciaa1`/`ciaa2`, `ciab1`/`ciab2`, che avviano con `$01`.
+                // It does not affect a start with LOAD (`$11`, the one of `Timer/cont*`):
+                // there the stage-2 load cancels the decrement of its own clock anyway, so
+                // the first decrement is at the fourth clock in both forms. That is why
+                // `Timer` cannot see it and `cnt/cnt3`, `ciaa1`/`ciaa2`, `ciab1`/`ciab2`,
+                // which start with `$01`, can.
                 if ((val & 0x01) != 0) {
                     delay |= CIACountA0 | CIACountA1; feed |= CIACountA0;
                     if ((cra & 0x01) == 0) pb67Toggle |= 0x40;
@@ -1240,10 +1160,9 @@ public class MOS8520 {
                 if ((val & 0x08) != 0) feed |= CIAOneShotA0; else feed &= ~CIAOneShotA0;
                 if ((val & 0x10) != 0) delay |= CIALoadA0;
                 if ((val & 0x20) != 0) { delay &= ~(CIACountA1 | CIACountA0); feed &= ~CIACountA0; }
-                // ⛔ Commutare TX↔RX azzera anche il REGISTRO, non solo il contatore:
-                // `c->sdr_cnt = 0; c->sdr_load = 0; c->sdr_buf = 0;` (`CIA_cr_write`,
-                // cia.cpp). E' cio' che `ser/ser6` misura: quattro bit dentro, commuta,
-                // quattro bit dentro — e i quattro primi devono sparire.
+                // Switching TX/RX also clears the REGISTER, not just the counter. That is
+                // what `ser/ser6` measures: four bits in, switch, four bits in, and the
+                // first four must vanish.
                 if (((val ^ cra) & 0x40) != 0) {
                     if ((val & 0x40) != 0) sp = false; // Amiga ACK: drive line LOW
                     serCounter = 0;
@@ -1257,7 +1176,7 @@ public class MOS8520 {
                 updatePB();
                 break;
             case 0xF:
-                // Gemello del case 0xE: vedi la nota sull'avvio a due stadi.
+                // Twin of case 0xE: see the note on the two-stage start.
                 if ((val & 0x01) != 0) {
                     delay |= CIACountB0 | CIACountB1; feed |= CIACountB0;
                     if ((crb & 0x01) == 0) pb67Toggle |= 0x80;
@@ -1287,9 +1206,9 @@ public class MOS8520 {
     public boolean isIrqAsserted() { return !irq; }
 
     /**
-     * Stato del pin /LED di CIA-A (PRA bit 1), che pilota il LED di alimentazione e
-     * il filtro audio dell'A500: il bit basso accende il LED (luminoso) e attiva il
-     * filtro; il bit alto lo lascia in penombra. Significativo solo per CIA-A.
+     * State of CIA-A's /LED pin (PRA bit 1), which drives the A500's power LED and audio
+     * filter: a low bit lights the LED (bright) and enables the filter; a high bit leaves it
+     * dim. Meaningful for CIA-A only.
      */
     public boolean isPowerLedOn() { return (pra & 0x02) == 0; }
 }

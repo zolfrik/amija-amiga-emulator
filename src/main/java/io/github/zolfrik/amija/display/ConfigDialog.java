@@ -87,76 +87,76 @@ import java.io.File;
 import java.io.IOException;
 
 /**
- * Popup modale (F12) per la modifica di {@code amiga.properties}.
+ * Modal popup (F12) for editing {@code amiga.properties}.
  *
- * <p>Espone tutti i valori configurabili con i controlli adatti: caselle di testo
- * con browse ({@code ...}) per i percorsi assoluti, tendine per Chip/Slow RAM,
- * check per i booleani, uno spinner per il volume dei suoni del floppy. I contenuti
- * sono organizzati in sezioni e racchiusi in un'area scorrevole verticalmente.
+ * <p>Exposes every configurable value with the right control: text fields with a browse
+ * button ({@code ...}) for absolute paths, drop-downs for Chip/Slow RAM, checkboxes for the
+ * booleans, a spinner for the floppy sound volume. The contents are organised in sections
+ * inside a vertically scrolling area.
  *
- * <p>Restituisce l'azione scelta dall'utente ({@link Result}); su {@link Result#OK}
- * i valori modificati vengono applicati direttamente all'{@link AmigaConfig} passato.
- * Il chiamante salva la configurazione e applica a caldo le sole modifiche ai floppy
- * (inserimento/sostituzione/espulsione) senza riavviare la macchina; gli altri
- * settaggi (ROM, RAM, lingua) hanno effetto solo al successivo riavvio.
+ * <p>Returns the action chosen by the user ({@link Result}); on {@link Result#OK} the
+ * changed values are applied directly to the {@link AmigaConfig} passed in. The caller
+ * saves the configuration and applies live only the floppy changes
+ * (insert/replace/eject) without restarting the machine; the other settings (ROM, RAM,
+ * language) take effect only at the next restart.
  */
 public final class ConfigDialog {
 
-    /** Esito della finestra: l'azione che il chiamante deve eseguire. */
+    /** Outcome of the window: the action the caller must perform. */
     public enum Result {
         CANCEL, OK, RESTART, SOFT_RESET, QUIT,
         /**
-         * L'utente ha chiesto di unirsi a un host (o di lasciarlo). La transizione la fa
-         * il chiamante: un ospite non emula niente, quindi unirsi <b>smonta la
-         * macchina</b>, e non si smonta una macchina da dentro un dialog modale mentre il
-         * thread di emulazione gira. Le modifiche del popup non sono state applicate:
-         * quello che conta è l'indirizzo registrato in {@code RemotePlayControl}.
+         * The user asked to join a host (or to leave it). The caller performs the
+         * transition: a guest emulates nothing, so joining <b>unmounts the machine</b>, and
+         * a machine is not unmounted from inside a modal dialog while the emulation thread
+         * runs. The popup's changes have not been applied: what counts is the address
+         * recorded in {@code RemotePlayControl}.
          */
         REMOTE_PLAY_TRANSITION,
         /**
-         * Lo stato da caricare pretende una macchina diversa da quella accesa. Il popup
-         * si è chiuso <b>senza</b> applicare le modifiche in corso: quello che conta ora
-         * è la configurazione conservata dentro lo slot, che il chiamante ripristina
-         * prima di ricostruire la macchina e ritentare il caricamento.
+         * The state to load requires a machine different from the running one. The popup
+         * closed <b>without</b> applying the pending changes: what counts now is the
+         * configuration kept inside the slot, which the caller restores before rebuilding
+         * the machine and retrying the load.
          */
         STATE_RESTORE
     }
 
     /**
-     * Esito di "Load State" visto dal popup.
+     * Outcome of "Load State" as seen by the popup.
      *
-     * @param message      testo da mostrare all'utente; {@code null} se non c'è ancora
-     *                     niente da dire perché l'operazione prosegue fuori di qui
-     * @param needsRestart {@code true} se il caricamento richiede di ricostruire la
-     *                     macchina: il popup si chiude con {@link Result#STATE_RESTORE}
-     *                     e il resto lo fa il chiamante
+     * @param message      text to show the user; {@code null} if there is nothing to say
+     *                     yet because the operation continues elsewhere
+     * @param needsRestart {@code true} if the load requires rebuilding the machine: the
+     *                     popup closes with {@link Result#STATE_RESTORE} and the caller does
+     *                     the rest
      */
     public record LoadStateOutcome(String message, boolean needsRestart) {
 
-        /** Operazione conclusa qui: c'è solo da riferire com'è andata. */
+        /** Operation finished here: only the outcome remains to report. */
         public static LoadStateOutcome done(String message) {
             return new LoadStateOutcome(message, false);
         }
 
-        /** Operazione da riprendere fuori dal popup, dopo aver ricostruito la macchina. */
+        /** Operation to resume outside the popup, after rebuilding the machine. */
         public static LoadStateOutcome restart() {
             return new LoadStateOutcome(null, true);
         }
     }
 
     /**
-     * Quanto resta a schermo un tooltip prima di sparire da solo: il doppio dei 4 s con
-     * cui parte Swing. Qui i tooltip non sono etichette da riconoscere ma spiegazioni da
-     * leggere, e quattro secondi non bastano per una frase intera.
+     * How long a tooltip stays on screen before disappearing by itself: twice Swing's 4 s.
+     * Here tooltips are not labels to recognise but explanations to read, and four seconds
+     * are not enough for a whole sentence.
      *
-     * <p>È un valore assoluto e non "il default moltiplicato per due" di proposito:
-     * {@link ToolTipManager} è un singleton di JVM, e raddoppiare il valore corrente a
-     * ogni apertura del popup lo farebbe crescere senza fine.
+     * <p>An absolute value, not "the default times two", on purpose: {@link ToolTipManager}
+     * is a JVM singleton, and doubling the current value at every opening of the popup would
+     * grow it without end.
      */
     private static final int TOOLTIP_DISMISS_MS = 8000;
 
-    // Metodo e non costante: la misura dipende dalla scala dell'interfaccia, che va letta
-    // quando il componente si costruisce, non quando la classe si carica.
+    // A method, not a constant: the size depends on the interface scale, which must be read
+    // when the component is built, not when the class loads.
     private static Dimension driveToolButtonSize() {
         return dim(34, 26);
     }
@@ -164,13 +164,13 @@ public final class ConfigDialog {
     private static final Icon LOCK_CLOSED_ICON = new LockIcon(true);
     private static final Icon LOCK_OPEN_ICON = new LockIcon(false);
 
-    /** Sorgenti di file del popup; ognuna ricorda la propria ultima cartella. */
+    /** File sources of the popup; each one remembers its own last folder. */
     private enum BrowseKind { FLOPPY, ROM, HDF, WHDLOAD, MEDIA }
 
-    // Valori sensati/possibili per le tendine della memoria (in KB).
+    // Sensible/possible values for the memory drop-downs (in KB).
     private static final Integer[] CHIP_RAM_OPTIONS = { 256, 512, 1024, 2048 };
     private static final Integer[] SLOW_RAM_OPTIONS = { 0, 512, 1024, 1536, 1792 };
-    // Fast RAM: potenze di due da 512 KB a 8 MB (vincolo AutoConfig Zorro II), 0=nessuna.
+    // Fast RAM: powers of two from 512 KB to 8 MB (Zorro II AutoConfig constraint), 0=none.
     private static final Integer[] FAST_RAM_OPTIONS = { 0, 512, 1024, 2048, 4096, 8192 };
 
     // Palette sobria/professionale.
@@ -180,17 +180,17 @@ public final class ConfigDialog {
     private static final Color ACCENT    = new Color(0x4D, 0x9D, 0xE0);
 
     /**
-     * I supporti montati sulla macchina accesa: quanti drive per floppy esistono, quali
-     * immagini di hard disk sono collegate e quale archivio WHDLoad è in esecuzione.
+     * The media mounted on the running machine: how many floppy drives exist, which hard
+     * disk images are connected and which WHDLoad archive is running.
      *
-     * <p>È il metro con cui la lista unica distingue ciò che sta già girando da ciò che
-     * l'utente sta aggiungendo: aggiungere un drive è una modifica all'hardware, e
-     * l'hardware di una macchina accesa non cambia. Le voci che ne pretendono uno nuovo
-     * sono marcate con un asterisco e diventano effettive al prossimo avvio.
+     * <p>It is the yardstick with which the single list tells what is already running from
+     * what the user is adding: adding a drive is a hardware change, and the hardware of a
+     * running machine does not change. Entries that require new hardware are marked with an
+     * asterisk and take effect at the next start.
      *
-     * @param floppyDrives numero di drive per floppy collegati
-     * @param hdDisks      immagini degli hard disk montati, nell'ordine delle unità
-     * @param whdloadFile  archivio WHDLoad in esecuzione; stringa vuota se nessuno
+     * @param floppyDrives number of floppy drives connected
+     * @param hdDisks      images of the mounted hard disks, in unit order
+     * @param whdloadFile  WHDLoad archive running; empty string if none
      */
     public record DriveHardware(int floppyDrives, java.util.List<String> hdDisks,
             String whdloadFile) {
@@ -204,18 +204,18 @@ public final class ConfigDialog {
     private ConfigDialog() {}
 
     /**
-     * Mostra il dialog in modalità modale e ritorna l'azione scelta. Se l'esito è
-     * {@link Result#OK} le modifiche sono già state scritte in {@code config}.
+     * Shows the dialog modally and returns the chosen action. If the outcome is
+     * {@link Result#OK} the changes have already been written to {@code config}.
      *
-     * @param onScreenshot        azione del pulsante "Take Screenshot"; ritorna il file
-     *                            salvato (o {@code null} in caso di errore).
-     * @param shaderParamUpdater  callback {@code (nome, valore)} per applicare a caldo i
-     *                            parametri dello shader OpenGL (popup "...").
-     * @param onSaveState         salva lo slot e ritorna il messaggio di esito.
-     * @param onLoadState         carica lo slot; vedi {@link LoadStateOutcome}.
-     * @param hardware            i supporti della macchina accesa, o {@code null} se non
-     *                            ce n'è una: senza macchina non c'è niente da rimandare
-     *                            e la lista non marca nulla.
+     * @param onScreenshot        action of the "Take Screenshot" button; returns the file
+     *                            saved (or {@code null} on error).
+     * @param shaderParamUpdater  callback {@code (name, value)} that applies the OpenGL
+     *                            shader parameters live ("..." popup).
+     * @param onSaveState         saves the slot and returns the outcome message.
+     * @param onLoadState         loads the slot; see {@link LoadStateOutcome}.
+     * @param hardware            the media of the running machine, or {@code null} if there
+     *                            is none: without a machine nothing is deferred and the list
+     *                            marks nothing.
      */
     public static Result show(JFrame parent, AmigaConfig config,
             java.util.function.Supplier<java.io.File> onScreenshot,
@@ -225,30 +225,30 @@ public final class ConfigDialog {
             RemotePlayControl remotePlay, DriveHardware hardware) {
         final Result[] result = { Result.CANCEL };
 
-        // Prima di costruire qualsiasi cosa: i tooltip di questo popup vanno letti, non
-        // solo intravisti. Il ToolTipManager è condiviso da tutta la JVM, quindi vale
-        // anche per le finestre figlie (tasti joystick, parametri shader, download).
+        // Before building anything: the tooltips of this popup are meant to be read, not
+        // glimpsed. The ToolTipManager is shared by the whole JVM, so it applies to the child
+        // windows too (joystick keys, shader parameters, downloads).
         ToolTipManager.sharedInstance().setDismissDelay(TOOLTIP_DISMISS_MS);
 
         JDialog dialog = new JDialog(parent, Messages.t("dialog.title"), true);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
 
         // -------------------------------------------------------------------
-        // Sezione: Sistema
+        // Section: System
         // -------------------------------------------------------------------
         JPanel system = section(Messages.t("section.system"));
 
-        // "Expert mode" (prima voce, spento di default): decide quanto popup l'utente si
-        // trova davanti. Spento, la macchina si configura da sé in base al supporto
-        // scelto — restano il Kickstart, sdoppiato nelle due ROM fra cui l'automatismo
-        // sceglie, e la lista unica dei drive; acceso, compare tutto e decide l'utente.
-        // Il cablaggio è più in basso (syncAuto), dopo le sezioni da cui dipende.
+        // "Expert mode" (first entry, off by default): decides how much popup the user sees.
+        // Off, the machine configures itself from the chosen media; what remains is the
+        // Kickstart, split into the two ROMs the automation chooses between, and the single
+        // list of drives. On, everything appears and the user decides. The wiring is further
+        // down (syncAuto), after the sections it depends on.
         JCheckBox expertCheck = check(Messages.t("label.expert"), !config.autoEnabled());
         tip("label.expert", expertCheck);
         addRow(system, 0, expertCheck, null, null);
         java.util.function.BooleanSupplier simpleMode = () -> !expertCheck.isSelected();
 
-        // Kickstart scelto a mano: visibile solo in Expert.
+        // Kickstart chosen by hand: visible in Expert only.
         JLabel kickLabel = label(Messages.t("label.kickstart"));
         JTextField kickField = textField(config.storedKickstartPath());
         JButton kickBrowse = browseButton();
@@ -257,15 +257,14 @@ public final class ConfigDialog {
         tip("label.kickstart", kickLabel, kickField);
         addRow(system, 1, kickLabel, kickField, kickBrowse);
 
-        // Le due ROM fra cui sceglie la configurazione automatica: visibili solo con
-        // Expert spento, cioè quando quella scelta la fa l'emulatore. Hanno una voce
-        // propria in amiga.properties ma condividono con il campo qui sopra l'ultima
-        // cartella visitata (BrowseKind.ROM): i Kickstart stanno tutti insieme.
+        // The two ROMs the automatic configuration chooses between: visible only with Expert
+        // off, i.e. when the emulator makes that choice. They have their own key in
+        // amiga.properties but share with the field above the last folder visited
+        // (BrowseKind.ROM): the Kickstarts all live together.
         //
-        // Se nessuna delle due è impostata siamo davanti a una configurazione più vecchia
-        // della modalità Auto: la prima parte allora dal Kickstart scelto a mano, che è
-        // quello con cui la macchina sta già girando. Senza, all'utente sembrerebbe di
-        // aver perso la propria ROM.
+        // If neither is set, the configuration predates Auto mode: the first then starts
+        // from the Kickstart chosen by hand, the one the machine is already running with.
+        // Otherwise the user would seem to have lost their ROM.
         JLabel ks13Label = label(Messages.t("label.kickstart13"));
         JTextField ks13Field = textField(
                 config.autoKickstart13().isEmpty() && config.autoKickstart31().isEmpty()
@@ -284,10 +283,10 @@ public final class ConfigDialog {
         tip("label.kickstart31", ks31Label, ks31Field);
         addRow(system, 3, ks31Label, ks31Field, ks31Browse);
 
-        // Le cinque voci qui sotto descrivono l'hardware della macchina. Con Expert
-        // spento le decide l'emulatore e le righe spariscono del tutto: chi non conosce
-        // l'Amiga non ha modo di scegliere fra OCS ed ECS, e vedersele davanti in sola
-        // lettura non lo aiuta. Riappaiono, modificabili, appena Expert si accende.
+        // The five entries below describe the machine's hardware. With Expert off the
+        // emulator decides them and the rows disappear entirely: someone who does not know
+        // the Amiga has no way to choose between OCS and ECS, and seeing them read-only does
+        // not help. They reappear, editable, as soon as Expert is switched on.
         JComboBox<Integer> chipCombo = kbCombo(CHIP_RAM_OPTIONS, config.chipRamKb());
         JLabel chipLabel = addRow(system, 4, "label.chipram", chipCombo, null);
 
@@ -297,38 +296,37 @@ public final class ConfigDialog {
         JComboBox<Integer> fastCombo = kbCombo(FAST_RAM_OPTIONS, config.fastRamKb());
         JLabel fastLabel = addRow(system, 6, "label.fastram", fastCombo, null);
 
-        // Modalita' video PAL/NTSC: il cambio richiede il riavvio dell'emulatore
-        // (gestito da Amija: un OK con modalita' diversa forza un cold restart).
+        // PAL/NTSC video mode: changing it requires restarting the emulator (handled by
+        // Amija: an OK with a different mode forces a cold restart).
         JComboBox<VideoMode> videoModeCombo = new JComboBox<>(VideoMode.values());
         videoModeCombo.setSelectedItem(config.videoMode());
         videoModeCombo.setMaximumSize(dim(160, 26));
         JLabel videoLabel = addRow(system, 7, "label.videomode", videoModeCombo, null);
 
-        // Chipset OCS/ECS: come la modalita' video, il cambio richiede un cold restart.
+        // OCS/ECS chipset: like the video mode, a change requires a cold restart.
         JComboBox<Chipset> chipsetCombo = new JComboBox<>(Chipset.values());
         chipsetCombo.setSelectedItem(config.chipset());
         chipsetCombo.setMaximumSize(dim(160, 26));
         JLabel chipsetLabel = addRow(system, 8, "label.chipset", chipsetCombo, null);
 
         // -------------------------------------------------------------------
-        // Sezione: Game ports
+        // Section: Game ports
         // -------------------------------------------------------------------
-        // Periferica collegata a ciascuna game port (mouse / joystick reale / joystick
-        // da tastiera / vuota). Applicata a caldo: nessun riavvio richiesto.
-        // Con "Joystick (via tastiera)" compare accanto alla tendina il pulsante "..."
-        // che apre la configurazione dei tasti di quella porta. Le due mappe sono
-        // modificate in copia e scritte nella configurazione solo alla conferma.
+        // Device plugged into each game port (mouse / real joystick / keyboard joystick /
+        // empty). Applied live: no restart needed. With "Joystick (via keyboard)" the "..."
+        // button appears next to the drop-down and opens that port's key configuration. The
+        // two maps are edited as copies and written to the configuration only on confirm.
         //
-        // Nel gioco a distanza le due porte hanno DUE PADRONI: l'host cede all'ospite una
-        // delle due, e da quel momento è l'ospite a decidere cosa infilarci e con quali
-        // tasti. Ciascuno ha quindi la tendina della propria porta e non dell'altra —
-        // altrimenti l'ultimo che conferma il popup scavalcherebbe la scelta dell'altro.
+        // In remote play the two ports have TWO OWNERS: the host gives one of them to the
+        // guest, and from then on the guest decides what to plug into it and with which
+        // keys. Each therefore has the drop-down of its own port and not of the other's;
+        // otherwise whoever confirms the popup last would override the other's choice.
         JPanel ports = section(Messages.t("section.gameports"));
         JoystickKeyMap[] joyKeyMaps = { config.joystickKeyMap(0), config.joystickKeyMap(1) };
 
-        // Il pulsante va nella colonna di coda della sezione, la stessa in cui le altre
-        // sezioni mettono il loro "...": resta quindi allineato a quelli e la tendina
-        // mantiene la propria larghezza sia che il pulsante ci sia sia che non ci sia.
+        // The button goes in the section's trailing column, the same in which the other
+        // sections put their "...": it stays aligned with them and the drop-down keeps its
+        // width whether the button is there or not.
         JComboBox<PortDevice> port0Combo = deviceCombo(config.portDevice(0));
         JButton port0Keys = joystickKeysButton();
         JLabel port0Label = addRow(ports, 0, "label.port0", port0Combo, port0Keys);
@@ -337,23 +335,23 @@ public final class ConfigDialog {
         JButton port1Keys = joystickKeysButton();
         JLabel port1Label = addRow(ports, 1, "label.port1", port1Combo, port1Keys);
 
-        // Una porta spenta senza motivo è un guasto; con il motivo scritto sotto è una
-        // regola. La riga compare solo quando c'è davvero una sessione di mezzo.
+        // A port switched off for no reason is a fault; with the reason written below it is
+        // a rule. The row appears only when a session is really involved.
         JLabel portOwnerNote = label("");
         addRow(ports, 2, new JLabel(""), portOwnerNote, null);
 
         port0Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 0, joyKeyMaps));
         port1Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 1, joyKeyMaps));
 
-        // Un solo posto in cui le due righe si riallineano: chi possiede quale porta, e il
-        // pulsante dei tasti, che appare solo sulla porta PROPRIA impostata sul joystick da
-        // tastiera. Lo richiamano le tendine e — perché ospite e ospitante vanno e vengono
-        // mentre il popup è aperto — il timer della sezione «Gioco a distanza».
+        // A single place where the two rows realign: who owns which port, and the keys
+        // button, which appears only on one's OWN port set to the keyboard joystick. Called
+        // by the drop-downs and (because guest and host come and go while the popup is open)
+        // by the timer of the "Remote play" section.
         Runnable syncPorts = () -> {
             int remotePort = remotePlay == null ? -1 : remotePlay.remoteGamePort();
             boolean hosting = remotePlay != null && remotePlay.isHosting();
             boolean guest = remotePlay != null && remotePlay.isGuest();
-            // Ospitando si perde la porta ceduta; da ospite si ha soltanto la propria.
+            // Hosting, the port given away is lost; as a guest only one's own port exists.
             boolean[] mine = {
                 !(hosting && remotePort == 0) && !(guest && remotePort != 0),
                 !(hosting && remotePort == 1) && !(guest && remotePort != 1),
@@ -383,15 +381,15 @@ public final class ConfigDialog {
         syncPorts.run();
 
         // -------------------------------------------------------------------
-        // Sezione: Floppy drive
+        // Section: Floppy drives
         // -------------------------------------------------------------------
         JPanel drives = section(Messages.t("section.drives"));
         JCheckBox[] driveEnabled = new JCheckBox[4];
         JTextField[] driveDisk   = new JTextField[4];
         JToggleButton[] driveReadOnly = new JToggleButton[4];
-        // Le funzioni che riallineano i controlli di una riga al suo stato. Servono anche
-        // dall'esterno: quando la lista unica della modalità Auto riversa qui i propri
-        // supporti, setSelected/setText non emettono eventi e nessuno le richiamerebbe.
+        // The functions that realign a row's controls to its state. Also needed from outside:
+        // when Auto mode's single list pours its media in here, setSelected/setText fire no
+        // events and nobody would call them.
         java.util.List<Runnable> classicSyncs = new java.util.ArrayList<>();
         for (int i = 0; i < 4; i++) {
             final int idx = i;
@@ -401,8 +399,8 @@ public final class ConfigDialog {
             JToggleButton diskReadOnly = readOnlyButton(config.driveReadOnly(i));
             JButton diskEject = ejectButton();
 
-            // Il percorso del disco è modificabile solo se il drive è collegato; il
-            // pulsante di espulsione è attivo solo se c'è effettivamente un disco.
+            // The disk path is editable only if the drive is connected; the eject button is
+            // active only if there really is a disk.
             Runnable sync = () -> {
                 boolean on = enabled.isSelected();
                 disk.setEnabled(on);
@@ -415,8 +413,8 @@ public final class ConfigDialog {
                 if (isZipPath(disk.getText())) diskReadOnly.setSelected(true);
                 sync.run();
             });
-            // Espulsione: svuota il campo. La differenza con lo stato corrente verrà
-            // applicata al disco reale alla conferma con OK (eject vero e proprio).
+            // Eject: clears the field. The difference from the current state is applied to
+            // the real disk when confirming with OK (the actual eject).
             diskEject.addActionListener(e -> {
                 disk.setText("");
                 disk.setCaretPosition(0);
@@ -426,7 +424,7 @@ public final class ConfigDialog {
             classicSyncs.add(sync);
             sync.run();
 
-            // "..." e "Eject" affiancati nella colonna di coda (eject a destra).
+            // "..." and "Eject" side by side in the trailing column (eject on the right).
             JPanel trailing = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
             trailing.setOpaque(false);
             trailing.add(diskBrowse);
@@ -441,7 +439,7 @@ public final class ConfigDialog {
         }
 
         // -------------------------------------------------------------------
-        // Sezione: Hard disk (master / slave)
+        // Section: Hard disk (master / slave)
         // -------------------------------------------------------------------
         JPanel hds = section(Messages.t("section.harddisks"));
         int hdCount = AmigaConfig.HD_UNITS.length;
@@ -489,7 +487,7 @@ public final class ConfigDialog {
         }
 
         // -------------------------------------------------------------------
-        // Sezione: WHDLoad (archivio .lha avviato automaticamente)
+        // Section: WHDLoad (.lha archive started automatically)
         // -------------------------------------------------------------------
         JPanel whd = section(Messages.t("section.whdload"));
         JCheckBox whdEnabled = check(Messages.t("whdload.enabled"), config.whdloadEnabled());
@@ -506,9 +504,9 @@ public final class ConfigDialog {
         whdBrowse.addActionListener(e -> {
             browse(dialog, config, BrowseKind.WHDLOAD, whdFile, Messages.t("chooser.whdload"), "lha", "lzh");
             whdSync.run();
-            // Punto di bisogno: l'archivio scelto non partirà senza i file di sistema
-            // WHDLoad, che AmiJa non può ridistribuire. È qui che la domanda ha un
-            // senso — non al primo avvio, dove la porremmo anche a chi non li userà mai.
+            // Point of need: the archive chosen will not run without the WHDLoad system
+            // files, which AmiJa cannot redistribute. Here the question makes sense, not at
+            // the first start, where it would be asked even of those who will never use them.
             if (!whdFile.getText().trim().isEmpty() && !new WhdLoadManager().isAvailable()) {
                 int answer = JOptionPane.showConfirmDialog(dialog,
                         Messages.t("assets.whdload.offer"), Messages.t("assets.title"),
@@ -535,15 +533,15 @@ public final class ConfigDialog {
         addRow(whd, 0, whdEnabled, whdFile, whdTrailing);
 
         // -------------------------------------------------------------------
-        // Sezione: Drives — la lista unica della modalità Auto, che prende il posto
-        // delle tre sezioni qui sopra. Vedi DriveList.
+        // Section: Drives, the single list of Auto mode, which replaces the three sections
+        // above. See DriveList.
         // -------------------------------------------------------------------
         JPanel media = section(Messages.t("section.media"));
         DriveList driveList = new DriveList(dialog, config, media, hardware);
         driveList.seed(MediaState.fromConfig(config));
 
-        // I supporti come li vedono le tre sezioni classiche, e come rimetterceli.
-        // Sono le due direzioni dello scambio con la lista unica.
+        // The media as the three classic sections see them, and how to put them back: the
+        // two directions of the exchange with the single list.
         java.util.function.Supplier<MediaState> classicMedia = () -> {
             MediaState s = new MediaState();
             for (int i = 0; i < 4; i++) {
@@ -576,31 +574,31 @@ public final class ConfigDialog {
             whdEnabled.setSelected(s.whdloadEnabled);
             whdFile.setText(s.whdloadFile == null ? "" : s.whdloadFile);
             whdFile.setCaretPosition(0);
-            // setSelected/setText non emettono eventi: i controlli di riga vanno
-            // riallineati a mano, o resterebbero abilitati come prima.
+            // setSelected/setText fire no events: the row controls must be realigned by
+            // hand, or they would stay enabled as before.
             classicSyncs.forEach(Runnable::run);
         };
 
         // -------------------------------------------------------------------
-        // Cablaggio di "Expert mode" (prima voce della sezione Sistema).
+        // Wiring of "Expert mode" (first entry of the System section).
         //
-        // Sta qui, e non lassù, perché deve conoscere entrambe le viste dei supporti:
-        // le tre sezioni classiche e la lista unica. Accendere o spegnere Expert scambia
-        // le viste passandosi quello che l'utente ha scelto, così un gioco appena messo
-        // nella lista non sparisce cambiando idea sulla modalità.
+        // It is here, not up there, because it must know both views of the media: the three
+        // classic sections and the single list. Switching Expert on or off swaps the views
+        // passing along what the user chose, so a game just put in the list does not vanish
+        // when changing one's mind about the mode.
         // -------------------------------------------------------------------
         Runnable syncAuto = () -> {
             boolean simple = simpleMode.getAsBoolean();
             setRowVisible(!simple, kickLabel, kickField, kickBrowse);
             setRowVisible(simple, ks13Label, ks13Field, ks13Browse);
             setRowVisible(simple, ks31Label, ks31Field, ks31Browse);
-            // Fuori da Expert l'hardware lo decide l'emulatore: le righe non servono.
+            // Outside Expert the emulator decides the hardware: the rows are not needed.
             setRowVisible(!simple, chipLabel, chipCombo);
             setRowVisible(!simple, slowLabel, slowCombo);
             setRowVisible(!simple, fastLabel, fastCombo);
             setRowVisible(!simple, videoLabel, videoModeCombo);
             setRowVisible(!simple, chipsetLabel, chipsetCombo);
-            // Una lista sola invece delle tre sezioni per tipo di supporto.
+            // A single list instead of the three sections per media type.
             media.setVisible(simple);
             drives.setVisible(!simple);
             hds.setVisible(!simple);
@@ -616,9 +614,9 @@ public final class ConfigDialog {
             if (simpleMode.getAsBoolean()) {
                 driveList.seed(classicMedia.get());
             } else {
-                // Accendendo Expert tornano in vigore le impostazioni di sistema scelte
-                // a mano, rimaste intatte nel file per tutto il tempo in cui la macchina
-                // si configurava da sé; i supporti invece sono quelli della lista.
+                // Switching Expert on brings back the system settings chosen by hand, left
+                // untouched in the file for as long as the machine configured itself; the
+                // media instead are those of the list.
                 applyToClassic.accept(driveList.toMediaState());
                 selectKb(chipCombo, config.storedChipRamKb());
                 selectKb(slowCombo, config.storedSlowRamKb());
@@ -630,14 +628,14 @@ public final class ConfigDialog {
         });
 
         // -------------------------------------------------------------------
-        // Sezione: file opzionali di terze parti (assistente di download).
-        // Materiale che AmiJa non può ridistribuire e che l'utente può farsi
-        // scaricare dai siti ufficiali. Vedi THIRD-PARTY-NOTICES.md §5.
+        // Section: optional third-party files (download assistant). Material AmiJa cannot
+        // redistribute and the user can have downloaded from the official sites. See
+        // THIRD-PARTY-NOTICES.md section 5.
         //
-        // Se sono già installati tutti, la sezione non ha più nulla da proporre:
-        // si omette del tutto (assets == null) invece di offrire un assistente che
-        // mostrerebbe solo "Già installato". Lo stato è letto a ogni apertura del
-        // popup, quindi la sezione sparisce da sé dopo un download riuscito.
+        // If they are all installed already, the section has nothing left to offer: it is
+        // omitted entirely (assets == null) instead of offering an assistant that would only
+        // show "Already installed". The state is read at every opening of the popup, so the
+        // section disappears by itself after a successful download.
         // -------------------------------------------------------------------
         JPanel assets = null;
         if (!AssetCatalog.packages(config).stream().allMatch(AssetPackage::installed)) {
@@ -649,11 +647,11 @@ public final class ConfigDialog {
         }
 
         // -------------------------------------------------------------------
-        // Sezione: Audio / Video
+        // Section: Audio / Video
         // -------------------------------------------------------------------
         JPanel av = section(Messages.t("section.av"));
 
-        // Rendering (prima voce): software (Java2D) o OpenGL (LWJGL, predisposto agli shader).
+        // Rendering (first entry): software (Java2D) or OpenGL (LWJGL, ready for shaders).
         JComboBox<RendererType> rendererCombo = new JComboBox<>(RendererType.values());
         rendererCombo.setSelectedItem(config.renderer());
         rendererCombo.setMaximumSize(dim(220, 26));
@@ -670,8 +668,8 @@ public final class ConfigDialog {
         });
         addRow(av, 0, "label.renderer", rendererCombo, null);
 
-        // Shader RetroArch: popolato coi .glslp nella cartella "shaders" (+ "Nessuno").
-        // Modificabile solo col renderer OpenGL.
+        // RetroArch shader: filled with the presets in the "shaders" folder (+ "None").
+        // Editable only with the OpenGL renderer.
         JComboBox<String> shaderCombo = new JComboBox<>(scanShaderNames());
         String curShader = config.shader();
         boolean shaderPresent = false;
@@ -689,10 +687,10 @@ public final class ConfigDialog {
                 if ("none".equals(value)) {
                     setText(Messages.t("shader.none"));
                 } else if (value != null) {
-                    // Un pacchetto come il Mega Bezel porta centinaia di preset annidati e
-                    // il percorso intero non entra in una tendina da 220px. Si mostrano le
-                    // ultime due parti — bastano a distinguere i nomi che si ripetono in
-                    // cartelle diverse — e il percorso completo va nel tooltip.
+                    // A pack like the Mega Bezel brings hundreds of nested presets and the
+                    // full path does not fit in a 220px drop-down. The last two parts are
+                    // shown (enough to tell apart names repeated in different folders) and
+                    // the full path goes in the tooltip.
                     String name = value.toString();
                     int last = name.lastIndexOf('/');
                     int prev = last < 0 ? -1 : name.lastIndexOf('/', last - 1);
@@ -702,13 +700,13 @@ public final class ConfigDialog {
                 return this;
             }
         });
-        // Pulsante "..." per i parametri dello shader selezionato.
+        // "..." button for the parameters of the selected shader.
         JButton shaderParamsBtn = button("...", false);
         styleDriveToolButton(shaderParamsBtn);
         shaderParamsBtn.setToolTipText(Messages.t("shaderParams.tooltip"));
 
-        // Abilitato solo se: renderer OpenGL, shader reale (non "none") ED è quello
-        // attualmente applicato (così l'anteprima a caldo dei parametri corrisponde).
+        // Enabled only with: OpenGL renderer, a real shader (not "none") AND the one
+        // currently applied (so the live preview of the parameters matches).
         final String appliedShader = config.shader();
         Runnable syncShaderTools = () -> {
             boolean gl = rendererCombo.getSelectedItem() == RendererType.OPENGL;
@@ -731,9 +729,9 @@ public final class ConfigDialog {
             }
         });
 
-        // BorderLayout: la tendina (CENTER) si allarga per riempire la colonna, il "..."
-        // (EAST) resta a destra al bordo. Così tendina + pulsante hanno la stessa larghezza
-        // totale delle altre tendine, allineate sia a sinistra sia a destra.
+        // BorderLayout: the drop-down (CENTER) widens to fill the column, the "..." (EAST)
+        // stays at the right edge. So drop-down + button have the same total width as the
+        // other drop-downs, aligned both left and right.
         JPanel shaderRow = new JPanel(new BorderLayout(4, 0));
         shaderRow.setOpaque(false);
         shaderRow.add(shaderCombo, BorderLayout.CENTER);
@@ -756,9 +754,9 @@ public final class ConfigDialog {
         });
         addRow(av, 2, "label.windowMode", windowModeCombo, null);
 
-        // Monitor su cui aprire l'emulatore: indici 0..n-1 dei monitor collegati
-        // (0 = principale). Il valore configurato resta selezionabile anche se il
-        // monitor non è al momento collegato, così non viene perso.
+        // Monitor to open the emulator on: indices 0..n-1 of the connected monitors (0 =
+        // primary). The configured value stays selectable even if that monitor is not
+        // connected right now, so it is not lost.
         int monitorCount = Math.max(1, AmigaDisplay.screenDevices().length);
         int selectedMonitor = config.monitorIndex();
         java.util.List<Integer> monitorItems = new java.util.ArrayList<>();
@@ -791,10 +789,9 @@ public final class ConfigDialog {
         addRow(av, 6, "label.sound", soundWrap, null);
 
         // -------------------------------------------------------------------
-        // Sezione: GUI — l'aspetto del popup e delle finestre di AmiJa, non della
-        // macchina emulata: lingua, scala dell'interfaccia e il pannello dei LED, che
-        // è un ornamento della finestra e non un dispositivo. Le prossime voci di
-        // interfaccia vanno qui invece che in "Sistema".
+        // Section: GUI, the look of AmiJa's popup and windows, not of the emulated machine:
+        // language, interface scale and the LED panel, which is an ornament of the window and
+        // not a device. Future interface entries go here rather than in "System".
         // -------------------------------------------------------------------
         JPanel gui = section(Messages.t("section.gui"));
 
@@ -803,11 +800,11 @@ public final class ConfigDialog {
         langCombo.setMaximumSize(dim(160, 26));
         addRow(gui, 0, "label.language", langCombo, null);
 
-        // Scala della sola interfaccia. Frazionaria: al contrario dell'integer scaling
-        // della finestra emulata, qui un'interpolazione non toglie niente a nessuno.
-        // Mostrata in percentuale perché è la forma in cui Windows presenta la stessa
-        // idea nelle impostazioni schermo; sul file resta un numero (1, 1.25, ...).
-        // Un valore scritto a mano fuori dalla lista viene aggiunto invece che perso.
+        // Scale of the interface only. Fractional: unlike the integer scaling of the emulated
+        // window, here interpolation takes nothing away from anyone. Shown as a percentage
+        // because that is how Windows presents the same idea in its display settings; the
+        // file keeps a number (1, 1.25, ...). A value written by hand outside the list is
+        // added rather than lost.
         java.util.List<Double> scaleItems = new java.util.ArrayList<>(
                 java.util.List.of(1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0));
         double currentUiScale = config.uiScale();
@@ -837,25 +834,25 @@ public final class ConfigDialog {
         addRow(gui, 2, ledCheck, null, null);
 
         // -------------------------------------------------------------------
-        // Sezione: Stato salvato (i cinque slot, ognuno con la sua foto e la sua data)
+        // Section: Saved state (the five slots, each with its picture and date)
         // -------------------------------------------------------------------
         JPanel state = stateSection(dialog, result, config, onSaveState, onLoadState);
 
         // -------------------------------------------------------------------
-        // Sezione: Gioco a distanza (docs/remote-play-plan.md §9)
+        // Section: Remote play (docs/remote-play-plan.md section 9)
         // -------------------------------------------------------------------
-        // Sta dopo le game port perché è di quelle che parla: l'ospite ne occupa una.
-        // I widget glieli passa il dialog invece di duplicarli: sono gli stessi, e due
-        // copie divergerebbero al primo ritocco della palette.
-        // Il riallineamento delle game port viaggia sul timer di questa sezione invece di
-        // avere il proprio: la cosa che lo rende necessario — un ospite che si collega o
-        // cade mentre il popup è aperto — è esattamente la cosa che quel timer sorveglia.
+        // It comes after the game ports because it is about them: the guest takes one. The
+        // dialog passes it its widgets instead of duplicating them: they are the same, and
+        // two copies would diverge at the first palette tweak.
+        // The realignment of the game ports rides on this section's timer instead of having
+        // its own: what makes it necessary (a guest connecting or dropping while the popup is
+        // open) is exactly what that timer watches.
         RemotePlaySection.Built remotePlaySection = remotePlay == null ? null
                 : RemotePlaySection.build(config, remotePlay, ConfigDialog::section,
                         widgets(dialog, result), syncPorts);
 
         // -------------------------------------------------------------------
-        // Contenuto scorrevole
+        // Scrollable content
         // -------------------------------------------------------------------
         JPanel content = new JPanel();
         content.setBackground(BG);
@@ -863,30 +860,30 @@ public final class ConfigDialog {
         content.setBorder(pad(14, 16, 14, 16));
         content.add(header());
         content.add(Box.createVerticalStrut(10));
-        // Modalità ospite: questa macchina NON emula niente (piano §3), quindi non c'è
-        // nessuna macchina da configurare. Le sezioni relative non si nascondono, non
-        // vengono proprio costruite dentro il contenitore: restano quelle locali — video,
-        // audio, interfaccia — che per l'ospite hanno senso eccome, perché crop, scaling,
-        // shader e fullscreen li decide lui.
+        // Guest mode: this machine emulates NOTHING (plan section 3), so there is no machine
+        // to configure. The related sections are not hidden, they are not built into the
+        // container at all: the local ones remain (video, audio, interface), which do matter
+        // to the guest, because crop, scaling, shaders and fullscreen are its own choice.
         boolean guestMode = remotePlay != null && remotePlay.isGuest();
         if (!guestMode) {
             content.add(system);
-            content.add(media);   // modalità Auto: sostituisce le tre sezioni qui sotto
+            content.add(media);   // Auto mode: replaces the three sections below
             content.add(drives);
             content.add(hds);
             content.add(whd);
         }
-        // Lo stato salvato viene dopo i supporti — dopo TUTTI, cioè anche dopo le tre
-        // sezioni per tipo che in Expert mode prendono il posto della lista unica: così
-        // sta sotto i dischi in entrambe le modalità. È l'unica sezione che non imposta
-        // niente ma agisce sulla macchina accesa, e segue il disco a cui appartiene.
+        // The saved state comes after the media, after ALL of them, i.e. also after the
+        // three per-type sections that in Expert mode replace the single list: so it sits
+        // below the disks in both modes. It is the only section that sets nothing but acts on
+        // the running machine, and it follows the disk it belongs to.
         if (!guestMode) {
             content.add(state);
         }
-        // Le game port ci sono anche per l'ospite, ed è il punto: la porta che l'host gli ha
-        // ceduto la riempie lui. Delle due righe gliene serve una — l'altra è dell'host e
-        // resta spenta — ma senza questa sezione non avrebbe modo di dire che gioca col
-        // joystick, né con quali tasti. Sono i suoi, letti dalla sua amiga.properties.
+        // The game ports are there for the guest too, and that is the point: the port the
+        // host gave it is filled by the guest. It needs one of the two rows (the other is the
+        // host's and stays off), but without this section it would have no way to say it
+        // plays with a joystick, or with which keys. They are its own, read from its
+        // amiga.properties.
         content.add(ports);
         if (remotePlaySection != null) {
             content.add(remotePlaySection.panel());
@@ -898,8 +895,8 @@ public final class ConfigDialog {
         }
         content.add(Box.createVerticalGlue());
 
-        // Solo ora che le sezioni sono dentro al contenitore: la prima passata decide
-        // quali si vedono, ed è lei a rendere il popup coerente con la modalità corrente.
+        // Only now that the sections are in the container: the first pass decides which ones
+        // are visible, and makes the popup consistent with the current mode.
         syncAuto.run();
 
         JScrollPane scroll = new JScrollPane(content,
@@ -908,12 +905,12 @@ public final class ConfigDialog {
         scroll.getViewport().setBackground(BG);
         scroll.setBorder(null);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
-        // Dimensione visibile dell'area scorrevole: se il contenuto è più alto,
-        // compare la barra di scorrimento verticale.
+        // Visible size of the scrolling area: if the content is taller, the vertical scroll
+        // bar appears.
         scroll.setPreferredSize(dim(580, 460));
 
         // -------------------------------------------------------------------
-        // Barra dei pulsanti
+        // Button bar
         // -------------------------------------------------------------------
         JButton about      = button(Messages.t("button.about"), false);
         JButton screenshot = button(Messages.t("button.screenshot"), false);
@@ -923,9 +920,9 @@ public final class ConfigDialog {
         JButton cancel    = button(Messages.t("button.cancel"), false);
         JButton ok        = button(Messages.t("button.ok"), true);
 
-        // Anche i pulsanti si spiegano: fra "Soft Reset" e "Riavvia" la differenza non
-        // si indovina, e chi apre il popup per la prima volta merita di saperla prima
-        // di premere.
+        // The buttons explain themselves too: the difference between "Soft Reset" and
+        // "Restart" cannot be guessed, and someone opening the popup for the first time
+        // deserves to know it before pressing.
         tip("button.about", about);
         tip("button.screenshot", screenshot);
         tip("button.softreset", softReset);
@@ -934,12 +931,12 @@ public final class ConfigDialog {
         tip("button.cancel", cancel);
         tip("button.ok", ok);
 
-        // "About": logo, versione, autore e indirizzo del progetto. Non tocca niente
-        // della configurazione, quindi non ha bisogno di applicare né di chiudere.
+        // "About": logo, version, author and address of the project. It touches nothing in
+        // the configuration, so it needs neither to apply nor to close.
         about.addActionListener(e -> AboutDialog.show(dialog));
 
-        // "Take Screenshot": salva la finestra di gioco (non il popup) in screenshots/.
-        // Funziona sia in software (composizione Java2D) sia in OpenGL (glReadPixels).
+        // "Take Screenshot": saves the game window (not the popup) to screenshots/. Works
+        // both in software (Java2D composition) and in OpenGL (glReadPixels).
         screenshot.addActionListener(e -> {
             java.io.File f = onScreenshot != null ? onScreenshot.get() : null;
             if (f != null) {
@@ -956,9 +953,9 @@ public final class ConfigDialog {
             config.setAutoEnabled(simpleMode.getAsBoolean());
             config.setAutoKickstart13(ks13Field.getText());
             config.setAutoKickstart31(ks31Field.getText());
-            // Con Expert spento i parametri di sistema sono dedotti, non scelti: quelli
-            // salvati NON vengono toccati, così accendere Expert restituisce all'utente
-            // esattamente la macchina che aveva configurato a mano.
+            // With Expert off the system parameters are derived, not chosen: the saved ones
+            // are NOT touched, so switching Expert on gives the user back exactly the machine
+            // they configured by hand.
             if (!simpleMode.getAsBoolean()) {
                 config.setKickstartPath(kickField.getText());
                 config.setChipRamKb((Integer) chipCombo.getSelectedItem());
@@ -967,8 +964,8 @@ public final class ConfigDialog {
                 config.setVideoMode((VideoMode) videoModeCombo.getSelectedItem());
                 config.setChipset((Chipset) chipsetCombo.getSelectedItem());
             }
-            // I supporti vengono dalla vista che l'utente ha davanti: la lista unica con
-            // Expert spento, le tre sezioni per tipo con Expert acceso.
+            // The media come from the view the user has in front of them: the single list
+            // with Expert off, the three per-type sections with Expert on.
             (simpleMode.getAsBoolean() ? driveList.toMediaState() : classicMedia.get()).toConfig(config);
             config.setFloppySoundVolume((Integer) soundSpinner.getValue());
             config.setLedsVisible(ledCheck.isSelected());
@@ -999,14 +996,14 @@ public final class ConfigDialog {
         quit.addActionListener(e -> { result[0] = Result.QUIT; dialog.dispose(); });
         cancel.addActionListener(e -> { result[0] = Result.CANCEL; dialog.dispose(); });
         ok.addActionListener(e -> {
-            // Applica i valori modificati all'AmigaConfig prima di chiudere.
+            // Applies the modified values to the AmigaConfig before closing.
             applyConfig.run();
             if (remotePlaySection != null) {
                 remotePlaySection.applyToConfig().run();
             }
-            // Se durante il popup ci si è collegati a un host, confermare significa passare
-            // davvero a fare l'ospite — cioè smontare la macchina, che è l'operazione che
-            // questo dialog non può fare da sé. Esce con l'esito che la fa eseguire fuori.
+            // If a connection to a host was made during the popup, confirming means really
+            // becoming the guest, i.e. unmounting the machine, which this dialog cannot do by
+            // itself. It exits with the outcome that has it done outside.
             boolean joined = remotePlaySection != null
                     && remotePlaySection.outcome().get() == RemotePlaySection.Outcome.JOIN;
             result[0] = joined ? Result.REMOTE_PLAY_TRANSITION : Result.OK;
@@ -1021,9 +1018,9 @@ public final class ConfigDialog {
         left.setOpaque(false);
         left.add(about);
         left.add(screenshot);
-        // «Reset» e «Riavvia» agiscono su una macchina, e un ospite non ne ha: sono le
-        // stesse ragioni per cui non vede le sezioni che la descrivono. Lo screenshot sì —
-        // quello lo fa sul video che sta guardando, che è suo quanto quello di chiunque.
+        // "Reset" and "Restart" act on a machine, and a guest has none: the same reasons it
+        // does not see the sections describing it. The screenshot it does have: it is taken
+        // of the video it is watching, which is as much its own as anyone's.
         if (!guestMode) {
             left.add(softReset);
             left.add(restart);
@@ -1060,10 +1057,10 @@ public final class ConfigDialog {
         prepareDialogFocus(dialog, ok);
         dialog.setVisible(true); // bloccante (modale)
 
-        // Il timer della sezione «Gioco a distanza» va fermato qui e non nel suo listener
-        // di chiusura: un Timer di Swing non è legato al ciclo di vita della finestra e
-        // continuerebbe a battere sull'EDT per tutta la vita del processo, una volta per
-        // ogni volta che il popup è stato aperto.
+        // The timer of the "Remote play" section is stopped here and not in its close
+        // listener: a Swing Timer is not tied to the window's life cycle and would keep
+        // ticking on the EDT for the life of the process, once for every time the popup was
+        // opened.
         if (remotePlaySection != null) {
             remotePlaySection.dispose().run();
         }
@@ -1071,19 +1068,18 @@ public final class ConfigDialog {
     }
 
     /**
-     * Riduce il popup a quel che ci sta sullo schermo, se dopo il {@code pack()} eccede.
+     * Shrinks the popup to what fits on the screen, if it exceeds it after {@code pack()}.
      *
-     * <p>Il contenuto è già dentro un riquadro scorrevole, quindi rimpicciolire non
-     * nasconde nulla: si scorre. Senza questo, i pulsanti in fondo — OK, Annulla, Riavvia —
-     * finiscono fuori dallo schermo e il popup diventa inutilizzabile, perché non è
-     * ridimensionabile e i pulsanti sono l'unico modo di confermare.
+     * <p>The content is already inside a scrolling pane, so shrinking hides nothing: it
+     * scrolls. Otherwise the buttons at the bottom (OK, Cancel, Restart) end up off screen
+     * and the popup becomes unusable, because it is not resizable and the buttons are the
+     * only way to confirm.
      *
-     * <p>Non è un problema nuovo della scala dell'interfaccia: esisteva già, e bastava un
-     * integer scaling alto su uno schermo piccolo per incontrarlo. La scala frazionaria lo
-     * rende solo più facile da raggiungere.
+     * <p>A high integer scaling on a small screen is enough to hit it; the fractional
+     * interface scale only makes it easier to reach.
      *
-     * <p>Si usa l'<em>area di lavoro</em> e non i bordi dello schermo, così il popup non
-     * finisce sotto la barra delle applicazioni.
+     * <p>The <em>work area</em> is used, not the screen bounds, so the popup does not end up
+     * under the taskbar.
      */
     private static void fitToScreen(JDialog dialog) {
         Rectangle usable = GraphicsEnvironment.getLocalGraphicsEnvironment()
@@ -1133,7 +1129,7 @@ public final class ConfigDialog {
     }
 
     // =========================================================================
-    // Costruzione dei widget
+    // Widget construction
     // =========================================================================
 
     private static JPanel header() {
@@ -1159,28 +1155,27 @@ public final class ConfigDialog {
     }
 
     // =========================================================================
-    // Sezione "Stato salvato"
+    // "Saved state" section
     // =========================================================================
 
     /**
-     * La sezione degli slot di stato: una linguetta per slot ({@link
-     * SaveStateManager#SLOT_COUNT} in tutto), e dentro ognuna la foto della macchina
-     * com'era quando quello stato è stato preso e il momento in cui è successo. I pulsanti
-     * stanno sotto le linguette e agiscono sempre sullo slot aperto.
+     * The section of the state slots: one tab per slot ({@link SaveStateManager#SLOT_COUNT}
+     * in all), each with the picture of the machine as it was when that state was taken and
+     * the moment it happened. The buttons are below the tabs and always act on the open slot.
      *
-     * <p>La linguetta scelta non è una modifica in sospeso: viene scritta subito in
-     * configurazione ({@code savestate.slot}), perché è lì che "Salva stato" e "Carica
-     * stato" — che agiscono immediatamente, popup aperto — vanno a leggere quale slot
-     * usare. Per lo stesso motivo resta valida anche se il popup si chiude con Annulla.
+     * <p>The chosen tab is not a pending change: it is written to the configuration at once
+     * ({@code savestate.slot}), because that is where "Save state" and "Load state", which
+     * act immediately with the popup open, read which slot to use. For the same reason it
+     * stays valid even if the popup closes with Cancel.
      *
-     * <p>Foto, data e titolo delle linguette si rileggono dal disco a ogni operazione,
-     * così la sezione mostra sempre gli slot veri e non quelli che c'erano all'apertura
-     * del popup. Il titolo di una linguetta occupata porta un pallino: quali slot sono
-     * pieni si vede senza aprirli uno per uno.
+     * <p>Pictures, dates and tab titles are re-read from disk at every operation, so the
+     * section always shows the real slots and not those there were when the popup opened.
+     * The title of an occupied tab carries a dot: which slots are full can be seen without
+     * opening them one by one.
      *
-     * <p>Il caricamento può non finire qui: se lo stato pretende una macchina diversa da
-     * quella accesa, il popup si chiude con {@link Result#STATE_RESTORE} e prosegue il
-     * chiamante (vedi {@link LoadStateOutcome}).
+     * <p>Loading may not end here: if the state requires a machine different from the
+     * running one, the popup closes with {@link Result#STATE_RESTORE} and the caller carries
+     * on (see {@link LoadStateOutcome}).
      */
     private static JPanel stateSection(JDialog dialog, Result[] result, AmigaConfig config,
             java.util.function.Supplier<String> onSaveState,
@@ -1220,9 +1215,9 @@ public final class ConfigDialog {
         tip("button.loadstate", load);
         tip("button.clearstate", clear);
 
-        // Rilegge TUTTI gli slot dal disco: foto, date, titoli delle linguette e
-        // disponibilità dei pulsanti per lo slot aperto. Costa cinque letture d'header e
-        // avviene solo a ogni operazione dell'utente, non in continuazione.
+        // Re-reads ALL the slots from disk: pictures, dates, tab titles and the availability
+        // of the buttons for the open slot. It costs five header reads and happens only at
+        // each user operation, not continuously.
         Runnable refresh = () -> {
             for (int i = 0; i < slots; i++) {
                 int slot = i + 1;
@@ -1243,8 +1238,8 @@ public final class ConfigDialog {
             clear.setEnabled(current);
         };
 
-        // La linguetta aperta all'apertura del popup è lo slot attivo; cambiarla lo
-        // cambia. clampSlot() perché il valore arriva da un file di testo.
+        // The tab open when the popup opens is the active slot; changing it changes the slot.
+        // clampSlot() because the value comes from a text file.
         tabs.setSelectedIndex(SaveStateManager.clampSlot(config.saveStateSlot()) - 1);
         tabs.addChangeListener(e -> {
             config.setSaveStateSlot(tabs.getSelectedIndex() + 1);
@@ -1254,8 +1249,8 @@ public final class ConfigDialog {
 
         save.addActionListener(e -> {
             String msg = onSaveState != null ? onSaveState.get() : null;
-            // Prima si riallinea la sezione, poi si parla: chiudendo il messaggio
-            // l'utente trova la foto nuova, non quella di prima.
+            // First realign the section, then speak: closing the message the user finds the
+            // new picture, not the old one.
             refresh.run();
             message(dialog, msg != null ? msg : Messages.t("savestate.save.fail", "?"));
         });
@@ -1266,8 +1261,8 @@ public final class ConfigDialog {
                 return;
             }
             if (outcome.needsRestart()) {
-                // Le modifiche in corso nel popup NON vengono applicate: la macchina che
-                // conta adesso è quella descritta dentro lo stato.
+                // The pending changes of the popup are NOT applied: the machine that counts
+                // now is the one described inside the state.
                 result[0] = Result.STATE_RESTORE;
                 dialog.dispose();
                 return;
@@ -1276,8 +1271,8 @@ public final class ConfigDialog {
         });
         clear.addActionListener(e -> {
             int slot = tabs.getSelectedIndex() + 1;
-            // Svuotare uno slot è l'unica azione di questa sezione che non si può disfare
-            // in nessun modo: la conferma è d'obbligo.
+            // Clearing a slot is the one action of this section that cannot be undone in any
+            // way: confirmation is a must.
             int answer = JOptionPane.showConfirmDialog(dialog,
                     Messages.t("savestate.clear.confirm", slot), Messages.t("app.title"),
                     JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
@@ -1318,16 +1313,16 @@ public final class ConfigDialog {
         return panel;
     }
 
-    /** Messaggio informativo nello stile del popup (titolo dell'applicazione). */
+    /** Informational message in the style of the popup (application title). */
     private static void message(JDialog parent, String text) {
         JOptionPane.showMessageDialog(parent, text, Messages.t("app.title"),
                 JOptionPane.INFORMATION_MESSAGE);
     }
 
     /**
-     * Istante in cui lo slot è stato salvato, letto dalla sua intestazione. Se lo slot
-     * non è leggibile (p.es. scritto da una versione precedente del formato) resta la
-     * data del file: sbagliare la data è meglio che non mostrare la sezione.
+     * Instant at which the slot was saved, read from its header. If the slot cannot be read
+     * (e.g. written by an earlier version of the format) the file date is used: a wrong date
+     * is better than not showing the section.
      */
     private static long slotTimestamp(File slot) {
         try {
@@ -1337,14 +1332,14 @@ public final class ConfigDialog {
         }
     }
 
-    /** Data e ora nel formato della lingua scelta per l'interfaccia. */
+    /** Date and time in the format of the language chosen for the interface. */
     private static String formatTimestamp(long millis) {
         return java.text.DateFormat.getDateTimeInstance(
                 java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT, Messages.locale())
                 .format(new java.util.Date(millis));
     }
 
-    /** Legge un'immagine, o {@code null} se manca o non si lascia decodificare. */
+    /** Reads an image, or {@code null} if it is missing or cannot be decoded. */
     private static java.awt.image.BufferedImage readImage(File file) {
         if (file == null || !file.isFile()) return null;
         try {
@@ -1357,15 +1352,14 @@ public final class ConfigDialog {
     }
 
     /**
-     * Il riquadro con la foto dello slot: l'immagine ci sta dentro intera, rimpicciolita
-     * quanto serve e centrata, senza deformarsi. Le dimensioni sono fisse anche quando
-     * non c'è nessuno stato salvato, così la sezione non cambia altezza al primo
-     * salvataggio facendo saltare tutto il popup.
+     * The frame with the slot's picture: the image fits inside whole, scaled down as needed
+     * and centred, without distortion. The size is fixed even when there is no saved state,
+     * so the section does not change height at the first save, making the whole popup jump.
      */
     private static final class StatePreview extends JComponent {
 
         private static final int W = 168;
-        private static final int H = 126; // 4:3, le proporzioni dello schermo Amiga
+        private static final int H = 126; // 4:3, the proportions of the Amiga screen
 
         private transient java.awt.image.BufferedImage image;
         private String emptyText = "";
@@ -1424,9 +1418,9 @@ public final class ConfigDialog {
     }
 
     /**
-     * I pezzi di questo dialog che {@link RemotePlaySection} usa, passati invece che
-     * duplicati: sono gli stessi widget delle altre sezioni, e due copie divergerebbero
-     * al primo ritocco della palette.
+     * The pieces of this dialog that {@link RemotePlaySection} uses, passed rather than
+     * duplicated: they are the same widgets as the other sections, and two copies would
+     * diverge at the first palette tweak.
      */
     private static RemotePlaySection.Widgets widgets(JDialog dialog, Result[] result) {
         return new RemotePlaySection.Widgets() {
@@ -1446,8 +1440,8 @@ public final class ConfigDialog {
             public JTextField readOnlyText(String value) {
                 JTextField tf = textField(value);
                 tf.setEditable(false);
-                // Non disabilitato: da disabilitato il testo si sbiadisce e non si può
-                // selezionare, e questi sono proprio i campi che si copiano a mano.
+                // Not disabled: disabled, the text fades and cannot be selected, and these are
+                // exactly the fields that are copied by hand.
                 tf.setFocusable(true);
                 return tf;
             }
@@ -1500,9 +1494,9 @@ public final class ConfigDialog {
                 BorderFactory.createLineBorder(new Color(0x45, 0x49, 0x50), px(1)), title);
         tb.setTitleColor(ACCENT);
         tb.setTitleFont(derive(p.getFont(), Font.BOLD, 13f));
-        // Lo spazio fra una sezione e la successiva è un margine della sezione, non uno
-        // strut nel BoxLayout: così una sezione nascosta si porta via anche il proprio
-        // spazio, invece di lasciare un buco (la modalità Auto nasconde tre sezioni).
+        // The space between one section and the next is a margin of the section, not a strut
+        // in the BoxLayout: so a hidden section takes its space away with it instead of
+        // leaving a hole (Auto mode hides three sections).
         p.setBorder(BorderFactory.createCompoundBorder(
                 pad(0, 0, 12, 0),
                 BorderFactory.createCompoundBorder(tb,
@@ -1511,9 +1505,9 @@ public final class ConfigDialog {
     }
 
     /**
-     * Aggiunge una riga la cui etichetta viene dalla chiave {@code labelKey} del bundle,
-     * col tooltip preso da {@code <labelKey>.tip} (vedi {@link #tip}). Il tooltip non
-     * viene messo sui pulsanti di coda, che hanno già il proprio.
+     * Adds a row whose label comes from the bundle key {@code labelKey}, with the tooltip
+     * from {@code <labelKey>.tip} (see {@link #tip}). The tooltip is not put on the trailing
+     * buttons, which already have their own.
      */
     private static JLabel addRow(JPanel panel, int row, String labelKey, JComponent field, JComponent trailing) {
         JLabel l = label(Messages.t(labelKey));
@@ -1523,19 +1517,19 @@ public final class ConfigDialog {
     }
 
     /**
-     * Applica a tutta la riga il tooltip di {@code baseKey}, cioè la voce
-     * {@code <baseKey>.tip} del bundle: la convenzione con cui ogni opzione del popup
-     * spiega sé stessa. Se la voce non c'è non succede niente.
+     * Applies to the whole row the tooltip of {@code baseKey}, i.e. the bundle entry
+     * {@code <baseKey>.tip}: the convention by which every option of the popup explains
+     * itself. If the entry is missing nothing happens.
      *
-     * <p><b>Regola:</b> ogni opzione del popup deve avere il proprio {@code .tip}, e
-     * quel testo va aggiornato insieme alla funzionalità che descrive. Un tooltip che
-     * mente è peggio di un tooltip che manca.
+     * <p><b>Rule:</b> every option of the popup must have its own {@code .tip}, and that text
+     * must be updated together with the feature it describes. A tooltip that lies is worse
+     * than a missing one.
      */
     private static void tip(String baseKey, JComponent... components) {
         String text = Messages.tOrNull(baseKey + ".tip");
         if (text == null) return;
-        // L'HTML manda a capo da sé: senza, la spiegazione resterebbe su una riga sola
-        // larga quanto lo schermo.
+        // HTML wraps by itself: without it the explanation would stay on a single line as
+        // wide as the screen.
         String html = "<html><body style='width: 260px'>" + text + "</body></html>";
         for (JComponent c : components) {
             applyTip(c, html);
@@ -1543,10 +1537,10 @@ public final class ConfigDialog {
     }
 
     /**
-     * Assegna il tooltip al componente e a tutti i figli che non ne hanno già uno. La
-     * discesa serve ai controlli composti: su un JPanel che avvolge tendina e pulsante,
-     * o su uno JSpinner (che è un pannello col suo campo di testo), il tooltip del
-     * contenitore non comparirebbe mai, perché a ricevere il mouse è il figlio.
+     * Assigns the tooltip to the component and to every child that does not have one. The
+     * descent is for composite controls: on a JPanel wrapping a drop-down and a button, or on
+     * a JSpinner (a panel with its text field), the container's tooltip would never appear,
+     * because the child receives the mouse.
      */
     private static void applyTip(Component c, String html) {
         if (!(c instanceof JComponent jc)) return;
@@ -1556,7 +1550,7 @@ public final class ConfigDialog {
         }
     }
 
-    /** Etichetta di riga nello stile del popup. */
+    /** Row label in the style of the popup. */
     private static JLabel label(String text) {
         JLabel l = new JLabel(text);
         l.setForeground(FG);
@@ -1564,10 +1558,9 @@ public final class ConfigDialog {
     }
 
     /**
-     * Mostra o nasconde un'intera riga di una sezione. Con GridBagLayout la riga
-     * scompare del tutto (altezza zero) quando tutti i suoi componenti sono invisibili,
-     * quindi non resta il buco: è così che la sezione Sistema scambia il Kickstart
-     * unico con i due della modalità Auto.
+     * Shows or hides a whole row of a section. With GridBagLayout the row disappears
+     * entirely (zero height) when all its components are invisible, so no hole is left:
+     * that is how the System section swaps the single Kickstart for the two of Auto mode.
      */
     private static void setRowVisible(boolean visible, JComponent... components) {
         boolean changed = false;
@@ -1587,9 +1580,9 @@ public final class ConfigDialog {
     }
 
     /**
-     * Seleziona un valore in una tendina di memoria, aggiungendolo in coda se non è
-     * fra le opzioni previste: i profili della modalità Auto vengono da
-     * {@code amiga.properties} e l'utente può averci messo una taglia inconsueta.
+     * Selects a value in a memory drop-down, appending it if it is not among the options:
+     * Auto mode's profiles come from {@code amiga.properties} and the user may have put an
+     * unusual size there.
      */
     private static void selectKb(JComboBox<Integer> combo, int value) {
         for (int i = 0; i < combo.getItemCount(); i++) {
@@ -1602,7 +1595,7 @@ public final class ConfigDialog {
         combo.setSelectedItem(value);
     }
 
-    /** Aggiunge una riga con componente iniziale (es. checkbox), campo e browse. */
+    /** Adds a row with a leading component (e.g. a checkbox), a field and a browse button. */
     private static void addRow(JPanel panel, int row, JComponent lead, JComponent field, JComponent trailing) {
         GridBagConstraints gc = new GridBagConstraints();
         gc.gridy = row;
@@ -1649,7 +1642,7 @@ public final class ConfigDialog {
     }
 
     private static JButton ejectButton() {
-        JButton b = button("⏏", false); // simbolo "eject"
+        JButton b = button("⏏", false); // "eject" symbol
         styleDriveToolButton(b);
         b.setToolTipText(Messages.t("eject.tooltip"));
         return b;
@@ -1686,15 +1679,15 @@ public final class ConfigDialog {
     }
 
     /**
-     * Chiave del nome di una game port <b>senza i due punti</b>: {@code label.portN} li ha,
-     * perché è l'etichetta di una riga, e infilarla in mezzo a una frase darebbe «Port 1: la
-     * riempie l'ospite».
+     * Key of a game port's name <b>without the colon</b>: {@code label.portN} has it, because
+     * it is a row label, and putting it in the middle of a sentence would give "Port 1: is
+     * filled by the guest".
      */
     private static String portName(int port) {
         return port == 0 ? "port.name.0" : "port.name.1";
     }
 
-    /** Tendina di scelta della periferica di una game port (Mouse / Joystick / Vuota). */
+    /** Drop-down choosing a game port's device (Mouse / Joystick / Empty). */
     private static JComboBox<PortDevice> deviceCombo(PortDevice current) {
         JComboBox<PortDevice> combo = new JComboBox<>(PortDevice.values());
         combo.setSelectedItem(current);
@@ -1711,7 +1704,7 @@ public final class ConfigDialog {
         return combo;
     }
 
-    /** Pulsante "..." che apre la configurazione dei tasti del joystick da tastiera. */
+    /** "..." button that opens the key configuration of the keyboard joystick. */
     private static JButton joystickKeysButton() {
         JButton b = button("...", false);
         styleDriveToolButton(b);
@@ -1720,9 +1713,9 @@ public final class ConfigDialog {
     }
 
     /**
-     * Mostra o nasconde il pulsante dei tasti joystick. La colonna di coda della sezione
-     * resta dimensionata dal "..." del Kickstart, quindi la comparsa del pulsante non
-     * cambia la larghezza della tendina accanto.
+     * Shows or hides the joystick keys button. The section's trailing column stays sized by
+     * the Kickstart's "...", so the button appearing does not change the width of the
+     * drop-down next to it.
      */
     private static void setJoystickKeysButtonVisible(JButton keysButton, boolean visible) {
         if (keysButton.isVisible() == visible) return;
@@ -1750,7 +1743,7 @@ public final class ConfigDialog {
         return combo;
     }
 
-    /** Garantisce che {@code value} sia tra le opzioni (lo inserisce in coda se assente). */
+    /** Makes sure {@code value} is among the options (appends it if absent). */
     private static Integer[] ensureContains(Integer[] options, int value) {
         for (Integer o : options) {
             if (o == value) return options;
@@ -1778,16 +1771,16 @@ public final class ConfigDialog {
         return b;
     }
 
-    /** Vero anche per i singoli dischi di uno zip multi-disco ({@code <zip>!<n>}). */
+    /** True for the individual disks of a multi-disk zip as well ({@code <zip>!<n>}). */
     private static boolean isZipPath(String path) {
         return io.github.zolfrik.amija.custom.DiskImage.isZipDisk(path);
     }
 
     /**
-     * Elenca i preset shader disponibili: {@code "none"} seguito dai nomi restituiti da
-     * {@link io.github.zolfrik.amija.display.render.gl.ShaderCatalog} — i {@code .glslp} e
-     * i {@code .slangp} sotto {@code shaders/}, sottocartelle comprese (un pacchetto come
-     * il Mega Bezel ne porta centinaia, tutti annidati).
+     * Lists the available shader presets: {@code "none"} followed by the names returned by
+     * {@link io.github.zolfrik.amija.display.render.gl.ShaderCatalog}, i.e. the
+     * {@code .glslp} and {@code .slangp} under {@code shaders/}, subfolders included (a pack
+     * like the Mega Bezel brings hundreds, all nested).
      */
     private static String[] scanShaderNames() {
         java.util.List<String> names = new java.util.ArrayList<>();
@@ -1797,14 +1790,14 @@ public final class ConfigDialog {
     }
 
     // =========================================================================
-    // Supporti: modello condiviso fra le due viste
+    // Media: model shared by the two views
     // =========================================================================
 
     /**
-     * I supporti scelti dall'utente, nella forma esatta in cui finiscono in
-     * {@code amiga.properties}. È la moneta di scambio fra le due viste del popup — le
-     * tre sezioni classiche (Floppy/Hard disk/WHDLoad) e la lista unica della modalità
-     * Auto — così passare dall'una all'altra non perde quello che si è appena scelto.
+     * The media chosen by the user, in the exact form they take in {@code amiga.properties}.
+     * It is the currency exchanged between the two views of the popup (the three classic
+     * sections Floppy/Hard disk/WHDLoad and Auto mode's single list), so moving from one to
+     * the other does not lose what was just chosen.
      */
     private static final class MediaState {
 
@@ -1855,32 +1848,32 @@ public final class ConfigDialog {
     }
 
     // =========================================================================
-    // Lista unica dei supporti (modalità Auto)
+    // Single media list (Auto mode)
     // =========================================================================
 
     /**
-     * La sezione "Drives" della modalità Auto: una sola lista in cui l'utente mette i
-     * propri file senza doversi chiedere in quale sezione vadano. Si parte da una voce
-     * vuota; scelto un file, la voce prende il nome del posto in cui il file è finito
-     * (DF0, hard drive master, WHDLoad) e sotto ne compare un'altra, finché c'è ancora
-     * spazio per qualcosa.
+     * The "Drives" section of Auto mode: a single list in which users put their files
+     * without having to wonder which section they belong to. It starts with an empty entry;
+     * once a file is chosen, the entry takes the name of the place the file went to (DF0,
+     * hard drive master, WHDLoad) and another appears below it, as long as there is room for
+     * something more.
      *
-     * <p>Il tipo si deduce dall'estensione, e le regole della macchina vera fanno il
-     * resto: quattro floppy al massimo, due hard disk, un solo WHDLoad — e hard disk e
-     * WHDLoad non convivono, perché sarebbero entrambi il volume di avvio. Quello che
-     * non è più aggiungibile sparisce dal filtro del browser, quindi la lista non può
-     * arrivare in uno stato che la macchina non saprebbe montare.
+     * <p>The type is inferred from the extension, and the rules of the real machine do the
+     * rest: four floppies at most, two hard disks, a single WHDLoad, and hard disk and
+     * WHDLoad do not coexist, because both would be the boot volume. Whatever can no longer
+     * be added disappears from the browser's filter, so the list cannot reach a state the
+     * machine could not mount.
      *
-     * <p>Aggiungere una voce che pretende un drive nuovo è una modifica all'hardware, e
-     * su una macchina accesa non si fa: la voce viene marcata con un asterisco, la
-     * legenda in fondo alla sezione dice perché, e il drive compare al prossimo avvio.
-     * Quello che invece resta immediato è il contenuto dei drive che già esistono —
-     * togliere e rimettere un floppy mentre il gioco gira è la cosa più normale del
-     * mondo, e il drive rimasto vuoto non sparisce prima del riavvio.
+     * <p>Adding an entry that requires a new drive is a hardware change, which is not made
+     * on a running machine: the entry is marked with an asterisk, the legend at the bottom of
+     * the section says why, and the drive appears at the next start. What stays immediate is
+     * the content of the drives that already exist: removing and reinserting a floppy while
+     * the game runs is the most normal thing in the world, and the drive left empty does not
+     * disappear before the restart.
      */
     private static final class DriveList {
 
-        /** Tipo di supporto, riconosciuto dall'estensione del file. */
+        /** Media type, recognised from the file extension. */
         private enum Kind {
             FLOPPY(4, "adf", "ipf", "zip"),
             HARDDISK(AmigaConfig.HD_UNITS.length, "hdf"),
@@ -1896,7 +1889,7 @@ public final class ConfigDialog {
 
             static Kind of(String path) {
                 String name = path.toLowerCase(java.util.Locale.ROOT);
-                // Uno zip multi-disco è indirizzato come <zip>!<n>: conta l'archivio.
+                // A multi-disk zip is addressed as <zip>!<n>: the archive is what counts.
                 int cut = name.indexOf(io.github.zolfrik.amija.custom.DiskImage.ZIP_ENTRY_SEPARATOR);
                 if (cut > 0) name = name.substring(0, cut);
                 for (Kind k : values()) {
@@ -1908,7 +1901,7 @@ public final class ConfigDialog {
             }
         }
 
-        /** Un file scelto dall'utente: il suo tipo e come va montato. */
+        /** A file chosen by the user: its type and how it is to be mounted. */
         private static final class Item {
             final Kind kind;
             final String path;
@@ -1924,7 +1917,7 @@ public final class ConfigDialog {
         private final JDialog owner;
         private final AmigaConfig config;
         private final JPanel panel;
-        /** I supporti della macchina accesa, o {@code null} se non ce n'è una. */
+        /** The media of the running machine, or {@code null} if there is none. */
         private final DriveHardware hardware;
         private final java.util.List<Item> items = new java.util.ArrayList<>();
 
@@ -1936,9 +1929,10 @@ public final class ConfigDialog {
         }
 
         /**
-         * Ricostruisce la lista dai supporti configurati. I dischi che AmiJa ha estratto
-         * da uno zip multi-disco in DF0 non diventano voci a sé: la voce è l'archivio, e
-         * i dischi che contiene tornano al loro posto da soli al prossimo avvio.
+         * Rebuilds the list from the configured media. The disks AmiJa extracted from a
+         * multi-disk zip in DF0 do not become entries of their own: the entry is the
+         * archive, and the disks it contains go back to their places by themselves at the
+         * next start.
          */
         void seed(MediaState state) {
             items.clear();
@@ -1946,8 +1940,8 @@ public final class ConfigDialog {
             for (int i = 0; i < 4; i++) {
                 String path = MediaState.text(state.floppyDisk[i]);
                 if (path.isEmpty() || !state.floppyConnected[i]) {
-                    // Il lettore che la macchina accesa ha davvero resta in lista anche
-                    // senza disco: quello che si è espulso è il floppy, non il drive.
+                    // The drive the running machine really has stays in the list even without
+                    // a disk: what was ejected is the floppy, not the drive.
                     if (i < liveFloppyDrives()) items.add(emptyFloppy());
                     continue;
                 }
@@ -1968,22 +1962,22 @@ public final class ConfigDialog {
             if (kind != null) items.add(new Item(kind, path, readOnly));
         }
 
-        /** Un drive per floppy collegato e vuoto: c'è, ma non ha niente dentro. */
+        /** A connected, empty floppy drive: it is there, but has nothing inside. */
         private static Item emptyFloppy() {
             return new Item(Kind.FLOPPY, "", false);
         }
 
-        /** {@code true} se la voce è un lettore vuoto e non un disco. */
+        /** {@code true} if the entry is an empty drive and not a disk. */
         private static boolean isEmptyDrive(Item item) {
             return item.path.isEmpty();
         }
 
-        /** Quanti drive per floppy ha la macchina accesa (0 se non ce n'è una). */
+        /** How many floppy drives the running machine has (0 if there is none). */
         private int liveFloppyDrives() {
             return hardware == null ? 0 : hardware.floppyDrives();
         }
 
-        /** I supporti della lista, distribuiti sui drive della macchina. */
+        /** The media of the list, spread over the machine's drives. */
         MediaState toMediaState() {
             MediaState s = new MediaState();
             int floppies = 0;
@@ -2009,24 +2003,22 @@ public final class ConfigDialog {
                     }
                 }
             }
-            // Un drive collegato per ogni disco, e altrettanti per i dischi di un
-            // eventuale zip multi-disco in DF0 (Amija li distribuisce all'avvio, ma solo
-            // sui drive che esistono).
+            // One connected drive per disk, and as many for the disks of a multi-disk zip in
+            // DF0, if any (Amija spreads them at start-up, but only over the drives that
+            // exist).
             //
-            // Senza floppy nella lista i drive restano scollegati, esattamente come una
-            // macchina configurata a mano su cui non si è spuntato nessun drive: chi
-            // avvia un hard disk o un WHDLoad non ha bisogno di un lettore, e averlo lì
-            // costa solo il tempo che il Kickstart perde a interrogarlo. L'eccezione è
-            // la lista del tutto vuota: lì DF0 resta collegato perché è l'unico bersaglio
-            // possibile di un disco trascinato sulla finestra, e senza di lui il
-            // drag-and-drop non avrebbe dove atterrare (AmigaDisplay rifiuta il drop sui
-            // drive non collegati).
+            // With no floppy in the list the drives stay disconnected, exactly like a machine
+            // configured by hand with no drive ticked: booting a hard disk or WHDLoad needs no
+            // drive, and having one there only costs the time the Kickstart spends polling it.
+            // The exception is a completely empty list: there DF0 stays connected because it
+            // is the only possible target of a disk dragged onto the window, and without it
+            // drag-and-drop would have nowhere to land (AmigaDisplay refuses a drop on
+            // drives that are not connected).
             //
-            // Un lettore rimasto vuoto tiene il proprio posto nella lista finché la
-            // macchina è accesa — è lì davvero, e ci si può rimettere un disco — ma al
-            // prossimo avvio non viene più chiesto: si arriva quindi fino all'ultimo
-            // drive che ha un disco, e i vuoti che lo precedono restano collegati
-            // perché senza di loro non esisterebbe nemmeno quello.
+            // A drive left empty keeps its place in the list while the machine runs (it is
+            // really there, and a disk can be put back in), but it is not requested at the
+            // next start: so the drives go up to the last one that has a disk, and the empty
+            // ones before it stay connected because without them that one would not exist.
             int lastDisk = -1;
             for (int i = 0; i < 4; i++) {
                 if (!MediaState.text(s.floppyDisk[i]).isEmpty()) lastDisk = i;
@@ -2038,7 +2030,7 @@ public final class ConfigDialog {
             return s;
         }
 
-        /** Quanti dischi contiene l'archivio, 1 se non è uno zip multi-disco. */
+        /** How many disks the archive contains, 1 if it is not a multi-disk zip. */
         private static int zipDiskCount(String path) {
             if (!isZipPath(path)) return 1;
             try {
@@ -2049,7 +2041,7 @@ public final class ConfigDialog {
             }
         }
 
-        /** {@code true} se {@code disk} è un disco estratto dallo zip {@code zipPath}. */
+        /** {@code true} if {@code disk} is a disk extracted from the zip {@code zipPath}. */
         private static boolean isZipEntryOf(String disk, String zipPath) {
             return !zipPath.isEmpty() && isZipPath(zipPath)
                     && disk.regionMatches(true, 0, zipPath, 0, zipPath.length())
@@ -2059,16 +2051,15 @@ public final class ConfigDialog {
         }
 
         /**
-         * Tipi ancora aggiungibili nella riga {@code index}, ignorando quello che la riga
-         * contiene adesso (la si sta per sostituire). {@code index == items.size()} è la
-         * riga vuota in coda.
+         * Types still addable in row {@code index}, ignoring what the row holds now (it is
+         * about to be replaced). {@code index == items.size()} is the empty trailing row.
          */
         private java.util.EnumSet<Kind> allowed(int index) {
             java.util.EnumSet<Kind> out = java.util.EnumSet.noneOf(Kind.class);
             for (Kind kind : Kind.values()) {
                 if (count(kind, index) >= kind.max) continue;
-                // Hard disk e WHDLoad sono entrambi il volume di avvio: il primo che
-                // arriva esclude l'altro.
+                // Hard disk and WHDLoad are both the boot volume: the first to arrive
+                // excludes the other.
                 if (kind == Kind.HARDDISK && count(Kind.WHDLOAD, index) > 0) continue;
                 if (kind == Kind.WHDLOAD && count(Kind.HARDDISK, index) > 0) continue;
                 out.add(kind);
@@ -2076,7 +2067,7 @@ public final class ConfigDialog {
             return out;
         }
 
-        /** Quante voci di quel tipo ci sono, escludendo la riga {@code except}. */
+        /** How many entries of that type there are, excluding row {@code except}. */
         private int count(Kind kind, int except) {
             int n = 0;
             for (int i = 0; i < items.size(); i++) {
@@ -2085,7 +2076,7 @@ public final class ConfigDialog {
             return n;
         }
 
-        /** Posizione della voce fra quelle del suo stesso tipo (0 = la prima). */
+        /** Position of the entry among those of the same type (0 = the first). */
         private int ordinal(int index) {
             Kind kind = items.get(index).kind;
             int nth = 0;
@@ -2096,20 +2087,20 @@ public final class ConfigDialog {
         }
 
         /**
-         * {@code true} se la voce pretende un drive che la macchina accesa non ha, o un
-         * supporto che non si sostituisce a caldo: diventerà effettiva al prossimo avvio.
+         * {@code true} if the entry requires a drive the running machine does not have, or a
+         * medium that cannot be swapped live: it takes effect at the next start.
          *
-         * <p>Il floppy fa eccezione a metà: il drive è hardware, il disco che ci sta
-         * dentro no. Una voce che sta in un drive già collegato è quindi immediata, e lo
-         * resta anche dopo averla tolta e rimessa. Hard disk e WHDLoad invece vengono
-         * montati alla costruzione della macchina: lì basta che il file sia diverso.
+         * <p>The floppy is a half exception: the drive is hardware, the disk inside it is
+         * not. An entry in an already connected drive is therefore immediate, and stays so
+         * even after being removed and put back. Hard disk and WHDLoad are mounted when the
+         * machine is built: there a different file is enough.
          */
         private boolean pending(int index) {
             if (hardware == null || index >= items.size()) return false;
             Item item = items.get(index);
             int nth = ordinal(index);
             return switch (item.kind) {
-                // Uno zip multi-disco in DF0 vuole un drive per ciascun disco.
+                // A multi-disk zip in DF0 wants one drive per disk.
                 case FLOPPY -> nth >= hardware.floppyDrives()
                         || (nth == 0 && zipDiskCount(item.path) > hardware.floppyDrives());
                 case HARDDISK -> nth >= hardware.hdDisks().size()
@@ -2118,7 +2109,7 @@ public final class ConfigDialog {
             };
         }
 
-        /** Etichetta della riga: il posto in cui il file è finito, o "Drive n" se vuota. */
+        /** Label of the row: the place the file went to, or "Drive n" if empty. */
         private String labelFor(int index) {
             if (index >= items.size()) {
                 return Messages.t("drive.entry.generic", index + 1);
@@ -2132,7 +2123,7 @@ public final class ConfigDialog {
             return pending(index) ? text + " *" : text;
         }
 
-        /** Chiave del tooltip della riga, per tipo (le etichette sono dinamiche). */
+        /** Key of the row's tooltip, by type (the labels are dynamic). */
         private String tipKeyFor(int index) {
             if (index >= items.size()) return "drive.entry.generic";
             return switch (items.get(index).kind) {
@@ -2144,8 +2135,8 @@ public final class ConfigDialog {
 
         void rebuild() {
             panel.removeAll();
-            // La riga vuota in coda serve ad aggiungere: se l'ultima voce è già un
-            // lettore vuoto, quella riga c'è di suo e una seconda sarebbe un doppione.
+            // The empty trailing row is for adding: if the last entry is already an empty
+            // drive, that row exists by itself and a second one would be a duplicate.
             boolean trailing = !allowed(items.size()).isEmpty()
                     && (items.isEmpty() || !isEmptyDrive(items.get(items.size() - 1)));
             int rows = items.size() + (trailing ? 1 : 0);
@@ -2154,7 +2145,7 @@ public final class ConfigDialog {
                 addEntryRow(row);
                 anyPending |= pending(row);
             }
-            // La legenda compare solo quando c'è un asterisco da spiegare.
+            // The legend appears only when there is an asterisk to explain.
             if (anyPending) {
                 JLabel legend = label(Messages.t("drive.entry.pending.legend"));
                 legend.setForeground(ACCENT);
@@ -2169,8 +2160,8 @@ public final class ConfigDialog {
             boolean filled = index < items.size();
             JLabel label = label(labelFor(index));
             JTextField path = textField(filled ? items.get(index).path : "");
-            // Non modificabile a mano: in questa modalità il tipo del file decide dove
-            // il file va a finire, quindi si sceglie col browser e basta.
+            // Not editable by hand: in this mode the file's type decides where it goes, so it
+            // is chosen with the browser and that is all.
             path.setEditable(false);
 
             JButton browse = browseButton();
@@ -2178,8 +2169,8 @@ public final class ConfigDialog {
 
             boolean hasMedia = filled && !isEmptyDrive(items.get(index));
             JToggleButton readOnly = readOnlyButton(filled && items.get(index).readOnly);
-            // Il WHDLoad non si monta: AmiJa gli costruisce un hard disk suo, che deve
-            // poter scrivere i salvataggi.
+            // WHDLoad is not mounted: AmiJa builds it a hard disk of its own, which must be
+            // able to write the saves.
             readOnly.setEnabled(hasMedia && items.get(index).kind != Kind.WHDLOAD);
             readOnly.addItemListener(e -> {
                 if (index < items.size()) items.get(index).readOnly = readOnly.isSelected();
@@ -2192,9 +2183,9 @@ public final class ConfigDialog {
             eject.setEnabled(hasMedia);
             eject.addActionListener(e -> {
                 if (index >= items.size()) return;
-                // Su un lettore che la macchina ha davvero si espelle il disco e basta:
-                // il drive resta, vuoto, pronto a riceverne un altro. Sparisce al
-                // prossimo avvio, quando la lista non chiede più quel posto.
+                // On a drive the machine really has, only the disk is ejected: the drive
+                // stays, empty, ready for another. It disappears at the next start, when the
+                // list no longer asks for that place.
                 if (liveDrive) {
                     items.set(index, emptyFloppy());
                 } else {
@@ -2213,7 +2204,7 @@ public final class ConfigDialog {
             addRow(panel, index, label, path, trailing);
         }
 
-        /** Sceglie il file della riga {@code index} e ne ricalcola tutta la lista. */
+        /** Chooses the file of row {@code index} and recomputes the whole list. */
         private void browseInto(int index) {
             java.util.EnumSet<Kind> allowed = allowed(index);
             if (allowed.isEmpty()) return;
@@ -2232,8 +2223,8 @@ public final class ConfigDialog {
 
             String path = chosen.getAbsolutePath();
             Kind kind = Kind.of(path);
-            // Il filtro del browser propone solo i tipi ammessi, ma il nome si può anche
-            // digitare: se quello che ne esce non ci sta, si dice perché.
+            // The browser's filter offers only the allowed types, but the name can also be
+            // typed: if what comes out does not fit, say why.
             if (kind == null || !allowed.contains(kind)) {
                 JOptionPane.showMessageDialog(owner,
                         Messages.t(kind == null ? "drive.entry.unknown" : "drive.entry.rejected",
@@ -2311,13 +2302,13 @@ public final class ConfigDialog {
     }
 
     /**
-     * Apre il browser dei file e ritorna quello scelto, o {@code null} se l'utente
-     * annulla. Parte dall'ultima cartella usata da questo {@code kind} (o da quella del
-     * file corrente) e, a scelta avvenuta, la ricorda.
+     * Opens the file browser and returns the file chosen, or {@code null} if the user
+     * cancels. Starts from the last folder used by this {@code kind} (or from that of the
+     * current file) and, once a choice is made, remembers it.
      */
     private static File chooseFile(JDialog parent, AmigaConfig config, BrowseKind kind,
             String currentPath, String desc, String... extensions) {
-        // Istanza condivisa e con elenco cartelle veloce: vedi FastFileChooser.
+        // Shared instance with a fast folder listing: see FastFileChooser.
         JFileChooser fc = FastFileChooser.acquire();
         fc.setDialogTitle(desc);
 
@@ -2354,8 +2345,8 @@ public final class ConfigDialog {
         if (extensions.length > 0) {
             fc.setFileFilter(new FileNameExtensionFilter(desc, extensions));
         }
-        // L'istanza è riusata: senza rilettura mostrerebbe l'elenco del giro precedente,
-        // che nel frattempo può essere cambiato sul disco.
+        // The instance is reused: without a rescan it would show the listing of the previous
+        // round, which may have changed on disk meanwhile.
         fc.rescanCurrentDirectory();
         if (fc.showOpenDialog(parent) != JFileChooser.APPROVE_OPTION) return null;
         File selected = fc.getSelectedFile();

@@ -31,52 +31,48 @@ import java.security.SecureRandom;
 import java.util.Arrays;
 
 /**
- * Crittografia dell'handshake: dal <i>join code</i> alle chiavi di sessione
- * ({@code docs/remote-play-plan.md} §8).
+ * Handshake cryptography: from the <i>join code</i> to the session keys
+ * ({@code docs/remote-play-plan.md} section 8).
  *
- * <h2>Cosa protegge, e da cosa</h2>
- * Stiamo aprendo una porta in ascolto sul PC di casa di qualcuno e sopra ci facciamo
- * passare input che pilotano una macchina. Il minimo non negoziabile del §8 e':
- * l'autenticazione viene <b>prima di qualunque altra cosa</b>, e il codice non viaggia mai
- * in chiaro.
+ * <h2>What it protects, and from what</h2>
+ * A port is opened listening on someone's home PC and inputs that drive a machine travel over
+ * it. The non-negotiable minimum of section 8: authentication comes <b>before anything
+ * else</b>, and the code never travels in clear.
  *
  * <pre>
- *   master   = PBKDF2-HMAC-SHA256(joinCode, salt, {@value #PBKDF2_ROUNDS} giri, 256 bit)
+ *   master   = PBKDF2-HMAC-SHA256(joinCode, salt, {@value #PBKDF2_ROUNDS} rounds, 256 bits)
  *   guestTag = HMAC-SHA256(master, "AJ-guest" | nonce | nonce2 | proto)
  *   hostTag  = HMAC-SHA256(master, "AJ-host"  | nonce | nonce2 | proto)
  *   mediaKey = HKDF-Expand(master, "AJ-media" | nonce | nonce2, 32)
  * </pre>
  *
- * <h2>Tre scelte che si discostano dal §3 del piano, e perche'</h2>
+ * <h2>Three choices, and why</h2>
  * <ol>
- *   <li><b>La chiave di sessione non viaggia.</b> Il §3 la metteva dentro il WELCOME, ma il
- *       canale di controllo e' TCP in chiaro: spedirla li' la regalerebbe a chiunque
- *       ascolti, annullando il motivo stesso per cui si cifra il media. Qui la si
- *       <b>deriva</b> dallo stesso materiale su entrambi i lati — nulla di segreto
- *       attraversa la rete.</li>
- *   <li><b>Anche l'host si autentica.</b> Il §3 faceva provare solo all'ospite di conoscere
- *       il codice. Con un segreto condiviso l'autenticazione mutua costa un secondo HMAC, e
- *       senza di essa chiunque si metta in mezzo potrebbe spacciarsi per l'host e
- *       raccogliere gli input dell'ospite.</li>
- *   <li><b>PBKDF2 con {@value #PBKDF2_ROUNDS} giri.</b> Il join code ha ~40 bit: pochi, per
- *       una chiave. La derivazione lenta e' cio' che li rende comunque scomodi da provare a
- *       tappeto, e il costo lo si paga una volta sola per sessione (~60 ms), non per
- *       pacchetto.</li>
+ *   <li><b>The session key does not travel.</b> The control channel is plain TCP: sending the
+ *       key there would give it away to anyone listening, defeating the very reason the media
+ *       is encrypted. It is <b>derived</b> from the same material on both sides: nothing
+ *       secret crosses the network.</li>
+ *   <li><b>The host authenticates too.</b> With a shared secret mutual authentication costs a
+ *       second HMAC, and without it anyone in the middle could pose as the host and collect
+ *       the guest's inputs.</li>
+ *   <li><b>PBKDF2 with {@value #PBKDF2_ROUNDS} rounds.</b> The join code has ~40 bits: few for a
+ *       key. The slow derivation is what makes them awkward to try exhaustively, and the cost
+ *       is paid once per session (~60 ms), not per packet.</li>
  * </ol>
  *
- * <p>Il confronto dei tag usa {@link MessageDigest#isEqual}, che non termina anticipatamente:
- * un confronto ingenuo perderebbe da un lato quello che si e' guadagnato dall'altro.
+ * <p>The tag comparison uses {@link MessageDigest#isEqual}, which does not exit early: a naive
+ * comparison would lose on one side what was gained on the other.
  */
 public final class SessionCrypto {
 
-    /** ~60 ms su una macchina da scrivania del 2026: caro per chi prova a tappeto, non per noi. */
+    /** ~60 ms on a 2026 desktop machine: expensive for exhaustive guessing, not for us. */
     public static final int PBKDF2_ROUNDS = 120_000;
 
     public static final int SALT_BYTES = 16;
     public static final int NONCE_BYTES = 16;
     public static final int TAG_BYTES = 32;
     public static final int KEY_BYTES = 32;
-    /** Prefisso del nonce AES-GCM, derivato e non trasmesso. */
+    /** Prefix of the AES-GCM nonce, derived and not transmitted. */
     public static final int NONCE_PREFIX_BYTES = 4;
 
     private static final byte[] LABEL_GUEST = "AJ-guest".getBytes(StandardCharsets.US_ASCII);
@@ -90,7 +86,7 @@ public final class SessionCrypto {
         this.master = master;
     }
 
-    /** Deriva il materiale di sessione dal join code e dal salt scelto dall'host. */
+    /** Derives the session material from the join code and the salt chosen by the host. */
     public static SessionCrypto derive(String joinCode, byte[] salt) {
         if (salt == null || salt.length != SALT_BYTES) {
             throw new IllegalArgumentException("salt di " + (salt == null ? "null" : salt.length)
@@ -114,27 +110,27 @@ public final class SessionCrypto {
         return b;
     }
 
-    /** Tag con cui l'ospite dimostra di conoscere il codice. */
+    /** Tag with which the guest proves it knows the code. */
     public byte[] guestTag(byte[] nonce, byte[] nonce2, int protocolVersion) {
         return hmac(master, LABEL_GUEST, nonce, nonce2, protocolVersion);
     }
 
-    /** Tag con cui l'host dimostra la stessa cosa all'ospite. */
+    /** Tag with which the host proves the same to the guest. */
     public byte[] hostTag(byte[] nonce, byte[] nonce2, int protocolVersion) {
         return hmac(master, LABEL_HOST, nonce, nonce2, protocolVersion);
     }
 
-    /** Chiave AES-GCM per il media, derivata: non attraversa mai la rete. */
+    /** AES-GCM key for the media, derived: it never crosses the network. */
     public byte[] mediaKey(byte[] nonce, byte[] nonce2) {
         return hkdfExpand(master, concat(LABEL_MEDIA, nonce, nonce2), KEY_BYTES);
     }
 
-    /** Prefisso del nonce GCM, anch'esso derivato. */
+    /** Prefix of the GCM nonce, derived as well. */
     public byte[] noncePrefix(byte[] nonce, byte[] nonce2) {
         return hkdfExpand(master, concat(LABEL_NONCE, nonce, nonce2), NONCE_PREFIX_BYTES);
     }
 
-    /** Confronto a tempo costante: un {@code Arrays.equals} qui sarebbe un oracolo. */
+    /** Constant-time comparison: an {@code Arrays.equals} here would be an oracle. */
     public static boolean tagsMatch(byte[] a, byte[] b) {
         return MessageDigest.isEqual(a, b);
     }
@@ -144,7 +140,7 @@ public final class SessionCrypto {
     }
 
     // =====================================================================
-    // Interno
+    // Internal
     // =====================================================================
 
     private static byte[] hmac(byte[] key, byte[] label, byte[] nonce, byte[] nonce2, int proto) {
@@ -167,11 +163,11 @@ public final class SessionCrypto {
     }
 
     /**
-     * HKDF-Expand (RFC 5869) su HMAC-SHA256, scritto a mano in una dozzina di righe.
+     * HKDF-Expand (RFC 5869) over HMAC-SHA256, written by hand in a dozen lines.
      *
-     * <p>Il JDK espone una API KDF recente, ma qui il vincolo del piano e' "nessuna
-     * dipendenza nuova <i>e</i> nessuna sorpresa": una funzione di questa taglia, con un
-     * RFC alle spalle, e' piu' facile da verificare che da giustificare.
+     * <p>The JDK exposes a recent KDF API, but here the constraint is "no new dependency
+     * <i>and</i> no surprises": a function of this size, with an RFC behind it, is easier to
+     * verify than to justify.
      */
     private static byte[] hkdfExpand(byte[] prk, byte[] info, int length) {
         try {

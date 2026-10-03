@@ -63,24 +63,24 @@ import java.net.URI;
 import java.util.List;
 
 /**
- * Popup "About": chi ha scritto AmiJa, che versione si sta usando e dove sta il codice.
+ * "About" popup: who wrote AmiJa, which version is in use and where the code is.
  *
- * <p>Il logo dell'applicazione a sinistra, tre righe di testo a destra (versione, autore,
- * indirizzo del repository) e un solo pulsante di chiusura in fondo. La riga
- * dell'indirizzo è un collegamento: cliccandola si apre il browser di sistema; dove non
- * c'è un browser da aprire ({@link Desktop} non supportato, ambienti headless) l'indirizzo
- * finisce negli appunti e l'utente viene avvisato — così il popup è comunque utile.
+ * <p>The application logo on the left, three lines of text on the right (version, author,
+ * repository address) and a single close button at the bottom. The address line is a link:
+ * clicking it opens the system browser; where there is no browser to open ({@link Desktop} not
+ * supported, headless environments) the address goes to the clipboard and the user is told,
+ * so the popup is useful anyway.
  *
- * <p>La versione non è scritta qui: viene da {@link Version}, cioè dal
- * {@code version.properties} filtrato da Maven con la versione del pom.
+ * <p>The version is not written here: it comes from {@link Version}, i.e. from the
+ * {@code version.properties} filtered by Maven with the pom's version.
  */
 public final class AboutDialog {
 
-    /** Pagina pubblica del progetto: la stessa che la finestra mostra come collegamento. */
+    /** Public page of the project: the same one the window shows as a link. */
     private static final String REPOSITORY_URL =
             "https://github.com/zolfrik/amija-amiga-emulator";
 
-    // Stessa palette del popup F12: questa finestra ne è una costola, non un'altra cosa.
+    // Same palette as the F12 popup: this window is an offshoot of it, not something else.
     private static final Color BG        = new Color(0x2B, 0x2D, 0x31);
     private static final Color PANEL_BG  = new Color(0x33, 0x36, 0x3B);
     private static final Color FG        = new Color(0xE6, 0xE6, 0xE8);
@@ -89,18 +89,18 @@ public final class AboutDialog {
     private static final Color ACCENT_HI = new Color(0x8A, 0xC4, 0xEE);
     private static final Color BORDER    = new Color(0x45, 0x49, 0x50);
 
-    /** Lato del logo mostrato: la misura si ricava dall'icona più vicina per eccesso. */
+    /** Side of the logo shown: the size is taken from the nearest larger icon. */
     private static final int LOGO_SIZE = 96;
 
     private AboutDialog() {}
 
-    /** Mostra il popup (modale) sopra {@code parent}. Ritorna alla chiusura. */
+    /** Shows the (modal) popup above {@code parent}. Returns when it closes. */
     public static void show(Window parent) {
         JDialog dialog = new JDialog(parent, Messages.t("about.title"),
                 Dialog.ModalityType.APPLICATION_MODAL);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-        // Il logo anche nella barra del titolo: la finestra si apre di solito da un
-        // dialog che le passa già le proprie icone, ma non deve dipenderne.
+        // The logo in the title bar too: the window usually opens from a dialog that already
+        // passes it its own icons, but it must not depend on that.
         AppIcons.apply(dialog);
 
         dialog.getContentPane().setBackground(BG);
@@ -119,10 +119,10 @@ public final class AboutDialog {
     }
 
     // =========================================================================
-    // Costruzione dell'interfaccia
+    // Building the interface
     // =========================================================================
 
-    /** Logo a sinistra, colonna di testo a destra, entrambi centrati verticalmente. */
+    /** Logo on the left, text column on the right, both centred vertically. */
     private static JPanel buildBody(JDialog dialog) {
         JPanel body = new JPanel(new GridBagLayout());
         body.setBackground(BG);
@@ -146,7 +146,7 @@ public final class AboutDialog {
         return body;
     }
 
-    /** Le tre righe: versione, autore, collegamento al repository. */
+    /** The three lines: version, author, link to the repository. */
     private static JPanel buildTextColumn(JDialog dialog) {
         JPanel column = new JPanel();
         column.setOpaque(false);
@@ -174,12 +174,12 @@ public final class AboutDialog {
     }
 
     /**
-     * L'indirizzo del repository come collegamento: sottolineato, del colore d'accento e
-     * col puntatore a mano, perché si veda che è cliccabile prima di provarci.
+     * The repository address as a link: underlined, in the accent colour and with the hand
+     * pointer, so it shows it is clickable before trying.
      */
     private static JLabel buildLink(JDialog dialog) {
-        // La sottolineatura viene dall'HTML: JLabel non ha un attributo per averla, e
-        // ricavarla dal font significherebbe derivarlo con gli attributi di TextAttribute.
+        // The underline comes from HTML: JLabel has no attribute for it, and getting it from
+        // the font would mean deriving it with TextAttribute attributes.
         JLabel link = new JLabel("<html><u>" + REPOSITORY_URL + "</u></html>");
         link.setForeground(ACCENT);
         link.setFont(derive(link.getFont(), Font.PLAIN, 13f));
@@ -204,7 +204,7 @@ public final class AboutDialog {
         return link;
     }
 
-    /** Barra di chiusura: un solo pulsante, al centro. */
+    /** Closing bar: a single button, in the centre. */
     private static JPanel buildButtonBar(JDialog dialog) {
         JButton ok = new JButton(Messages.t("button.ok"));
         ok.setFocusPainted(false);
@@ -225,14 +225,13 @@ public final class AboutDialog {
     }
 
     // =========================================================================
-    // Utilità
+    // Utilities
     // =========================================================================
 
     /**
-     * Apre la pagina del progetto nel browser di sistema. Se non c'è modo di aprirla
-     * (piattaforma senza {@link Desktop}, browser assente, errore di lancio) l'indirizzo
-     * viene copiato negli appunti e lo si dice all'utente: il collegamento non resta
-     * comunque un vicolo cieco.
+     * Opens the project page in the system browser. If there is no way to open it (platform
+     * without {@link Desktop}, no browser, launch error) the address is copied to the clipboard
+     * and the user is told: the link is never a dead end.
      */
     private static void openRepository(JDialog parent) {
         try {
@@ -242,7 +241,7 @@ public final class AboutDialog {
                 return;
             }
         } catch (Exception e) {
-            // Browser non avviabile: si ripiega sugli appunti, come se non ci fosse.
+            // Browser cannot be started: fall back on the clipboard, as if there were none.
         }
         copyToClipboard();
         JOptionPane.showMessageDialog(parent,
@@ -255,21 +254,21 @@ public final class AboutDialog {
             Toolkit.getDefaultToolkit().getSystemClipboard()
                     .setContents(new StringSelection(REPOSITORY_URL), null);
         } catch (Exception e) {
-            // Appunti non disponibili: l'indirizzo resta comunque leggibile nel messaggio.
+            // Clipboard not available: the address is still readable in the message.
         }
     }
 
     /**
-     * Il logo alla misura richiesta, ricavato dall'icona più piccola che la copre (così
-     * si scala sempre in riduzione, mai in ingrandimento). {@code null} se le icone non
-     * sono state trovate — in quel caso il popup mostra il solo testo.
+     * The logo at the requested size, taken from the smallest icon that covers it (so it is
+     * always scaled down, never up). {@code null} if the icons were not found: then the popup
+     * shows the text alone.
      */
     private static Image logoImage(int size) {
         List<Image> icons = AppIcons.getIcons();
         if (icons.isEmpty()) return null;
 
-        Image source = icons.get(icons.size() - 1); // la più grande, se nessuna basta
-        for (Image icon : icons) { // la lista è ordinata dalla più piccola alla più grande
+        Image source = icons.get(icons.size() - 1); // the largest, if none is big enough
+        for (Image icon : icons) { // the list is sorted from the smallest to the largest
             if (icon.getWidth(null) >= size) {
                 source = icon;
                 break;

@@ -49,15 +49,14 @@ public class CmpmInstruction extends AbstractM68kInstruction {
             if (cpu.isRisingEdgeConsumed()) return false;
             switch (getStep(cpu)) {
                 case 0 -> {
-                    // CMPM dichiara il proprio offset del PC di gruppo 0: nel generato di WinUAE
-                    // (op_b148/op_b188 _14_ff) il ramo di guasto porta due byte in piu' della
-                    // regola generale, per entrambe le taglie.
+                    // CMPM declares its own group 0 PC offset: the fault branch carries two bytes
+                    // more than the general rule, for both sizes ($B148/$B188).
                     cpu.markGroup0EaDelta(2);
                     int addrSrc = cpu.getA(regY, 4);
                     if (size != 4) {
-                        // WinUAE op_b108/op_b148 _14_ff: `ipl_fetch_now()` sta prima della
-                        // lettura SORGENTE, non sull'ultimo accesso. La .L ha l'ancora fra le
-                        // due word della sorgente (case 1), come ADDX/SUBX .L (§6.1.3).
+                        // $B108/$B148: the `now` sample sits before the SOURCE read, not on the
+                        // last access. .L has the anchor between the two words of the source
+                        // (case 1), like ADDX/SUBX .L (section 6.1.3).
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                     }
                     cpu.scheduleRead(addrSrc, (size == 4) ? 2 : size);
@@ -69,8 +68,8 @@ public class CmpmInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     if (size == 4) {
                         setTemp(cpu, SRC_VAL, (cpu.getLatchedBusData() & 0xFFFF) << 16);
-                        // WinUAE op_b188_14_ff: `ipl_fetch_now()` sta FRA le due word della
-                        // lettura sorgente, a 16 clock dalla fine.
+                        // $B188: the `now` sample sits BETWEEN the two words of the source
+                        // read, 16 clocks from the end.
                         cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
                         cpu.scheduleRead(cpu.getA(regY, 4) - 2, 2);
                         nextStep(cpu);

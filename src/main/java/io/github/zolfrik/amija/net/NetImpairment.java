@@ -30,71 +30,71 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Perdita, ritardo e jitter <b>simulati</b> sul canale media
- * ({@code docs/remote-play-plan.md} §13).
+ * <b>Simulated</b> loss, delay and jitter on the media channel ({@code docs/remote-play-plan.md}
+ * section 13).
  *
- * <h2>Perche' e' indispensabile e non un lusso</h2>
- * Su un loopback non si perde mai niente. Ma tutta la robustezza di questo protocollo — il
- * riferimento all'ultimo ACK, il riassemblaggio tutto-o-niente, il keyframe di ripiego — e'
- * <b>codice che su un loopback perfetto non viene mai eseguito</b>. Senza un modo di rompere
- * il link a comando, quei rami resterebbero non collaudati fino alla prima partita vera su
- * una rete vera, cioe' esattamente quando non si possono osservare.
+ * <h2>Why it is indispensable and not a luxury</h2>
+ * Nothing is ever lost on a loopback. But all of this protocol's robustness (the reference to
+ * the last ACK, the all-or-nothing reassembly, the fallback keyframe) is <b>code that never
+ * runs on a perfect loopback</b>. Without a way to break the link on command, those branches
+ * would stay untested until the first real game on a real network, exactly when they cannot
+ * be observed.
  *
- * <p>Si applica in <b>uscita</b>, subito prima della {@code send}: e' indifferente da quale
- * lato si butti via un pacchetto, e cosi' il ricevente resta codice di produzione puro,
- * senza un solo {@code if} di collaudo dentro il percorso caldo.
+ * <p>Applied on <b>output</b>, right before the {@code send}: it does not matter on which side a
+ * packet is dropped, and so the receiver stays pure production code, without a single test
+ * {@code if} on the hot path.
  *
- * <p>Configurazione da riga di comando, secondo la convenzione del progetto per le property
- * diagnostiche (solo {@code -D}, mai nel popup):
+ * <p>Configured from the command line, following the project convention for diagnostic
+ * properties (only {@code -D}, never in the popup):
  * <pre>
- *   -Damija.remoteplay.simloss=0.05      frazione di datagrammi buttati (0..1)
- *   -Damija.remoteplay.simlatency=60     ritardo di base, ms
- *   -Damija.remoteplay.simjitter=10      variazione casuale sul ritardo, ms
+ *   -Damija.remoteplay.simloss=0.05      fraction of datagrams dropped (0..1)
+ *   -Damija.remoteplay.simlatency=60     base delay, ms
+ *   -Damija.remoteplay.simjitter=10      random variation on the delay, ms
  * </pre>
  *
- * <p>{@link #NONE} non e' una configurazione con i valori a zero: e' un oggetto che non fa
- * <i>niente</i>, non alloca uno scheduler e non consulta un generatore casuale. Quando la
- * simulazione e' spenta — cioe' sempre, tranne nei test — il costo e' una chiamata virtuale
- * che il JIT devirtualizza.
+ * <p>{@link #NONE} is not a configuration with zero values: it is an object that does
+ * <i>nothing</i>, allocates no scheduler and consults no random generator. When the
+ * simulation is off (i.e. always, except in tests) the cost is a virtual call the JIT
+ * devirtualises.
  */
 public class NetImpairment {
 
-    /** Nessuna alterazione: e' il caso normale, e non deve costare niente. */
+    /** No alteration: the normal case, and it must cost nothing. */
     public static final NetImpairment NONE = new NetImpairment();
 
     private NetImpairment() {
     }
 
-    /** Spedisce, o simula la sorte che il link avrebbe riservato al datagramma. */
+    /** Sends, or simulates the fate the link would have given the datagram. */
     public void send(DatagramSocket socket, DatagramPacket packet) throws IOException {
         socket.send(packet);
     }
 
-    /** Ferma lo scheduler, se ne era stato creato uno. */
+    /** Stops the scheduler, if one was created. */
     public void close() {
     }
 
-    /** Vero se qualcosa viene alterato: serve solo a decidere cosa scrivere nei log. */
+    /** True if something is altered: used only to decide what to write in the logs. */
     public boolean active() {
         return false;
     }
 
     /**
-     * Sospende o riprende l'alterazione, a sessione aperta.
+     * Suspends or resumes the alteration, with the session open.
      *
-     * <p>Serve ai collaudi che devono <b>chiudere in pulito</b>: la garanzia del §4.2 e' che
-     * i buchi interni diventino silenzio della lunghezza giusta, ma l'ultimo blocco di una
-     * prova, se si perde, non ha nessun successore che possa accorgersene. Spegnere la
-     * perdita per la coda rende esatta un'asserzione che altrimenti sarebbe un lancio di
-     * moneta — invece di indebolirla fino a non dire piu' niente.
+     * <p>Used by the tests that must <b>close cleanly</b>: the guarantee of section 4.2 is that
+     * inner gaps become silence of the right length, but the last block of a test, if lost,
+     * has no successor that could notice. Switching the loss off for the tail makes exact an
+     * assertion that would otherwise be a coin toss, instead of weakening it until it says
+     * nothing.
      */
     public void setEnabled(boolean enabled) {
     }
 
     /**
-     * Legge la configurazione dalle property {@code -D}.
+     * Reads the configuration from the {@code -D} properties.
      *
-     * @return {@link #NONE} se nessuna property e' impostata
+     * @return {@link #NONE} if no property is set
      */
     public static NetImpairment fromSystemProperties() {
         double loss = doubleProperty("amija.remoteplay.simloss", 0);
@@ -104,9 +104,9 @@ public class NetImpairment {
     }
 
     /**
-     * @param lossProbability frazione di datagrammi da buttare, 0..1
-     * @param latencyMs       ritardo di base applicato a ogni datagramma
-     * @param jitterMs        variazione casuale <b>aggiunta</b> al ritardo, 0..jitterMs
+     * @param lossProbability fraction of datagrams to drop, 0..1
+     * @param latencyMs       base delay applied to every datagram
+     * @param jitterMs        random variation <b>added</b> to the delay, 0..jitterMs
      */
     public static NetImpairment of(double lossProbability, int latencyMs, int jitterMs) {
         if (lossProbability <= 0 && latencyMs <= 0 && jitterMs <= 0) {
@@ -170,9 +170,9 @@ public class NetImpairment {
                 socket.send(packet);
                 return;
             }
-            // Il DatagramPacket e il suo array sono riusati dal chiamante a ogni invio: se lo
-            // si consegnasse allo scheduler cosi' com'e', partirebbe il contenuto di un altro
-            // pacchetto. La copia e' il prezzo della simulazione, e sta solo qui.
+            // The DatagramPacket and its array are reused by the caller at every send: handing
+            // it to the scheduler as it is, the content of another packet would leave. The copy
+            // is the price of the simulation, and it is only here.
             byte[] copy = new byte[packet.getLength()];
             System.arraycopy(packet.getData(), packet.getOffset(), copy, 0, copy.length);
             DatagramPacket delayedPacket =
@@ -183,16 +183,16 @@ public class NetImpairment {
                     try {
                         socket.send(delayedPacket);
                     } catch (IOException ignored) {
-                        // Il socket si e' chiuso mentre il pacchetto aspettava: e' la fine
-                        // della sessione, non un guasto da segnalare.
+                        // The socket closed while the packet was waiting: the end of the
+                        // session, not a failure to report.
                     }
                 }, delay, TimeUnit.MILLISECONDS);
                 delayed++;
             } catch (RejectedExecutionException e) {
-                // La sessione si sta chiudendo e lo scheduler e' gia' fermo. Un pacchetto
-                // che non parte durante la chiusura e' un pacchetto perso, che e' proprio
-                // cio' che questa classe simula: contarlo come tale e' la verita', farne
-                // un'eccezione sarebbe rumore su un thread che sta comunque per finire.
+                // The session is closing and the scheduler has already stopped. A packet that
+                // does not leave during the close is a lost packet, which is exactly what this
+                // class simulates: counting it as such is the truth, an exception would be
+                // noise on a thread about to end anyway.
                 dropped++;
             }
         }

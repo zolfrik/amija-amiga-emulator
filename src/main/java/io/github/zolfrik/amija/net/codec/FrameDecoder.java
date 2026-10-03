@@ -24,26 +24,26 @@ import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 
 /**
- * Decodificatore video <b>AJV1</b>: ricostruisce il raster RGB da un payload di
- * {@link FrameEncoder} e dal frame di riferimento.
+ * <b>AJV1</b> video decoder: rebuilds the RGB raster from a {@link FrameEncoder} payload and
+ * the reference frame.
  *
- * <p>Possiede i propri buffer e non alloca per frame; non e' thread-safe.
+ * <p>It owns its buffers and allocates nothing per frame; not thread-safe.
  *
- * <h2>Questi byte vengono dalla rete</h2>
- * Il decodificatore e' l'unico punto del gioco a distanza in cui dati arbitrari di terzi
- * pilotano indici e lunghezze, quindi vale la regola del §8.2 del piano: <b>ogni campo di
- * lunghezza si confronta con un tetto costante prima di usarlo</b>. In concreto:
+ * <h2>These bytes come from the network</h2>
+ * The decoder is the only place in remote play where arbitrary third-party data drives
+ * indices and lengths, so the rule of plan section 8.2 applies: <b>every length field is
+ * compared with a constant cap before use</b>. In practice:
  * <ul>
- *   <li>il corpo inflato non puo' superare {@link FrameCodec#maxBodyBytes}, che dipende
- *       solo dalla geometria concordata nel WELCOME: il buffer e' allocato una volta alla
- *       costruzione e uno stream che ne produce di piu' viene interrotto, non assecondato;</li>
- *   <li>la lunghezza del corpo deve corrispondere <b>esattamente</b> a quella implicata
- *       dalla bitmap dei tile sporchi — ne' corta (troncamento) ne' lunga (byte di troppo,
- *       che sarebbero un canale nascosto o un errore di framing);</li>
- *   <li>ogni indice di palette e' verificato contro il numero di voci dichiarate.</li>
+ *   <li>the inflated body cannot exceed {@link FrameCodec#maxBodyBytes}, which depends only on
+ *       the geometry agreed in the WELCOME: the buffer is allocated once at construction and a
+ *       stream that produces more is interrupted, not indulged;</li>
+ *   <li>the body length must match <b>exactly</b> the one implied by the dirty-tile bitmap:
+ *       neither short (truncation) nor long (extra bytes, which would be a hidden channel or a
+ *       framing error);</li>
+ *   <li>every palette index is checked against the number of entries declared.</li>
  * </ul>
- * Nessuna eccezione non controllata deve poter uscire da {@link #decode}: qualunque input
- * sbagliato diventa una {@link CodecException}, cioe' "scarta il frame e non ACKarlo".
+ * No unchecked exception must be able to leave {@link #decode}: any wrong input becomes a
+ * {@link CodecException}, i.e. "discard the frame and do not ACK it".
  */
 public final class FrameDecoder implements AutoCloseable {
 
@@ -80,17 +80,17 @@ public final class FrameDecoder implements AutoCloseable {
     }
 
     /**
-     * Ricostruisce un frame.
+     * Rebuilds a frame.
      *
-     * @param src       payload prodotto da {@link FrameEncoder#encode}
-     * @param reference riferimento con cui e' stato codificato, o {@code null} per un keyframe
-     * @param dst       raster di uscita, {@code width*height} pixel. Puo' essere lo stesso
-     *                  array di {@code reference}: i tile puliti restano quello che sono e
-     *                  i modi che leggono il riferimento lo fanno prima di scrivere lo
-     *                  stesso indice, quindi la ricostruzione in loco e' sicura.
-     * @throws CodecException se il payload e' malformato, incoerente o troncato. Tutte le
-     *                        verifiche precedono la prima scrittura: o {@code dst} si
-     *                        riempie per intero, o non viene toccato affatto.
+     * @param src       payload produced by {@link FrameEncoder#encode}
+     * @param reference reference it was encoded with, or {@code null} for a keyframe
+     * @param dst       output raster, {@code width*height} pixels. It may be the same array as
+     *                  {@code reference}: clean tiles stay as they are and the modes that read
+     *                  the reference do so before writing the same index, so in-place
+     *                  reconstruction is safe.
+     * @throws CodecException if the payload is malformed, inconsistent or truncated. Every
+     *                        check precedes the first write: either {@code dst} is filled
+     *                        entirely, or it is not touched at all.
      */
     public void decode(byte[] src, int off, int len, int[] reference, int[] dst)
             throws CodecException {
@@ -122,8 +122,8 @@ public final class FrameDecoder implements AutoCloseable {
         }
         readBitmap();
 
-        // La bitmap determina quanti pixel devono seguire: il conto e' l'unica prova che il
-        // corpo e la sua intestazione parlino dello stesso frame.
+        // The bitmap decides how many pixels must follow: the count is the only proof that
+        // the body and its header talk about the same frame.
         int p = bitmapBytes;
         int paletteCount = 0;
         boolean indexed = false;
@@ -161,17 +161,17 @@ public final class FrameDecoder implements AutoCloseable {
         }
 
         if (indexed) {
-            int q = p + dirtyPixels;   // la palette sta in fondo: vedi FrameCodec
+            int q = p + dirtyPixels;   // the palette is at the end: see FrameCodec
             for (int i = 0; i < paletteCount; i++) {
                 palette[i] = AmigaColor.toRgb((body[q] & 0xFF) | ((body[q + 1] & 0xFF) << 8));
                 q += 2;
             }
-            // Gli indici si validano TUTTI adesso, non mentre si scrive. Costa una passata
-            // su byte gia' in cache, e compra una garanzia che serve al chiamante: decode()
-            // o riesce del tutto o non tocca 'dst'. Senza, un indice fuori palette a meta'
-            // frame lascerebbe la destinazione mezza scritta — e quando 'dst' e' anche il
-            // riferimento (ricostruzione in loco) quello sarebbe il riferimento corrotto,
-            // cioe' un errore che si trascina sui frame successivi invece di fermarsi qui.
+            // ALL the indices are validated now, not while writing. It costs a pass over bytes
+            // already in cache, and buys a guarantee the caller needs: decode() either succeeds
+            // entirely or does not touch 'dst'. Otherwise an index outside the palette halfway
+            // through the frame would leave the destination half written, and when 'dst' is
+            // also the reference (in-place reconstruction) that would be a corrupt reference,
+            // an error dragging on into the following frames instead of stopping here.
             for (int i = 0; i < dirtyPixels; i++) {
                 if ((body[p + i] & 0xFF) >= paletteCount) {
                     throw new CodecException("indice di palette " + (body[p + i] & 0xFF)
@@ -217,7 +217,7 @@ public final class FrameDecoder implements AutoCloseable {
     }
 
     // =====================================================================
-    // Interno
+    // Internal
     // =====================================================================
 
     private int inflate(byte[] src, int off, int len) throws CodecException {
@@ -265,7 +265,7 @@ public final class FrameDecoder implements AutoCloseable {
         dirtyPixels = pixels;
     }
 
-    /** I tile puliti sono, per definizione, identici al riferimento (nero se non c'e'). */
+    /** Clean tiles are, by definition, identical to the reference (black if there is none). */
     private void fillClean(int[] reference, int[] dst) {
         if (dst == reference) {
             return;
@@ -338,10 +338,10 @@ public final class FrameDecoder implements AutoCloseable {
                         int d = (body[p] & 0xFF) | ((body[p + 1] & 0xFF) << 8);
                         p += 2;
                         int idx = base + x;
-                        // Il riferimento e' RGB: va riportato a 12 bit per applicare lo XOR.
-                        // Che sia rappresentabile lo garantisce l'encoder, che passa al modo
-                        // R quando non lo e'; qui un valore fuori tavolozza degrada a 0 e
-                        // basta, senza far saltare la decodifica dell'intero frame.
+                        // The reference is RGB: it must be brought back to 12 bits to apply the
+                        // XOR. The encoder guarantees it is representable, switching to mode R
+                        // when it is not; here a value outside the palette just degrades to 0,
+                        // without failing the decoding of the whole frame.
                         int r = reference == null ? 0 : AmigaColor.fromRgb(reference[idx]);
                         dst[idx] = AmigaColor.toRgb((r < 0 ? 0 : r) ^ d);
                     }

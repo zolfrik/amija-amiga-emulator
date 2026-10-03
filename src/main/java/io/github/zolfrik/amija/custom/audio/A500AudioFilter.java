@@ -21,23 +21,20 @@
 package io.github.zolfrik.amija.custom.audio;
 
 /**
- * La catena analogica di un canale di uscita dell'A500 — un'istanza per lato.
+ * The analogue chain of one A500 output channel: one instance per side.
  *
- * <p>Oracolo: WinUAE {@code audio.cpp}, funzione {@code filter()}, caso
- * {@code FILTER_MODEL_A500} (il default per un A500: {@code sound_filter_type = 0} con
- * {@code sound_filter = FILTER_SOUND_EMUL}). Due stadi distinti:
+ * <p>The A500 filter model has two distinct stages:
  *
  * <ul>
- *   <li>il filtro <b>fisso</b>, sempre in circuito: due RC in cascata a 6,2 kHz e 20 kHz.
- *       È quello che dà all'A500 il suo timbro;</li>
- *   <li>il filtro del <b>LED</b>, che il software inserisce dal bit 1 di CIA-A PRA: tre RC
- *       a 7 kHz in cascata, <b>dopo</b> il filtro fisso.</li>
+ *   <li>the <b>fixed</b> filter, always in circuit: two cascaded RCs at 6.2 kHz and 20 kHz. It
+ *       is what gives the A500 its timbre;</li>
+ *   <li>the <b>LED</b> filter, which the software switches in from bit 1 of CIA-A PRA: three
+ *       cascaded RCs at 7 kHz, <b>after</b> the fixed filter.</li>
  * </ul>
  *
- * <p>Le due catene girano <b>sempre</b> entrambe, come in WinUAE, dove {@code rc3..rc5}
- * sono aggiornati ad ogni campione e {@code led_filter_on} sceglie soltanto quale uscita
- * prendere. Farne girare una a intermittenza la lascerebbe con uno stato stantio, e ogni
- * accensione del filtro sarebbe un salto di continuità: un clic.
+ * <p>Both chains <b>always</b> run, and the LED state only chooses which output to take.
+ * Running one intermittently would leave it with a stale state, and every switch of the
+ * filter would be a discontinuity: a click.
  */
 public final class A500AudioFilter {
 
@@ -60,8 +57,8 @@ public final class A500AudioFilter {
     }
 
     /**
-     * @param ledFilterOn se il filtro del LED è inserito (LED acceso)
-     * @return il campione filtrato
+     * @param ledFilterOn whether the LED filter is switched in (LED on)
+     * @return the filtered sample
      */
     public float process(float input, boolean ledFilterOn) {
         float normal = fixed2.process(fixed1.process(input));
