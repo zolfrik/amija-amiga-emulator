@@ -403,21 +403,7 @@ public final class VirtualCRT {
         return vpos + agnus.getDisplayRowShift();
     }
 
-    // SAFETY NET: frame skip (lastCompletedFrameHadLateBitplaneDma) only HIDES a single
-    // transient frame (e.g. the Kickstart's insert-disk hand). A "partial" frame is by
-    // definition an isolated event; a game that marks EVERY frame (e.g. a misclassified split
-    // screen) must NEVER freeze the display. So never more than 1 consecutive frame is
-    // skipped: at most a single frame is hidden, never a sequence. That makes a display
-    // freeze from frame skip impossible whatever the heuristic in Agnus.
-    private int consecutiveSkips = 0;
-
     private void presentFrame() {
-        if (agnus.lastCompletedFrameHadLateBitplaneDma() && consecutiveSkips < 1) {
-            consecutiveSkips++;
-            resetFrameModeCounters();
-            return;
-        }
-        consecutiveSkips = 0;
         buildFrameInfo(frameInfo);
         // Before presenting: the asynchronous branch swaps frameBuffer with renderBuffer, and
         // after the swap the frame just completed is no longer in frameBuffer. The cost

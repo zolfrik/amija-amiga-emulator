@@ -677,27 +677,6 @@ public abstract class AbstractAgnus {
 
         if (oldValue == newValue) return;
 
-        boolean oldBitplaneEnabled = (oldValue & 0x0200) != 0 && (oldValue & 0x0100) != 0;
-        boolean newBitplaneEnabled = (newValue & 0x0200) != 0 && (newValue & 0x0100) != 0;
-        // A frame is "partial" (not to be shown) only if bitplane DMA was OFF when the
-        // display window opened and is switched on further down, INSIDE the window
-        // [diwVStart, diwVStop): the first visible lines are border instead of content
-        // (e.g. the Kickstart's insert-disk hand switches DMA on halfway down the window
-        // while the top is still empty).
-        //
-        // It is NOT marked (= complete frame, to be shown) when:
-        //  - DMA is switched on OUTSIDE the window (Monkey Island 2's protection screen:
-        //    CLR at line 233 = end of window, then SET at line 234, preparing the next
-        //    frame); or
-        //  - DMA was ALREADY ON at the start of the window and is only toggled halfway (a
-        //    legitimate split screen: Monkey Island 2's verb/inventory panel switches BPLEN
-        //    back on at ~line 178 every frame). The top of the display already has content
-        //    there: dropping the frame would freeze the screen.
-        if (!oldBitplaneEnabled && newBitplaneEnabled
-                && vpos >= diwVStart && vpos < diwVStop && !bitplaneDmaOnAtWindowStart) {
-            bitplaneDmaEnabledLateThisFrame = true;
-        }
-
         final boolean copWas = copperDmaEnabled;
 
         dmacon = newValue;
@@ -1316,10 +1295,6 @@ public abstract class AbstractAgnus {
     private boolean copperDmaEnabled    = false;
     private boolean blitterDmaEnabled   = false;
 
-    // Used by the frame presenter to avoid exposing a frame whose bitplane DMA
-    // was enabled after the display window had already started.
-    private boolean bitplaneDmaEnabledLateThisFrame = false;
-    private boolean lastCompletedFrameHadLateBitplaneDma = false;
     private int lastCompletedFrameField = 0;
 
     /** REFPTR - DRAM refresh address, stepped by every refresh cycle. */
@@ -2851,9 +2826,7 @@ public abstract class AbstractAgnus {
         // runs on the first lines and the main loop has the rest of the frame (line 312
         // included, on long frames) to sample the beam position.
         if (paula != null) paula.assertVertbInterrupt();
-        lastCompletedFrameHadLateBitplaneDma = bitplaneDmaEnabledLateThisFrame;
         lastCompletedFrameField = field;   // saved before the toggle, used by VirtualCRT
-        bitplaneDmaEnabledLateThisFrame = false;
 
         // New frame: every sprite in the POS/CTL phase (sprDmaEnabled=false).
         Arrays.fill(sprDmaEnabled, false);
@@ -4839,8 +4812,6 @@ public abstract class AbstractAgnus {
         dmacon = 0;
         bitplaneVerticalActive = false;
         updateDmaFlags();
-        bitplaneDmaEnabledLateThisFrame = false;
-        lastCompletedFrameHadLateBitplaneDma = false;
         // LOF=0 ONLY at power-on, i.e. a SHORT frame (312 lines PAL, 262 NTSC). The frame
         // becomes long when software writes VPOSW with bit 15, which is how the Kickstart's
         // bootblock runs; the whole CPU/beam phase of the boot depends on it
@@ -5110,11 +5081,6 @@ public abstract class AbstractAgnus {
         final boolean end = triggerVpos == diwVStop || forceOff;
         if (start && !end) {
             bitplaneVerticalActive = true;
-            // Bitplane DMA state when the display window OPENS: it tells a partial frame
-            // (bitplanes off at the top, on further down: the Kickstart's insert-disk hand)
-            // from a legitimate split screen (bitplanes on at the top, toggled midway: Monkey
-            // Island 2's verb/inventory panel).
-            bitplaneDmaOnAtWindowStart = bitplaneDmaEnabled;
         } else if (end) {
             bitplaneVerticalActive = false;
         }
@@ -5140,8 +5106,6 @@ public abstract class AbstractAgnus {
         compareBitplaneVerticalWindow();
         bitplaneDmaActive = bitplaneDmaEnabled && bitplaneVerticalActive;
     }
-
-    private boolean bitplaneDmaOnAtWindowStart = false;
 
     private boolean isSpriteDMAEnabled() {
         return spriteDmaEnabled;
@@ -5726,7 +5690,6 @@ public abstract class AbstractAgnus {
     /** The bits a DMA pointer keeps, see {@link #dmaPtrMask}. */
     public int  getDmaPtrMask()      { return dmaPtrMask; }
     public int  getLastCompletedFrameField() { return lastCompletedFrameField; }
-    public boolean lastCompletedFrameHadLateBitplaneDma() { return lastCompletedFrameHadLateBitplaneDma; }
     /**
      * The Blitter as the COPPER sees it (BFD): busy for <b>one CCK more</b> than the CPU sees
      * through DMACONR. See {@link Blitter#isBusyForCopper}.

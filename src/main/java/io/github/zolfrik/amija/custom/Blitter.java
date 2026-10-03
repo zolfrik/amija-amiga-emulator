@@ -546,13 +546,10 @@ public final class Blitter {
      * countdown through {@link #tickStartCountdown()}.
      */
     private void armBlit() {
-        // Without Blitter DMA enabled the blit does not start and BBUSY does not go on (see
-        // startBlit()); cancels any pending arm.
-        if (!dmaEnabled) {
-            running = false; clearBbusy(); startPending = false; startCountdown = 0; clearBusyCountdown = 0;
-            return;
-        }
-        if (immediateMode) {
+        // A BLTSIZE written with Blitter DMA off arms the blit all the same: BBUSY comes on
+        // and the blit waits, paused, for BLTEN (see setDmaEnabled). Immediate mode runs it
+        // at once only if it can do memory cycles now; otherwise it takes the normal path.
+        if (immediateMode && dmaEnabled) {
             startPending = false; startCountdown = 0;
             startBlit();
             runImmediate();
@@ -578,11 +575,6 @@ public final class Blitter {
     public boolean isStarting() { return startPending; }
 
     private void startBlit() {
-        // Without Blitter DMA enabled the Blitter cannot do memory cycles: it does not start
-        // and BBUSY does not go on (loaders that write BLTSIZE with DMA off and then wait
-        // for BBUSY, e.g. the Speedball II cracktro, would hang otherwise).
-        if (!dmaEnabled) { running = false; clearBbusy(); clearBusyCountdown = 0; return; }
-
         recacheAreaBlitFields();
 
         running = true;
@@ -1148,15 +1140,12 @@ public final class Blitter {
      * {@code dmacon/dmacon9}, which switches BLTEN off in the middle of a 60x120 blit and
      * back on three waits later.
      *
-     * <p>Only a <b>pending arm</b> is cancelled: a BLTSIZE written with the DMA already off
-     * does not start and does not set BBUSY; that is the guard of {@code armBlit()}/
-     * {@code startBlit()}, set by the SpeedBall II cracktro.
+     * <p>The same holds before the blit has started: a BLTSIZE written with the DMA off, or
+     * a DMA switched off during the start latency, still sets BBUSY, and the blit, its
+     * warm-up included, begins when BLTEN comes back.
      */
     public void setDmaEnabled(boolean enabled) {
         this.dmaEnabled = enabled;
-        if (!enabled) {
-            startPending = false; startCountdown = 0;
-        }
     }
     public boolean isZero() { return bzero; }
     public int getBltcon0() { return bltcon0; }
