@@ -31,14 +31,12 @@ import java.util.Arrays;
 import java.util.function.IntSupplier;
 
 /**
- * Paula (8364) — Audio / Interrupt Controller / Disk DMA / Serial Port dell'Amiga 500.
- *
- * Allineata alla versione C++ di vAmiga.
+ * Paula (8364): audio, interrupt controller, disk DMA and serial port of the Amiga 500.
  */
 public final class Paula {
-    
+
     // =========================================================================
-    // Dipendenze
+    // Dependencies
     // =========================================================================
 
     private AbstractAgnus agnus;
@@ -57,30 +55,24 @@ public final class Paula {
     // =========================================================================
 
     /**
-     * INTREQ e INTENA <b>come li rilegge la CPU</b> (INTREQR/INTENAR). WinUAE
-     * {@code intreq}/{@code intena}, e {@code INTREQR()} restituisce proprio questo.
+     * INTREQ and INTENA <b>as the CPU reads them back</b> (INTREQR/INTENAR).
      */
     private int intreq;
     private int intena;
     /**
-     * Le <b>copie da cui si calcola la linea IPL</b>, e solo quelle: WinUAE
-     * {@code intreq2}/{@code intena2}, con {@code doint()} che fa
-     * {@code uae_u16 imask = intreq2 & intena2} (custom.cpp:3146). Non sono un duplicato
-     * ridondante: le due coppie si aggiornano in momenti diversi e <b>possono restare
-     * disallineate per sempre</b>.
+     * The <b>copies the IPL line is computed from</b>, and only that: the line is
+     * {@code intreq2 & intena2}. They are not a redundant duplicate: the two pairs are
+     * updated at different moments and <b>can stay out of step for good</b>.
      *
-     * <p>Una scrittura di CPU/Copper cambia la copia letta <b>subito</b> e quella dell'IPL
-     * un CCK dopo (WinUAE {@code doint_delay_intreq}: «INTREQ or INTENA write: IPL line
-     * changes 0.5 CCKs later. 68000 needs one more CPU clock (0.5 CCK) before it detects
-     * it»); un interrupt generato da un chip le alza <b>entrambe insieme</b>
-     * ({@code event_doint_delay_do_ext}).
+     * <p>A CPU or Copper write changes the read-back copy <b>at once</b> and the IPL copy one
+     * CCK later (the IPL line changes 0.5 CCK after the write, and the 68000 needs one more
+     * CPU clock to detect it); an interrupt raised by a chip sets <b>both together</b>.
      *
-     * <p>Da qui nasce uno stato che con una copia sola non esiste: bit alto in
-     * {@code intreq} e basso in {@code intreq2}, cioè un interrupt che la CPU
-     * <i>rilegge come pendente</i> ma che <i>non viene mai consegnato</i>. È lo stallo che
-     * i test vAmigaTS {@code Paula/Audio/timing/audtim*} misurano — l'oracolo invoca il
-     * gestore sei volte e poi si ferma per sempre, noi lo servivamo all'infinito. Vedi
-     * {@code docs/vamigats-paula-audio-plan.md} §14.5.
+     * <p>That makes possible a state a single copy cannot hold: a bit set in {@code intreq}
+     * and clear in {@code intreq2}, i.e. an interrupt the CPU <i>reads back as pending</i>
+     * that is <i>never delivered</i>. The vAmigaTS tests {@code Paula/Audio/timing/audtim*}
+     * measure exactly that stall: the handler runs six times and then never again
+     * ({@code docs/vamigats-paula-audio-plan.md} section 14.5).
      */
     private int intreq2;
     private int intena2;
@@ -93,18 +85,18 @@ public final class Paula {
 
     private int potgo;
     /**
-     * Stato del potenziometro, indicizzato [porta][linea]: porta 0 = {@link #gamePort1}
-     * (sinistra), 1 = {@link #gamePort2} (destra); linea 0 = X (pulsante medio / button 3),
-     * 1 = Y (destro / button 2). @see #capCheck(boolean)
+     * Potentiometer state, indexed [port][line]: port 0 = {@link #gamePort1} (left),
+     * 1 = {@link #gamePort2} (right); line 0 = X (middle button / button 3), 1 = Y (right
+     * button / button 2). @see #capCheck(boolean)
      */
     private final int[][] potCap = new int[2][2];
     private final int[][] potDat = new int[2][2];
     private final int[][] potDatAct = new int[2][2];
 
-    /** Righe di scarica veloce dopo START: {@code POTDAT_DELAY} dell'oracolo. */
+    /** Lines of fast discharge after START. */
     private static final int POTDAT_DELAY = 8;
 
-    // Game port 1 (mouse) e port 2 (joystick) per la gestione di POTINP
+    // Game port 1 (mouse) and port 2 (joystick), for POTINP
     private GamePort gamePort1 = null;
     private GamePort gamePort2 = null;
 
@@ -124,21 +116,17 @@ public final class Paula {
     private int dskpth, dskptl;
     private int dsklen;
     /**
-     * DSKSYNC. ⛔ <b>Al reset vale ZERO</b>, non {@code 0x4489}: in WinUAE
-     * {@code dsksync} e' uno static azzerato che {@code DISK_reset()} non tocca mai,
-     * quindi finche' il software non lo scrive il comparatore confronta contro
-     * {@code 0x0000}. Misurato sui due lati sul boot di {@code Paula/Audio/irqaud1}
-     * (20 s emulati): <b>nessuno dei due emulatori scrive DSKSYNC</b> — Kickstart 1.3
-     * legge la traccia grezza con WORDSYNC spento (ADKCON {@code $1100}) e decodifica
-     * in software — quindi il {@code 0x4489} che ci ritrovavamo era solo il nostro
-     * valore di reset. Vedi docs/vamigats-paula-audio-plan.md §7.1.24.
+     * DSKSYNC. <b>It is ZERO at power-on</b>, not {@code 0x4489}: until software writes it
+     * the comparator matches against {@code 0x0000}. Kickstart 1.3 never writes it: it reads
+     * the raw track with WORDSYNC off (ADKCON {@code $1100}) and decodes in software
+     * (docs/vamigats-paula-audio-plan.md section 7.1.24).
      */
     private int dsksync = 0x0000;
-    private int dsk_syncMatches = 0; // diagnostica: sync trovati nella sessione DMA corrente
+    private int dsk_syncMatches = 0; // diagnostics: syncs found in the current DMA session
     /**
-     * Latch del rilevatore di sync: l'interrupt DSKSYN e' <b>edge-triggered</b> e parte solo
-     * al primo bit in cui lo shifter combacia, non a ognuno. Si riarma quando lo shifter
-     * torna a non combaciare. E' il {@code dsksync_on} dell'oracolo (disk.cpp).
+     * Sync detector latch: the DSKSYN interrupt is <b>edge-triggered</b> and fires only at
+     * the first bit where the shifter matches, not at every one. It rearms when the shifter
+     * stops matching.
      */
     private boolean dsksyncOn = false;
     private int dskbytr_incoming;
@@ -158,11 +146,11 @@ public final class Paula {
      */
     private int dskSlotRequests;
 
-    // ── Shift register di SCRITTURA (Paula → testina) ────────────────────────
-    // Speculare a dsk_dataReg: la DMA carica una word alla volta (loadWriteWord,
-    // richiesta da Agnus solo quando lo shifter è vuoto) e il drive preleva un bit
-    // per cella MFM (nextWriteBit), così la velocità di trasferimento è dettata
-    // dalla rotazione del supporto e non dal numero di slot DMA disponibili.
+    // -- WRITE shift register (Paula -> head) -----------------------------------
+    // The mirror of dsk_dataReg: the DMA loads one word at a time (loadWriteWord,
+    // requested by Agnus only when the shifter is empty) and the drive takes one bit per
+    // MFM cell (nextWriteBit), so the transfer rate follows the rotation of the medium,
+    // not the number of DMA slots available.
     private int dsk_writeShift;
     private int dsk_writeBits;
 
@@ -198,11 +186,11 @@ public final class Paula {
     { audioOutput.setCorrectionSupplier(this::getSampleRateCorrection); }
     private double outputSamplePhase;
     private int activeAudioMask;
-    /** Cicli accumulati e non ancora applicati ai period-counter (vedi {@link #tick(int)}). */
+    /** Cycles accumulated and not yet applied to the period counters (see {@link #tick(int)}). */
     private int pendingAudioCycles;
-    /** min(periodCounter) sui canali attivi; -1 = da ricalcolare. */
+    /** min(periodCounter) over the active channels; -1 = to be recomputed. */
     private int audioMinCounter = -1;
-    /** Master-cycle trascorsi dall'ultimo sample di output: divisore dell'integrazione. */
+    /** Master cycles since the last output sample: the divisor of the integration. */
     private int mixIntervalCycles;
     private static final boolean AUDIO_VERIFY =
             Boolean.getBoolean("amiga.audioverify");
@@ -210,39 +198,36 @@ public final class Paula {
     private static final int PAL_SYSTEM_CLOCK = 7_093_790;
 
     // -------------------------------------------------------------------------
-    // ASR — Adaptive Sample Rate (allineato a vAmiga AudioPort::updateSampleRateCorrection)
+    // ASR - Adaptive Sample Rate
     //
-    // Produttore (questo thread) e consumatore (scheda audio) sono pilotati da
-    // due clock indipendenti che driftano sempre. Senza correzione il ring buffer
-    // finisce per svuotarsi (underrun → gracchio) o riempirsi (overflow → clic).
-    // L'ASR varia impercettibilmente la frequenza di produzione per mantenere il
-    // buffer attorno al livello target, eliminando il drift.
+    // Producer (this thread) and consumer (the sound card) run on two independent clocks
+    // that always drift. Without correction the ring buffer ends up empty (underrun ->
+    // crackle) or full (overflow -> clicks). The ASR varies the production rate
+    // imperceptibly to keep the buffer around its target level.
     // -------------------------------------------------------------------------
-    private static final double ASR_TARGET_FILL = 0.12;   // livello di riempimento desiderato del ring (~90 ms di cuscinetto)
-    // ASR a DUE ZONE (deadzone) — risolve il wobble di pitch udibile.
-    // Il vecchio controllore proporzionale (gain 25000, cap ±3000 = ±7%) inseguiva il
-    // dente di sega del fill (oscillazione ±1500 campioni per gli stalli di rendering
-    // per-frame) correggendo ±100-300 Hz di continuo: pitch wow/flutter percepibile
-    // ("audio non perfettamente fluido"). Ora:
-    //   • DENTRO la deadzone (|fill-target| ≤ ASR_DEADZONE, dove cade tutta la normale
-    //     oscillazione): correzione lineare minuscola, max ±ASR_FINE_MAX Hz (~0,07%,
-    //     sotto la soglia di percezione del pitch) → la normale oscillazione del buffer
-    //     NON modula più il pitch.
-    //   • FUORI (squilibrio grosso: avvio, stallo lungo): la correzione cresce fino a
-    //     ±ASR_COARSE_MAX per recuperare rapidamente prima di rischiare underrun.
-    // Il drift lento host↔Amiga (<0,1%) è ben coperto dalla zona fine.
-    private static final double ASR_DEADZONE = 0.06;      // ±~2000 campioni attorno al target (copre l'oscillazione normale)
-    private static final double ASR_FINE_MAX = 30.0;      // Hz: correzione max dentro la deadzone (~0,07%, sub-udibile)
-    private static final double ASR_COARSE_GAIN = 25000.0; // gain proporzionale fuori dalla deadzone (come l'originale)
-    private static final double ASR_COARSE_MAX = 3000.0;  // Hz: correzione max fuori (recupero rapido squilibri grossi: avvio)
-    private static final int ASR_UPDATE_INTERVAL = 256;   // ricalcola la correzione ogni N sample prodotti
-    // EWMA: leviga ulteriormente la transizione tra le zone e il dente di sega residuo.
-    private static final double ASR_SMOOTHING = 0.05;     // peso del nuovo campione nell'EWMA
+    private static final double ASR_TARGET_FILL = 0.12;   // target fill of the ring (~90 ms of cushion)
+    // TWO-ZONE ASR (dead zone), against audible pitch wobble. A purely proportional
+    // controller chases the sawtooth of the fill level (+-1500 samples from per-frame
+    // rendering stalls) and keeps correcting by +-100-300 Hz: audible wow/flutter.
+    //   - INSIDE the dead zone (|fill-target| <= ASR_DEADZONE, where all the normal
+    //     oscillation falls): a tiny linear correction, at most +-ASR_FINE_MAX Hz (~0.07%,
+    //     below the pitch perception threshold), so the normal oscillation of the buffer
+    //     does not modulate the pitch.
+    //   - OUTSIDE (large imbalance: start-up, long stall): the correction grows up to
+    //     +-ASR_COARSE_MAX to recover quickly before an underrun.
+    // The slow host/Amiga drift (<0.1%) is well within the fine zone.
+    private static final double ASR_DEADZONE = 0.06;      // +-~2000 samples around the target (covers the normal oscillation)
+    private static final double ASR_FINE_MAX = 30.0;      // Hz: max correction inside the dead zone (~0.07%, inaudible)
+    private static final double ASR_COARSE_GAIN = 25000.0; // proportional gain outside the dead zone
+    private static final double ASR_COARSE_MAX = 3000.0;  // Hz: max correction outside (fast recovery from large imbalances)
+    private static final int ASR_UPDATE_INTERVAL = 256;   // recompute the correction every N samples produced
+    // EWMA: further smooths the transition between the zones and the residual sawtooth.
+    private static final double ASR_SMOOTHING = 0.05;     // weight of the new sample in the EWMA
     private double sampleRateCorrection;
     private int asrCounter;
 
     // =========================================================================
-    // Costruttore & Reset
+    // Constructor and reset
     // =========================================================================
 
     public Paula() {
@@ -255,13 +240,11 @@ public final class Paula {
     public void reset() { reset(true); }
 
     /**
-     * Reset di Paula. {@code hardware} distingue l'accensione dal reset che l'istruzione CPU
-     * RESET porta ai peripheral: <b>DSKSYNC non sta su quella linea</b> e sopravvive al reset
-     * software, come nell'oracolo, dove {@code custom_reset} azzera {@code adkcon} e chiama
-     * {@code DSKLEN(0, 0)} ma non tocca {@code dsksync} ne' il suo latch {@code dsksync_on}.
-     * Azzerandolo anche a caldo, lo shifter di lettura a riposo — che scorre zeri — faceva
-     * match su {@code $0000} e alzava un DSKSYN che l'oracolo non ha: misurato 7 CCK dopo il
-     * ColdReboot della demo `Jesus On E's` (docs/vamigats-import-order.md §26).
+     * Paula reset. {@code hardware} tells power-on from the reset the CPU's RESET
+     * instruction brings to the peripherals: <b>DSKSYNC is not on that line</b> and survives
+     * a software reset, with its edge latch. Cleared at a warm reset too, the idle read
+     * shifter, which shifts zeros, would match {@code $0000} and raise a DSKSYN 7 CCK after
+     * the ColdReboot of the demo Jesus On E's (docs/vamigats-import-order.md section 26).
      */
     public void reset(boolean hardware) {
         intena = 0;
@@ -276,11 +259,10 @@ public final class Paula {
         Arrays.fill(setIntreq, AbstractAgnus.NEVER);
         iplPipe = 0;
 
-        // ⛔ Al reset i condensatori delle linee POT sono SCARICHI. Partivano da 1.0, e
-        // cosi' una porta senza niente attaccato leggeva il proprio bit DAT alto finche'
-        // nessuno scriveva START (che e' l'unica cosa che fa girare il ciclo di carica).
-        // Misurato su vAmigaTS Mainboard/Ports/POT/potgo0, potgo5, potgo6: nessuno dei tre
-        // scrive START, e l'oracolo legge POTGOR $0500 dove leggevamo $5500.
+        // At reset the capacitors of the POT lines are DISCHARGED: a port with nothing
+        // attached reads its DAT bit low until someone writes START (the only thing that
+        // runs the charge cycle). vAmigaTS Mainboard/Ports/POT/potgo0, potgo5 and potgo6
+        // never write START and read POTGOR $0500.
         for (int j = 0; j < 2; j++) {
             for (int i = 0; i < 2; i++) { potCap[j][i] = 0; potDat[j][i] = 0; potDatAct[j][i] = 0; }
         }
@@ -326,22 +308,23 @@ public final class Paula {
     }
 
     /**
-     * Avanza i period-counter dei canali audio ATTIVI di {@code cycles} master-cycle.
+     * Advances the period counters of the ACTIVE audio channels by {@code cycles} master
+     * cycles.
      *
-     * La produzione dei sample di output (accumulatore {@link #outputSamplePhase})
-     * NON è più qui: è ora un evento auto-rischedulante (SLOT_CH0 / AUDIO_MIX, vedi
-     * {@link #serviceAudioSampleEvent()}), così la matematica del rate gira una volta
-     * per sample (~44.1k/s) invece che ad ogni master-cycle (~7.09M/s). Il gating su
-     * {@link #activeAudioMask} rende questo metodo quasi gratuito quando non c'è audio.
+     * The output samples (accumulator {@link #outputSamplePhase}) are produced elsewhere,
+     * by a self-rescheduling event (SLOT_CH0 / AUDIO_MIX, see
+     * {@link #serviceAudioSampleEvent()}), so the rate arithmetic runs once per sample
+     * (~44.1k/s) instead of at every master cycle (~7.09M/s). Gating on
+     * {@link #activeAudioMask} makes this method almost free when there is no audio.
      */
     public void tick(int cycles) {
-        // Lunghezza dell'intervallo di integrazione del prossimo sample di output.
-        // Va contata SEMPRE, anche senza canali attivi: un canale che si spegne a metà
-        // intervallo ha accumulato solo la propria parte, e il divisore deve restare
-        // l'intervallo intero perché la media venga giusta (il resto vale zero).
+        // Length of the integration interval of the next output sample. It is ALWAYS
+        // counted, even with no channel active: a channel that stops halfway through the
+        // interval has accumulated only its own part, and the divisor must stay the whole
+        // interval for the average to come out right (the rest is zero).
         mixIntervalCycles += cycles;
         if (activeAudioMask == 0) {
-            // Nessun canale attivo: nulla da accumulare (i contatori sono già allineati).
+            // No channel active: nothing to accumulate (the counters are already aligned).
             pendingAudioCycles = 0;
             audioMinCounter = -1;
             return;
@@ -350,8 +333,8 @@ public final class Paula {
         if (min < 0) {
             min = audioMinCounter = computeAudioMinCounter();
         } else if (AUDIO_VERIFY) {
-            // Rete di sicurezza: la deadline in cache deve coincidere con quella ricalcolata.
-            // Una discrepanza = un sito di mutazione che non chiama syncAudioChannels().
+            // Safety net: the cached deadline must match the recomputed one. A mismatch is
+            // a mutation site that does not call syncAudioChannels().
             int fresh = computeAudioMinCounter();
             if (fresh != min) {
                 System.out.printf(
@@ -362,7 +345,7 @@ public final class Paula {
         }
         int pending = pendingAudioCycles + cycles;
         if (pending < min) {
-            // Nessun canale può scadere prima di `min`: nulla di osservabile cambia.
+            // No channel can expire before `min`: nothing observable changes.
             pendingAudioCycles = pending;
             return;
         }
@@ -371,7 +354,7 @@ public final class Paula {
         audioMinCounter = -1;
     }
 
-    /** Applica {@code cycles} master-cycle ai period-counter dei canali attivi. */
+    /** Applies {@code cycles} master cycles to the period counters of the active channels. */
     private void applyAudioCycles(int cycles) {
         int mask = activeAudioMask;
         while (mask != 0) {
@@ -389,8 +372,8 @@ public final class Paula {
             AudioChannel ch = audioChannels[chan];
             int counter = ch.periodCounter;
             if (counter < min) min = counter;
-            // Δ2: anche l'elaborazione differita della word DMA è una scadenza, e se il
-            // salto la scavalcasse il gestore cadrebbe tardi (vedi AudioChannel.tick).
+            // The deferred processing of the DMA word is a deadline too: a jump past it
+            // would run the handler late (see AudioChannel.tick).
             if (ch.dmaWordDelay > 0 && ch.dmaWordDelay < min) min = ch.dmaWordDelay;
             if (ch.reloadRequestDelay > 0 && ch.reloadRequestDelay < min) min = ch.reloadRequestDelay;
             mask &= ~(1 << chan);
@@ -399,12 +382,12 @@ public final class Paula {
     }
 
     /**
-     * Porta i period-counter al ciclo corrente e invalida la deadline. Va chiamata prima di
-     * OGNI mutazione che possa accorciare un contatore o cambiare l'insieme dei canali attivi
-     * (scritture AUDxPER/VOL/DAT, DMACON, ADKCON, consegna di una word DMA, reset): dopo la
-     * sync i contatori di tutti i canali sono riferiti allo stesso istante, quindi il minimo
-     * ricalcolato è confrontabile. È sempre sicura — anticipare l'applicazione dei cicli
-     * pendenti non produce alcun effetto osservabile finché nessun contatore è scaduto.
+     * Brings the period counters to the current cycle and invalidates the deadline. Called
+     * before EVERY mutation that can shorten a counter or change the set of active channels
+     * (AUDxPER/VOL/DAT writes, DMACON, ADKCON, delivery of a DMA word, reset): after the sync
+     * the counters of all channels refer to the same instant, so the recomputed minimum is
+     * comparable. Always safe: applying the pending cycles early has no observable effect
+     * while no counter has expired.
      */
     private void syncAudioChannels() {
         int pending = pendingAudioCycles;
@@ -416,14 +399,13 @@ public final class Paula {
     }
 
     /**
-     * Evento auto-rischedulante (Agnus SLOT_CH0 / AUDIO_MIX): produce un sample di
-     * output audio e ri-programma il prossimo. Sostituisce l'accumulatore per-ciclo
-     * che girava in {@link #tick(int)}.
+     * Self-rescheduling event (Agnus SLOT_CH0 / AUDIO_MIX): produces one audio output
+     * sample and schedules the next.
      */
     public void serviceAudioSampleEvent() {
-        // I cicli tenuti in sospeso da tick() sono già contati in mixIntervalCycles ma
-        // non ancora negli accumulatori dei canali: senza questa sync il numeratore
-        // coprirebbe meno tempo del denominatore e il livello uscirebbe basso.
+        // The cycles tick() holds back are already counted in mixIntervalCycles but not yet
+        // in the channels' accumulators: without this sync the numerator would cover less
+        // time than the denominator and the level would come out low.
         syncAudioChannels();
         mixAudioSample();
         updateSampleRateCorrection();
@@ -431,13 +413,12 @@ public final class Paula {
     }
 
     /**
-     * Programma il prossimo evento AUDIO_MIX. Il numero di master-cycle {@code k}
-     * fino al prossimo sample è il più piccolo {@code k >= 1} tale che
-     * {@code outputSamplePhase + rate*k >= PAL_SYSTEM_CLOCK}, con
-     * {@code rate = OUTPUT_RATE + sampleRateCorrection}. È identico al vecchio
-     * accumulatore per-ciclo: fra due sample {@code rate} è costante (la correzione
-     * ASR cambia solo in corrispondenza dei sample), quindi i cicli di emissione
-     * coincidono esattamente con il modello a polling precedente.
+     * Schedules the next AUDIO_MIX event. The number of master cycles {@code k} to the next
+     * sample is the smallest {@code k >= 1} such that
+     * {@code outputSamplePhase + rate*k >= PAL_SYSTEM_CLOCK}, with
+     * {@code rate = OUTPUT_RATE + sampleRateCorrection}. Between two samples {@code rate}
+     * is constant (the ASR correction changes only at samples), so this is exactly a
+     * per-cycle accumulator.
      */
     private void scheduleNextAudioSample() {
         if (agnus == null) return;
@@ -450,29 +431,29 @@ public final class Paula {
     }
 
     /**
-     * Aggiorna la correzione ASR in base al riempimento del ring buffer.
-     * Errore positivo (buffer sotto target) → produci più veloce; negativo → più lento.
-     * La correzione è smussata via EWMA per evitare oscillazioni di pitch udibili.
+     * Updates the ASR correction from the fill level of the ring buffer. A buffer above
+     * target slows production down, below target speeds it up. The correction is smoothed
+     * by an EWMA to avoid audible pitch oscillations.
      */
     private void updateSampleRateCorrection() {
         if (++asrCounter < ASR_UPDATE_INTERVAL) return;
         asrCounter = 0;
 
-        // error > 0 → buffer troppo pieno → rallenta la produzione (correzione negativa).
+        // error > 0 -> buffer too full -> slow production down (negative correction).
         double error = audioRingBuffer.fillLevel() - ASR_TARGET_FILL;
         double absErr = Math.abs(error);
 
         double correction;
         if (absErr <= ASR_DEADZONE) {
-            // Zona fine: correzione lineare e minuscola (sub-udibile). Qui cade tutta la
-            // normale oscillazione del buffer → il pitch non viene più modulato.
+            // Fine zone: tiny linear correction (inaudible). All the normal oscillation of
+            // the buffer falls here, so the pitch is not modulated.
             correction = -(error / ASR_DEADZONE) * ASR_FINE_MAX;
         } else {
-            // Zona grossa: controllo proporzionale FORTE come l'originale (gain elevato,
-            // clamp ±COARSE_MAX) per recuperare in fretta gli squilibri grossi (es. il
-            // boot, dove il consumer della scheda parte in ritardo e il buffer si
-            // riempirebbe fino all'overflow). L'EWMA leviga la transizione col bordo
-            // della deadzone in un breve glissato (~0,1 s), non un salto netto.
+            // Coarse zone: STRONG proportional control (high gain, clamped to
+            // +-COARSE_MAX) to recover quickly from large imbalances (e.g. the boot, where
+            // the sound card's consumer starts late and the buffer would fill up to
+            // overflow). The EWMA turns the edge of the dead zone into a short glide
+            // (~0.1 s), not a jump.
             correction = -error * ASR_COARSE_GAIN;
             if (correction >  ASR_COARSE_MAX) correction =  ASR_COARSE_MAX;
             else if (correction < -ASR_COARSE_MAX) correction = -ASR_COARSE_MAX;
@@ -481,7 +462,7 @@ public final class Paula {
         sampleRateCorrection = sampleRateCorrection * (1.0 - ASR_SMOOTHING) + correction * ASR_SMOOTHING;
     }
 
-    /** Correzione ASR corrente in Hz (diagnostica). */
+    /** Current ASR correction in Hz (diagnostics). */
     public double getSampleRateCorrection() {
         return sampleRateCorrection;
     }
@@ -493,13 +474,12 @@ public final class Paula {
     public void serviceIrqEvent() {
         long clock = agnus.getMasterClock();
 
-        // ORDINE: prima gli interrupt dei chip, poi il poke differito. Non è
-        // indifferente, ed è ciò che decide lo stallo del §14.5 del piano audio: in
-        // WinUAE, a parità di ciclo, scatta prima l'evento accodato prima, e un
-        // interrupt audio è accodato con 2 CCK di anticipo (AUDIO_IRQ_DELAY_CYCLES)
-        // contro il mezzo CCK del poke. Applicando prima il poke, l'ack del gestore
-        // finirebbe SOTTO la richiesta del canale invece che sopra, e le due copie
-        // resterebbero allineate: lo stallo non si formerebbe mai.
+        // ORDER: chip interrupts first, then the deferred poke. It matters, and it is
+        // what decides the stall of section 14.5 of the audio plan: within one cycle the
+        // event queued first fires first, and an audio interrupt is queued 2 CCK ahead
+        // (AUDIO_IRQ_DELAY_CYCLES) against the poke's half CCK. With the poke first, the
+        // handler's acknowledge would land UNDER the channel's request instead of over it,
+        // the two copies would stay aligned, and the stall would never form.
         for (int i = 0; i < 16; i++) {
             if (clock >= setIntreq[i]) {
                 setINTREQ(true, (1 << i));
@@ -512,7 +492,7 @@ public final class Paula {
         rescheduleIrqEvent();
     }
 
-    /** Riprogramma SLOT_IRQ alla prima scadenza fra i set differiti e il poke differito. */
+    /** Reschedules SLOT_IRQ at the earliest of the deferred sets and the deferred poke. */
     private void rescheduleIrqEvent() {
         long next = shadowPokeAt;
         for (long t : setIntreq) {
@@ -522,34 +502,31 @@ public final class Paula {
     }
 
     /**
-     * Livello IPL che la CPU vede sui pin: lo stadio 0 della pipe, cioè il valore
-     * SUBITO, senza ritardo. È il modello WinUAE (adottato il 2026-07-31): {@code doint()}
-     * chiama {@code update_ipl()} immediatamente, senza pipe. Gli stadi alti della pipe
-     * restano perché {@link #serviceIplEvent} li usa per propagare il livello, ma il pin
-     * non li legge: leggere lo stadio 3 (il vecchio modello) metterebbe il pin ~3 CCK più
-     * tardi di WinUAE, differenza invisibile finché il riconoscimento dell'interrupt è
-     * quantizzato al boundary d'istruzione ma misurabile con le soglie di
-     * {@code ipl_fetch_next} (cd/cdp), che partono dall'istante del cambio di pin.
+     * IPL level the CPU sees on its pins: stage 0 of the pipe, i.e. the value AT ONCE,
+     * with no delay. The higher stages remain because {@link #serviceIplEvent} propagates
+     * the level through them, but the pin does not read them: reading stage 3 would put the
+     * pin ~3 CCK late, invisible while interrupt recognition is quantised to instruction
+     * boundaries but measurable with the IPL sampling thresholds, which start from the
+     * instant the pin changes.
      */
     public int getCpuIplFromPipe() {
         return (int) (iplPipe & 0xFF);
     }
 
     /**
-     * Avanza la pipe IPL di uno stadio (1 CCK). Porta fedele di vAmiga
-     * {@code Paula::serviceIplEvent}: prima aggiorna il pin IPL della CPU col valore
-     * in cima alla pipe (byte 3), POI shifta la pipe di un byte propagando il nuovo
-     * livello verso l'alto, e si ri-schedula a 1 CCK (2 master-cycle) finché la pipe
-     * non è interamente shiftata (contatore repeat in {@code data}).
+     * Advances the IPL pipe by one stage (1 CCK): first updates the CPU's IPL pin, THEN
+     * shifts the pipe by one byte, carrying the new level upwards, and reschedules itself
+     * 1 CCK (2 master cycles) later until the pipe is fully shifted (repeat counter in
+     * {@code data}).
      */
     public void serviceIplEvent(long repeat) {
-        // 1. Aggiorna il pin IPL della CPU col valore in cima alla pipe.
+        // 1. Update the CPU's IPL pin.
         if (iplChangedCallback != null) {
             iplChangedCallback.run();
         }
-        // 2. Shifta la pipe (il nuovo livello, nel byte 0, sale di uno stadio).
+        // 2. Shift the pipe (the new level, in byte 0, moves up one stage).
         iplPipe = ((iplPipe & 0x00FF_FFFF_FFFF_FFFFL) << 8) | (iplPipe & 0xFFL);
-        // 3. Ri-schedula finché la pipe non è completamente attraversata.
+        // 3. Reschedule until the pipe has been fully traversed.
         if (repeat != 0) {
             agnus.scheduleRel(EventSlot.SLOT_IPL, 2, EventID.IPL_CHANGE, repeat - 1);
         } else {
@@ -561,37 +538,33 @@ public final class Paula {
         int level = calculateIPL();
         if ((iplPipe & 0xFF) != level) {
             iplPipe = (iplPipe & ~0xFFL) | level;
-            // vAmiga: scheduleRel<SLOT_IPL>(0, IPL_CHANGE, 5) — primo stadio subito,
-            // poi 1 CCK per stadio. Il nostro executeEvents gira a inizio risingEdge,
-            // quindi delay=1 mc fa scattare il primo stadio al ciclo successivo.
+            // First stage at once, then 1 CCK per stage. executeEvents runs at the start
+            // of risingEdge, so delay=1 mc fires the first stage at the next cycle.
             agnus.scheduleRel(EventSlot.SLOT_IPL, 1, EventID.IPL_CHANGE, 5);
         }
     }
 
-    /** La linea IPL si calcola dalle copie ritardate, mai da quelle lette. Vedi {@link #intreq2}. */
+    /** The IPL line is computed from the delayed copies, never the read-back ones. See {@link #intreq2}. */
     public int calculateIPL() {
         if ((intena2 & 0x4000) != 0) {
             int mask = intreq2 & intena2;
-            // EXTER (bit 13) + bit 14 — IPL 6.
-            // Il bit 14 di INTREQ non ha una sorgente hardware e i manuali non lo
-            // elencano, ma è un bit scrivibile e Paula lo include nel gruppo di
-            // priorità più alto insieme a EXTER: con il master enable acceso,
-            // scrivere INTREQ=$C000 solleva un IPL 6 a tutti gli effetti.
-            // Oracolo: WinUAE custom.cpp intlev(), "if (imask & (0x4000 | 0x2000))".
-            // Adrenalynn (Loriciel) se ne serve per far ripartire la copper list:
-            // la lista scrive INTREQ=$C000 a fine frame e l'handler di livello 6
-            // ricarica COP1LC e azzera il bit con INTREQ=$4000. Senza questo,
-            // la copper list resta parcheggiata e il gioco attende all'infinito.
+            // EXTER (bit 13) + bit 14 - IPL 6.
+            // Bit 14 of INTREQ has no hardware source and the manuals do not list it, but
+            // it is writable and Paula puts it in the highest priority group with EXTER:
+            // with the master enable on, writing INTREQ=$C000 raises a real IPL 6.
+            // Adrenalynn (Loriciel) uses it to restart its copper list: the list writes
+            // INTREQ=$C000 at the end of the frame, and the level 6 handler reloads COP1LC
+            // and clears the bit with INTREQ=$4000.
             if ((mask & 0x6000) != 0) return 6;
-            // DSKSYN (bit 12) + RBF (bit 11) — IPL 5
+            // DSKSYN (bit 12) + RBF (bit 11) - IPL 5
             if ((mask & 0x1800) != 0) return 5;
-            // AUD3-AUD0 (bits 10-7) — IPL 4
+            // AUD3-AUD0 (bits 10-7) - IPL 4
             if ((mask & 0x0780) != 0) return 4;
-            // BLIT + VERTB + COPER (bits 6-4) — IPL 3
+            // BLIT + VERTB + COPER (bits 6-4) - IPL 3
             if ((mask & 0x0070) != 0) return 3;
-            // PORTS / CIA-A (bit 3) — IPL 2
+            // PORTS / CIA-A (bit 3) - IPL 2
             if ((mask & 0x0008) != 0) return 2;
-            // SOFT + DSKBLK + TBE (bits 2-0) — IPL 1
+            // SOFT + DSKBLK + TBE (bits 2-0) - IPL 1
             if ((mask & 0x0007) != 0) return 1;
         }
         return 0;
@@ -602,31 +575,24 @@ public final class Paula {
     // =========================================================================
 
     /**
-     * Modello del potenziometro — porting di {@code cap_check()} dell'oracolo
-     * ({@code inputdevice.cpp}), chiamato una volta per riga da Agnus.
+     * Potentiometer model, called once per line by Agnus.
      *
-     * <p>⛔ Qui prima non c'era un contatore: {@code POTGO[START]} programmava due eventi a
-     * intervallo fisso che <b>azzeravano</b> i quattro contatori, e POTxDAT leggeva sempre
-     * <b>0</b>. Misurato su {@code vAmigaTS Mainboard/Ports}: l'oracolo conta <b>4</b> o
-     * <b>10</b> a seconda della riga in cui il Copper rilegge, noi zero ovunque.
-     *
-     * <p>La macchina a stati, per ognuna delle quattro linee:
+     * <p>The state machine, for each of the four lines:
      * <ol>
-     *   <li>{@code POTGO[START]} arma tutte e quattro: {@code act = 1}, {@code dat = 0};</li>
-     *   <li>finché {@code act == 1} il condensatore è <b>scaricato in fretta</b> e
-     *       {@code dat} conta le prime {@link #POTDAT_DELAY} righe; poi {@code act = 2} e
-     *       {@code dat} riparte da zero;</li>
-     *   <li>con {@code act == 2} {@code dat} conta una riga alla volta mentre il
-     *       condensatore si carica, e si <b>ferma</b> quando la carica supera 10 — a meno
-     *       che il pulsante non tenga la linea a massa, che è ciò che rende il conteggio
-     *       la misura di quel pulsante;</li>
-     *   <li>una linea programmata come <b>uscita</b> non misura: alta ferma il conteggio,
-     *       bassa lo lascia correre libero se il pulsante è premuto.</li>
+     *   <li>{@code POTGO[START]} arms all four: {@code act = 1}, {@code dat = 0};</li>
+     *   <li>while {@code act == 1} the capacitor is <b>discharged fast</b> and {@code dat}
+     *       counts the first {@link #POTDAT_DELAY} lines; then {@code act = 2} and
+     *       {@code dat} starts again from zero;</li>
+     *   <li>with {@code act == 2} {@code dat} counts one line at a time while the capacitor
+     *       charges, and <b>stops</b> when the charge exceeds 10, unless the button holds
+     *       the line to ground, which is what makes the count measure that button;</li>
+     *   <li>a line programmed as an <b>output</b> does not measure: high stops the count,
+     *       low lets it run free if the button is pressed.</li>
      * </ol>
      *
-     * <p>⚠️ Il conteggio si ferma solo se alla porta c'è <b>qualcosa</b>: a porta vuota
-     * nessuno carica il condensatore e {@code dat} corre libero, come nell'oracolo
-     * ({@code digital_port[joy][i] || mouse_port[joy]}).
+     * <p>The count stops only if <b>something</b> is plugged into the port: on an empty port
+     * nobody charges the capacitor and {@code dat} runs free. {@code vAmigaTS
+     * Mainboard/Ports} reads 4 or 10 depending on the line where the Copper reads back.
      */
     public void potHsync() {
         capCheck(true);
@@ -640,22 +606,22 @@ public final class Paula {
             for (int i = 0; i < 2; i++) {
                 final int pdir = 0x0200 << (joy * 4 + i * 2);
                 final int pdat = 0x0100 << (joy * 4 + i * 2);
-                // i == 0 e' la linea X (pulsante medio / button 3), i == 1 la Y (destro /
-                // button 2). Oracolo: getbuttonstate(joy, i == 0 ? JOYBUTTON_3 : JOYBUTTON_2).
+                // i == 0 is the X line (middle button / button 3), i == 1 the Y line
+                // (right button / button 2).
                 final boolean isButton = port != null
                         && (i == 0 ? port.isMiddleOrButton3Pressed()
                                    : port.isRightOrButton2Pressed());
 
                 boolean canCharge = true;
-                int charge = pullup ? 1 : 0;   // carica lenta attraverso il pull-up del device
+                int charge = pullup ? 1 : 0;   // slow charge through the device's pull-up
 
-                if ((potgo & pdir) == 0) {                       // linea in INGRESSO
+                if ((potgo & pdir) == 0) {                       // line is an INPUT
                     if (potDatAct[joy][i] != 0 && hsync) {
                         potDat[joy][i] = (potDat[joy][i] + 1) & 0xFF;
                     }
                     if (potDatAct[joy][i] == 1) {
                         if (potDat[joy][i] < POTDAT_DELAY) {
-                            charge = -2;                          // scarica veloce
+                            charge = -2;                          // fast discharge
                             canCharge = hsync;
                         } else {
                             potDatAct[joy][i] = 2;
@@ -666,18 +632,18 @@ public final class Paula {
                             && potCap[joy][i] >= 10 && !isButton) {
                         potDatAct[joy][i] = 0;
                     }
-                } else {                                          // linea in USCITA
+                } else {                                          // line is an OUTPUT
                     boolean high = (potgo & pdat) != 0;
-                    charge = high ? 2 : -2;                       // (dis)carica immediata
+                    charge = high ? 2 : -2;                       // immediate (dis)charge
                     if (high) {
-                        potDatAct[joy][i] = 0;                    // alta: conteggio fermo
+                        potDatAct[joy][i] = 0;                    // high: count stopped
                     } else if (isButton) {
                         potDat[joy][i] = (potDat[joy][i] + 1) & 0xFF;  // "free running"
                     }
                 }
 
                 if (isButton) {
-                    charge = -2;    // il pulsante a massa vince su tutto
+                    charge = -2;    // the button to ground wins over everything
                 }
                 if (canCharge) {
                     chargeCap(joy, i, charge);
@@ -686,7 +652,7 @@ public final class Paula {
         }
     }
 
-    /** {@code charge_cap()} dell'oracolo: |carica| &gt; 1 vale 80 volte tanto, e si satura a 511. */
+    /** Charges the capacitor: |charge| &gt; 1 counts 80 times over, saturating at 511. */
     private void chargeCap(int joy, int i, int charge) {
         int c = (charge < -1 || charge > 1) ? charge * 80 : charge;
         potCap[joy][i] = Math.max(0, Math.min(511, potCap[joy][i] + c));
@@ -697,7 +663,7 @@ public final class Paula {
     // =========================================================================
 
     public void serviceTxdEvent(EventID id) {
-        // Sentinel-bit scheme (mirrors vAmiga / real Paula behaviour):
+        // Sentinel-bit scheme:
         //   shift register layout = [sentinel=1][data bits][start bit=0]
         //   Transmission ends when the shift register becomes 0 after the sentinel
         //   has been shifted out as the stop bit (mark = 1).
@@ -712,10 +678,10 @@ public final class Paula {
                 serTransmitShiftReg = ((1 << numData) | (serTransmitBuffer & dataMask)) << 1;
                 serTransmitBuffer = 0;
                 serTxbFull = false;
-                // TBE: transmit buffer is now empty → raise interrupt
+                // TBE: transmit buffer is now empty -> raise interrupt
                 raiseInterrupt(0x0001);
             } else {
-                // Nothing left to send — stop scheduling.
+                // Nothing left to send - stop scheduling.
                 agnus.cancel(EventSlot.SLOT_TXD);
                 return;
             }
@@ -748,48 +714,45 @@ public final class Paula {
     // =========================================================================
 
     public void serviceDiskEvent() {
-        // In vAmiga, this is called every ~2us to transfer bytes
-        // In this monolithic version, we can simplify or implement the rotation
+        // The rotation is driven by the drives' own tick; this only keeps the slot alive.
         agnus.scheduleRel(EventSlot.SLOT_DSK, 14, EventID.DSK_ROTATE);
     }
 
     /**
-     * true quando la FIFO del disco ha spazio e la DMA deve fornire un'altra word.
-     * Agnus consulta questo flag sullo slot DMA del disco: senza di esso la DMA
-     * svuoterebbe DSKLEN alla velocità degli slot invece che a quella di rotazione
-     * del supporto (1 word ogni 16 celle MFM, ~227 cicli).
+     * true when the disk FIFO has room and the DMA must supply another word. Agnus checks
+     * this flag at the disk DMA slot: without it the DMA would drain DSKLEN at the rate of
+     * the slots instead of the rotation of the medium (1 word every 16 MFM cells, ~227
+     * cycles).
      *
-     * <p>Anche in scrittura si passa dalla FIFO a 3 word: i tre slot DMA del disco
-     * sono raggruppati a inizio riga raster (cck 7/9/11), mentre una word dura
-     * mezza riga. Alimentando direttamente lo shift register si riuscirebbe a
-     * caricare una sola word per riga — metà della velocità di rotazione reale.
-     * La FIFO è esattamente ciò che sull'hardware assorbe questo raggruppamento.
+     * <p>Writes go through the 3-word FIFO too: the three disk DMA slots are grouped at the
+     * start of the raster line (CCK 7/9/11), while a word lasts half a line. Feeding the
+     * shift register directly would load only one word per line, half the real rotation
+     * rate. The FIFO is exactly what absorbs that grouping on the hardware.
      */
     public boolean isWriteWordNeeded() {
         return diskState == DriveDmaState.WRITE && dsk_fifoCount < 3;
     }
 
-    /** Accoda alla FIFO di scrittura una word prelevata dalla DMA. */
+    /** Queues a word fetched by the DMA into the write FIFO. */
     public void loadWriteWord(int data) {
         writeFifo(data);
     }
 
     /**
-     * Preleva la cella MFM successiva da scrivere sul supporto. Chiamato dal drive
-     * una volta per cella, alla cadenza di rotazione.
+     * Takes the next MFM cell to write to the medium. Called by the drive once per cell,
+     * at the rotation rate.
      *
-     * @return 0/1 = bit da scrivere; {@link #WRITE_BIT_STALL} se lo shifter è
-     *         momentaneamente vuoto (la DMA non ha ancora fornito la word: la
-     *         cella passa sotto la testina senza essere alterata);
-     *         {@link #WRITE_BIT_END} quando il trasferimento è concluso e il drive
-     *         deve uscire dalla modalità di scrittura.
+     * @return 0/1 = bit to write; {@link #WRITE_BIT_STALL} if the shifter is momentarily
+     *         empty (the DMA has not supplied the word yet: the cell passes under the head
+     *         unaltered); {@link #WRITE_BIT_END} when the transfer is over and the drive
+     *         must leave write mode.
      */
     public int nextWriteBit() {
         if (dsk_writeBits == 0) {
             int word = readFifo();
             if (word < 0) {
-                // FIFO vuota: se la DMA è ancora attiva la word arriverà al prossimo
-                // slot del disco, altrimenti l'ultima è già stata incisa per intero.
+                // FIFO empty: while the DMA is still active the word arrives at the next
+                // disk slot, otherwise the last one has been written in full.
                 return diskState == DriveDmaState.WRITE ? WRITE_BIT_STALL : WRITE_BIT_END;
             }
             dsk_writeShift = word;
@@ -801,9 +764,9 @@ public final class Paula {
         return bit;
     }
 
-    /** Sentinella di {@link #nextWriteBit()}: nessun dato pronto in questa cella. */
+    /** Sentinel of {@link #nextWriteBit()}: no data ready for this cell. */
     public static final int WRITE_BIT_STALL = -2;
-    /** Sentinella di {@link #nextWriteBit()}: trasferimento in scrittura concluso. */
+    /** Sentinel of {@link #nextWriteBit()}: write transfer over. */
     public static final int WRITE_BIT_END   = -1;
 
     /**
@@ -893,10 +856,9 @@ public final class Paula {
     public void shiftInDiskBit(int bit) {
         dsk_dataReg = ((dsk_dataReg << 1) | (bit & 1)) & 0xFFFF;
 
-        // Ordine di Paula (WinUAE disk.cpp, disk_doupdate_read): prima si CHIUDE la
-        // word corrente — aggiornamento di DSKBYT e travaso nella FIFO — e solo dopo
-        // si valuta il match di sync. Così la seconda word di sync dei settori
-        // standard (che ne hanno due consecutive) viene comunque trasferita.
+        // Paula's order: first the current word is CLOSED (DSKBYT update and hand-over to
+        // the FIFO), only then is the sync match evaluated. So the second sync word of
+        // standard sectors (which have two in a row) is transferred too.
         // Same modulo-16 counter as the idle path (see shiftInDiskBitIdle): the word
         // boundary is continuous across a change of drive selection.
         dsk_dataRegCount = (dsk_dataRegCount + 1) & 15;
@@ -913,26 +875,22 @@ public final class Paula {
             assembleReadWord(dsk_dataReg & 0xFFFF);
         }
 
-        // ── Rilevamento del sync, un bit alla volta ──────────────────────────────
-        // ⛔ L'INTERRUPT E' EDGE-TRIGGERED, il rilevamento no. L'oracolo tiene un latch
-        // `dsksync_on`: lo alza al primo bit in cui lo shifter combacia e lo riarma solo
-        // quando torna a NON combaciare (`if (word != dsksync) dsksync_on = false;`,
-        // disk.cpp, tre siti identici). Noi alzavamo DSKSYN a OGNI bit di match: con un
-        // DSKSYNC che combacia per piu' bit di fila — il caso limite e' `dsksync == 0` con
-        // lo shifter a zero — era una raffica di interrupt invece di uno.
+        // -- Sync detection, one bit at a time -------------------------------------
+        // The INTERRUPT is EDGE-TRIGGERED, the detection is not. The `dsksyncOn` latch is
+        // raised at the first bit where the shifter matches and rearmed only when it stops
+        // matching: a DSKSYNC that matches for several bits in a row (the limit case is
+        // `dsksync == 0` with the shifter at zero) raises one interrupt, not a burst.
         //
-        // ⚠️ Il RILEVAMENTO invece resta a ogni bit: `dsk_syncCycle`/`dsk_syncMatches` sono
-        // l'osservabile del comparatore (li legge WORDEQUAL in DSKBYTR), non dell'interrupt,
-        // e di la' il log `Sync match` sta in `wordsync_detected`, che il match lo chiama
-        // ogni volta. Anche il riallineamento da WORDSYNC sta li' dentro, cioe' fuori dal
-        // latch: su match ripetuti lo shifter si riallinea comunque.
+        // The DETECTION stays at every bit: `dsk_syncCycle`/`dsk_syncMatches` are what the
+        // comparator shows (WORDEQUAL in DSKBYTR reads them), not the interrupt. The
+        // WORDSYNC realignment is in there too, outside the latch: on repeated matches the
+        // shifter realigns anyway.
         //
-        // I due gate sono dell'oracolo anche loro:
-        //   - MSBSYNC (ADKCON bit 9): `!(adkcon & 0x200)` racchiude match E riallineamento;
-        //   - scrittura: `if (dskdmaen != DSKDMA_WRITE)` inibisce il solo interrupt.
-        // ⚠️ WORDSYNC (bit 10) NON entra nella condizione dell'interrupt in nessuno dei due:
-        // governa il riallineamento, e da noi era gia' cosi'.
-        // Vedi docs/vamigats-paula-audio-plan.md §7.1.21.
+        // The two gates:
+        //   - MSBSYNC (ADKCON bit 9) gates both the match and the realignment;
+        //   - a write inhibits the interrupt only.
+        // WORDSYNC (bit 10) is NOT part of the interrupt condition: it governs the
+        // realignment. See docs/vamigats-paula-audio-plan.md section 7.1.21.
         if (dsk_dataReg != dsksync) {
             dsksyncOn = false;
         }
@@ -946,14 +904,11 @@ public final class Paula {
                 dsksyncOn = true;
             }
 
-            // "wordsync match resets read shifter" (WinUAE wordsync_detected):
-            // con WORDSYNC attivo il match RIALLINEA SEMPRE lo shift register di
-            // lettura, indipendentemente dallo stato del DMA. Legarlo alla sola
-            // transizione WAIT→READ lasciava disallineati i byte per le protezioni
-            // che aprono il comparatore con DSKLEN a lunghezza 0 (nessun
-            // trasferimento, sola lettura via DSKBYTR): è il caso di Barbarian II,
-            // che confronta i bit dati della prima word letta e altrimenti ritenta
-            // all'infinito (schermo nero).
+            // A wordsync match resets the read shifter: with WORDSYNC on the match ALWAYS
+            // realigns the read shift register, whatever the DMA state. Protections that
+            // open the comparator with a zero-length DSKLEN (no transfer, reading through
+            // DSKBYTR only) depend on it: Barbarian II compares the data bits of the first
+            // word read and otherwise retries forever (black screen).
             if ((adkcon & 0x0400) != 0) {           // WORDSYNC
                 dsk_dataRegCount = 0;
                 if (diskState == DriveDmaState.WAIT) {
@@ -965,11 +920,6 @@ public final class Paula {
         }
     }
 
-    /**
-     * Push a 16-bit word into the 3-word disk FIFO.
-     * On overflow (FIFO already full) the oldest word is silently discarded —
-     * this matches real hardware where Agnus must drain the FIFO fast enough.
-     */
     /**
      * A word completed by the read shifter during a read DMA. With the FIFO full the word
      * is lost and not counted. When it is the last word of the transfer and the FIFO is
@@ -1063,7 +1013,7 @@ public final class Paula {
         return word;
     }
 
-    /** How many words are currently in the disk FIFO (0–3). */
+    /** How many words are currently in the disk FIFO (0-3). */
     public int fifoWordCount() { return dsk_fifoCount; }
 
     private int dskdatr() {
@@ -1079,23 +1029,21 @@ public final class Paula {
     // =========================================================================
 
     /**
-     * Variante di {@link #readRegister(int)} <b>priva di effetti collaterali</b>, per il
-     * debugger/disassemblatore. Tre registri di Paula mutano lo stato quando li si legge,
-     * ed è comportamento hardware voluto, non un difetto:
+     * Variant of {@link #readRegister(int)} <b>without side effects</b>, for the debugger
+     * and disassembler. Three Paula registers change state when read, as the hardware does:
      * <ul>
-     *   <li>{@code DSKDATR} ($008) estrae una word dalla FIFO del disco;</li>
-     *   <li>{@code SERDATR} ($018) azzera OVRUN;</li>
-     *   <li>{@code DSKBYTR} ($01A) azzera il bit DSKBYT.</li>
+     *   <li>{@code DSKDATR} ($008) takes a word out of the disk FIFO;</li>
+     *   <li>{@code SERDATR} ($018) clears OVRUN;</li>
+     *   <li>{@code DSKBYTR} ($01A) clears the DSKBYT bit.</li>
      * </ul>
-     * Qui i primi due restituiscono lo stato <i>senza</i> consumarlo e il terzo lo
-     * ricostruisce col bit ancora alto. Tutto il resto passa da {@code readRegister}
-     * invariato. Vedi {@code AbstractAgnus.peekCustomRegister}.
+     * Here they return the state <i>without</i> consuming it. Everything else goes through
+     * {@code readRegister} unchanged. See {@code AbstractAgnus.peekCustomRegister}.
      */
     public int peekRegister(int address) {
         address &= 0x1FE;
         switch (address) {
             case 0x008: {
-                // Sbircia la word più vecchia della FIFO senza estrarla.
+                // Peek at the oldest FIFO word without taking it out.
                 if (dsk_fifoCount == 0) return agnus != null ? agnus.getLastBusData() : 0xFFFF;
                 int shift = (dsk_fifoCount - 1) * 16;
                 return (int) ((dsk_fifo >>> shift) & 0xFFFF);
@@ -1136,46 +1084,33 @@ public final class Paula {
     }
 
     /**
-     * POTGOR ($DFF016). ⛔ Restituisce <b>solo</b> i quattro bit DAT (maschera {@code $5500}):
-     * i bit di direzione non si rileggono. È {@code POTGOR()} dell'oracolo,
-     * {@code inputdevice.cpp}: {@code v = handle_joystick_potgor(potgo_value) & 0x5500}.
+     * POTGOR ($DFF016). Returns <b>only</b> the four DAT bits (mask {@code $5500}): the
+     * direction bits do not read back.
      *
-     * <p>⛔ <b>C'è UNA regola sola, e non guarda la direzione: il bit DAT è la tensione del
-     * CONDENSATORE.</b> L'oracolo, {@code handle_joystick_potgor}, non ha nessun ramo
-     * «uscita»: per ognuna delle quattro linee fa
-     * <pre>
-     *   potgor &amp;= ~pdat;
-     *   if (pot_cap[joy][i] &gt; 100) potgor |= pdat;
-     * </pre>
-     * La direzione decide soltanto <b>come si carica</b> il condensatore, e questo succede
-     * dentro {@link #capCheck(boolean)}: {@code charge = (potgo_value & pdat) ? 2 : -2},
-     * <i>fast (dis)charge if output</i>.
+     * <p><b>There is ONE rule, and it ignores the direction: the DAT bit is the voltage of
+     * the CAPACITOR</b> (above 100). The direction only decides <b>how the capacitor
+     * charges</b>, inside {@link #capCheck(boolean)}: fast (dis)charge for an output.
      *
-     * <p>⛔ <b>E il pulsante vince comunque</b>, perché nell'oracolo l'ultima parola arriva
-     * DOPO il ramo d'uscita: {@code if (isbutton) charge = -2; // button press overrides
-     * everything}. Un pulsante è un corto verso massa, il driver d'uscita di Paula è debole:
-     * una linea programmata «uscita alta» viene tirata a zero lo stesso.
+     * <p><b>And the button wins anyway</b>: a button is a short to ground and Paula's output
+     * driver is weak, so a line programmed as "output high" is pulled to zero all the same.
      *
-     * <p>⚠️ È l'idioma con cui i demo aspettano il click a schermo fermo, e leggere il dato
-     * scritto invece del condensatore lo rompeva: <i>Hardwired</i>, alla schermata «INSERT
-     * HARDWIRED DISK 2», programma la porta 1 come {@code POTGO=$0F00} — entrambe le linee
-     * uscite alte — e poi gira su {@code BTST #2,$DFF016} aspettando che DATLY scenda. Con la
-     * rilettura del dato scritto DATLY restava 1 per sempre e il tasto destro non arrivava
-     * mai: il disco 2 si poteva infilare quanto si voleva. Vedi
+     * <p>That is the idiom demos use to wait for a click on a still screen: <i>Hardwired</i>,
+     * at "INSERT HARDWIRED DISK 2", programs port 1 as {@code POTGO=$0F00} (both lines
+     * outputs, high) and then loops on {@code BTST #2,$DFF016} waiting for DATLY to drop.
+     * Reading back the written data instead of the capacitor kept DATLY at 1 forever. See
      * {@code PotgorButtonOverridesOutputTest}.
      *
-     * <p>⚠️ {@code cap_check(false)} è chiamato <b>dalla lettura stessa</b>, come nell'oracolo
-     * ({@code handle_joystick_potgor} lo fa in cima): è quello che dà la risposta immediata al
-     * pulsante senza aspettare la riga successiva, perché con {@code charge = -2} il
-     * condensatore perde 160 per lettura e un poll stretto lo porta sotto soglia subito.
+     * <p>The read itself runs {@code capCheck(false)}: that gives the button an immediate
+     * response without waiting for the next line, since with {@code charge = -2} the
+     * capacitor loses 160 per read and a tight poll takes it below threshold at once.
      */
     private int buildPotinp() {
         capCheck(false);
         int v = 0;
-        if (potCap[0][0] > 100) v |= 0x0100;   // DATLX — porta 1, linea X
-        if (potCap[0][1] > 100) v |= 0x0400;   // DATLY — porta 1, linea Y
-        if (potCap[1][0] > 100) v |= 0x1000;   // DATRX — porta 2, linea X
-        if (potCap[1][1] > 100) v |= 0x4000;   // DATRY — porta 2, linea Y
+        if (potCap[0][0] > 100) v |= 0x0100;   // DATLX - port 1, line X
+        if (potCap[0][1] > 100) v |= 0x0400;   // DATLY - port 1, line Y
+        if (potCap[1][0] > 100) v |= 0x1000;   // DATRX - port 2, line X
+        if (potCap[1][1] > 100) v |= 0x4000;   // DATRY - port 2, line Y
         return v;
     }
 
@@ -1183,8 +1118,8 @@ public final class Paula {
         int val = serReceiveBuffer & 0x3FF;
         if (serOvrun)               val |= 0x8000; // OVRUN
         if ((intreq & 0x0800) != 0) val |= 0x4000; // RBF
-        if (!serTxbFull)            val |= 0x2000; // TBE  – buffer empty (serTxbFull=false means buffer has no pending byte)
-        if (serTransmitShiftReg == 0) val |= 0x1000; // TSRE – shift register empty
+        if (!serTxbFull)            val |= 0x2000; // TBE  - buffer empty (serTxbFull=false means buffer has no pending byte)
+        if (serTransmitShiftReg == 0) val |= 0x1000; // TSRE - shift register empty
         val |= 0x0800; // RXD idle (mark)
 
         // Reading SERDATR clears only OVRUN. RBF must be cleared explicitly via INTREQ write.
@@ -1196,42 +1131,36 @@ public final class Paula {
         int val = dskbytr_incoming & 0x80FF;
         // DMAEN (bit 14): disk DMA is active and enabled in DMACON.
         if (diskState != DriveDmaState.OFF && (getDmacon() & 0x0210) == 0x0210) val |= 0x4000;
-        // DSKWRITE (bit 13): current transfer is a write (CPU→disk).
+        // DSKWRITE (bit 13): current transfer is a write (CPU->disk).
         if ((dsklen & 0x4000) != 0) val |= 0x2000;
-        // WORDEQUAL (bit 12): livello asserito dopo un match di DSKSYNC.
-        //   Guard: dsk_syncCycle==0 significa che non c'è ancora stato alcun sync
-        //   (o che DSKSYNC è stato riscritto: il vecchio match non vale più).
+        // WORDEQUAL (bit 12): level asserted after a DSKSYNC match.
+        //   Guard: dsk_syncCycle==0 means no sync yet (or DSKSYNC was rewritten and the
+        //   old match no longer counts).
         if (dsk_syncCycle != 0 && agnus != null
                 && agnus.getMasterClock() - dsk_syncCycle <= WORDEQUAL_WINDOW) val |= 0x1000;
-        // Clear DSKBYT (bit 15) on read — hardware behaviour.
+        // Clear DSKBYT (bit 15) on read - hardware behaviour.
         dskbytr_incoming &= 0x7FFF;
         return val;
     }
 
     /**
-     * Durata del livello WORDEQUAL (DSKBYTR bit 12) dopo un match di DSKSYNC, in
-     * master-cycle. Vale 2 celle MFM (~3,95 µs): una cella a doppia densità dura
-     * 7 CCK = 14 master-cycle (WinUAE {@code NORMAL_FLOPPY_SPEED}, vedi
-     * {@code FloppyDrive.CYCLES_PER_BIT}).
+     * Length of the WORDEQUAL level (DSKBYTR bit 12) after a DSKSYNC match, in master
+     * cycles: 2 MFM cells (~3.95 us), a double-density cell lasting 7 CCK = 14 master cycles
+     * (see {@code FloppyDrive.CYCLES_PER_BIT}).
      *
-     * <p>vAmiga usa una cella sola ({@code agnus.clock - syncCycle <= USEC(2)}) e
-     * WinUAE l'equivalente ({@code word == dsksync} sullo shift register vivo, vero
-     * per una cella). Una cella sola però NON basta: le protezioni Rob Northen in
-     * variante PIO campionano DSKBYTR con un loop
-     * {@code BTST #4,$DFF01A / BEQ} che sull'68000 dura 26 cicli (≈27,6 misurati con
-     * la contesa DMA dei bitplane), cioè quasi il DOPPIO della finestra. Il livello
-     * viene quindi agganciato solo ~1 volta su 2 e, siccome ogni sync compare una
-     * sola volta per giro, ogni ricerca costa in media 2 giri.
+     * <p>This is a deliberate choice over a level that lasts exactly while the live shift
+     * register equals DSKSYNC (one cell). The PIO variant of the Rob Northen protections
+     * samples DSKBYTR with a {@code BTST #4,$DFF01A / BEQ} loop that takes 26 cycles on the
+     * 68000 (about 27.6 with bitplane DMA contention), almost TWICE a one-cell window: the
+     * level would be caught about once in two, and since each sync passes once per
+     * revolution every search would cost two revolutions on average.
      *
-     * <p>È esattamente il fallimento di <b>Last Battle</b> (IPF originale): la
-     * protezione cerca in sequenza i sync $8911/$8912/$8914/$8951 sulla traccia 1
-     * (Copylock, {@code dentype=cpdenCLAmiga}); con una cella sola i primi tre
-     * costavano 2 giri ciascuno e sul quarto il watchdog del gioco (handler di
-     * interrupt di livello 3, PC $022FA6) spegneva il motore del drive — dopodiché
-     * il loop non può più uscire e lo schermo resta nero per sempre. Su WinUAE, che
-     * è l'oracolo, la stessa sequenza passa e il gioco arriva al titolo: registri e
-     * memoria sono bit-identici fino a questo punto, l'unica differenza misurata è
-     * l'aggancio del livello. Con 2 celle ogni sync viene agganciato al primo giro.
+     * <p>That is how <b>Last Battle</b> (original IPF) fails: its protection looks for the
+     * syncs $8911/$8912/$8914/$8951 in turn on track 1 (Copylock); with one cell the first
+     * three cost two revolutions each, and at the fourth the game's watchdog (level 3
+     * interrupt handler, PC $022FA6) switches the drive motor off, after which the loop can
+     * never exit. With 2 cells every sync is caught at the first revolution
+     * (docs/boot-randomness-plan.md, WORDEQUAL window).
      */
     private static final long WORDEQUAL_WINDOW = 28;
 
@@ -1254,10 +1183,9 @@ public final class Paula {
             case 0x034: setPOTGO(value); break;
             case 0x07E:
                 dsksync = value & 0xFFFF;
-                // Nuovo valore da confrontare: il match precedente non vale più.
-                // Senza questo, il livello WORDEQUAL (largo 2 celle) potrebbe essere
-                // letto come match del sync APPENA scritto. WinUAE non ne ha bisogno
-                // perché confronta lo shift register vivo con il DSKSYNC corrente.
+                // New value to compare against: the previous match no longer counts.
+                // Without this the WORDEQUAL level (2 cells wide) could read as a match
+                // of the sync JUST written.
                 dsk_syncCycle = 0;
                 dsklenWriteCount = 0;
                 break;
@@ -1289,16 +1217,16 @@ public final class Paula {
         dsklenWriteCount++;
 
         if ((oldValue & value & 0x8000) != 0) {
-            // Second consecutive write with bit 15 set → DMA start. Only the FIFO
+            // Second consecutive write with bit 15 set -> DMA start. Only the FIFO
             // is emptied here.
             //
-            // ⛔ The READ shift register and its bit counter are NOT touched. They
+            // The READ shift register and its bit counter are NOT touched. They
             // free-run with the head from the moment the drive is selected, and the
             // word boundary of the data the DMA transfers is the one they already
             // carry. Clearing them re-anchored that boundary to the DSKLEN write, so
             // a whole track landed in Chip RAM shifted by a few bits. Kickstart reads
             // the raw track with WORDSYNC off and re-aligns the sector headers in
-            // software, so the machine still boots — but through the slow
+            // software, so the machine still boots, but through the slow
             // re-alignment path, which costs about 890 cck on the instant the loaded
             // program starts (measured on the CIA/TOD/latch1 boot chain).
             // A WRITE does clear the shifter: see below.
@@ -1329,8 +1257,8 @@ public final class Paula {
                 // Writing clears the read shift register and the DSKBYT flag.
                 dsk_dataReg = 0;
                 dskbytr_incoming &= 0x7FFF;
-                // Il drive selezionato passa in scrittura: da qui in avanti la sua
-                // testina consuma le celle da nextWriteBit() invece di leggerle.
+                // The selected drive goes into write mode: from here on its head takes
+                // the cells from nextWriteBit() instead of reading them.
                 if (agnus != null) agnus.startFloppyWriting();
             } else {
                 diskState = ((adkcon & 0x0400) != 0) ? DriveDmaState.WAIT : DriveDmaState.READ;
@@ -1352,17 +1280,14 @@ public final class Paula {
     }
 
     /**
-     * POTGO ($DFF034). Porting di {@code POTGO()} dell'oracolo ({@code inputdevice.cpp}).
+     * POTGO ($DFF034).
      *
-     * <p>⛔ Non è un assegnamento. I bit di <b>direzione</b> si prendono tutti dalla
-     * scrittura, ma il bit di <b>dato</b> di una linea si aggiorna <b>solo se in questa
-     * stessa scrittura</b> la sua direzione è messa a 1; altrimenti resta quello di prima.
-     * È il {@code potgo_value = potgo_value & 0x5500} dell'oracolo, <i>keep state of data
-     * bits</i>, seguito dal ciclo che copia il dato delle sole linee appena dichiarate
-     * uscite.
+     * <p>Not a plain assignment. The <b>direction</b> bits are all taken from the write, but
+     * the <b>data</b> bit of a line is updated <b>only if this same write</b> sets its
+     * direction to 1; otherwise it keeps its previous value.
      *
-     * <p>Il bit 0 (START) riarma tutte e quattro le linee: contatore a zero e condensatore
-     * da scaricare. Vedi {@link #capCheck(boolean)}.
+     * <p>Bit 0 (START) rearms all four lines: counter to zero and capacitor to discharge.
+     * See {@link #capCheck(boolean)}.
      */
     private void setPOTGO(int value) {
         potgo = (potgo & 0x5500) | (value & 0xAA00);
@@ -1383,7 +1308,7 @@ public final class Paula {
         }
     }
 
-    /** Scrittura di CPU/Copper a INTENA: copia letta subito, copia IPL un CCK dopo. */
+    /** CPU/Copper write to INTENA: read-back copy at once, IPL copy one CCK later. */
     private void setINTENA(int value) {
         boolean set = (value & 0x8000) != 0;
         int bits = value & 0x7FFF;
@@ -1391,7 +1316,7 @@ public final class Paula {
         scheduleShadowPoke(value, true);
     }
 
-    /** Scrittura di CPU/Copper a INTREQ: copia letta subito, copia IPL un CCK dopo. */
+    /** CPU/Copper write to INTREQ: read-back copy at once, IPL copy one CCK later. */
     private void setINTREQ(int value) {
         boolean set = (value & 0x8000) != 0;
         int bits = value & 0x7FFF;
@@ -1400,13 +1325,11 @@ public final class Paula {
     }
 
     /**
-     * Interrupt <b>generato da un chip</b> (audio, disco, Copper, blitter, CIA, seriale):
-     * alza o abbassa <b>entrambe</b> le copie nello stesso istante, come WinUAE
-     * {@code event_doint_delay_do_ext}, che fa {@code setclr(&intreq, ...)} e
-     * {@code setclr(&intreq2, ...)} di seguito e poi chiama {@code doint()}.
+     * Interrupt <b>raised by a chip</b> (audio, disk, Copper, blitter, CIA, serial): sets or
+     * clears <b>both</b> copies at the same instant.
      *
-     * <p>Non è la stessa cosa di una scrittura del programma a INTREQ: quella passa da
-     * {@link #setINTREQ(int)} e differisce la copia dell'IPL. Vedi {@link #intreq2}.
+     * <p>Not the same as a program's write to INTREQ, which goes through
+     * {@link #setINTREQ(int)} and defers the IPL copy. See {@link #intreq2}.
      */
     public void setINTREQ(boolean setclr, int value) {
         if (setclr) {
@@ -1425,45 +1348,33 @@ public final class Paula {
     }
 
     /**
-     * Ritardo, in master-cycle, con cui una scrittura di CPU/Copper raggiunge le copie
-     * dell'IPL: <b>2 master-cycle = 1 CCK</b>, cioè il valore letterale di
-     * {@code doint_delay_intreq} in WinUAE («IPL line changes 0.5 CCKs later. 68000 needs
-     * one more CPU clock (0.5 CCK) before it detects it»),
-     * {@code event2_newevent_xx(-1, 1 * CYCLE_UNIT, …)}.
+     * Delay, in master cycles, with which a CPU/Copper write reaches the IPL copies:
+     * <b>2 master cycles = 1 CCK</b> (the IPL line changes 0.5 CCK later, and the 68000
+     * needs one more CPU clock, 0.5 CCK, to detect it).
      *
-     * <p>Fino al 2026-08-14 valeva <b>1</b>, e il commento spiegava perché: il secondo
-     * mezzo CCK il nostro modello lo spendeva nel latch del pin in
-     * {@code Motorola68000.fallingEdge()}, che timbrava il cambio di pin un clock più
-     * tardi di quanto l'oracolo timbra il suo. Corretta quella sfasatura di fase (vedi
-     * {@code Motorola68000.fallingEdge()}, {@code pinChangeAt}), la compensazione non
-     * serve più e il valore torna quello dell'oracolo.
-     *
-     * <p><b>Le due modifiche vanno insieme</b>: separate, ciascuna sposta di un clock il
-     * riconoscimento dell'interrupt e il banco vAmigaTS {@code cpu/timing} lo vede subito
-     * — misurato, 245 rossi su 253 con la sola prima. La misura del pin che aveva fissato
-     * il valore vecchio (FIX #24, §S4 di vAmigaTS {@code cpu/timing}) resta valida: la
-     * linea IPL si muove allo stesso master-cycle di prima, perché il clock tolto qui è
-     * quello aggiunto là. Vedi {@code docs/vamigats-paula-audio-plan.md} §18.
+     * <p>This value goes together with the pin stamp in {@code Motorola68000.fallingEdge()}
+     * ({@code pinChangeAt}): changed apart, each moves interrupt recognition by one clock,
+     * and the vAmigaTS bank {@code cpu/timing} sees it at once (245 reds out of 253 with
+     * the first alone). See {@code docs/vamigats-paula-audio-plan.md} section 18.
      */
     private static final int INTREQ_SHADOW_DELAY_MC = 2;
 
     /**
-     * Δ2: quanto WinUAE aspetta prima di elaborare una word consegnata dal DMA audio —
-     * «{@code AUDxDAT is processed after 1 CCK delay}», {@code audio.cpp} {@code AUDxDAT()},
-     * cioè {@code cyc = 1 * CYCLE_UNIT}. Un CCK = due master-cycle. Vedi
-     * {@link AudioChannel#receiveDmaWord} e {@code docs/vamigats-paula-audio-plan.md} §22.
+     * How long a word delivered by the audio DMA waits before it is processed: 1 CCK = two
+     * master cycles. See {@link AudioChannel#receiveDmaWord} and
+     * {@code docs/vamigats-paula-audio-plan.md} section 22.
      */
     private static final int DMA_WORD_DELAY_MC = 2;
 
-    /** Poke di CPU/Copper in attesa di raggiungere {@link #intreq2}/{@link #intena2}. */
+    /** CPU/Copper poke waiting to reach {@link #intreq2}/{@link #intena2}. */
     private long    shadowPokeAt = AbstractAgnus.NEVER;
     private int     shadowPokeValue;
     private boolean shadowPokeIsIntena;
 
     private void scheduleShadowPoke(int value, boolean isIntena) {
         if (shadowPokeAt != AbstractAgnus.NEVER) {
-            // Due poke entro un CCK: in WinUAE sono due eventi distinti e il primo scade
-            // comunque per primo, quindi lo si applica qui invece di perderlo.
+            // Two pokes within one CCK: they are two distinct events and the first one
+            // expires first anyway, so it is applied here instead of being lost.
             applyShadowPoke();
         }
         shadowPokeValue = value;
@@ -1501,37 +1412,24 @@ public final class Paula {
     }
 
     /**
-     * Ritardo, in master-cycle, fra il momento in cui la macchina a stati di un canale
-     * decide l'interrupt e il momento in cui AUDxIR compare in INTREQ: <b>2 CCK</b>.
-     *
-     * <p>Oracolo: WinUAE {@code audio.cpp}
-     * <pre>
-     * static void setirq(int nr, int which) {
-     *     // audio interrupts are delayed by 1 CCK
-     *     INTREQ_INT(nr + 7, CYCLE_UNIT);
-     * }
-     * </pre>
-     * e {@code custom.cpp}, {@code INTREQ_INT}, che in modo cycle-exact
-     * ({@code m68k_interrupt_delay}) accoda l'evento a <b>{@code delay + CYCLE_UNIT}</b>:
-     * il commento dice 1 CCK ma il ritardo effettivo e' quello passato PIU' uno, cioe' 2.
-     * Solo dopo l'evento {@code intreq} viene aggiornato e {@code doint()} chiamato.
+     * Delay, in master cycles, between the moment a channel's state machine decides the
+     * interrupt and the moment AUDxIR appears in INTREQ: <b>2 CCK</b> (one CCK of audio
+     * delay plus the CCK every chip interrupt takes to reach INTREQ).
      */
     private static final int AUDIO_IRQ_DELAY_CYCLES = 4;   // 2 CCK = 4 master cycle
 
     /**
-     * Alza AUDxIR come WinUAE: non subito, ma {@link #AUDIO_IRQ_DELAY_CYCLES} dopo.
-     * Sollevarlo nello stesso ciclo ci metteva in anticipo sull'oracolo su tutta la
-     * cartella vAmigaTS {@code Paula/Audio} (vedi {@code docs/vamigats-paula-audio-plan.md}).
+     * Raises AUDxIR not at once but {@link #AUDIO_IRQ_DELAY_CYCLES} later (vAmigaTS
+     * {@code Paula/Audio}, see {@code docs/vamigats-paula-audio-plan.md}).
      */
     private void raiseAudioInterrupt(int channel) {
         scheduleIntreq(7 + channel, AUDIO_IRQ_DELAY_CYCLES);
     }
 
     /**
-     * Programma il set di un bit di INTREQ fra {@code delayCycles} master-cycle.
-     * Se per quel bit c'e' gia' una richiesta in coda <b>prima</b>, quella vince: due
-     * eventi ravvicinati sullo stesso bit collassano in uno, come in WinUAE dove il
-     * secondo {@code setclr(&intreq, ...)} trova il bit gia' alzato.
+     * Schedules the set of an INTREQ bit {@code delayCycles} master cycles from now. If a
+     * request for that bit is already queued <b>earlier</b>, it wins: two close events on
+     * the same bit collapse into one, the second finding the bit already set.
      */
     private void scheduleIntreq(int bit, int delayCycles) {
         long when = agnus.getMasterClock() + delayCycles;
@@ -1549,28 +1447,21 @@ public final class Paula {
     }
 
     /**
-     * Produce un sample di output facendo la <b>media pesata nel tempo</b> dell'uscita
-     * di ciascun canale sull'intervallo appena trascorso, invece di leggerne il valore
-     * istantaneo.
+     * Produces one output sample as the <b>time-weighted average</b> of each channel's
+     * output over the interval just elapsed, rather than its instantaneous value: every
+     * step of the emulation accumulates {@code sample * vol * dt}, and the sum is divided by
+     * the time accumulated.
      *
-     * <p>Oracolo: WinUAE {@code audio.cpp}, modo di interpolazione <i>anti</i>
-     * ({@code sound_interpol = 1}, il DEFAULT) — {@code anti_prehandler} accumula
-     * {@code current_sample * vol * dt} ad ogni passo dell'emulazione e
-     * {@code samplexx_anti_handler} divide per il tempo accumulato.
+     * <p>Reading the instantaneous value amounts to nearest-neighbour resampling: the edges
+     * of Paula's output, which fall on a 7.09 MHz grid, move by up to 22.7 us to land on
+     * the 44.1 kHz grid. That jitter is broadband noise with very strong lines next to the
+     * fundamental. Measured on a 500 Hz sine generated the way Amiga Test Kit generates it:
+     * <b>SNR 20.8 dB</b> with instantaneous sampling against the <b>28.8 dB</b> of the ideal
+     * reference, which the integration reaches exactly.
      *
-     * <p>Leggere il valore istantaneo (quello che si faceva prima) equivale a un
-     * ricampionamento a vicino-più-prossimo: i fronti dell'uscita di Paula, che cadono
-     * su una griglia da 7,09 MHz, vengono spostati fino a 22,7 µs per finire sulla
-     * griglia a 44,1 kHz. Quel jitter è un rumore a banda larga con righe fortissime
-     * accanto alla fondamentale. Misurato sul banco (una sinusoide da 500 Hz generata
-     * come la genera Amiga Test Kit): <b>SNR 20,8 dB</b> col campionamento istantaneo
-     * contro i <b>28,8 dB</b> del riferimento ideale, che l'integrazione raggiunge esatto.
-     * Su un'onda quadra da 10 kHz il divario era ancora più largo, ma lì il grosso lo
-     * faceva un secondo difetto — vedi {@code loadCurrentWord()}.
-     *
-     * <p>Il residuo a 28,8 dB non è nostro: sono le immagini della scaletta a 8 bit di
-     * Paula (15,5 e 16,5 kHz per questo segnale), che ci sono anche in WinUAE e che il
-     * filtro fisso dell'A500 attenua a valle. La misura vive in {@code PaulaAudioQualityTest}.
+     * <p>The residual at 28.8 dB is the images of Paula's 8-bit staircase (15.5 and 16.5 kHz
+     * for this signal), which the A500's fixed filter attenuates downstream. The
+     * measurement lives in {@code PaulaAudioQualityTest}.
      */
     private void mixAudioSample() {
         int interval = mixIntervalCycles;
@@ -1593,19 +1484,13 @@ public final class Paula {
     // =========================================================================
 
     /**
-     * Ritardo, in master-cycle, fra la discesa della linea /IRQ di un CIA e la comparsa di
-     * PORTS/EXTER in INTREQ: <b>1 CCK</b>.
+     * Delay, in master cycles, between the fall of a CIA's /IRQ line and PORTS/EXTER
+     * appearing in INTREQ: <b>1 CCK</b>, the CCK every chip interrupt takes to reach INTREQ
+     * (the audio delay, {@link #AUDIO_IRQ_DELAY_CYCLES}, adds one more).
      *
-     * <p>Oracolo: {@code cia.cpp} {@code ICR()} → {@code ICRIRQ()} →
-     * {@code safe_interrupt_set()}, che in modo cycle-exact chiama
-     * {@code INTREQ_INT(inum, 0)}; e {@code INTREQ_INT} accoda l'evento a
-     * {@code delay + CYCLE_UNIT}, cioè a <b>un CCK</b> con {@code delay = 0}. È lo stesso
-     * meccanismo del ritardo audio ({@link #AUDIO_IRQ_DELAY_CYCLES}), che parte da
-     * {@code delay = CYCLE_UNIT} e quindi vale il doppio.
-     *
-     * <p>Misura (piano §7.1.17): underflow del Timer B → INTREQ bit 3 vale <b>+6 CCK</b>
-     * sull'oracolo — 5 per il clock di CIA che la CIA stessa si prende
-     * ({@code MOS8520.triggerIrq}) e 1 per questo evento. Prima erano 0 + 0.
+     * <p>Measured (plan section 7.1.17): Timer B underflow to INTREQ bit 3 is <b>+6 CCK</b>,
+     * 5 for the CIA clock the CIA itself takes ({@code MOS8520.triggerIrq}) and 1 for this
+     * event.
      */
     private static final int CIA_IRQ_DELAY_CYCLES = 2;   // 1 CCK = 2 master cycle
 
@@ -1621,7 +1506,7 @@ public final class Paula {
 
     public int getDiskDmaPointer() { return (dskpth << 16) | dskptl; }
 
-    /** Word di sincronizzazione DSKSYNC corrente (diagnostica). */
+    /** Current DSKSYNC word (diagnostics). */
     public int getDskSync() { return dsksync & 0xFFFF; }
 
     public void setDiskDmaPointerHigh(int high) {
@@ -1723,8 +1608,8 @@ public final class Paula {
     }
 
     /**
-     * Deriva verso la rete il chunk PCM già convertito e filtrato
-     * (docs/remote-play-plan.md §4.2). {@code null} la rimuove.
+     * Taps the PCM chunk, already converted and filtered, towards the network
+     * (docs/remote-play-plan.md section 4.2). {@code null} removes the tap.
      */
     public void setPcmTap(JavaSoundAudioOutput.PcmTap tap) {
         audioOutput.setPcmTap(tap);
@@ -1739,24 +1624,22 @@ public final class Paula {
     }
 
     /**
-     * L'uscita del canale <b>verso il mixer</b>: {@code (current_sample * mixvol) & adk_mask}
-     * di WinUAE ({@code audio.cpp}, quel che {@code anti_prehandler} integra). Intervallo
+     * The channel's output <b>towards the mixer</b>: sample x latched volume, masked. Range
      * -8192..8128.
      *
-     * <p>Non è {@code getAudioCurrentSample(chan) * AUDxVOL}, e le due differenze sono
-     * entrambe volute:
+     * <p>It is not {@code getAudioCurrentSample(chan) * AUDxVOL}, for two reasons:
      * <ul>
-     *   <li>il volume è quello <b>latchato</b> a {@code loadper()}, non il registro —
-     *       una scrittura di AUDxVOL entra nel mixer al confine di periodo successivo;</li>
-     *   <li>un canale che <b>modula</b> il successivo è muto: {@code adk_mask} vale 0
-     *       per ogni canale che compare in ADKCON come modulatore di volume o di periodo
-     *       ({@code audio_update_adkmasks}: {@code t = adkcon | (adkcon >> 4)}).</li>
+     *   <li>the volume is the one <b>latched</b> at the period boundary, not the register:
+     *       an AUDxVOL write enters the mixer at the next period boundary;</li>
+     *   <li>a channel that <b>modulates</b> the next one is silent: every channel that
+     *       appears in ADKCON as a volume or period modulator
+     *       ({@code adkcon | (adkcon >> 4)}) is masked to 0.</li>
      * </ul>
      */
     public int getAudioMixerOutput(int chan) {
         if (chan < 0 || chan > 3) return 0;
         int t = adkcon | (adkcon >> 4);
-        if ((t & (1 << chan)) != 0) return 0;    // adk_mask = 0
+        if ((t & (1 << chan)) != 0) return 0;    // modulator: masked
         return audioChannels[chan].currentSample * audioChannels[chan].mixVolume();
     }
 
@@ -1793,8 +1676,8 @@ public final class Paula {
                 audioChannels[chan].reloadPeriodClocks();
                 break;
             case 0x8:
-                // Solo il registro (audvol): nel mixer ci entra al confine di periodo
-                // successivo, quando loadPeriod() latcha mixvol. Vedi AudioChannel.mixVolume.
+                // The register only: it enters the mixer at the next period boundary, when
+                // loadPeriod() latches the mixer volume. See AudioChannel.mixVolume.
                 audVOL[chan] = Math.min(value & 0x7F, 64);
                 break;
             case 0xA:
@@ -1845,44 +1728,40 @@ public final class Paula {
         private boolean currentWordEndsBlock;
         private boolean dmaPriming;
         /**
-         * La word di priming è arrivata e la <b>prossima</b> è la prima che suona: è lo
-         * stato 5 di WinUAE. Serve per una ragione sola — quella word <b>non scala la
-         * lunghezza residua</b>. WinUAE toglie uno a {@code wlen} nello stato 1 (la word
-         * scartata) e poi una volta per ogni word che arriva <i>mentre il canale è negli
-         * stati 2/3</i> ({@code event_audxdat_func}); l'arrivo che fa passare da 5 a 2 non
-         * cade in nessuno dei due casi, quindi non conta. Contarlo faceva suonare
-         * <b>LEN-1</b> word per blocco invece di LEN: il blocco si chiudeva una word
-         * prima e da lì in poi eravamo due campioni avanti all'oracolo.
+         * The priming word has arrived and the <b>next</b> one is the first to play. It
+         * matters for one reason: that word <b>does not decrement the remaining length</b>.
+         * The length drops by one for the discarded priming word and then once for every
+         * word that arrives <i>while the channel is playing</i>; the arrival that starts it
+         * playing is neither, so it does not count. Counting it played <b>LEN-1</b> words per
+         * block instead of LEN.
          */
         private boolean dmaFirstWord;
         /**
-         * Il canale sta suonando una word scritta dalla CPU in AUDxDAT con il DMA
-         * spento — gli stati 2/3 di WinUAE, contro lo stato 0 di riposo. Distingue
-         * la scrittura che <i>avvia</i> il canale (che chiede l'interrupt) da tutte
-         * quelle successive, che sono solo il rifornimento chiesto dall'interrupt
-         * precedente e non ne devono chiedere un altro. Vedi {@link #writeData}.
+         * The channel is playing a word the CPU wrote to AUDxDAT with the DMA off (playing in
+         * interrupt mode, as opposed to idle). It tells the write that <i>starts</i> the
+         * channel (which requests the interrupt) from all the later ones, which are only the
+         * refill the previous interrupt asked for and must not request another. See
+         * {@link #writeData}.
          */
         private boolean cpuDriven;
         private int bytePhase;
         private int periodCounter;
         private int periodClocks;
         /**
-         * Volume <b>latchato</b>, cioè quello che entra davvero nel mixer: WinUAE
-         * {@code data.mixvol}. AUDxVOL (il registro, {@code data.audvol}) ci finisce
-         * dentro solo a {@code loadper()} — vedi {@link #loadPeriod()} — quindi una
-         * scrittura del volume ha effetto al <b>confine di periodo successivo</b>, non
-         * subito. Applicarlo all'istante ci metteva in anticipo sull'oracolo su tutta
-         * la modulazione di volume (docs/vamigats-paula-audio-plan.md §9.4).
+         * The <b>latched</b> volume, the one that actually enters the mixer. AUDxVOL (the
+         * register) gets in only at the period boundary (see {@link #loadPeriod()}), so a
+         * volume write takes effect at the <b>next period boundary</b>, not at once
+         * (docs/vamigats-paula-audio-plan.md section 9.4).
          */
         private int mixVolume;
         private float mixVolumeScale;
         private int currentSample;
-        /** Integrale di {@code currentSample * mixVolumeScale} sui cicli dell'intervallo. */
+        /** Integral of {@code currentSample * mixVolumeScale} over the interval's cycles. */
         private double sampleAccum;
         /**
-         * Master-cycle che mancano a {@link #processDmaWord()}, cioè il ritardo di un CCK
-         * con cui WinUAE elabora una word consegnata dal DMA (Δ2, vedi
-         * {@link #receiveDmaWord}). 0 = niente in sospeso.
+         * Master cycles left before {@link #processDmaWord()}: the one-CCK delay with which a
+         * word delivered by the DMA is processed (see {@link #receiveDmaWord}). 0 = nothing
+         * pending.
          */
         private int dmaWordDelay;
 
@@ -1922,113 +1801,93 @@ public final class Paula {
         }
 
         /**
-         * DMACON ha acceso o spento il canale.
+         * DMACON has switched the channel on or off.
          *
-         * <p>Lo <b>spegnimento non ferma il canale</b>, e non è un dettaglio: in WinUAE
-         * ({@code audio_state_channel2}) solo gli stati 1 e 5 — l'avvio del DMA, prima che
-         * la prima word entri in riproduzione — controllano {@code chan_ena} e vanno in
-         * {@code zerostate}. Negli stati 2 e 3, cioè a canale che suona, {@code chan_ena}
-         * cambia soltanto <i>chi rifornisce</i>: il canale prosegue in modo a interrupt,
-         * ripete l'ultima AUDxDAT ({@code loaddat} incondizionato) e si ferma solo quando
-         * la CPU smette di acknowledgare. È esattamente ciò che {@code simple/dmaaud2}
-         * misura — «the frequency changes, because no samples are fed into AUD0DAT any
-         * more» — e ciò che il gemello {@code dmaaud1} mostra sullo schermo, dove il
-         * gestore di livello 4 è ancora invocato sette secondi dopo lo spegnimento.
+         * <p>Switching it <b>off does not stop the channel</b>. Only the DMA start-up, before
+         * the first word plays, checks the enable and goes back to idle. A channel that is
+         * playing only changes <i>who refills it</i>: it carries on in interrupt mode,
+         * repeats the last AUDxDAT and stops only when the CPU stops acknowledging. That is
+         * what {@code simple/dmaaud2} measures ("the frequency changes, because no samples
+         * are fed into AUD0DAT any more") and what its twin {@code dmaaud1} shows, with the
+         * level 4 handler still invoked seven seconds after the switch-off.
          *
-         * <p>E per lo stesso motivo <b>l'accensione dipende da dove il canale si trova</b>:
-         * la sequenza d'avvio (0→1→5) è del solo {@code case 0}, cioè del canale fermo. Un
-         * canale già negli stati 2/3 la scrittura di DMACON la vede soltanto come un cambio
-         * di rifornitore. Sono le due facce della stessa domanda, e finora ne rispondevamo
-         * una sola: {@code timing/dmatim2} è il canale fermo (che deve scaricare il
-         * fine-blocco pendente), {@code timing/dmatim3} il canale che suona (che non deve
-         * ricominciare da capo).
+         * <p>For the same reason <b>switching on depends on where the channel is</b>: the
+         * start-up sequence (idle, priming, first word) belongs to an idle channel only. A
+         * channel already playing sees the DMACON write only as a change of supplier.
+         * {@code timing/dmatim2} is the idle channel (which must deliver the pending
+         * end-of-block), {@code timing/dmatim3} the playing one (which must not start over).
          */
         private void setDmaEnabled(boolean enabled) {
             if (dmaEnabled == enabled) return;
-            // Lo stato PRIMA della scrittura di DMACON: a DMA spento isPlaying() sono gli
-            // stati 2/3 di WinUAE (il canale suona in modo a interrupt), il resto è lo
-            // stato 0, il canale fermo. La sequenza d'avvio del DMA è del secondo caso e
-            // basta — vedi sotto.
+            // The state BEFORE the DMACON write: with the DMA off, isPlaying() means playing
+            // in interrupt mode, anything else is idle. The DMA start-up sequence belongs to
+            // the idle case alone (see below).
             final boolean wasPlaying = isPlaying();
             dmaEnabled = enabled;
             if (enabled && wasPlaying) {
-                // Stati 2/3: DMACON accende il DMA su un canale che <b>sta ancora
-                // suonando</b>, e in WinUAE non succede niente. `audio_state_machine()`
-                // richiama `audio_state_channel2(nr, false)`, che nei case 2/3 aggiorna
-                // `dmaenstore` ed esce al `if (!perfin) return true;`: nessun priming,
-                // nessuna richiesta immediata. Il DMA riprende semplicemente a rifornire
-                // al confine di periodo successivo — `case 3: if (chan_ena) { loaddat(nr);
-                // setdr(nr, false); if (intreq2 && napnav) setirq(nr, 31); }` — che è la
-                // strada normale di advanceSampleByte()/loadCurrentWord().
+                // DMACON switches the DMA on for a channel that <b>is still playing</b>:
+                // nothing happens. No priming, no immediate request: the DMA simply resumes
+                // refilling at the next period boundary, the normal path of
+                // advanceSampleByte()/loadCurrentWord().
                 //
-                // Ripartire dal priming (0->1->5) come si faceva prima costa tre errori in
-                // fila, tutti visibili su vAmigaTS timing/dmatim3 (piano §23.3): una
-                // richiesta d'interrupt di tipo sbagliato (l'avvio invece del fine-blocco),
-                // la lunghezza residua fuori fase e quindi nessun fine-blocco alla riga
-                // dopo, e il puntatore che avanza invece di ricaricarsi a ogni giro.
-                cpuDriven = false;      // il DMA prende il posto del modo a interrupt
+                // Starting from the priming again costs three errors in a row, all visible
+                // on vAmigaTS timing/dmatim3 (plan section 23.3): an interrupt request of the
+                // wrong kind (start instead of end-of-block), the remaining length out of
+                // phase and so no end-of-block on the next line, and the pointer stepping
+                // instead of reloading at every loop.
+                cpuDriven = false;      // the DMA takes the place of interrupt mode
                 refreshActiveMask();
                 return;
             }
             if (enabled) {
-                // Stato 0 -> 1. Se il canale era FERMO e si porta dietro un fine-blocco
-                // non ancora consegnato, l'accensione del DMA lo <b>scarica subito</b>:
+                // Idle -> priming. If the channel was IDLE and carries an end-of-block not
+                // yet delivered, switching the DMA on <b>delivers it at once</b>. It is the
+                // only audio interrupt raised by a DMACON write rather than by a slot or a
+                // period boundary; without it vAmigaTS timing/dmatim2 missed a whole
+                // handler invocation at lines 112 and 160 (plan section 23). It exists only
+                // because the pending end-of-block SURVIVES the switch-off: see
+                // clearDmaPipeline().
                 //
-                //   case 0: if (chan_ena) { ... cdp->dsr = true;
-                //       if (cdp->intreq2) { setirq(nr, 0); cdp->intreq2 = false; } }
-                //
-                // È l'unico interrupt audio che nasce da una scrittura di DMACON invece
-                // che da uno slot o da un confine di periodo, e senza di esso su
-                // vAmigaTS timing/dmatim2 mancava un'invocazione intera del gestore alle
-                // righe 112 e 160 (piano §23). Vive solo perché `intreq2` SOPRAVVIVE allo
-                // spegnimento: vedi clearDmaPipeline().
-                //
-                // Qui `cpuDriven` è già falso: il ramo si prende solo con `wasPlaying`
-                // falso, che a DMA spento è esattamente `!cpuDriven`.
+                // `cpuDriven` is already false here: this branch is taken only with
+                // `wasPlaying` false, which with the DMA off is exactly `!cpuDriven`.
                 // The start request fetches at the pointer the channel was left with, and its
                 // slot then loads the pointer from AUDxLC.
                 reloadDmaLength();
                 dmaPriming = true;
                 if (nextWordEndsBlock) {
                     nextWordEndsBlock = false;
-                    raiseAudioInterrupt(index);     // WinUAE: setirq(nr, 0)
+                    raiseAudioInterrupt(index);
                 }
                 requestNextWord(true);
                 dmaReloadRequest = true;
             } else if (dmaPriming || dmaFirstWord) {
-                // Stati 1 e 5: "if (!chan_ena) { zerostate(nr, false); return true; }".
-                // Il canale non ha ancora suonato niente e non suonerà: dmaonoff1.
+                // Start-up (priming or first word): the channel has played nothing yet and
+                // will not, it goes back to idle (dmaonoff1).
                 clearDmaPipeline();
             } else {
-                // Stati 2/3: il canale sopravvive. Cade solo la pipeline DMA — la word
-                // in coda non si perde davvero, perché AUDxDAT la contiene ed è da lì
-                // che loaddat() ripesca (advanceSampleByte, ramo di fallback).
+                // Playing: the channel survives. Only the DMA pipeline drops; the queued
+                // word is not really lost, since AUDxDAT holds it and the refill picks it
+                // up from there (advanceSampleByte, fallback branch).
                 // A word request already raised stays pending: the next DMAL hands it over
                 // and, while any audio channel has DMA on, its slot still runs and delivers
                 // the word as a CPU write to AUDxDAT (receiveAudioDmaWord).
                 nextWord = 0;
                 nextWordValid = false;
-                // `nextWordEndsBlock` (l'`intreq2` di WinUAE) NON si azzera: vedi
-                // clearDmaPipeline(). Tenerlo è inerte finché il DMA resta spento —
-                // lo consumano solo loadCurrentWord() e consumeQueuedWord(), entrambi
-                // dietro `nextWordValid` — e diventa osservabile alla riaccensione.
+                // `nextWordEndsBlock` is NOT cleared: see clearDmaPipeline(). Keeping it is
+                // inert while the DMA stays off (only loadCurrentWord() and
+                // consumeQueuedWord() consume it, both behind `nextWordValid`) and becomes
+                // observable when the DMA is switched on again.
                 cpuDriven = true;
             }
             refreshActiveMask();
         }
 
         /**
-         * Il {@code zerostate(nr, false)} di WinUAE: il canale esce dalla macchina a stati.
+         * The channel goes back to idle.
          *
-         * <p>⚠️ <b>Non azzera il fine-blocco pendente.</b> In modo cycle-exact — quello
-         * dell'oracolo — {@code zerostate} lascia stare {@code intreq2}:
-         * <pre>
-         * if (!currprefs.cpu_memory_cycle_exact || reset) { cdp-&gt;intreq2 = false; }
-         * </pre>
-         * Il flag sopravvive quindi allo spegnimento del DMA e resta lì finché la
-         * riaccensione non lo scarica ({@link #setDmaEnabled}, {@code setirq(nr, 0)}).
-         * Solo il <b>reset</b> vero (l'unico {@code zerostate(nr, true)}) lo cancella, ed è
-         * infatti quel che fa {@link #reset()}.
+         * <p><b>It does not clear the pending end-of-block.</b> The flag survives the DMA
+         * switch-off and stays until switching it on again delivers it
+         * ({@link #setDmaEnabled}). Only a real <b>reset</b> clears it, in {@link #reset()}.
          */
         private void clearDmaPipeline() {
             // The pending word and reload requests are not cleared: only the DMAL load
@@ -2043,18 +1902,15 @@ public final class Paula {
             dmaFirstWord = false;
             cpuDriven = false;
             bytePhase = 0;
-            // currentSample NON si azzera: zerostate() di WinUAE non tocca
-            // data.current_sample. Un canale che si ferma resta all'ultimo valore
-            // uscito, non torna a zero — vedi advanceSampleByte(), stesso motivo.
+            // currentSample is NOT cleared: a channel that stops stays at the last value
+            // it output, it does not return to zero (see advanceSampleByte()).
         }
 
         /**
-         * Il canale è in riproduzione, cioè negli stati <b>2/3</b> di WinUAE — gli unici
-         * in cui il period counter gira ({@code evtime != MAX_EV}).
+         * The channel is playing: the only state in which the period counter runs.
          *
-         * <p>Gli altri tre si riconoscono da qui: {@code dmaPriming}/{@code dmaFirstWord}
-         * sono gli stati 1 e 5 (avvio del DMA, prima word non ancora in riproduzione),
-         * e «né DMA né modo a interrupt» è lo stato 0, il canale fermo.
+         * <p>The others: {@code dmaPriming}/{@code dmaFirstWord} are the DMA start-up (first
+         * word not playing yet), and "neither DMA nor interrupt mode" is idle.
          */
         private boolean isPlaying() {
             if (dmaEnabled) {
@@ -2064,16 +1920,12 @@ public final class Paula {
         }
 
         /**
-         * Avanza il canale di {@code cycles} master-cycle <b>integrando</b> l'uscita.
+         * Advances the channel by {@code cycles} master cycles, <b>integrating</b> its output.
          *
-         * <p>Fra due scadenze del period-counter l'uscita del canale è costante, quindi
-         * l'integrale sull'intervallo è esatto: basta pesare ogni valore per il numero
-         * di cicli in cui è rimasto in uscita. È il {@code anti_prehandler} di WinUAE,
-         * che accumula {@code current_sample * vol * best_evtime} ad ogni passo.
-         *
-         * <p>Il conteggio dei passaggi di byte è identico a prima
-         * ({@code periodCounter -= cycles} seguito dai riarmi a {@code periodClocks}):
-         * qui si sottrae a pezzi per sapere <i>quanto a lungo</i> è valso ogni valore.
+         * <p>Between two expiries of the period counter the channel's output is constant, so
+         * the integral over the interval is exact: each value is weighted by the number of
+         * cycles it stayed at the output. The counter is decremented piecewise to know
+         * <i>how long</i> each value lasted.
          */
         private void tick(int cycles) {
             if (reloadRequestDelay > 0) {
@@ -2084,10 +1936,10 @@ public final class Paula {
                     dmaReloadRequest = true;
                 }
             }
-            // Δ2: l'intervallo si spezza sulla scadenza della word DMA in sospeso, così il
-            // gestore differito cade nel master-cycle esatto e non a fine intervallo.
-            // computeAudioMinCounter() tiene conto della stessa scadenza, quindi qui il
-            // taglio è al più uno per chiamata — ma il ciclo lo gestisce comunque.
+            // The interval is split at the deadline of the pending DMA word, so the
+            // deferred handler lands on the exact master cycle, not at the end of the
+            // interval. computeAudioMinCounter() accounts for the same deadline, so there is
+            // at most one split per call, but the loop handles more anyway.
             while (dmaWordDelay > 0 && dmaWordDelay <= cycles) {
                 int step = dmaWordDelay;
                 dmaWordDelay = 0;
@@ -2106,16 +1958,14 @@ public final class Paula {
                 return;
             }
             if (!isPlaying()) {
-                // Stati 0, 1 e 5 di WinUAE: tutti e tre mettono `evtime = MAX_EV`, cioè
-                // il period counter NON gira. Per gli stati 1/5 (avvio del DMA) farlo
-                // girare regala al canale confini di periodo prematuri, che consumano
-                // word: su dmamod3 bastava a scambiare volume e periodo per sempre,
-                // perché le parole della tabella si alternano. Per lo stato 0 (il canale
-                // fermo, zerostate) sono confini che chiedono interrupt di rifornimento
-                // a un canale che non sta suonando.
+                // Idle or starting up: the period counter does NOT run. During the DMA
+                // start-up, running it would give the channel premature period boundaries
+                // that consume words: on dmamod3 that swapped volume and period for good,
+                // since the table's words alternate. When idle, they would be boundaries
+                // requesting refill interrupts from a channel that is not playing.
                 //
-                // L'uscita continua a essere integrata: il campione resta quello, e
-                // toglierlo dalla maschera attiva lo conterebbe come zero.
+                // The output is still integrated: the sample stays, and dropping it from
+                // the active mask would count it as zero.
                 sampleAccum += currentSample * (double) mixVolumeScale * cycles;
                 return;
             }
@@ -2128,7 +1978,7 @@ public final class Paula {
                 // interrupt mode that stops here for want of a refill keeps the volume
                 // it had, so a VOL written meanwhile does not reach the held sample.
                 boolean latch = dmaEnabled || bytePhase == 0;
-                periodCounter = periodClocks;   // periodClocks >= 2: il ciclo termina sempre
+                periodCounter = periodClocks;   // periodClocks >= 2: the loop always ends
                 advanceSampleByte();
                 if (latch && isPlaying()) latchMixVolume();
             }
@@ -2137,35 +1987,15 @@ public final class Paula {
         }
 
         /**
-         * Il {@code loadper()} di WinUAE: riarma il contatore di periodo <b>e latcha il
-         * volume</b>.
+         * Rearms the period counter <b>and latches the volume</b>. The two go together: the
+         * volume the mixer uses for the sample about to come out is the one AUDxVOL had at
+         * the period boundary. See {@link #mixVolume}.
          *
-         * <pre>
-         * static void loadper(int nr) {
-         *     cdp-&gt;evtime = cdp-&gt;per;
-         *     cdp-&gt;data.mixvol = cdp-&gt;data.audvol;
-         * }
-         * </pre>
-         *
-         * Le due cose stanno insieme perché sono la stessa cosa: il volume che il mixer
-         * userà per il campione che sta per uscire è quello che AUDxVOL aveva al confine
-         * di periodo. Vedi {@link #mixVolume}.
-         *
-         * <p><b>Con il DMA spento il confine basso non latcha.</b> WinUAE ci chiama
-         * {@code loadperm1()} invece di {@code loadper()}:
-         * <pre>
-         * case 3: if (cdp-&gt;pbufldl) { newsample(nr, dat2 &amp; 0xff);
-         *             if (chan_ena) loadper(nr); else loadperm1(nr); ... }
-         * </pre>
-         * e {@code loadperm1} riarma il contatore <i>senza</i> toccare {@code mixvol}. Un
-         * canale in modo a interrupt latcha quindi il volume <b>una volta per word</b>, al
-         * confine alto, non due. Si vede su tutta la modulazione di volume manuale
-         * ({@code irqmod1}, {@code irqmod3}), dove un latch di troppo anticipa di mezzo
-         * periodo ogni gradino della rampa.
-         *
-         * <p>({@code loadperm1} spezza anche il periodo in {@code per-1} + {@code 1} CCK
-         * per campionare {@code isirq} un CCK prima del confine: la durata totale non
-         * cambia, e quel CCK di anticipo non è modellato qui.)
+         * <p><b>With the DMA off the low-byte boundary does not latch</b>: it rearms the
+         * counter without touching the volume. A channel in interrupt mode therefore latches
+         * the volume <b>once per word</b>, at the high-byte boundary, not twice. It shows on
+         * all manual volume modulation ({@code irqmod1}, {@code irqmod3}), where one latch
+         * too many moves every step of the ramp half a period early.
          */
         private void loadPeriod() {
             periodCounter = periodClocks;
@@ -2179,17 +2009,15 @@ public final class Paula {
             mixVolumeScale = mixVolume / (128.0f * 64.0f);
         }
 
-        /** Il {@code mixvol} corrente, per {@link Paula#getAudioMixerOutput(int)}. */
+        /** The current latched volume, for {@link Paula#getAudioMixerOutput(int)}. */
         private int mixVolume() {
             return mixVolume;
         }
 
         /**
-         * Media dell'uscita sull'intervallo appena chiuso, e azzeramento
-         * dell'accumulatore. {@code intervalCycles} è la durata PIENA dell'intervallo:
-         * la parte in cui il canale è stato inattivo non è nell'accumulatore e vale
-         * zero, esattamente come in WinUAE, dove il prehandler gira comunque su tutti
-         * e quattro i canali e somma zero per quelli fermi.
+         * Average of the output over the interval just closed, and reset of the
+         * accumulator. {@code intervalCycles} is the FULL length of the interval: the part
+         * where the channel was inactive is not in the accumulator and counts as zero.
          */
         private double takeAverageSample(int intervalCycles) {
             double accum = sampleAccum;
@@ -2198,32 +2026,24 @@ public final class Paula {
         }
 
         /**
-         * Scrittura della CPU in AUDxDAT. Con il DMA acceso rifornisce e basta;
-         * con il DMA spento è il modo "a interrupt", ed è l'unico punto in cui la
-         * scrittura può chiedere un interrupt — <b>solo</b> quella che trova il
-         * canale fermo.
+         * CPU write to AUDxDAT. With the DMA on it only refills; with the DMA off it is
+         * interrupt mode, and the only place a write can request an interrupt: <b>only</b>
+         * the write that finds the channel idle, and only with no interrupt of the channel
+         * already pending (then the channel stays idle).
          *
-         * <p>Alzare AUDxIR a <i>ogni</i> scrittura è il modo di non far partire
-         * mai più nulla: il gestore di livello 4 che rifornisce il campione si
-         * ri-arma da solo prima della propria RTE, rientra subito, e gli interrupt
-         * di livello più basso — VERTB in testa — non vengono serviti mai più.
-         * Il gioco resta a schermo nero con INTREQ fermo su AUD0+VERTB e la CPU
-         * al 100% dentro il gestore audio. In modo a interrupt il ritmo lo detta
-         * il periodo: la word successiva la chiede {@link #advanceSampleByte()}
-         * quando i due byte sono stati suonati.
-         *
-         * <p>Oracolo: WinUAE {@code audio.cpp}, {@code audio_state_channel2} stato
-         * 0 — {@code else if (cdp->dat_written && !isirq(nr))}, che passa allo
-         * stato 2 con {@code setirq}. Con l'interrupt già pendente la scrittura
-         * non fa nulla e il canale resta fermo ({@code zerostate}).
+         * <p>Raising AUDxIR at <i>every</i> write would lock the machine: the level 4 handler
+         * that refills the sample would rearm itself before its own RTE, re-enter at once,
+         * and lower interrupts (VERTB first) would never be served again. In interrupt mode
+         * the period sets the pace: {@link #advanceSampleByte()} asks for the next word when
+         * both bytes have played.
          */
         private void writeData(int value) {
             nextWord = value & 0xFFFF;
             nextWordValid = true;
             nextWordEndsBlock = false;
             if (dmaEnabled) {
-                // Un modulatore non manda mai la word in riproduzione: la legge da
-                // audDAT ai confini di periodo (vedi advanceModulator).
+                // A modulator never plays its word: it reads it from audDAT at period
+                // boundaries (see advanceModulator).
                 if (!currentWordValid && !isModulator()) {
                     loadCurrentWord();
                 }
@@ -2231,80 +2051,58 @@ public final class Paula {
                 return;
             }
             if (cpuDriven) {
-                // Rifornimento chiesto dall'interrupt precedente: la word resta in
-                // attesa, la prende advanceSampleByte() a fine periodo.
+                // Refill requested by the previous interrupt: the word waits,
+                // advanceSampleByte() takes it at the end of the period.
                 refreshActiveMask();
                 return;
             }
             if ((intreq & (0x0080 << index)) != 0) {
-                // Interrupt del canale ancora pendente: il canale non riparte.
+                // The channel's interrupt is still pending: the channel does not restart.
                 refreshActiveMask();
                 return;
             }
             cpuDriven = true;
-            raiseAudioInterrupt(index);         // WinUAE: setirq(nr, 1)
+            raiseAudioInterrupt(index);
             if (isModulator()) {
-                // `loaddat(nr)` su un modulatore non manda in riproduzione niente:
-                // applica la modulazione di VOLUME, e la applica QUI, all'ingresso
-                // nello stato 2 — non al primo confine di periodo. Il primo confine
-                // e' percio' il 2->3, cioe' quello del PERIODO: bytePhase parte da 1.
+                // Loading the word into a modulator plays nothing: it applies the VOLUME
+                // modulation, and applies it HERE, as the channel starts playing, not at
+                // the first period boundary. The first boundary is therefore the PERIOD
+                // one: bytePhase starts from 1.
                 //
-                // Farlo partire da 0 sfasa di mezzo periodo l'intera tabella di
-                // modulazione, e su una tabella che alterna volume e periodo
-                // (irqmod3/4) scambia i due per sempre: le parole del volume
-                // finivano in AUDxPER, il canale modulato si fermava al primo giro
-                // e la traccia si chiudeva a 61 eventi contro i 13995 dell'oracolo.
+                // Starting it from 0 shifts the whole modulation table by half a period,
+                // and on a table alternating volume and period (irqmod3/4) swaps the two
+                // for good: the volume words ended up in AUDxPER, the modulated channel
+                // stopped at the first loop and the trace closed at 61 events instead of
+                // 13995.
                 if ((adkcon & (1 << index)) != 0) {
                     audioChannels[index + 1].setModulatedVolume(audDAT[index]);
                 }
                 consumeQueuedWord();
-                loadPeriod();                   // WinUAE: loadper nel case 2 (pbufldl)
+                loadPeriod();
                 bytePhase = 1;
             } else {
-                loadCurrentWord();              // loaddat(nr): dat2 = dat
+                loadCurrentWord();
                 loadPeriod();
-                // ...e `newsample(nr, dat2 >> 8)` nello STESSO istante: il case 0
-                // mette pbufldl = true e richiama subito la macchina a stati. Il byte
-                // alto esce alla scrittura di AUDxDAT, non un periodo dopo. In una
-                // traccia riportata al proprio primo evento lo sfasamento e'
-                // invisibile, ma sposta di un periodo intero le bande gialle del
-                // gestore rispetto al suono — che e' cio' che lo screenshot vede.
+                // ...and the high byte comes out at the SAME instant, at the AUDxDAT write,
+                // not one period later. In a trace aligned on its own first event the shift
+                // is invisible, but it moves the handler's yellow bands by a whole period
+                // against the sound, which is what the screenshot sees.
                 advanceSampleByte();
             }
             refreshActiveMask();
         }
 
         /**
-         * Lo slot DMA ha consegnato la word. <b>Δ2</b>: qui succede solo ciò che WinUAE fa
-         * dentro {@code AUDxDAT()} — il dato e, se il canale sta già suonando, {@code intreq2} —
-         * mentre tutto il resto è armato a {@link #DMA_WORD_DELAY_MC} master-cycle, cioè
-         * <b>un CCK dopo</b>:
+         * The DMA slot has delivered the word. Only the data, and for a channel already
+         * playing the end-of-block flag, take effect here; everything else is armed
+         * {@link #DMA_WORD_DELAY_MC} master cycles later, <b>one CCK after</b> the slot.
          *
-         * <pre>
-         * if (chan_ena) { cdp-&gt;dat = v; cdp-&gt;dat_written = true; }
-         * if (chan_ena) {
-         *     cyc = 1 * CYCLE_UNIT;                    // AUDxDAT is processed after 1 CCK delay
-         *     if ((cdp-&gt;state &amp; 15) == 2 || (cdp-&gt;state &amp; 15) == 3) {
-         *         if (cdp-&gt;wlen == 1) cdp-&gt;intreq2 = true;   // But INTREQ2 is set immediately
-         *     }
-         * }
-         * event2_newevent_xx(-1, cyc, vv, event_audxdat_func);
-         * </pre>
-         *
-         * <p>La condizione è attiva nella configurazione dell'oracolo: dipende da
-         * {@code cpu_compatible}, che {@code cycle_exact=full} non imposta ma che
-         * {@code default_prefs} mette a 1 (§9.2.1 del piano).
-         *
-         * <p>Misurato su `timing/dmalen0` (piano §22): lo slot cade a `hpos 17` su entrambi i
-         * lati e la richiesta d'interrupt dell'oracolo segue di 1 CCK esatto, su tutti i rami
-         * (`which=10` dello stato 1 come `which=31` dello stato 3) e su tutte le otto righe
-         * del blocco. Senza questo CCK il gestore prende il confine d'istruzione precedente
-         * e la banda si sposta di 5 CCK = 20 px.
-         *
-         * <p>⚠️ Il §9.2.1 aveva provato Δ2 e l'aveva revocata: differiva <i>tutto</i> il corpo,
-         * quando la word che arriva a un canale già in riproduzione non deve entrare in
-         * riproduzione affatto. Quella metà è il §21; questa è il ritardo vero e proprio, e le
-         * due insieme sono la trascrizione completa.
+         * <p>Measured on {@code timing/dmalen0} (plan section 22): the slot falls at hpos 17
+         * and the interrupt request follows exactly 1 CCK later, on every branch and on all
+         * eight lines of the block. Without this CCK the handler takes the previous
+         * instruction boundary and the band moves by 5 CCK = 20 px. The other half, that a
+         * word reaching a channel already playing does not start playing at all, is section
+         * 21.
          */
         private void receiveDmaWord(int value) {
             audDAT[index] = value & 0xFFFF;
@@ -2313,20 +2111,20 @@ public final class Paula {
 
             stepDmaPointer();
             if (!dmaPriming && !dmaFirstWord) {
-                // `intreq2` si alza SUBITO, prima del ritardo: è l'unica cosa che, negli
-                // stati 2/3, WinUAE non accoda. Il decremento di `wlen` che lo giustifica
-                // avviene invece nel gestore differito, quindi qui si anticipa il suo
-                // risultato: `<= 1` e non `== 1`, perché il decremento è clampato a zero e
-                // la lunghezza residua ci resta finché `requestNextWord()` non ricarica il
-                // blocco. Con `== 1` la word successiva a quella di fine blocco perdeva il
-                // proprio interrupt — misurato su dmalen0, una richiesta in meno per blocco.
+                // The end-of-block flag is set AT ONCE, before the delay. The length
+                // decrement that justifies it happens in the deferred handler, so its
+                // result is anticipated here: `<= 1` and not `== 1`, because the decrement
+                // is clamped at zero and the remaining length stays there until
+                // `requestNextWord()` reloads the block. With `== 1` the word after the
+                // end-of-block one lost its own interrupt (dmalen0: one request fewer per
+                // block).
                 nextWordEndsBlock = remainingWords <= 1;
             }
             dmaWordDelay = DMA_WORD_DELAY_MC;
             refreshActiveMask();
         }
 
-        /** Il corpo di {@code event_audxdat_func}: un CCK dopo lo slot. Vedi {@link #receiveDmaWord}. */
+        /** The deferred processing of a DMA word, one CCK after the slot. See {@link #receiveDmaWord}. */
         private void processDmaWord() {
             if (dmaPriming) {
                 nextWord = 0;
@@ -2345,8 +2143,8 @@ public final class Paula {
             }
             final boolean startsPlayback = dmaFirstWord;
             if (dmaFirstWord) {
-                // Stato 5 -> 2: questa word entra in riproduzione ma non scala LEN,
-                // ed è QUI che il period counter riparte — WinUAE, case 5: loadper(nr).
+                // First word -> playing: this word starts playing but does not decrement
+                // LEN, and it is HERE that the period counter restarts.
                 dmaFirstWord = false;
                 loadPeriod();
                 nextWordEndsBlock = remainingWords == 0;
@@ -2359,48 +2157,37 @@ public final class Paula {
                 remainingWords--;
             }
 
-            // Una word che arriva a un canale GIA' in riproduzione non entra in
-            // riproduzione allo slot DMA. Oracolo: WinUAE audio.cpp, event_audxdat_func —
-            // negli stati 2 e 3 con il canale in DMA aggiorna soltanto `wlen` (e
-            // `intreq2`, che AUDxDAT ha gia' alzato subito) e NON chiama ne' loaddat()
-            // ne' newsample(). La word entra al confine di periodo successivo, ed e' li'
-            // che nasce l'interrupt di fine blocco: `case 3: ... loaddat(nr); if
-            // (cdp->intreq2 && napnav) setirq(nr, 31);`.
+            // A word reaching a channel ALREADY playing does not start playing at the DMA
+            // slot: only the remaining length is updated. The word enters at the next period
+            // boundary, and that is where the end-of-block interrupt is raised.
             //
-            // Misurato su vAmigaTS timing/dmatim5 (docs/vamigats-paula-audio-plan.md
-            // §21): lo slot DMA del canale 0 cade a hpos 17 su ENTRAMBI i lati — quindi
-            // l'arbitraggio e' esatto — ma l'oracolo chiede l'interrupt 1 o 2 CCK dopo,
-            // secondo la fase 2/3 in cui si trova il canale, mentre noi lo chiedevamo
-            // nello stesso ciclo dello slot. Con AUD0PER=1 quei 2 CCK fanno mancare al
-            // gestore di livello 4 il confine del `dbra` del main loop, e la banda gialla
-            // si sposta di 6 CCK: e' l'unica riga sbagliata dello screenshot.
+            // Measured on vAmigaTS timing/dmatim5 (docs/vamigats-paula-audio-plan.md
+            // section 21): channel 0's DMA slot falls at hpos 17, but the interrupt comes 1
+            // or 2 CCK later depending on the byte phase of the channel. With AUD0PER=1
+            // requesting it in the slot's own cycle made the level 4 handler miss the main
+            // loop's `dbra` boundary, moving the yellow band by 6 CCK.
             //
-            // Resta immediato il solo avvio (stato 5 -> 2), che in WinUAE passa dall'altro
-            // ramo di event_audxdat_func e chiama la macchina a stati subito. Il
-            // modulatore non manda mai la word in riproduzione: la legge da audDAT ai
-            // confini di periodo (advanceModulator).
+            // Only the start (first word -> playing) is immediate. A modulator never plays
+            // its word: it reads it from audDAT at period boundaries (advanceModulator).
             if (startsPlayback && !currentWordValid && !isModulator()) {
                 loadCurrentWord();
             }
             if (startsPlayback) {
-                // ...e il primo byte esce SUBITO, non al confine di periodo successivo:
-                // il case 5 di WinUAE mette `pbufldl = true` e richiama la macchina a
-                // stati, che entra nel case 2 e fa `newsample(dat2 >> 8)` nello stesso
-                // istante. Aspettare un periodo intero e' invisibile in una traccia
-                // (che e' riportata al proprio primo evento) ma non lo e' quando il
-                // canale viene spento prima: dmaonoff2 tiene il DMA acceso due righe
-                // sole, e cosi' non suonava affatto invece dei 486 eventi dell'oracolo.
+                // ...and the first byte comes out AT ONCE, not at the next period boundary.
+                // Waiting a whole period is invisible in a trace aligned on its own first
+                // event, but not when the channel is switched off early: dmaonoff2 keeps
+                // the DMA on for two lines only, and then played nothing instead of 486
+                // events.
                 advanceSampleByte();
             }
             refreshActiveMask();
         }
 
         /**
-         * Il canale sta <b>modulando</b> il successivo: ADKCON gli ha assegnato il volume
-         * (bit {@code index}) o il periodo (bit {@code index+4}) del canale {@code index+1}.
-         * Il canale 3 non modula nessuno ({@code loaddat} esce con {@code if (nr >= 3)}),
-         * ma i suoi bit lo ammutoliscono lo stesso — quello lo fa {@code adk_mask}, non
-         * questo metodo.
+         * The channel is <b>modulating</b> the next one: ADKCON gave it the volume (bit
+         * {@code index}) or the period (bit {@code index+4}) of channel {@code index+1}.
+         * Channel 3 modulates nobody, but its bits mute it all the same; that is done by
+         * {@link Paula#getAudioMixerOutput(int)}, not by this method.
          */
         private boolean isModulator() {
             return index < 3 && (adkcon & (0x11 << index)) != 0;
@@ -2412,19 +2199,16 @@ public final class Paula {
                 return;
             }
             if (!currentWordValid && cpuDriven && !dmaEnabled) {
-                // I due byte della word sono stati suonati: è QUI che il modo a
-                // interrupt chiede il rifornimento, un periodo dopo il byte basso
-                // (WinUAE stato 3 con perfin e canale non in DMA). Se l'interrupt
-                // precedente è ancora pendente la CPU non ha rifornito in tempo e
-                // il canale si ferma, esattamente come lo zerostate di WinUAE.
+                // Both bytes of the word have played: HERE interrupt mode asks for the
+                // refill, one period after the low byte. If the previous interrupt is still
+                // pending the CPU did not refill in time and the channel stops.
                 boolean stillPending = (intreq & (0x0080 << index)) != 0;
                 raiseAudioInterrupt(index);
                 if (stillPending) {
-                    // zerostate(): il canale esce dagli stati 2/3 e il period counter
-                    // si ferma (isPlaying() diventa falsa). currentSample NON si tocca —
-                    // WinUAE non lo azzera, e l'uscita resta congelata all'ultimo byte
-                    // suonato. Azzerarla aggiungeva a dmaonoff2 un evento "-> 0" per
-                    // giro che nell'oracolo non c'è: 728 eventi contro 486.
+                    // The channel goes idle and the period counter stops (isPlaying()
+                    // turns false). currentSample is NOT touched: the output stays frozen
+                    // at the last byte played. Clearing it added a "-> 0" event per loop to
+                    // dmaonoff2: 728 events instead of 486.
                     cpuDriven = false;
                     nextWordValid = false;
                     refreshActiveMask();
@@ -2432,35 +2216,27 @@ public final class Paula {
                 }
             }
             if (!currentWordValid && !loadCurrentWord()) {
-                // WinUAE fa loaddat() incondizionato: senza rifornimento il canale
-                // risuona l'ultima word scritta invece di zittirsi, e si ferma al
-                // primo interrupt non servito (il controllo qui sopra). Tenerlo
-                // conserva la cadenza di un interrupt ogni due periodi.
+                // The word is loaded unconditionally: without a refill the channel plays
+                // the last word written again instead of going silent, and stops at the
+                // first interrupt not served (the check above). That keeps the pace of one
+                // interrupt every two periods.
                 //
-                // Vale anche col DMA ACCESO: se lo slot audio non ha ancora consegnato
-                // la word, Paula rimette in riproduzione il contenuto di AUDxDAT, non
-                // il silenzio. È la rete di sicurezza dietro la richiesta anticipata
-                // qui sotto in loadCurrentWord(): un periodo di zero è un buco udibile,
-                // una word ripetuta no.
+                // It holds with the DMA ON too: if the audio slot has not delivered the
+                // word yet, Paula plays the content of AUDxDAT again, not silence. It is
+                // the safety net behind the early request in loadCurrentWord(): a period
+                // of zero is an audible hole, a repeated word is not.
                 currentWord = audDAT[index] & 0xFFFF;
                 currentWordValid = true;
                 currentWordEndsBlock = false;
                 bytePhase = 0;
                 if (dmaEnabled && nextWordEndsBlock) {
-                    // ...e il fine-blocco rimasto in sospeso si scarica QUI, anche se il
-                    // DMA non ha (ancora) consegnato niente. In WinUAE le due cose sono
-                    // separate: `loaddat(nr)` è incondizionato e il controllo che segue
-                    // guarda solo il flag —
-                    //
-                    //   case 3: if (chan_ena) { loaddat(nr); if (napnav) setdr(nr, false);
-                    //       if (cdp->intreq2 && napnav) { setirq(nr, 31); intreq2 = false; } }
-                    //
-                    // Da noi il flag viaggia con la word in coda, quindi senza questo ramo
-                    // un `intreq2` sopravvissuto allo spegnimento del DMA (§23.2) non
-                    // veniva scaricato mai: su timing/dmatim3 l'oracolo chiede l'interrupt
-                    // a vpos 144 e 160 — il primo confine di periodo dopo che DMACON ha
-                    // riacceso un canale che stava ancora suonando — e noi non chiedevamo
-                    // niente.
+                    // ...and the pending end-of-block is delivered HERE, even if the DMA has
+                    // not delivered anything (yet): loading the word and checking the flag
+                    // are separate. The flag travels with the queued word, so without this
+                    // branch an end-of-block that survived a DMA switch-off (section 23.2)
+                    // would never be delivered: on timing/dmatim3 the interrupt comes at
+                    // vpos 144 and 160, the first period boundary after DMACON switched a
+                    // still-playing channel back on.
                     nextWordEndsBlock = false;
                     raiseAudioInterrupt(index);
                 }
@@ -2494,21 +2270,17 @@ public final class Paula {
             if (currentWordEndsBlock) {
                 raiseAudioInterrupt(index);
             }
-            // La richiesta della word successiva parte SEMPRE quando una word entra in
-            // riproduzione — anche per l'ultima del blocco. Oracolo: WinUAE audio.cpp,
-            // stato 3 con perfin e canale in DMA, dove `setdr(nr, false)` segue
-            // `loaddat(nr)` senza alcuna condizione sulla lunghezza residua; è `setdr`
-            // stessa a scegliere fra richiesta normale e richiesta con ricarica del
-            // puntatore (`dsr`, quando wlen == 1).
+            // The request for the next word is ALWAYS raised when a word starts playing,
+            // the last one of the block included, whatever the remaining length; the
+            // request itself chooses between a normal request and one that reloads the
+            // pointer (one word left).
             //
-            // Saltarla al confine del blocco — quello che si faceva prima — toglie al
-            // DMA un'intera word di anticipo: la richiesta partiva solo dopo che
-            // l'ultima word era stata suonata per intero, e lo slot DMA audio passa una
-            // volta per riga (454 cicli). Con un periodo corto la word arrivava tardi e
-            // il canale restava a ZERO per un periodo intero. Misurato sul banco con
-            // un'onda quadra da 10 kHz: 40 buchi al secondo, che nello spettro sono
-            // bande laterali distanti ~39,5 Hz dalla fondamentale, forti quanto la
-            // fondamentale stessa.
+            // Skipping it at the block boundary takes a whole word of lead away from the
+            // DMA: the request would start only after the last word had played in full,
+            // and the audio slot comes once per line (454 cycles). With a short period the
+            // word arrived late and the channel stayed at ZERO for a whole period: on a
+            // 10 kHz square wave, 40 holes per second, sidebands ~39.5 Hz from the
+            // fundamental and as strong as the fundamental itself.
             if (dmaEnabled) {
                 requestNextWord(false);
             }
@@ -2517,41 +2289,38 @@ public final class Paula {
         }
 
         /**
-         * Un confine di periodo su un canale <b>modulatore</b>.
+         * A period boundary on a <b>modulator</b> channel.
          *
-         * <p>Oracolo: WinUAE {@code audio.cpp}, {@code loaddat(nr, modper)} e i suoi due
-         * punti di chiamata. Il modulatore percorre la stessa macchina a stati di un
-         * canale normale, ma i due confini di periodo <b>non fanno la stessa cosa</b>:
+         * <p>A modulator runs the same state machine as a normal channel, but its two period
+         * boundaries <b>do not do the same thing</b>:
          * <ul>
-         *   <li><b>confine alto</b> (stato 5→2 e 3→2), {@code loaddat(nr, false)}:
-         *       {@code update_volume(nr+1, cdp->dat)} se ADKCON chiede il volume;</li>
-         *   <li><b>confine basso</b> (stato 2→3), {@code loaddat(nr, true)}:
-         *       {@code cdp[1].per = cdp->dat} se ADKCON chiede il periodo.</li>
+         *   <li><b>high-byte boundary</b>: sets the next channel's volume if ADKCON asks
+         *       for volume modulation;</li>
+         *   <li><b>low-byte boundary</b>: sets the next channel's period if ADKCON asks for
+         *       period modulation.</li>
          * </ul>
          *
-         * <p>La word è sempre {@code cdp->dat}, cioè <b>l'ultima arrivata</b>
-         * ({@code audDAT[index]}), mai {@code dat2}: un modulatore non "suona" niente.
+         * <p>The word is always <b>the last one arrived</b> ({@code audDAT[index]}): a
+         * modulator plays nothing.
          *
-         * <p>E la richiesta della word successiva parte a confini diversi —
-         * {@code setdr} al confine alto solo se {@code napnav = (!audav && !audap) || audav},
-         * e al confine basso solo se {@code audap}. Con <b>entrambe</b> le modulazioni
-         * attive parte a tutti e due, quindi il canale consuma <b>una word per periodo</b>
-         * invece che una ogni due: una alimenta il volume, la successiva il periodo, e le
-         * parole si alternano. È esattamente il modo in cui è scritta la tabella di
-         * {@code dmamod3} ({@code 0,0, 1,0, 0,2, 2,0, …}) e il motivo per cui
-         * {@code dmamod4}, che ne ha un numero dispari, «scambia volume e periodo a giri
-         * alterni».
+         * <p>And the request for the next word starts at different boundaries: at the high
+         * one only with volume modulation (or with neither), at the low one only with period
+         * modulation. With <b>both</b> modulations on it starts at both, so the channel
+         * consumes <b>one word per period</b> instead of one every two: one feeds the
+         * volume, the next the period, alternating. That is how the table of
+         * {@code dmamod3} is written ({@code 0,0, 1,0, 0,2, 2,0, ...}), and why
+         * {@code dmamod4}, which has an odd number of them, "swaps volume and period on
+         * alternate loops".
          *
-         * <p>Prendere volume <i>e</i> periodo dalla stessa word — quello che si faceva
-         * prima — infila in AUDxPER parole destinate al volume: {@code $0002} diventa un
-         * periodo di 2 CCK e il canale esplode. Misurato: 594169 eventi contro i 13996
-         * dell'oracolo.
+         * <p>Taking volume <i>and</i> period from the same word puts words meant for the
+         * volume into AUDxPER: {@code $0002} becomes a 2 CCK period and the channel explodes
+         * (594169 events instead of 13996).
          */
         private void advanceModulator() {
             final boolean audav = (adkcon & (1 << index)) != 0;
             final boolean audap = (adkcon & (0x10 << index)) != 0;
 
-            currentSample = 0;      // adk_mask = 0: il modulatore e' muto
+            currentSample = 0;      // a modulator is silent
             if (bytePhase == 0) {
                 if (audav) {
                     audioChannels[index + 1].setModulatedVolume(audDAT[index]);
@@ -2570,11 +2339,10 @@ public final class Paula {
         }
 
         /**
-         * Libera la word in coda. Il modulatore non la manda in riproduzione — legge
-         * sempre AUDxDAT — ma la coda va svuotata lo stesso, perché è
-         * {@code nextWordValid} a impedire che parta una seconda richiesta. Ed è qui che
-         * scatta l'interrupt di fine blocco, nello stesso punto in cui WinUAE controlla
-         * {@code cdp->intreq2}: accanto a {@code setdr}.
+         * Releases the queued word. A modulator does not play it (it always reads AUDxDAT),
+         * but the queue must be emptied all the same, since {@code nextWordValid} is what
+         * keeps a second request from starting. The end-of-block interrupt fires here, next
+         * to the request for the next word.
          */
         private void consumeQueuedWord() {
             if (!nextWordValid) return;
@@ -2586,25 +2354,16 @@ public final class Paula {
         }
 
         /**
-         * Il {@code setdr}/{@code setirq} di WinUAE: chiedi la word successiva, per DMA
-         * se il canale è in DMA e per interrupt se sta girando in modo manuale
-         * ({@code irqmod*}).
+         * Asks for the next word: by DMA if the channel is in DMA, by interrupt if it runs
+         * in manual mode ({@code irqmod*}).
          *
-         * <p>{@code checkPendingIrq} distingue i due confini di periodo, e la distinzione
-         * è indispensabile. Il controllo «l'interrupt precedente è ancora pendente ⇒ la
-         * CPU non ha rifornito in tempo ⇒ il canale si ferma» ({@code zerostate}) vive
-         * <b>solo nello stato 3</b>, cioè al confine alto:
-         * <pre>
-         * case 3: ... else {
-         *     if (!cdp-&gt;irqcheck) cdp-&gt;irqcheck = isirq(nr);
-         *     if (napnav) setirq(nr, 32);
-         *     if (cdp-&gt;irqcheck &gt; 0) { zerostate(nr, false); return true; }
-         * </pre>
-         * Nello stato 2 c'è solo {@code if (audap) setirq(nr, 22);}, senza controllo.
-         * Applicarlo a tutti e due i confini ferma il canale al primo giro quando ADKCON
-         * chiede entrambe le modulazioni, perché i due interrupt cadono a mezzo periodo
-         * l'uno dall'altro e il secondo trova sempre pendente il primo: misurato,
-         * {@code irqmod3} passava da 13995 eventi a 61.
+         * <p>{@code checkPendingIrq} tells the two period boundaries apart, and the
+         * distinction is essential. The check "the previous interrupt is still pending, so
+         * the CPU did not refill in time, so the channel stops" applies <b>only at the
+         * high-byte boundary</b>; the low-byte one requests without checking. Applying it at
+         * both stops the channel at the first loop when ADKCON asks for both modulations,
+         * since the two interrupts fall half a period apart and the second always finds the
+         * first pending: {@code irqmod3} went from 13995 events to 61.
          */
         private void askForNextWord(boolean checkPendingIrq) {
             if (dmaEnabled) {
@@ -2621,19 +2380,18 @@ public final class Paula {
         }
 
         /**
-         * Volume imposto dal canale precedente. WinUAE {@code update_volume()} scrive
-         * {@code data.audvol}, <b>non</b> {@code mixvol}: il valore entra nel mixer al
-         * {@code loadper()} successivo, non subito. Vedi {@link #mixVolume}.
+         * Volume set by the previous channel. It sets the register, <b>not</b> the latched
+         * volume: the value enters the mixer at the next period boundary, not at once. See
+         * {@link #mixVolume}.
          */
         private void setModulatedVolume(int word) {
             audVOL[index] = Math.min(word & 0x7F, 64);
         }
 
         /**
-         * Periodo imposto dal canale precedente. WinUAE scrive {@code cdp[1].per} e basta:
-         * il contatore in corso <b>non</b> viene riarmato, il periodo nuovo vale dal
-         * {@code loadper()} successivo. Riarmarlo subito accorcia o allunga il periodo che
-         * sta scorrendo, che è un errore anche quando il valore è quello giusto.
+         * Period set by the previous channel. The running counter is <b>not</b> rearmed: the
+         * new period applies from the next period boundary. Rearming it at once would
+         * shorten or lengthen the period in progress.
          */
         private void setModulatedPeriod(int word) {
             audPER[index] = word & 0xFFFF;
@@ -2683,19 +2441,17 @@ public final class Paula {
         }
 
         /**
-         * Scrittura della CPU in AUDxPER. Come {@link #setModulatedPeriod}, aggiorna solo
-         * la durata del periodo: WinUAE {@code AUDxPER()} assegna {@code cdp->per} e
-         * lascia stare {@code cdp->evtime}, quindi il periodo in corso finisce con la
-         * durata vecchia.
+         * CPU write to AUDxPER. Like {@link #setModulatedPeriod}, it updates the period length
+         * only: the period in progress ends with the old length.
          */
         private void reloadPeriodClocks() {
             periodClocks = computePeriodClocks();
         }
 
         private void refreshActiveMask() {
-            // cpuDriven entra nella condizione perché il modo a interrupt vive sul
-            // period-counter: un canale che uscisse dalla maschera smetterebbe di
-            // contare e non chiederebbe mai più la word successiva.
+            // cpuDriven is part of the condition because interrupt mode lives on the period
+            // counter: a channel leaving the mask would stop counting and never ask for the
+            // next word again.
             boolean active = dmaEnabled || dmaRequest || nextWordValid || currentWordValid
                     || cpuDriven || currentSample != 0 || dmaWordDelay > 0 || reloadRequestDelay > 0;
             if (active) activeAudioMask |= (1 << index);

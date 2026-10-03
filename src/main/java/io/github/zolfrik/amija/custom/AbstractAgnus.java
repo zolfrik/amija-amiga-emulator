@@ -33,51 +33,39 @@ import java.util.Arrays;
 import java.util.function.IntConsumer;
 
 /**
- * Agnus (8361/8367/8372) — DMA Controller, Copper, Blitter e bus arbiter dell'Amiga 500.
+ * Agnus (8361/8367/8372): DMA controller, Copper, Blitter and bus arbiter of the Amiga 500.
  *
- * Agnus è il cuore del sistema DMA dell'Amiga. Si occupa di:
- *   - Generare i segnali di sincronizzazione video (hpos/vpos)
- *   - Arbitrare il bus tra CPU, Copper, Blitter e DMA custom
- *   - Gestire i DMA slot: Refresh, Disk, Audio, Sprite, Bitplane, Copper, Blitter
- *   - Pilotare Denise con i dati bitplane e sprite via DMA
- *   - Interfacciarsi con le CIA per OVL, TOD, interrupt
- *   - Interfacciarsi con Paula per gli interrupt e il DMA disco
+ * Agnus is the heart of the Amiga's DMA system. It:
+ *   - generates the video sync signals (hpos/vpos);
+ *   - arbitrates the bus between CPU, Copper, Blitter and custom DMA;
+ *   - runs the DMA slots: refresh, disk, audio, sprites, bitplanes, Copper, Blitter;
+ *   - feeds Denise with bitplane and sprite data by DMA;
+ *   - talks to the CIAs for OVL, TOD and interrupts;
+ *   - talks to Paula for interrupts and disk DMA.
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * TEMPORIZZAZIONE
- * ═══════════════════════════════════════════════════════════════════════════
+ * TIMING
  *
- * L'Amiga usa due unità di tempo:
- *   - System clock (SC): il clock master PAL a 7.09379 MHz
- *   - Color Clock (CCK): SC/2 = 3.54690 MHz (un CCK = 2 SC)
+ * Two time units:
+ *   - system clock (SC): the PAL master clock at 7.09379 MHz;
+ *   - colour clock (CCK): SC/2 = 3.54690 MHz (one CCK = 2 SC).
  *
- * hpos conta i system clock (0–453 PAL, 0–453 NTSC per alcune versioni).
- * I DMA slot sono assegnati in unità CCK (hpos pari = CCK = hpos/2).
- * Un'intera riga PAL ha 227 CCK (454 SC).
+ * The DMA slots are assigned in CCK units. A whole PAL line has 227 CCK (454 SC).
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * SEGNALI TOD CIA
- * ═══════════════════════════════════════════════════════════════════════════
+ * CIA TOD LINES
  *
- * CIA-A TOD: riceve un impulso dal segnale di rete (50 Hz PAL / 60 Hz NTSC).
- *   Su PAL: 1 impulso per frame, generato a vpos=0 (inizio nuovo frame).
- *   Il segnale rimane HIGH per un breve periodo, poi torna LOW.
+ * CIA-A TOD: a pulse from the vertical sync (50 Hz PAL / 60 Hz NTSC), one per frame.
  *
- * CIA-A FLAG: riceve l'impulso di indice del floppy disk (~5.4 Hz per giro).
- *   Pilotato dal pin FLAG della CIA-A tramite il segnale di indice del drive.
- *   NON è pilotato dal vsync — è un segnale separato gestito da updateFloppy().
+ * CIA-A FLAG: the floppy index pulse (~5 Hz, once per revolution), driven by the drive's
+ *   index signal through updateFloppy(), NOT by the vertical sync.
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * INTERRUPT
- * ═══════════════════════════════════════════════════════════════════════════
+ * INTERRUPTS
  *
- * CIA-A IRQ → Paula INTREQ bit 3 (PORTS, IPL 2).
- * CIA-B IRQ → Paula INTREQ bit 13 (EXTER, IPL 6).
+ * CIA-A IRQ -> Paula INTREQ bit 3 (PORTS, IPL 2).
+ * CIA-B IRQ -> Paula INTREQ bit 13 (EXTER, IPL 6).
  *
- * Il bit PORTS/EXTER viene settato quando il pin /IRQ della CIA scende (LOW).
- * Viene azzerato dal software scrivendo su INTREQ (CLR) — NON automaticamente
- * quando la CIA rilascia il proprio IRQ. Questo è il comportamento hardware
- * corretto: il bit INTREQ è latched e va azzerato esplicitamente.
+ * The PORTS/EXTER bit is set when the CIA's /IRQ pin goes low. Software clears it by
+ * writing INTREQ (CLR); it is NOT cleared when the CIA releases its IRQ: the INTREQ bit is
+ * latched and must be cleared explicitly.
  *
  * @author alessio.carotenuto
  */
@@ -90,7 +78,7 @@ public abstract class AbstractAgnus {
     private int frameCount = 1;
 
     // =========================================================================
-    // Dipendenze
+    // Dependencies
     // =========================================================================
 
     private final Motorola68000  cpu;
@@ -103,21 +91,20 @@ public abstract class AbstractAgnus {
     private final ROM     rom;
 
     /**
-     * Espansione Fast RAM Zorro II (AutoConfig). null = nessuna Fast RAM (default
-     * A500). Iniettata dopo la costruzione via {@link #setFastRam(FastRam)} per non
-     * alterare la firma del costruttore (usata da numerosi test). Vista solo dalla
-     * CPU: i master DMA (Copper/Blitter/bitplane) non accedono mai alla Fast RAM.
+     * Zorro II Fast RAM expansion (AutoConfig). null = no Fast RAM (A500 default). Injected
+     * after construction through {@link #setFastRam(FastRam)}. Seen by the CPU only: the
+     * DMA masters (Copper/Blitter/bitplanes) never reach Fast RAM.
      */
     private FastRam fastRam;
 
     /**
-     * Controller hard disk (schede Zorro II con AutoConfig + boot ROM). Lista vuota
-     * = nessun hard disk. Iniettati dopo la costruzione via
-     * {@link #setHdControllers}. Come la Fast RAM partecipano all'AutoConfig.
+     * Hard disk controllers (Zorro II boards with AutoConfig + boot ROM). Empty list = no
+     * hard disk. Injected after construction through {@link #setHdControllers}. Like the
+     * Fast RAM they take part in AutoConfig.
      */
     private final java.util.List<HdController> hdControllers = new java.util.ArrayList<>();
 
-    /** Accesso byte alla RAM Amiga (chip/slow/fast) usato dai controller hard disk. */
+    /** Byte access to Amiga RAM (chip/slow/fast) for the hard disk controllers. */
     private final HdController.Bus hdBus = new HdController.Bus() {
         @Override public int  readByte(int addr)            { return hdReadByte(addr); }
         @Override public void writeByte(int addr, int value) { hdWriteByte(addr, value); }
@@ -194,11 +181,8 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * STEP 4 (PERFORMANCE_REPORT_FINAL): cache statica di EventSlot.values().
-     * Enum.values() clona l'array interno $VALUES ad ogni chiamata; in
-     * executeEvents() (hot loop, fino a ~709k volte/s per SLOT_CIAA) questo
-     * generava un clone per evento. L'array è immutabile, quindi la cache è
-     * comportamentalmente identica.
+     * PERF: static cache of EventSlot.values(). Enum.values() clones the array at every
+     * call, and executeEvents() is a hot loop (up to ~709k times/s for SLOT_CIAA).
      */
     private static final EventSlot[] SLOT_VALUES = EventSlot.values();
 
@@ -226,23 +210,19 @@ public abstract class AbstractAgnus {
     private long nextTrigger = NEVER;
 
     /**
-     * PERF: bitmask degli slot evento ATTIVI (trigger != NEVER). SLOT_COUNT (25) ≤ 64,
-     * quindi un solo long. executeEvents itera solo i bit settati (tipicamente 2-4 slot:
-     * CIAA ogni 10 cicli + audio + sporadici) invece di scandire incondizionatamente
-     * tutti i 25 slot ad ogni firing (~709k volte/s per la sola SLOT_CIAA). L'ordine di
-     * iterazione resta crescente (indice 0→24) tramite numberOfTrailingZeros, identico
-     * alla vecchia scansione lineare; gli slot inattivi erano no-op (trigger=NEVER non
-     * scatta e NEVER<nextTrigger è falso), quindi saltarli è comportamentalmente neutro.
-     * Mantenuta coerente in scheduleAbs/cancel/executeEvents/internalReset, gli unici
-     * punti che mutano trigger[].
+     * PERF: bitmask of the ACTIVE event slots (trigger != NEVER). SLOT_COUNT (25) <= 64, so
+     * one long. executeEvents iterates the set bits only (typically 2-4 slots) in increasing
+     * order (index 0..24, through numberOfTrailingZeros), the same order as a linear scan.
+     * Kept consistent in scheduleAbs/cancel/executeEvents/internalReset, the only places
+     * that change trigger[].
      */
     private long activeSlotMask = 0L;
     private long masterClock = 0;
 
     // --- Delayed Register Changes ---
-    // RegChange mutabile e riutilizzabile. Il recorder usa un min-heap custom su
-    // array preallocati invece di PriorityQueue+Comparator: nessuna allocazione o
-    // crescita nascosta durante le write Copper.
+    // Mutable, reusable RegChange objects. The recorder is a custom min-heap over
+    // preallocated arrays instead of PriorityQueue+Comparator: no allocation or hidden
+    // growth during Copper writes.
     private static final int REG_CHANGE_CAPACITY = 1024;
 
     private static class RegChange {
@@ -391,9 +371,9 @@ public abstract class AbstractAgnus {
     }
 
     private void hsyncHandler() {
-        // VirtualCRT consuma l'HSYNC osservando hpos/vpos dal MasterClock.
-        // Il modello del potenziometro invece l'HSYNC lo vuole: conta una riga alla volta
-        // (oracolo: cap_check(true) da CIA_hsync_posthandler). Vedi Paula.capCheck.
+        // VirtualCRT takes HSYNC by watching hpos/vpos from the MasterClock. The
+        // potentiometer model needs it explicitly: it counts one line at a time. See
+        // Paula.capCheck.
         if (paula != null) paula.potHsync();
     }
 
@@ -417,40 +397,30 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Una scrittura a BPLxPTH/BPLxPTL è <b>persa</b> se quel piano ha il proprio slot di
-     * fetch nel <b>CCK SUCCESSIVO</b>: il puntatore per quello slot è già stato latchato.
+     * A write to BPLxPTH/BPLxPTL is <b>lost</b> if that plane has its fetch slot in the
+     * <b>NEXT CCK</b>: the pointer for that slot has already been latched.
      *
-     * <p>⛔ <b>Il verso conta, ed era invertito.</b> Il modello che c'era —
-     * {@code dropWrite()}, portato da vAmiga: «una scrittura a un registro puntatore è
-     * scartata se il puntatore è stato usato un ciclo <i>prima</i>» — guarda il CCK
-     * sbagliato, ed era per giunta su un percorso morto. Nell'oracolo la sequenza è una
-     * pipeline a due stadi:
+     * <p>The sequence is a two-stage pipeline:
      * <pre>
-     * cck C  : bitplane_rga_ptmod()  →  r->pv = bplpt[bpl]      (CATTURA)
-     * cck C+1: fetch da r->pv, addmodfm(&r->pv), bplpt[num] = r->pv   (USO + WRITE-BACK)
+     * cck C  : capture the pointer for the slot of C+1
+     * cck C+1: fetch from the captured pointer, add the modulo, write it back
      * </pre>
-     * — e il commento di {@code custom.cpp} lo dichiara: <i>«Because BPL and SPR DMA is
-     * decided 1 CCK earlier than others, PT and MOD need to be loaded in following
-     * cycle»</i>. Una scrittura che cade nel CCK della cattura arriva <b>dopo</b> di essa,
-     * e un CCK più tardi il write-back la cancella. Una scrittura un CCK prima, o un CCK
-     * dopo, sopravvive.
+     * Bitplane and sprite DMA are decided 1 CCK earlier than the other channels, so their
+     * pointer and modulo are loaded in the following cycle. A write that falls in the
+     * capture's CCK arrives <b>after</b> it, and one CCK later the write-back cancels it. A
+     * write one CCK earlier, or one CCK later, survives.
      *
-     * <p>⚠️ <b>Misurato sui due lati con la stessa sonda</b> ({@code WINUAE_BPLPTLOG} da una
-     * parte, {@code -Damiga.bplptlog} dall'altra), su {@code BPLPTR/drop31}, che spazza il
-     * CCK della scrittura di un'unità alla volta. Delle otto finestre del test l'oracolo
-     * perde la scrittura esattamente nelle due in cui il fetch del piano cade al CCK
-     * successivo (vpos 73 e 121), e le tiene nelle altre sei. Questa regola le riproduce
-     * tutte e otto.
+     * <p>Measured on {@code BPLPTR/drop31}, which sweeps the CCK of the write one unit at a
+     * time: of the test's eight windows the write is lost exactly in the two where the
+     * plane's fetch falls at the next CCK (vpos 73 and 121), and kept in the other six.
      */
     private boolean bplPointerWriteIsLost(int bidx) {
-        // ⛔ Vale per le scritture del COPPER, non per quelle della CPU, e la ragione è
-        // l'ordine dentro `do_cck()`: `bitplane_rga_ptmod()` (la cattura) sta in cima
-        // all'iterazione, PRIMA che il Copper prenda il suo slot DMA, mentre la CPU gira
-        // in `do_cycles_normal()` dopo `inc_cck()`, cioè prima della cattura successiva.
-        // La cattura sta quindi FRA la finestra di scrittura della CPU e quella del
-        // Copper. ⚠️ Misurato, non dedotto: nei log di `dropcpu41` e `dropcpu61` la
-        // scrittura della CPU compare SEMPRE prima della `CAPT` dello stesso cck e
-        // sopravvive; in `drop31` quella del Copper compare DOPO e viene persa.
+        // It applies to COPPER writes, not CPU ones, because of the order within a CCK:
+        // the capture comes at the top of the CCK, BEFORE the Copper takes its DMA slot,
+        // while the CPU's access completes before the next capture. The capture thus sits
+        // BETWEEN the CPU's write window and the Copper's. Measured: in `dropcpu41` and
+        // `dropcpu61` the CPU write always comes before the capture of the same CCK and
+        // survives; in `drop31` the Copper's comes after and is lost.
         if (!__inCopperWrite) {
             return false;
         }
@@ -459,36 +429,26 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Lo stesso di {@link #bplPointerWriteIsLost(int)} per SPRxPT, e non è un'analogia: è la
-     * <b>stessa</b> funzione dell'oracolo. {@code bitplane_rga_ptmod()} cattura il puntatore
-     * di ogni slot che uscirà dalla pipe al CCK dopo, e il suo {@code switch} ha tre rami —
-     * {@code CYCLE_BITPLANE}, {@code CYCLE_SPRITE} e i due insieme — che chiamano tutti
-     * {@code write_rga_update()}. Anche il commento che la motiva li nomina entrambi:
-     * <i>«Because BPL and SPR DMA is decided 1 CCK earlier than others, PT and MOD need to be
-     * loaded in following cycle»</i>.
+     * The same as {@link #bplPointerWriteIsLost(int)} for SPRxPT, and not by analogy: the
+     * capture of the pointer for the slot leaving the pipe at the next CCK is one mechanism
+     * for bitplanes and sprites alike. A Copper write falling in the capture's CCK arrives
+     * after it, and the next CCK's write-back cancels it; a CPU write does not, by the order
+     * within the CCK measured on the bitplanes.
      *
-     * <p>⇒ Una scrittura del Copper che cade nel CCK della cattura arriva dopo di essa, e il
-     * write-back del CCK seguente la cancella. Vale per il Copper e non per la CPU, per
-     * l'ordine dentro {@code do_cck()} già misurato sui bitplane.
+     * <p>Measured by the sweep {@code Denise/Sprites/sprdrop1-4}: the same program four times
+     * with the Copper's WAIT two CCK apart, around the sprite's first DMA slot.
      *
-     * <p>Lo misura lo sweep {@code Denise/Sprites/sprdrop1÷4}: quattro volte lo stesso
-     * programma con la WAIT del Copper a due CCK di distanza l'una dall'altra, attorno al
-     * primo slot DMA dello sprite.
+     * <p><b>Only if that slot is an ALLOCATED DMA cycle</b>: the capture happens only for an
+     * allocated slot, and a sprite slot is allocated only outside Agnus's vertical blank,
+     * with sprite DMA on and with the channel's sequencer asking for it. Where there is no
+     * slot there is no capture and no write-back, and the Copper write <b>survives</b>. That
+     * is exactly the list of conditions that decides the transfer, so the question is asked
+     * once, in {@link #spriteSlotAllocated(int, boolean, long)}.
      *
-     * <p>⛔ <b>Solo se quello slot è un ciclo DMA ALLOCATO</b>, e non è un dettaglio: nel
-     * {@code bitplane_rga_ptmod()} dell'oracolo la cattura sta dentro {@code if (r->alloc > 0)},
-     * e uno slot sprite entra nella pipe RGA solo quando {@code generate_sprites()} viene
-     * chiamata — cioè quando {@code handle_dmal()} lo consente ({@code !agnus_vb_active}),
-     * quando {@code dmaen(DMA_SPRITE)} è vero e quando il sequencer del canale lo chiede.
-     * Dove non c'è slot non c'è cattura, non c'è write-back, e la scrittura del Copper
-     * <b>sopravvive</b>. È esattamente la stessa lista di condizioni che decide il
-     * trasferimento, e per questo la domanda si fa una volta sola, in
-     * {@link #spriteSlotAllocated(int, boolean, long)}.
-     *
-     * <p>⚠️ Misurato su Agony: la sua lista Copper riarma SPRxPT dei canali 3 e 4 a
-     * {@code vpos 0}, in pieno VBlank, ai CCK 32 e 36 — cioè il CCK prima dei rispettivi
-     * slot. Guardando il solo latch del sequencer buttavamo via entrambe le scritture a
-     * ogni quadro, e gli sprite del gufo disegnavano residui della riga precedente.
+     * <p>Measured on Agony: its Copper list rearms SPRxPT of channels 3 and 4 at
+     * {@code vpos 0}, in the vertical blank, at CCK 32 and 36, the CCK before their slots.
+     * Looking at the sequencer latch alone threw both writes away every frame, and the owl's
+     * sprites drew leftovers of the previous line.
      */
     private boolean sprPointerWriteIsLost(int sidx) {
         if (!__inCopperWrite) {
@@ -501,28 +461,26 @@ public abstract class AbstractAgnus {
         if ((next - SLOT_SPRITE_0) / 4 != sidx) {
             return false;
         }
-        // Lo slot è quello del CCK prossimo, quindi lo si interroga con i valori che avrà
-        // allora: il bit di DMA sprite deciso per lui è quello che oggi sta nel primo
-        // stadio del pipe, e la sua decisione è caduta al CCK precedente.
+        // The slot is the next CCK's, so it is queried with the values it will have then:
+        // the sprite DMA bit decided for it is the one now in the first pipe stage, and its
+        // decision fell in the previous CCK.
         return spriteSlotAllocated(next, spriteDmaPipe, (masterClock >> 1) - 1);
     }
 
     /**
-     * Vero se lo slot sprite al CCK {@code cck} è un ciclo DMA <b>allocato</b>: quello in cui
-     * Agnus preleva davvero una word e fa avanzare SPRxPT. È il {@code r->alloc} dell'oracolo,
-     * e mette in fila tutte le condizioni che di là governano la nascita dello slot:
-     * {@code handle_dmal()} non chiama {@code generate_sprites()} durante il VBlank di Agnus,
-     * {@code generate_sprites()} richiede {@code dmaen(DMA_SPRITE)} e il proprio sequencer di
-     * canale ({@link #sprSlotFetch}, che porta già {@code dmacycle} e il conflitto col
-     * bitplane), e l'accensione di SPREN proprio sul CCK di decisione lascia lo slot
-     * <b>deciso ma non allocato</b> (vedi {@link #spriteDmaOnDecisionCck}).
+     * True if the sprite slot at CCK {@code cck} is an <b>allocated</b> DMA cycle: one in
+     * which Agnus really fetches a word and advances SPRxPT. No slot is allocated during
+     * Agnus's vertical blank; it needs sprite DMA on and the channel's own sequencer
+     * ({@link #sprSlotFetch}, which already carries the DMA cycle state and the conflict with
+     * the bitplanes); and SPREN coming on in the very CCK of the decision leaves the slot
+     * <b>decided but not allocated</b> (see {@link #spriteDmaOnDecisionCck}).
      *
-     * <p>La risposta serve in due punti, e devono darla insieme: l'arbitraggio, per sapere se
-     * prelevare, e {@link #sprPointerWriteIsLost(int)}, per sapere se quello slot catturerà il
-     * puntatore un CCK prima. Sono lo stesso {@code alloc}, quindi è una funzione sola.
+     * <p>Two places need the answer and must get the same one: the arbitration, to know
+     * whether to fetch, and {@link #sprPointerWriteIsLost(int)}, to know whether that slot
+     * captures the pointer one CCK earlier.
      *
-     * @param dmaSeq       il bit di DMA sprite <b>deciso</b> per quello slot, due CCK prima
-     * @param decisionCck  il CCK globale in cui quello slot è stato deciso
+     * @param dmaSeq       the sprite DMA bit <b>decided</b> for that slot, two CCK earlier
+     * @param decisionCck  the global CCK in which that slot was decided
      */
     private boolean spriteSlotAllocated(int cck, boolean dmaSeq, long decisionCck) {
         return decisionCck != spriteDmaOnDecisionCck && spriteSlotDecided(cck, dmaSeq);
@@ -552,14 +510,13 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * ⚠️ <b>Percorso morto</b>: {@link #recordRegisterChange} non ha chiamanti, quindi
-     * nessuna scrittura passa più di qui. Resta perché la coda dei cambi ritardati serve
-     * ad altro; la regola dei puntatori di bitplane vive in
-     * {@link #bplPointerWriteIsLost(int)}, sul percorso vivo.
+     * <b>Dead path</b>: {@link #recordRegisterChange} has no callers, so no write goes
+     * through here. The rule for bitplane pointers lives in
+     * {@link #bplPointerWriteIsLost(int)}, on the live path.
      */
     private boolean dropWrite(BusOwner owner) {
-        // vAmiga: A write to a pointer register is dropped if the pointer was used one
-        // cycle before the update would happen.
+        // A write to a pointer register is dropped if the pointer was used one cycle
+        // before the update would happen.
         int cck = hpos >> 1;
         if (cck >= 1 && busOwners[cck - 1] == owner.ordinal()) {
             return true;
@@ -625,11 +582,10 @@ public abstract class AbstractAgnus {
                 int sidx = (reg.ordinal() - AgnusReg.SPR0PTH.ordinal());
                 if (dropWrite(OWNER_VALUES[BusOwner.SPRITE0.ordinal() + sidx])) break;
                 sprPt[sidx] = (sprPt[sidx] & 0x0000FFFF) | ((value << 16) & dmaPtrHiMask);
-                // SPRxPT è il puntatore DMA LIVE: una scrittura (CPU o Copper) cambia da
-                // dove il prossimo accesso DMA sprite preleva, esattamente come i bitplane
-                // (HW Agnus non ha un puntatore interno
-                // separato per gli sprite). Senza questo i giochi che riposizionano gli
-                // sprite via Copper a inizio frame (es. Silkworm) prelevano dati stantii.
+                // SPRxPT is the LIVE DMA pointer: a write (CPU or Copper) changes where the
+                // next sprite DMA access fetches from, like the bitplanes (Agnus has no
+                // separate internal pointer for sprites). Games that reposition sprites
+                // through the Copper at the start of the frame (e.g. Silkworm) rely on it.
                 sprPtrInternal[sidx] = (sprPtrInternal[sidx] & 0x0000FFFF) | (sprPt[sidx] & dmaPtrHiMask);
                 break;
             }
@@ -655,41 +611,36 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Equivalente di {@code sprstartstop()} di WinUAE (custom.cpp): ogni volta che
-     * VSTART/VSTOP di uno sprite cambiano (scrittura di SPRxPOS/SPRxCTL da CPU,
-     * Copper o fetch DMA del descrittore) lo stato DMA dello sprite va rivalutato
-     * SULLA RIGA CORRENTE, non solo al cambio riga. È così che un gioco può
-     * (ri)avviare uno sprite a metà frame scrivendo POS/CTL via Copper.
+     * Every time a sprite's VSTART/VSTOP change (SPRxPOS/SPRxCTL written by the CPU, the
+     * Copper or the DMA fetch of the descriptor) the sprite's DMA state is re-evaluated ON
+     * THE CURRENT LINE, not only at the line change. That is how a game can (re)start a
+     * sprite in the middle of the frame by writing POS/CTL through the Copper.
      */
     private void sprStartStop(int idx) {
-        // ⛔ La riga è {@link #triggerVpos}, non {@code vpos}: nell'oracolo `sprstartstop()`
-        // legge lo stesso `vpos` che `custom_trigger_start()` ha già incrementato, e la
-        // differenza si vede negli ULTIMI TRE CCK della riga. È ciò che `sprdma12`/`sprdma13`
-        // misurano — *«SPRxCTL modified at the end of a rasterline»*: il Copper scrive
-        // SPRxCTL a `WAIT $47DF` (fine riga 71) e l'oracolo, che lì è già alla riga 72, trova
-        // `vpos == vstop` col VSTOP VECCHIO e **addormenta** lo sprite; noi eravamo ancora a
-        // 71, nessun match, e lo sprite continuava a disegnare per diciotto righe.
+        // The line is {@link #triggerVpos}, not {@code vpos}: the difference shows in the
+        // LAST THREE CCK of the line. `sprdma12`/`sprdma13` measure it ("SPRxCTL modified
+        // at the end of a rasterline"): the Copper writes SPRxCTL at `WAIT $47DF` (end of
+        // line 71), where the line counter already reads 72, so `vpos == vstop` matches the
+        // OLD VSTOP and the sprite is **put to sleep**.
         if (inVBlankArea(triggerVpos)) return;
         if (triggerVpos == sprVStart[idx]) sprDmaEnabled[idx] = true;
         if (triggerVpos == sprVStop[idx]) {
             sprDmaEnabled[idx] = false;
-            // ⚠️ ASIMMETRIA DELL'ORACOLO, trascritta com'è: sul percorso della SCRITTURA
-            // (`sprstartstop`) il VSTOP AZZERA `dmacycle`, mentre allo slot 0 di
-            // `generate_sprites()` lo mette a 1. Le due funzioni si somigliano ma non
-            // fanno la stessa cosa, ed è la differenza che decide chi vince fra una
-            // scrittura del Copper e il DMA.
+            // Asymmetry: on the WRITE path VSTOP CLEARS the DMA cycle state, while at
+            // slot 0 of the sprite fetch it sets it to 1. This difference decides who wins
+            // between a Copper write and the DMA.
             sprDmaCycle[idx] = 0;
         }
     }
 
-    /** SPRxPOS: come WinUAE SPRxPOS() → sprstartstop, ricalcolo, sprstartstop. */
+    /** SPRxPOS: start/stop check, update, start/stop check. */
     private void writeSPRxPOS(int idx, int value) {
         sprStartStop(idx);
         setSPRxPOS(idx, value);
         sprStartStop(idx);
     }
 
-    /** SPRxCTL: come WinUAE SPRxCTL() → sprstartstop, ricalcolo, sprstartstop. */
+    /** SPRxCTL: start/stop check, update, start/stop check. */
     private void writeSPRxCTL(int idx, int value) {
         sprStartStop(idx);
         setSPRxCTL(idx, value);
@@ -698,7 +649,7 @@ public abstract class AbstractAgnus {
 
     private void setSPRxPOS(int idx, int value) {
         // SPRxPOS bit 15-8 = VSTART[7:0]; bit 0 = HSTART bit 0 (ignored here).
-        // Il bit 8 di VSTART arriva da SPRxCTL bit 2, già memorizzato in sprVStart.
+        // Bit 8 of VSTART comes from SPRxCTL bit 2, already stored in sprVStart.
         sprVStart[idx] = (sprVStart[idx] & 0x100) | ((value >> 8) & 0xFF);
     }
 
@@ -708,9 +659,8 @@ public abstract class AbstractAgnus {
         // SPRxCTL bit 1    = VSTOP  bit 8
         sprVStart[idx] = (sprVStart[idx] & 0x00FF) | ((value & 0x04) != 0 ? 0x100 : 0);
         sprVStop[idx]  = ((value >> 8) & 0xFF)     | ((value & 0x02) != 0 ? 0x100 : 0);
-        // A5 — Sprite V9 (ECS): SPRxCTL guadagna un nono bit verticale codificato
-        // nei bit "inutilizzati" 6 (VSTART V9) e 5 (VSTOP V9). Ignorato su OCS.
-        // Rif. vAmiga AgnusRegs.cpp:516-525. Non è hot path (≈8 scritture/frame).
+        // Sprite V9 (ECS): SPRxCTL gains a ninth vertical bit in the "unused" bits 6
+        // (VSTART V9) and 5 (VSTOP V9). Ignored on OCS.
         if (isECS()) {
             if ((value & 0x40) != 0) sprVStart[idx] |= 0x200;
             if ((value & 0x20) != 0) sprVStop[idx]  |= 0x200;
@@ -729,23 +679,20 @@ public abstract class AbstractAgnus {
 
         boolean oldBitplaneEnabled = (oldValue & 0x0200) != 0 && (oldValue & 0x0100) != 0;
         boolean newBitplaneEnabled = (newValue & 0x0200) != 0 && (newValue & 0x0100) != 0;
-        // Un frame è "parziale" (da non mostrare) solo se il DMA bitplane era SPENTO
-        // all'apertura della finestra di display e viene acceso più giù, DENTRO la
-        // finestra [diwVStart, diwVStop): le prime righe visibili sono bordo invece
-        // che contenuto (es. la mano insert-disk del Kickstart accende il DMA a metà
-        // finestra mentre la cima è ancora vuota).
+        // A frame is "partial" (not to be shown) only if bitplane DMA was OFF when the
+        // display window opened and is switched on further down, INSIDE the window
+        // [diwVStart, diwVStop): the first visible lines are border instead of content
+        // (e.g. the Kickstart's insert-disk hand switches DMA on halfway down the window
+        // while the top is still empty).
         //
-        // NON va marcato (= frame completo, da mostrare) quando:
-        //  - il DMA viene acceso FUORI dalla finestra (Monkey Island 2 schermata di
-        //    protezione: CLR a riga 233 = fine finestra, poi SET a riga 234, come
-        //    preparazione del frame successivo); oppure
-        //  - il DMA era GIÀ ACCESO all'inizio della finestra e viene solo commutato a
-        //    metà (split-screen legittimo: il pannello verbi/inventario di Monkey
-        //    Island 2 ri-accende BPLEN a ~riga 178 ogni frame). In questi casi la cima
-        //    del display ha già contenuto: scartare il frame congelerebbe lo schermo.
-        // La vecchia soglia "vpos != 0" scartava OGNI frame della protezione; quella
-        // successiva "dentro la finestra" scartava OGNI frame della schermata di gioco
-        // (split-screen) → schermo nero col gioco che girava sotto.
+        // It is NOT marked (= complete frame, to be shown) when:
+        //  - DMA is switched on OUTSIDE the window (Monkey Island 2's protection screen:
+        //    CLR at line 233 = end of window, then SET at line 234, preparing the next
+        //    frame); or
+        //  - DMA was ALREADY ON at the start of the window and is only toggled halfway (a
+        //    legitimate split screen: Monkey Island 2's verb/inventory panel switches BPLEN
+        //    back on at ~line 178 every frame). The top of the display already has content
+        //    there: dropping the frame would freeze the screen.
         if (!oldBitplaneEnabled && newBitplaneEnabled
                 && vpos >= diwVStart && vpos < diwVStop && !bitplaneDmaOnAtWindowStart) {
             bitplaneDmaEnabledLateThisFrame = true;
@@ -756,26 +703,13 @@ public abstract class AbstractAgnus {
         dmacon = newValue;
         updateDmaFlags();
 
-        // ⛔ Un cambio di COPEN NON e' visibile all'arbitraggio nello stesso CCK: finche'
-        // il ciclo corrente non ha superato la soglia, il Copper legge il valore VECCHIO.
-        // L'oracolo lo scrive in due pezzi (custom.cpp):
-        //
-        //   if (newcop != oldcop && safecpu())
-        //       copper_dma_change_cycle = copper_access ? get_cycles()
-        //                                               : get_cycles() + CYCLE_UNIT;
-        //   static bool is_copper_dma(bool checksame) {
-        //       bool dma = dmaen(DMA_COPPER);
-        //       if (checksame && get_cycles() <= copper_dma_change_cycle) return !dma;
-        //       return dma;
-        //   }
-        //
-        // ⇒ la soglia e' `<=`, quindi una scrittura del COPPER costa 1 CCK e una della
-        // CPU ne costa 2. `safecpu()` e' vero per la nostra configurazione (68000
-        // cycle-exact), quindi il ritardo vale sempre.
-        // ⚠️ E' la stessa forma della classe B del §14 (DDFSTRT/DDFSTOP: il match usa il
-        // valore vecchio) e del `spriteDmaOnDecisionCck` qui sopra. Misurato sui quattro
-        // `lc` del banco Agnus/Copper, che accendono il DMA del Copper a meta' riga: erano
-        // 8 px ciascuno, cioe' 2 CCK di anticipo, sempre su una riga sola.
+        // A COPEN change is NOT visible to the arbitration in the same CCK: until the
+        // current cycle has passed the threshold, the Copper sees the OLD value. The
+        // threshold is inclusive, so a COPPER write costs 1 CCK and a CPU write 2.
+        // It has the same shape as class B of section 14 (DDFSTRT/DDFSTOP: the match uses
+        // the old value) and as `spriteDmaOnDecisionCck`. Measured on the four `lc` tests of
+        // the Agnus/Copper bank, which switch Copper DMA on halfway through a line: they
+        // were 8 px each, i.e. 2 CCK early, always on a single line.
         if (copWas != copperDmaEnabled) {
             copperDmaChangeCck = (masterClock >> 1) + (__inCopperWrite ? 0 : 1);
         }
@@ -794,28 +728,23 @@ public abstract class AbstractAgnus {
 
     private void setBPLCON0(int value, int pc) {
         if (denise != null) denise.writeRegister(0x100, value);
-        // ⛔ Il rilascio è IMMEDIATO, l'ingresso no: `checksyncstopped()` dell'oracolo
-        // spegne `syncs_stopped` sulla scrittura, mentre lo accende solo nel ramo non
-        // cycle-exact. Con la configurazione del banco l'unico ingresso è il confine di
-        // riga in `updateBeam`. Quindi un ERSY alzato e riabbassato dentro la stessa riga
-        // non arriva mai qui con `syncsStopped` vero, e non fa niente.
+        // The release is IMMEDIATE, the entry is not: the freeze starts only at the line
+        // boundary in `updateBeam`. So an ERSY raised and lowered within the same line never
+        // gets here with `syncsStopped` true, and does nothing.
         if (syncsStopped && !ersyActive()) {
             syncsStopped = false;
-            // ERSY che CADE: la riga riparte da capo.
+            // ERSY FALLING: the line starts over.
             //
-            // In WinUAE, per tutta la durata del freeze, `setsyncstoppos()` azzera
-            // `agnus_hpos` a OGNI cck (custom.cpp, do_cck: "if (syncs_stopped) {
-            // setsyncstoppos(); set_fakehsync_handler(); }"), quindi quando la scrittura
-            // di BPLCON0 spegne ERSY il pennello è a inizio riga e la riga corrente dura
-            // per intero. Da noi le righe hanno continuato a scorrere: senza questo
-            // azzeramento il fotogramma del freeze si allunga di un multiplo di riga
-            // invece che della durata del freeze, ed è la causa dei 126 CCK di fase che
-            // restavano dopo il §13.8 (docs/vamigats-paula-audio-plan.md §13.10.4).
+            // During the freeze the horizontal counter is held at the start of the line at
+            // every CCK, so when the BPLCON0 write clears ERSY the beam is at the start of a
+            // line and the current line lasts in full. Without this reset the frozen frame
+            // would grow by a multiple of a line instead of by the length of the freeze
+            // (docs/vamigats-paula-audio-plan.md section 13.10.4).
             //
-            // L'altra metà di `setsyncstoppos()` — hpos inchiodato *durante* il freeze,
-            // quindi nessuno slot DMA per tutta la sua durata — vive nell'arbitraggio del
-            // `risingEdge`, sul flag `beamFrozen`: mentre il freeze è in corso il bus non
-            // va a nessun canale di Agnus e resta di CPU e Blitter.
+            // The other half (hpos held *during* the freeze, so no DMA slot for its whole
+            // length) lives in the arbitration of `risingEdge`, on the `beamFrozen` flag:
+            // while the freeze lasts the bus goes to no Agnus channel and stays with the CPU
+            // and the Blitter.
             // The line restarts six CCKs before its wrap: one because the vertical counter
             // advances one CCK into the line rather than at the wrap, three for the beam
             // origin (see INITIAL_HPOS), and two for BPLCON0 reaching the sync generator
@@ -869,44 +798,25 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Lo scroll orizzontale di BPLCON1 in <b>sub-pixel</b> (pixel hires), che è l'unità in
-     * cui Denise lo applica davvero.
+     * The horizontal scroll of BPLCON1 in <b>sub-pixels</b> (hires pixels), the unit Denise
+     * really applies it in.
      *
-     * <p>⛔ <b>In hires lo scroll NON è più fine: è più CORTO.</b> Una unità di BPLCON1 vale
-     * un pixel <b>lores</b> — cioè 2 sub-pixel — <b>in tutte e due le risoluzioni</b>; quel
-     * che cambia in hires è che il valore viene <b>mascherato a 3 bit</b> e quindi si
-     * avvolge a 8. L'oracolo lo scrive in {@code update_bplcon1()}:
-     * <pre>
-     * bplcon1_shift_mask = fetchmode_mask_denise &gt;&gt; denise_res;   // 15 in lores, 7 in hires
-     * bplcon1_shift[0]   = delay1 &amp; bplcon1_shift_mask;
-     * bplcon1_shift_full[0] = (bplcon1_shift[0] &lt;&lt; 2) | bplcon1_hr[0];  // &lt;&lt;2 SEMPRE
-     * </pre>
-     * dove {@code fetchmode_mask_denise} è 15 su OCS/ECS ({@code 16 << bpldat_fmode}, fmode
-     * 0) e {@code bplcon1_hr} è la parte sub-hires di AGA, zero qui. Lo spostamento è quindi
-     * {@code (v & mask) << 2} in <b>shres</b>, e uno shres è mezzo sub-pixel dei nostri: da
-     * cui il {@code * 2}.
+     * <p><b>In hires the scroll is NOT finer: it is SHORTER.</b> One BPLCON1 unit is one
+     * <b>lores</b> pixel (2 sub-pixels) <b>in both resolutions</b>; what changes in hires is
+     * that the value is <b>masked to 3 bits</b> and so wraps at 8. Assuming "one unit = one
+     * pixel of the current resolution" is wrong, and was measured: with
+     * {@code v * (hires ? 1 : 2)} the {@code simple} group got worse, from 6.77% to 9.55%.
      *
-     * <p>⛔ <b>Dedurre «un'unità = un pixel della risoluzione corrente» è sbagliato, ed è
-     * stato misurato</b>: con {@code v * (hires ? 1 : 2)} il gruppo {@code simple} peggiora
-     * da 6,77 % a 9,55 %. La regola è quella dell'oracolo, non quella che sembra simmetrica.
-     *
-     * <p>La regola unica {@code sub = (v & mask) * 2} si divide poi in:
+     * <p>The single rule {@code sub = (v & mask) * 2} then splits into:
      * <ul>
-     *   <li><b>grossa</b>, {@code sub >> 2}: quanti CCK ritardare il blocco di draw (un CCK
-     *       sono 4 sub-pixel), ed è quel che decide {@link #handleBitplaneDrawEvent};</li>
-     *   <li><b>fine</b>, {@code sub & 3}: il resto sotto il CCK, che applica Denise
-     *       spostando il cursore di uscita.</li>
+     *   <li><b>coarse</b>, {@code sub >> 2}: how many CCK to delay the draw block (one CCK is
+     *       4 sub-pixels), decided in {@link #handleBitplaneDrawEvent};</li>
+     *   <li><b>fine</b>, {@code sub & 3}: the remainder below the CCK, which Denise applies
+     *       by moving its output cursor.</li>
      * </ul>
      *
-     * <p>⚠️ In lores si riduce a quel che il codice faceva già ({@code v>>1} CCK più il bit
-     * 0), ed è per questo che il lores di {@code BPLCON1/simple} era verde. In <b>hires</b>
-     * no: mancava la maschera a 3 bit e la parte fine avanzava di un sub-pixel invece che di
-     * due. Sono le righe hires di {@code simple0÷14}.
-     *
-     * <p>Nell'oracolo non esiste nessuna divisione: lo scroll è <b>un solo contatore</b> in
-     * Denise ({@code bplcon1_shift[]} + {@code bplshiftcnt[]}). La nostra divisione in due è
-     * una deroga di struttura; questa funzione è il punto in cui resta almeno <b>una sola
-     * regola</b>.
+     * <p>On the hardware the scroll is <b>one counter</b> in Denise; splitting it in two is
+     * a structural shortcut, and this function is where it keeps <b>a single rule</b>.
      */
     private static int scrollSubPixels(int pfh, boolean hires) {
         return (pfh & (hires ? 0x07 : 0x0F)) * 2;
@@ -926,8 +836,8 @@ public abstract class AbstractAgnus {
             activeSlotMask |= (1L << s);
             if (cycle < nextTrigger) nextTrigger = cycle;
         } else {
-            // Schedulare a NEVER è equivalente a disattivare lo slot (non scatta mai,
-            // non abbassa nextTrigger): toglilo dalla maschera attiva.
+            // Scheduling at NEVER is the same as deactivating the slot (it never fires and
+            // does not lower nextTrigger): drop it from the active mask.
             activeSlotMask &= ~(1L << s);
         }
     }
@@ -958,31 +868,20 @@ public abstract class AbstractAgnus {
     }
 
     private void executeEvents(long cycle) {
-        // STEP 13 (PERFORMANCE_REPORT_FINAL): scansione SINGOLA. In precedenza si
-        // facevano due scansioni dei 25 slot (una per eseguire gli eventi, una per
-        // ricalcolare nextTrigger). Ora si fa scattare gli eventi e si ricostruisce
-        // nextTrigger nello stesso passaggio: si parte da NEVER e si prende il minimo
-        // dei trigger NON scattati; gli eventi ri-schedulati durante processEvent
-        // abbassano nextTrigger tramite scheduleAbs (che fa nextTrigger=min(...)).
+        // PERF: a SINGLE scan fires the events and rebuilds nextTrigger: it starts from
+        // NEVER and takes the minimum of the triggers NOT fired; events rescheduled during
+        // processEvent lower nextTrigger through scheduleAbs.
         //
-        // Correttezza: il firing è identico (stesso ordine, stessa condizione
-        // trigger[i] <= cycle). nextTrigger risultante è sempre <= vero minimo dei
-        // trigger correnti (mai superiore), quindi nessun evento viene mai perso o
-        // anticipato. L'unico effetto possibile è un "stale-low" (nextTrigger più
-        // basso del vero minimo se un handler ri-schedula PIÙ TARDI uno slot già
-        // scansionato) che provoca al più una chiamata extra no-op a executeEvents —
-        // esattamente la stessa classe di comportamento già prodotta da cancel(),
-        // che lascia nextTrigger invariato. trigger[] ed eventIds[] sono sempre
-        // coerenti (trigger=NEVER ⟺ eventIds=NONE), quindi nessun slot finito è
-        // mai trattato come non-scattato per errore.
+        // Correctness: the resulting nextTrigger is always <= the true minimum of the
+        // current triggers, so no event is ever lost or anticipated. The only possible
+        // effect is a "stale low" value (a handler rescheduling an already scanned slot
+        // LATER), which costs at most one extra no-op call, the same as cancel(), which
+        // leaves nextTrigger unchanged. trigger[] and eventIds[] are always consistent
+        // (trigger == NEVER iff eventIds == NONE).
         nextTrigger = NEVER;
-        // Scansione dei soli slot ATTIVI (bit settati in activeSlotMask), in ordine di
-        // indice crescente. activeSlotMask è ri-letta ad ogni passo (non snapshot) così
-        // un handler che ri-schedula uno slot a indice più alto dentro lo stesso `cycle`
-        // viene comunque visitato in questo passaggio — esattamente come la vecchia
-        // scansione lineare 0..24 leggeva trigger[]/eventIds[] dal vivo. Gli slot non
-        // attivi (saltati) erano no-op, quindi il risultato (firing + nextTrigger) è
-        // identico bit-per-bit.
+        // Only the ACTIVE slots (bits set in activeSlotMask), in increasing index order.
+        // activeSlotMask is re-read at every step (not a snapshot), so a handler that
+        // reschedules a higher slot within the same `cycle` is still visited in this pass.
         int i = 0;
         while (true) {
             long remaining = activeSlotMask >>> i;
@@ -1031,44 +930,33 @@ public abstract class AbstractAgnus {
                 serviceCiaEvent();
                 break;
             case SLOT_CH0:
-                // Produzione di un sample di output audio (event-driven). Sostituisce
-                // l'accumulatore outputSamplePhase che girava in paula.tick() ad OGNI
-                // master-cycle: ora la matematica del rate gira solo una volta per
-                // sample (~44.1k/s invece di ~7.09M/s). Vedi piano
-                // docs/event-driven-agnus-step2.md (paula.tick).
+                // Production of one audio output sample (event driven): the rate
+                // arithmetic runs once per sample (~44.1k/s) instead of at every master
+                // cycle (~7.09M/s).
                 if (paula != null) paula.serviceAudioSampleEvent();
                 break;
-            // Aggiungi altri gestori se necessario
         }
     }
 
     /**
-     * Tick E-clock delle CIA (CLK/10), del keyboard e del Gary, schedulato come
-     * evento auto-rischedulante su {@link EventSlot#SLOT_CIAA}.
+     * E-clock tick of the CIAs (CLK/10), the keyboard and Gary, a self-rescheduling event on
+     * {@link EventSlot#SLOT_CIAA}. It fires at exactly the master cycles of the E clock
+     * (multiples of 10) at no cost in the 9 cycles between, since {@code nextTrigger} keeps
+     * executeEvents from running when there is nothing to do.
      *
-     * Sostituisce il vecchio accumulatore {@code ciaTimerPhase} (polling
-     * incondizionato ad ogni master-cycle): l'evento scatta esattamente agli stessi
-     * master-cycle (multipli di 10) ma a costo zero nei 9 cicli intermedi, perché
-     * {@code nextTrigger} impedisce di entrare in executeEvents quando non c'è nulla
-     * da fare (piano docs/event-driven-agnus.md, Step 1 / Problema B).
-     *
-     * Le due CIA vengono tick-ate INSIEME ad ogni E-clock, come nel modello polling
-     * precedente: NON si usano due slot a fasi diverse (cambierebbe il timing e
-     * romperebbe il golden CRC). Il rate hardware-corretto è CLK/10 (vedi nota sul
-     * detune DiagROM 19/200 rimosso a favore della sync audio dei giochi).
+     * Both CIAs are ticked TOGETHER at every E-clock.
      */
     private void serviceCiaEvent() {
         if (ciaA != null) ciaA.tick();
         if (ciaB != null) ciaB.tick();
         if (keyboard != null) keyboard.tick(10);
 
-        // ── Reset da tastiera CTRL+AMIGA+AMIGA (aggiornato a frequenza E-Clock) ──
-        // La MPU della tastiera tiene bassa /KBRST; Gary la propaga su /RESET+/HALT
-        // verso il 68000. Sul fronte di discesa la CPU viene resettata e a sua volta
-        // asserisce la propria linea RESET: da lì la cascata (chip custom, CIA,
-        // floppy, bus Zorro, ri-attivazione dell'overlay ROM) è la stessa
-        // dell'istruzione RESET, gestita in risingEdge(). La RAM non viene toccata:
-        // è un warm reset, esattamente come sull'hardware.
+        // -- CTRL+AMIGA+AMIGA keyboard reset (updated at E-clock rate) --
+        // The keyboard's MPU holds /KBRST low; Gary passes it on to /RESET+/HALT of the
+        // 68000. On the falling edge the CPU is reset and in turn asserts its own RESET
+        // line: from there the cascade (custom chips, CIAs, floppies, Zorro bus, ROM
+        // overlay re-enabled) is the same as the RESET instruction's, handled in
+        // risingEdge(). RAM is untouched: it is a warm reset, as on the hardware.
         if (gary != null) {
             if (keyboard != null) gary.setKeyboardResetLine(keyboard.isResetLineAsserted());
             if (gary.isResetAsserted()) {
@@ -1076,34 +964,31 @@ public abstract class AbstractAgnus {
                     systemResetActive = true;
                     if (cpu != null) cpu.reset();
                 }
-                // Finché /RESET è bassa la macchina resta ferma: la finestra di reset
-                // della CPU viene rinnovata a ogni E-clock (10 cicli), così scade solo
-                // quando la tastiera rilascia la linea e la CPU riparte dal reset vector.
+                // While /RESET is low the machine stays halted: the CPU's reset window is
+                // renewed at every E-clock (10 cycles), so it expires only when the
+                // keyboard releases the line and the CPU restarts from the reset vector.
                 if (cpu != null) cpu.assertReset(64);
             } else {
                 systemResetActive = false;
             }
         }
 
-        // Segnali OVL (ROM overlay) e LED/filtro audio: dipendono solo dal latch
-        // PRA/DDRA di CIA-A, che cambia in risposta a scritture CPU sul CIA. Su
-        // hardware reale ogni accesso CIA è sincronizzato all'E-clock (bus 6800 via
-        // /VMA), quindi campionarli qui (granularità E-clock, ~709k/s) invece che ad
-        // ogni master-cycle è funzionalmente equivalente e 10× più economico. La
-        // parte TOD-LOW resta nel loop SC (è temporizzata sul raster). Il path di
-        // reboot via istruzione CPU RESET è gestito a parte in risingEdge (chiamata
-        // diretta a updateCiaOvlLed dopo softReset), perché rilegge il reset vector
-        // entro pochi cicli e non può attendere il prossimo E-clock.
+        // OVL (ROM overlay) and LED/audio filter lines: they depend only on CIA-A's
+        // PRA/DDRA latch, which changes on CPU writes to the CIA. Every CIA access is
+        // synchronised to the E clock (6800 bus via /VMA), so sampling them here (E-clock
+        // granularity) instead of at every master cycle is equivalent and 10x cheaper. The
+        // reboot path through the CPU's RESET instruction is handled in risingEdge (direct
+        // call to updateCiaOvlLed after softReset), since it rereads the reset vector within
+        // a few cycles and cannot wait for the next E clock.
         updateCiaOvlLed();
 
-        // Prossimo E-clock fra 10 master-cycle. Eseguito DOPO l'eventuale reset:
-        // dopo un hard reset masterClock==0 → ri-arma a 10 (coerente con l'arm di
-        // internalReset).
+        // Next E clock in 10 master cycles. Done AFTER any reset: after a hard reset
+        // masterClock == 0, so it rearms at 10 (consistent with internalReset's arm).
         scheduleRel(EventSlot.SLOT_CIAA, 10, EventID.CIA_EXECUTE);
     }
 
     // =========================================================================
-    // Stato bus
+    // Bus state
     // =========================================================================
 
     private enum BusOwner {
@@ -1113,65 +998,51 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * STEP 4 (PERFORMANCE_REPORT_FINAL): cache statica di BusOwner.values().
-     * Usata negli hot path di risingEdge() e nella DMA arbitration (dropWrite),
-     * indicizzata con ordinal()+offset. Evita il clone dell'array ad ogni accesso.
+     * PERF: static cache of BusOwner.values(), indexed with ordinal()+offset in the hot
+     * paths of risingEdge() and the DMA arbitration.
      */
     private static final BusOwner[] OWNER_VALUES = BusOwner.values();
 
     /**
-     * Fase (in master-cycle) a cui è ancorata la griglia del clock delle CIA. Vedi la
-     * nota estesa sull'arm di {@code SLOT_CIAA} nel costruttore: è una fase, e va
-     * insieme al punto in cui una scrittura CIA consegna il dato al chip.
+     * Phase (in master cycles) the CIA clock grid is anchored to. See the note on the arm
+     * of {@code SLOT_CIAA} in the constructor: it is a phase, and goes together with the
+     * point where a CIA write delivers the data to the chip.
      */
     private static final int CIA_ANCHOR = 5;
 
-    // STEP 14/P-15 (PERFORMANCE_REPORT_FINAL): busOwners come int[] di ordinali
-    // invece di BusOwner[]. Arrays.fill(int[]) è più veloce del fill di un array di
-    // reference (niente card-marking) ed è eseguito ~15.600 volte/s (eolHandler).
-    // 0 == BusOwner.NONE.ordinal(), quindi il default int 0 coincide con NONE.
-    // Il confronto per ordinali è equivalente al confronto per reference enum.
-    // 228 e non 227: la riga lunga NTSC (LOL) ha un CCK in più, indice 227.
+    // PERF: busOwners as an int[] of ordinals instead of BusOwner[]: Arrays.fill(int[]) is
+    // faster than filling a reference array (no card marking) and runs ~15,600 times/s
+    // (eolHandler). 0 == BusOwner.NONE.ordinal(), so the int default is NONE.
+    // 228, not 227: the NTSC long line (LOL) has one more CCK, index 227.
     private final int[] busOwners = new int[228];
     public final int[] diagDmaOwners = new int[228]; // DIAG-TEMP
 
 
-    /** DIAG (Fase F): conta, per gli accessi del loop firework ($3000-$31FF), quante
-     *  decisioni DTACK sono bloccate e da QUALE owner DMA (busOwners[]) o dall'odd-wait,
-     *  per trovare l'over-allocazione slot. Dump da IkPlusBootTest. */
+    /** DIAG: for the accesses of a PC window (default IK+'s firework loop, $3000-$31FF),
+     *  how many DTACK decisions are blocked and by WHICH DMA owner (busOwners[]) or by the
+     *  odd-cycle wait. */
     public static volatile boolean diagBlockTally = false;
     public static final long[] diagBlk = new long[25];
     public static long diagBlkOdd = 0, diagBlkTot = 0;
 
-    // Il ritardo dei poke a INTREQ/INTENA non sta più qui (2026-08-14). Stava, come
-    // `INTREQ_DELAY_MC = 1`, e differiva l'INTERA scrittura: il valore riletto da
-    // INTREQR/INTENAR cambiava un mezzo CCK dopo insieme alla linea IPL. Nell'oracolo le
-    // due cose sono separate — `intreq` cambia subito, `intreq2` (da cui si calcola l'IPL)
-    // un CCK dopo — e la differenza non è cosmetica: è l'unica via per cui un interrupt
-    // può risultare pendente in lettura e mai consegnato. Ora vive in Paula, su quella
-    // sola copia (`Paula.INTREQ_SHADOW_DELAY_MC`, stesso mezzo CCK, stessa misura del pin
-    // che l'aveva fissato col FIX #24 della §S4 di vAmigaTS cpu/timing).
-
-    /** DIAG: cattura raster-keyed degli eventi che posizionano le barre bbusy
-     *  (COLOR00 $180, INTREQ $09C, BLTSIZE $058). hpos loggato in CCK (hpos>>1).
-     *  Consumato da {@code BbusyB0AnalysisTest}. */
+    /** DIAG: raster-keyed capture of the events that place the bbusy bars (COLOR00 $180,
+     *  INTREQ $09C, BLTSIZE $058). hpos logged in CCK (hpos>>1). */
     public static volatile boolean diagBb = false;
     public static int diagBbCap = 60000;
     public static final java.util.List<String> diagBbCol = new java.util.ArrayList<>();
     public static final java.util.List<String> diagBbInt = new java.util.ArrayList<>();
     public static final java.util.List<String> diagBbBlt = new java.util.ArrayList<>();
-    /** Finestra di PC (opcodeAddress) su cui diagBlockTally campiona. Default = loop
-     *  firework di IK+ ($3000-$3200); riconfigurabile (es. al loop synccpu di bbusy). */
+    /** PC window (opcodeAddress) diagBlockTally samples. Default = IK+'s firework loop
+     *  ($3000-$3200). */
     public static volatile int diagBlkPcLo = 0x3000;
     public static volatile int diagBlkPcHi = 0x3200;
 
 
     /**
-     * Route dell'accesso CPU corrente. Calcolata mentre la CPU presenta il ciclo
-     * (stati S2-S4 della SUA FSM) e riusata al trasferimento dati (S5/S6). Persiste
-     * per l'intera durata di un singolo accesso. La CPU pre-splitta i long-word in
-     * due word distinte (vedi Motorola68000.scheduleRead/scheduleWriteLong), quindi
-     * Agnus vede sempre accessi a 8/16 bit: nessun cpuBusCyclePart necessario.
+     * Route of the current CPU access. Computed while the CPU presents the cycle (states
+     * S2-S4 of its FSM) and reused at the data transfer (S5/S6). The CPU splits long words
+     * into two words beforehand (see Motorola68000.scheduleRead/scheduleWriteLong), so
+     * Agnus always sees 8/16-bit accesses.
      */
     private Gary.Route cpuCurrentRoute = null;
     private boolean cpuRouteCacheValid = false;
@@ -1181,10 +1052,10 @@ public abstract class AbstractAgnus {
     private boolean cpuRouteCacheLds;
 
     /**
-     * Latch "trasferimento dati eseguito" per l'accesso CPU corrente. Garantisce
-     * che handleCpuDataTransfer() (con effetti collaterali: scritture in memoria,
-     * letture con side-effect, latch del pennello) venga eseguito UNA sola volta
-     * per accesso, anche se handleCpuBusCycle() è invocato a ogni fronte di clock.
+     * "Data transfer done" latch of the current CPU access. It makes sure
+     * handleCpuDataTransfer() (with side effects: memory writes, reads with side effects,
+     * beam latch) runs ONCE per access, although handleCpuBusCycle() is called at every
+     * clock edge.
      */
     private boolean cpuAccessTransferred = false;
 
@@ -1200,26 +1071,20 @@ public abstract class AbstractAgnus {
     private boolean ciaWriteDone;
 
     /**
-     * PERF (Fase 2): true quando il path "CPU non sul bus" di handleCpuBusCycle ha
-     * già azzerato le linee di handshake e la cache route. handleCpuBusCycle è
-     * chiamato 2× per master-cycle e per la maggior parte dei cicli la CPU non
-     * chiede il bus (AS basso): quel path azzerava incondizionatamente ~10 campi ad
-     * ogni invocazione (~14M/s) benché siano idempotenti mentre AS resta basso
-     * (nessun altro codice li tocca durante i cicli interni della CPU). Con questo
-     * flag l'azzeramento avviene UNA sola volta alla discesa di AS; i fronti idle
-     * successivi (e la doppia chiamata) si riducono a un check-and-return. Resettato
-     * a false non appena AS risale → comportamento in uscita bit-identico.
+     * PERF: true once the "CPU not on the bus" path of handleCpuBusCycle has cleared the
+     * handshake lines and the route cache. handleCpuBusCycle runs twice per master cycle
+     * and most of the time the CPU does not want the bus (AS low); the clearing is
+     * idempotent while AS stays low, so it is done ONCE when AS falls, and the following
+     * idle edges reduce to a check and return. Reset to false as soon as AS rises.
      */
     private boolean cpuBusIdle = false;
 
     /**
-     * STEP 2 (PERFORMANCE_REPORT_FINAL): scratch Route dedicati per ciascun master
-     * di bus. gary.route(...) riempie questi oggetti invece di allocarne di nuovi
-     * ad ogni accesso. Tre istanze distinte perché CPU, Copper e Blitter sono
-     * serviti nello stesso fronte di clock: scratch separati evitano l'aliasing.
-     * La route CPU persiste tra le fasi S4→S6 del ciclo bus, ma viene consumata
-     * (S6) prima della successiva chiamata route() per la CPU (prossimo S4),
-     * quindi un singolo cpuScratchRoute è sufficiente.
+     * PERF: dedicated scratch Routes per bus master; gary.route(...) fills them instead of
+     * allocating new ones at every access. Separate instances because CPU, Copper and
+     * Blitter are served in the same clock edge. The CPU route lives from S4 to S6 of the
+     * bus cycle and is consumed (S6) before the next route() call for the CPU (next S4), so
+     * one cpuScratchRoute is enough.
      */
     private final Gary.Route cpuScratchRoute     = new Gary.Route();
     private final Gary.Route copperScratchRoute  = new Gary.Route();
@@ -1227,30 +1092,28 @@ public abstract class AbstractAgnus {
     private boolean copperBusProcessed  = false;
 
     /**
-     * Contatore di cicli consecutivi in cui la CPU è stata bloccata dal Blitter.
-     * Diagnostica/legacy (getArbitrationReason); la precedenza CPU vera è ora {@link #bls}.
+     * Consecutive cycles in which the Blitter blocked the CPU. Diagnostics only
+     * (getArbitrationReason); the CPU's real precedence is {@link #bls}.
      */
     private int cpuBlockedByBlitterCount = 0;
 
     /**
-     * Segnale BLS (Blitter Slow down, modello vAmiga {@code Agnus::executeUntilBusIsFree}):
-     * asserito quando la CPU è in attesa del bus da ≥2 CCK. Con BLTPRI spento, il blitter
-     * cede lo slot alla CPU finché bls resta alto ({@code busIsFree<BLITTER>} nega). È il
-     * sostituto cycle-exact del vecchio contatore-euristico {@code >=3}.
+     * BLS (Blitter Slow down): asserted when the CPU has been waiting for the bus for >= 2
+     * CCK. With BLTPRI off, the blitter yields the slot to the CPU while bls stays high.
      */
     private boolean bls = false;
-    /** Cicli (CCK) consecutivi in cui la CPU ha voluto il bus senza ottenerlo. */
+    /** Consecutive CCKs in which the CPU wanted the bus without getting it. */
     private int cpuBusWaitCck = 0;
 
-    /** {@code BLIT_NASTY_CPU_STEAL_CYCLE_COUNT} di blitter.cpp. */
+    /** How many CCKs the CPU waits before a nasty blitter lets it steal a cycle. */
     private static final int BLIT_NASTY_CPU_STEAL_CYCLE_COUNT = 3;
 
     private boolean lastResetSignal = false;
 
     /**
-     * /RESET di sistema (da Gary) attualmente asserita: la macchina è tenuta ferma
-     * in reset dalla tastiera (CTRL+AMIGA+AMIGA). Serve a distinguere il fronte di
-     * discesa — che resetta la CPU una volta sola — dal mantenimento della linea.
+     * System /RESET (from Gary) currently asserted: the keyboard holds the machine in reset
+     * (CTRL+AMIGA+AMIGA). It tells the falling edge, which resets the CPU once, from the
+     * line being held.
      */
     private boolean systemResetActive = false;
 
@@ -1260,145 +1123,129 @@ public abstract class AbstractAgnus {
     private int     lastCiaADdra    = -1;
 
     // =========================================================================
-    // Posizione del raster (beam)
+    // Raster (beam) position
     // =========================================================================
 
-    /** Posizione orizzontale corrente in system clock (0 – maxHpos-1). */
+    /** Current horizontal position in system clocks (0 - maxHpos-1). */
     private int hpos;
 
     /**
-     * Il reset software ha ri-ancorato il contatore orizzontale: al prossimo {@code hpos 1}
-     * la riga interrotta va contata. Vedi {@code updateBeam()} e {@code internalReset()}.
+     * The software reset has re-anchored the horizontal counter: at the next {@code hpos 1}
+     * the interrupted line must be counted. See {@code updateBeam()} and
+     * {@code internalReset()}.
      */
     private boolean resetRowPending = false;
     /** The line advance a custom-chip reset brought forward still owes the drives their sync. */
     private boolean resetDriveHsyncPending = false;
 
     /**
-     * L'accensione è passata. La prima volta che la CPU alza la linea di reset siamo alla
-     * costruzione della macchina — l'oracolo lì fa un reset HARD, e l'origine del pennello
-     * è {@code INITIAL_HPOS} per costruzione — quindi quel reset non ri-ancora niente.
+     * Power-on is over. The first time the CPU raises the reset line is the machine's
+     * construction, a hard reset where the beam's origin is {@code INITIAL_HPOS} by
+     * construction, so that reset re-anchors nothing.
      */
     private boolean poweredOn = false;
 
-    /** Posizione verticale corrente in righe (0 – maxVpos-1). */
+    /** Current vertical position in lines (0 - maxVpos-1). */
     private int vpos;
 
     /**
-     * Campo corrente per l'interlace: 0 = frame pari (lungo), 1 = frame dispari (corto).
-     * In modalità non-interlace non alterna: resta al valore che l'ultima VPOSW ha scritto.
-     * ⛔ All'ACCENSIONE vale 1, cioè LOF = 0 e fotogramma CORTO (312 righe PAL, 262 NTSC):
-     * è lo stato da cui il bootblock del Kickstart passa, e da qui in avanti lo muove solo
-     * una VPOSW. Il valore sta nella dichiarazione, non nel reset, perché il reset dei chip
-     * custom NON lo tocca — vedi {@code internalReset()} e docs/vamigats-import-order.md §26.
+     * Current interlace field: 0 = even (long) frame, 1 = odd (short) frame. Without
+     * interlace it does not alternate: it keeps what the last VPOSW wrote. At POWER-ON it is
+     * 1, i.e. LOF = 0 and a SHORT frame (312 lines PAL, 262 NTSC): the state the Kickstart's
+     * bootblock runs through, which only a VPOSW changes from then on. The value is in the
+     * declaration, not in the reset, because the custom-chip reset does NOT touch it (see
+     * {@code internalReset()} and docs/vamigats-import-order.md section 26).
      */
     private int field = 1;
 
     /**
-     * {@code agnus_vsync} dell'oracolo: l'impulso di vsync è in corso. Serve solo a far
-     * scattare l'aggancio <b>una volta sola</b> per fotogramma — in {@code custom.cpp}
-     * {@code vsync_mark()} è dentro un {@code if (!agnus_vsync)}.
+     * The vsync pulse is in progress. It only makes the display lock fire <b>once</b> per
+     * frame.
      */
     private boolean vsyncActive = false;
 
-    /** Vedi {@link #getDisplayRowShift()}: latchato all'inizio del vsync, una volta per frame. */
+    /** See {@link #getDisplayRowShift()}: latched at the start of vsync, once per frame. */
     private int displayRowShift = 0;
 
     /**
-     * Numero massimo di righe per frame.
-     * PAL: 312 (righe 0-311), NTSC: 262 (righe 0-261).
+     * Maximum number of lines per frame. PAL: 312 (lines 0-311), NTSC: 262 (lines 0-261).
      */
-    // STEP 14/P-12 (PERFORMANCE_REPORT_FINAL) l'aveva reso `final` per il constant
-    // folding del JIT. ⛔ Non può più esserlo: su ECS il modo si commuta A CALDO
-    // scrivendo BEAMCON0 (vedi {@link #beamNtsc}), e `init_beamcon0()` dell'oracolo
-    // riassegna `maxvpos` nel CCK stesso della scrittura. Resta assegnato nel
-    // costruttore (262 NTSC / 312 PAL) e cambia SOLO su una scrittura a BEAMCON0 che
-    // rovescia il bit PAL — cioè mai, in una macchina che non tocca il registro.
+    // Not final: on ECS the mode switches WHILE RUNNING by writing BEAMCON0 (see
+    // {@link #beamNtsc}), which reassigns it in the CCK of the write. Set in the constructor
+    // (262 NTSC / 312 PAL) and changed ONLY by a BEAMCON0 write that flips the PAL bit.
     private int maxVpos;
 
     /**
-     * Numero di system clock della riga <b>corta</b>: 454 SC = 227 CCK.
-     * È la lunghezza di ogni riga in PAL e della riga corta in NTSC.
+     * System clocks of the <b>short</b> line: 454 SC = 227 CCK. The length of every PAL line
+     * and of the short NTSC line.
      */
     private static final int MAXHPOS_SHORT = 454;
 
     /**
-     * Riga su cui cade l'impulso TOD di <b>CIA-A</b>, il «50 Hz di rete».
+     * Line where the <b>CIA-A</b> TOD pulse falls, the "50 Hz mains".
      *
-     * <p>⛔ Non è l'inizio del frame: è la <b>fine dell'impulso di vsync</b>, e in PAL cade
-     * alla riga <b>5</b>. Oracolo, {@code custom.cpp}: <i>«CIA-A TOD counter increases when
-     * vsync pulse ends»</i>, {@code if (vpos == VSYNC_ENDLINE_PAL) CIAA_tod_handler(...)},
-     * con {@code VSYNC_ENDLINE_PAL 5} in {@code include/custom.h}. Qui l'impulso stava allo
-     * <b>wrap di vpos</b>, cinque righe prima.
-     *
-     * <p>L'{@code hoffset} che l'oracolo passa insieme alla riga ({@code lof_store ? 132 : 18})
-     * è modellato in {@link #todIncOffsetCck(int, long)}.
+     * <p>It is not the start of the frame: it is the <b>end of the vsync pulse</b>, line
+     * <b>5</b> in PAL (the CIA-A TOD counter increases when the vsync pulse ends). The
+     * horizontal offset within the line is modelled in {@link #todIncOffsetCck(int, long)}.
      */
     private static final int CIAA_TOD_VPOS = 5;
 
     /**
-     * Riga su cui l'impulso di <b>vsync</b> COMINCIA — e con lui il fotogramma che il
-     * display assembla.
+     * Line where the <b>vsync</b> pulse STARTS, and with it the frame the display assembles.
      *
-     * <p>⛔ <b>Non è una costante: dipende da LOF, e solo in PAL.</b> Oracolo,
-     * {@code custom.cpp} (il blocco {@code if (realpal) … else …} che alza
-     * {@code agnus_vsync}):
+     * <p><b>Not a constant: it depends on LOF, in PAL only.</b>
      * <pre>
-     * PAL : SHS     &amp;&amp; vpos == 3 &amp;&amp;  lof_store  → vsync_mark()
-     *       HCENTER &amp;&amp; vpos == 2 &amp;&amp; !lof_store  → vsync_mark()
-     * NTSC: SHS     &amp;&amp; vpos == 3 &amp;&amp;  lof_store  → vsync_mark()
-     *       HCENTER &amp;&amp; vpos == 3 &amp;&amp; !lof_store  → vsync_mark()
+     * PAL : HSSTRT  and vpos == 3 and  LOF -> vsync starts
+     *       HCENTER and vpos == 2 and !LOF -> vsync starts
+     * NTSC: HSSTRT  and vpos == 3 and  LOF -> vsync starts
+     *       HCENTER and vpos == 3 and !LOF -> vsync starts
      * </pre>
-     * cioè in PAL il fotogramma <b>corto</b> aggancia il vsync <b>una riga prima</b>,
-     * mentre in NTSC le due righe coincidono e cambia solo il punto dentro la riga
-     * (HSSTRT contro HCENTER, gli stessi due che {@link #TOD_HOFFSET_CIAA_LONG} e
-     * {@link #TOD_HOFFSET_CIAA_SHORT} già portano).
+     * so in PAL the <b>short</b> frame starts vsync <b>one line earlier</b>, while in NTSC the
+     * two lines coincide and only the point within the line changes (HSSTRT against HCENTER,
+     * the same two {@link #TOD_HOFFSET_CIAA_LONG} and {@link #TOD_HOFFSET_CIAA_SHORT} carry).
      *
-     * <p>Conta perché <b>il display si aggancia al vsync, non allo wrap di vpos</b>:
-     * in {@code custom.cpp} è {@code vsync_mark()} ad azzerare {@code linear_vpos}, che è
-     * la riga del framebuffer. Una riga di vpos V finisce quindi alla riga
-     * {@code V − vsyncStartLine}, e in PAL con LOF=0 tutto il quadro scende di una riga.
-     * Vedi {@link #getDisplayRowShift()}.
+     * <p>It matters because <b>the display locks to vsync, not to the vpos wrap</b>: vsync
+     * resets the framebuffer row. A line at vpos V therefore lands on row
+     * {@code V - vsyncStartLine}, and in PAL with LOF=0 the whole picture moves down one row.
+     * See {@link #getDisplayRowShift()}.
      */
     private static final int VSYNC_START_VPOS_PAL_LONG = 3;
     private static final int VSYNC_START_VPOS_PAL_SHORT = 2;
     private static final int VSYNC_START_VPOS_NTSC = 3;
 
-    /** Riga su cui l'impulso di vsync FINISCE: PAL 5, NTSC 6 ({@code agnus_vsync = false}). */
+    /** Line where the vsync pulse ENDS: PAL 5, NTSC 6. */
     private static final int VSYNC_END_VPOS_PAL = 5;
     private static final int VSYNC_END_VPOS_NTSC = 6;
 
     /**
-     * {@code hoffset} dell'impulso TOD di <b>CIA-B</b>: la fine dell'hsync.
-     * Oracolo, {@code custom.cpp}: {@code CIAB_tod_handler(35); // hsync end}.
+     * Horizontal offset of the <b>CIA-B</b> TOD pulse: the end of hsync.
      */
     private static final int TOD_HOFFSET_CIAB = 35;
 
-    /** {@code hoffset} dell'impulso TOD di CIA-A su frame <b>lungo</b> (LOF=1, HCENTER). */
+    /** Horizontal offset of the CIA-A TOD pulse on a <b>long</b> frame (LOF=1, HCENTER). */
     private static final int TOD_HOFFSET_CIAA_LONG = 132;
 
-    /** {@code hoffset} dell'impulso TOD di CIA-A su frame <b>corto</b> (LOF=0, HSSTRT). */
+    /** Horizontal offset of the CIA-A TOD pulse on a <b>short</b> frame (LOF=0, HSSTRT). */
     private static final int TOD_HOFFSET_CIAA_SHORT = 18;
 
     /**
-     * Ritardo interno del contatore TOD, in CCK: {@code TOD_INC_DELAY} dell'oracolo,
-     * {@code 12 * E_CLOCK_LENGTH / 2} = 12 E-clock = 60 CCK ({@code cia.cpp}).
+     * Internal delay of the TOD counter, in CCK: 12 E clocks = 60 CCK.
      */
     private static final int TOD_INC_DELAY_CCK = 60;
 
     /**
-     * Passo della griglia a cui l'incremento del TOD si allinea, in CCK: quattro E-clock
-     * ({@code unit = (E_CLOCK_LENGTH * 4) / 2} in {@code tod_inc_delay}). ⚠️ È il modulo che
-     * rende la posizione dell'impulso <b>diversa riga per riga</b>: 227 non è multiplo di 20.
+     * Step of the grid the TOD increment aligns to, in CCK: four E clocks. It is the modulus
+     * that makes the position of the pulse <b>different line by line</b>: 227 is not a
+     * multiple of 20.
      */
     private static final int TOD_ALIGN_CCK = 20;
 
-    /** {@code E_CLOCK_TOD_N} dell'oracolo, in CCK: la correzione finale di {@code tod_inc_delay}. */
+    /** Final correction of the TOD increment delay, in CCK. */
     private static final int TOD_ECLOCK_TOD_CCK = -2;
 
     /**
-     * Larghezza dell'impulso TOD, in system clock. Due periodi di E-clock: garantisce che
-     * la CIA ne veda il fronte di salita a un solo dei propri tick.
+     * Width of the TOD pulse, in system clocks. Two E-clock periods: the CIA sees its rising
+     * edge at exactly one of its ticks.
      */
     private static final int TOD_PULSE_WIDTH_SC = 20;
 
@@ -1412,61 +1259,54 @@ public abstract class AbstractAgnus {
     private static final int INITIAL_HPOS = MAXHPOS_SHORT - 8;
 
     /**
-     * Numero massimo di system clock della riga corrente: {@link #MAXHPOS_SHORT},
-     * più un CCK (2 SC) sulle righe lunghe NTSC (vedi {@link #lol}).
+     * System clocks of the current line: {@link #MAXHPOS_SHORT}, plus one CCK (2 SC) on NTSC
+     * long lines (see {@link #lol}).
      */
     private int maxHpos = MAXHPOS_SHORT;
 
     /**
-     * LOL — <i>long line</i>. Su Agnus NTSC la lunghezza della riga <b>alterna</b> fra
-     * 227 e 228 CCK: è così che il frame NTSC vale in media 227,5 CCK per riga (la
-     * "mezza riga" del segnale NTSC). In PAL non esiste e resta sempre {@code false}.
+     * LOL, <i>long line</i>. On an NTSC Agnus the line length <b>alternates</b> between 227
+     * and 228 CCK: that is how the NTSC frame averages 227.5 CCK per line (the "half line"
+     * of the NTSC signal). It does not exist in PAL and stays {@code false}. It toggles at
+     * the end of every line (unless BEAMCON0 has LOLDIS) and applies to the NEXT line.
      *
-     * <p>Oracolo WinUAE {@code custom.cpp}: {@code lol = lol ? false : true} a ogni
-     * riga quando {@code !(new_beamcon0 & BEAMCON0_PAL) && !(… & BEAMCON0_LOLDIS)},
-     * seguito da {@code setmaxhpos()} → {@code maxhpos = maxhpos_short + lol}. Il
-     * toggle avviene a fine riga e vale per la riga SUCCESSIVA.
-     *
-     * <p>Senza questo, la riga NTSC era fissa a 227 CCK: il frame durava 263×227 CCK
-     * invece di 262,5×227,5 e la fase fra CPU e pennello restava bloccata su un unico
-     * valore per tutta la partita. Un gioco che attende il VBLANK leggendo INTREQR in
-     * polling (Out of This World via WHDLoad: {@code move.w #$7FFF,INTREQ} +
-     * {@code btst #5,INTREQR}) perdeva così SEMPRE la corsa contro il gestore di
-     * interrupt di Exec, che azzerava il bit prima che il polling potesse vederlo →
-     * schermo nero all'infinito dopo lo splash WHDLoad.
+     * <p>With the NTSC line fixed at 227 CCK the phase between CPU and beam stayed locked on
+     * one value for a whole session. A game waiting for VBLANK by polling INTREQR (Out of
+     * This World under WHDLoad: {@code move.w #$7FFF,INTREQ} + {@code btst #5,INTREQR})
+     * ALWAYS lost the race against Exec's interrupt handler, which cleared the bit before
+     * the poll could see it: black screen forever after the WHDLoad splash.
      */
     private boolean lol = false;
 
     protected final VideoMode mode;
 
     // =========================================================================
-    // Registri Agnus
+    // Agnus registers
     // =========================================================================
 
     /**
-     * DMACON — DMA Control Register.
+     * DMACON - DMA Control Register.
      * Bit 15: SETCLR (write only)
-     * Bit 14: BBUSY  — Blitter busy (read only)
-     * Bit 13: BZERO  — Blitter zero flag (read only)
-     * Bit 9:  MASTER — DMA master enable
-     * Bit 8:  BPLEN  — Bitplane DMA enable
-     * Bit 7:  COPEN  — Copper DMA enable
-     * Bit 6:  BLTEN  — Blitter DMA enable
-     * Bit 5:  SPREN  — Sprite DMA enable
-     * Bit 4:  DSKEN  — Disk DMA enable
-     * Bit 3:  AUD3EN — Audio channel 3 DMA enable
+     * Bit 14: BBUSY  - Blitter busy (read only)
+     * Bit 13: BZERO  - Blitter zero flag (read only)
+     * Bit 9:  MASTER - DMA master enable
+     * Bit 8:  BPLEN  - Bitplane DMA enable
+     * Bit 7:  COPEN  - Copper DMA enable
+     * Bit 6:  BLTEN  - Blitter DMA enable
+     * Bit 5:  SPREN  - Sprite DMA enable
+     * Bit 4:  DSKEN  - Disk DMA enable
+     * Bit 3:  AUD3EN - Audio channel 3 DMA enable
      * Bit 2:  AUD2EN
      * Bit 1:  AUD1EN
      * Bit 0:  AUD0EN
-     * Bit 10: BLTPRI — Blitter nasty (non cede mai il bus alla CPU)
+     * Bit 10: BLTPRI - Blitter nasty (never yields the bus to the CPU)
      */
     private int dmacon = 0;
 
-    // Flag DMA derivati da dmacon (+ bitplaneVerticalActive per bitplaneDmaActive).
-    // Ricalcolati da updateDmaFlags() ad ogni scrittura di dmacon e da
-    // updateBitplaneVerticalWindow() per la finestra verticale. Sostituiscono i
-    // test di bit ripetuti ad ogni ciclo nell'arbitraggio del bus (hot path);
-    // valore identico al ricalcolo al volo (dipendono solo da dmacon/finestra V).
+    // DMA flags derived from dmacon (+ bitplaneVerticalActive for bitplaneDmaActive),
+    // recomputed by updateDmaFlags() at every dmacon write and by
+    // updateBitplaneVerticalWindow() for the vertical window. They replace bit tests
+    // repeated at every cycle of the bus arbitration (hot path).
     private boolean dmaMasterEnabled    = false;
     private boolean bitplaneDmaEnabled  = false;
     private boolean bitplaneDmaActive   = false;
@@ -1482,39 +1322,36 @@ public abstract class AbstractAgnus {
     private boolean lastCompletedFrameHadLateBitplaneDma = false;
     private int lastCompletedFrameField = 0;
 
-    /** REFPTR — DRAM refresh address, stepped by every refresh cycle. */
+    /** REFPTR - DRAM refresh address, stepped by every refresh cycle. */
     private int refptr = 0;
 
-    /** DSKPT — Disk DMA pointer. */
+    /** DSKPT - Disk DMA pointer. */
     private int dskpt = 0;
 
     /**
-     * BEAMCON0 — controllo segnali video.
-     * Bit 5: VARVSYEN — PAL/NTSC select (0=NTSC, 1=PAL su ECS; su OCS ignorato).
-     * Default: 0x0020 per PAL.
+     * BEAMCON0 - video signal control.
+     * Bit 5: PAL/NTSC select (0=NTSC, 1=PAL on ECS; ignored on OCS).
+     * Default: 0x0020 for PAL.
      */
     protected int beamcon0 = 0x0020;
 
-    /** BEAMCON0 bit 5: video PAL. Spento ⇒ NTSC. */
+    /** BEAMCON0 bit 5: PAL video. Clear = NTSC. */
     private static final int BEAMCON0_PAL_BIT = 0x0020;
-    /** BEAMCON0 bit 11: LOLDIS, disabilita l'alternanza riga lunga/corta. */
+    /** BEAMCON0 bit 11: LOLDIS, disables the long/short line alternation. */
     private static final int BEAMCON0_LOLDIS  = 0x0800;
 
     /**
-     * Modo del <b>pennello</b>: NTSC se il bit PAL di BEAMCON0 è spento.
+     * Mode of the <b>beam</b>: NTSC if BEAMCON0's PAL bit is clear.
      *
-     * <p>⛔ <b>Non è {@link #mode}</b>. `mode` è la macchina — il quarzo, l'ID di Agnus
-     * letto da VPOSR, la scelta fatta alla costruzione; questo è quel che il pennello sta
-     * facendo <i>adesso</i>, e su ECS il software lo commuta <b>a caldo</b> scrivendo
-     * BEAMCON0. L'oracolo lo calcola in `init_beamcon0()` (custom.cpp) come
-     * {@code isntsc = (beamcon0 & BEAMCON0_PAL) ? 0 : 1}, con la deroga
-     * {@code if (!ecs_agnus) isntsc = currprefs.ntscmode} — da noi implicita, perché su OCS
-     * {@link #beamcon0Writable()} è falso e il registro non cambia mai.
+     * <p><b>Not {@link #mode}</b>. {@code mode} is the machine (the crystal, the Agnus ID read
+     * from VPOSR, chosen at construction); this is what the beam is doing <i>now</i>, and on
+     * ECS software switches it <b>while running</b> by writing BEAMCON0. On OCS
+     * {@link #beamcon0Writable()} is false and the register never changes.
      *
-     * <p>Cambia tre cose insieme, e vanno insieme: {@link #maxVpos} (312 ⇄ 262),
-     * l'alternanza {@link #lol} della riga lunga (che esiste solo in NTSC) e la fase del
-     * VSYNC. Misurato su `Agnus/Misc/ntsc4` e `ntsc5`, gli unici due del banco che spengono
-     * il bit PAL.
+     * <p>It changes three things together: {@link #maxVpos} (312 / 262), the long-line
+     * alternation {@link #lol} (NTSC only) and the VSYNC phase. Measured on
+     * {@code Agnus/Misc/ntsc4} and {@code ntsc5}, the only two tests of the bank that clear
+     * the PAL bit.
      */
     private boolean beamNtsc;
 
@@ -1525,20 +1362,12 @@ public abstract class AbstractAgnus {
     private static final int ID_OCS_PAL  = 0x00;
     private static final int ID_OCS_NTSC = 0x10;
     // =========================================================================
-    // DMA Slot (in CCK, ovvero hpos/2)
+    // DMA slots (in CCK, i.e. hpos/2)
     // =========================================================================
 
-    // NOTA STORICA: una vecchia scelta metteva il refresh a CCK 0/2/4/6 (inizio riga, pari)
-    // per evitare una collisione con la fetch bitplane in overscan (con DDFSTOP grande, es.
-    // $D8, l'ultima fetch del piano 0 cadeva a CCK 223 e la refresh a 223-226 la rubava →
-    // bitplane traslati). vAmiga risolve mettendo UNA sola refresh a fine riga (0xE2=226),
-    // OLTRE la max fetch bitplane (DDFSTOP max in lores → ultima fetch < 226), quindi nessuna
-    // collisione. Le altre 3 refresh stanno a inizio riga (1,3,5), prima di DDFSTRT.
-    // Posizioni DAS allineate BIT-PER-BIT a vAmiga (SequencerDas.cpp `dasDMA` + serviceDASEvent),
-    // in CCK = pos.h. vAmiga mette TUTTA la DMA DAS su CCK DISPARI, con refresh anche a fine
-    // riga (0xE2=226). La vecchia scelta 0/2/4/6 (refresh a inizio riga, pari) era un'euristica
-    // per evitare una collisione con la fetch bitplane in overscan; sostituita dal modello
-    // rigoroso, verificato dai test vAmigaTS. Refresh: 1,3,5 e lo strobe sull'ultimo CCK della riga (strobeCck).
+    // All the fixed (disk/audio/sprite) DMA sits on ODD CCKs. Refresh: 1, 3, 5 and the
+    // strobe on the last CCK of the line (strobeCck), beyond the last possible bitplane
+    // fetch, so no refresh collides with an overscan fetch.
     private static final int SLOT_REFRESH_1 = 1;
     private static final int SLOT_REFRESH_2 = 3;
     private static final int SLOT_REFRESH_3 = 5;
@@ -1589,49 +1418,43 @@ public abstract class AbstractAgnus {
      */
     private static final int DMAL_LATCH_CCK = 0;
 
-    // Disk DMA: 3 slot per riga (vAmiga p[0x07/09/0B] = CCK 7, 9, 11).
+    // Disk DMA: 3 slots per line (CCK 7, 9, 11).
     private static final int SLOT_DISK_1 = 7;
     private static final int SLOT_DISK_2 = 9;
     private static final int SLOT_DISK_3 = 11;
 
-    // Audio DMA: 1 slot per canale (vAmiga p[0x0D/0F/11/13] = CCK 13,15,17,19).
+    // Audio DMA: 1 slot per channel (CCK 13, 15, 17, 19).
     private static final int SLOT_AUDIO_0 = 13;
     private static final int SLOT_AUDIO_1 = 15;
     private static final int SLOT_AUDIO_2 = 17;
     private static final int SLOT_AUDIO_3 = 19;
 
-    // Sprite DMA: 2 slot per sprite (vAmiga p[0x15..0x33] dispari = CCK 21..51).
+    // Sprite DMA: 2 slots per sprite (odd CCKs 21..51).
     // Sprite 0: 21,23; sprite 1: 25,27; ... sprite 7: 49,51.
     private static final int SLOT_SPRITE_0     = 21;
 
     /**
-     * CCK di anticipo della DECISIONE di uno slot sprite rispetto al trasferimento.
-     * ⛔ È l'ancora dell'oracolo, non una taratura: `generate_sprites()` è chiamata da
-     * `handle_dmal()`, dove i tap degli sprite nello shift register stanno DUE posizioni
-     * più avanti di quelli di disco e audio («sprites have earlier DMA decisions»).
+     * How many CCKs the DECISION of a sprite slot precedes its transfer. Not a tuning:
+     * sprites have earlier DMA decisions, their taps in the DMA request shift register sit
+     * TWO positions ahead of the disk and audio ones.
      */
     private static final int SPRITE_DECISION_LEAD_CCK = 2;
     private static final int SLOT_SPRITE_7_END = 51;
 
     // =========================================================================
-    // DMA sequencer table (precomputed per-line schedule, modello vAmiga)
+    // DMA sequencer table (precomputed per-line schedule)
     // =========================================================================
     //
-    // Tabella che mappa ogni CCK della riga al tipo di slot DMA "fisso" (DAS =
-    // Disk/Audio/Sprite + Refresh) che lo occupa. È la versione data-driven del
-    // sequencer hardware di Agnus (cfr. vAmiga Sequencer::dasDMA in
-    // Components/Agnus/Sequencer/SequencerDas.cpp): invece di una catena di
-    // confronti `if (cck==SLOT_REFRESH_1 || cck==SLOT_REFRESH_2 ...)` per ogni
-    // CCK, si fa un singolo lookup. La POSIZIONE degli slot è costante per riga
-    // (refresh 0/2/4/6, disk 1/5/9, audio 15/17/19/21, sprite 23..53 dispari);
-    // le condizioni dinamiche (DMACON enable, richiesta canale, fase/VSTOP sprite)
-    // restano fuori dalla tabella: disco e audio le valutano all'allocazione, un CCK
-    // prima dello slot (allocateDasSlot), gli sprite alla loro decisione.
+    // Maps every CCK of the line to the type of "fixed" DMA slot (DAS = Disk/Audio/Sprite
+    // + Refresh) that occupies it: a data-driven version of Agnus's sequencer, one lookup
+    // instead of a chain of comparisons per CCK. The POSITION of the slots is the same on
+    // every line; the dynamic conditions (DMACON enable, channel request, sprite
+    // phase/VSTOP) stay out of the table: disk and audio evaluate them at allocation, one
+    // CCK before the slot (allocateDasSlot), sprites at their decision.
     //
-    // NB: la priorità di arbitraggio NON cambia. Refresh/disk/audio restano
-    // dispatchati PRIMA del bitplane; lo sprite DOPO (il bitplane vince sullo
-    // sprite quando le finestre si sovrappongono in overscan). La tabella serve
-    // solo a riconoscere il tipo di slot, non a riordinare l'arbitraggio.
+    // The arbitration priority does NOT change: refresh/disk/audio are dispatched BEFORE
+    // the bitplanes, sprites AFTER (bitplanes win over sprites where the windows overlap
+    // in overscan). The table only recognises the slot type.
     private static final byte DMASLOT_NONE    = 0;
     private static final byte DMASLOT_REFRESH = 1;
     private static final byte DMASLOT_DISK    = 2;
@@ -1641,9 +1464,9 @@ public abstract class AbstractAgnus {
     private static final byte[] DMA_SLOT_TABLE = buildDmaSlotTable();
 
     private static byte[] buildDmaSlotTable() {
-        // 228 posizioni: 227 CCK della riga corta più il CCK extra della riga lunga NTSC
-        // (LOL). Lo strobe non sta in tabella: occupa l'ultimo CCK della riga, che dipende
-        // dalla sua lunghezza (strobeCck).
+        // 228 entries: the 227 CCKs of the short line plus the extra CCK of the NTSC long
+        // line (LOL). The strobe is not in the table: it takes the last CCK of the line,
+        // which depends on the line's length (strobeCck).
         byte[] t = new byte[228];
         t[SLOT_REFRESH_1] = DMASLOT_REFRESH;
         t[SLOT_REFRESH_2] = DMASLOT_REFRESH;
@@ -1655,7 +1478,7 @@ public abstract class AbstractAgnus {
         t[SLOT_AUDIO_1] = DMASLOT_AUDIO;
         t[SLOT_AUDIO_2] = DMASLOT_AUDIO;
         t[SLOT_AUDIO_3] = DMASLOT_AUDIO;
-        // Sprite: CCK dispari nel range [21, 51] (2 slot per sprite).
+        // Sprites: odd CCKs in [21, 51] (2 slots per sprite).
         for (int cck = SLOT_SPRITE_0; cck <= SLOT_SPRITE_7_END; cck++) {
             if ((cck & 1) != 0) t[cck] = DMASLOT_SPRITE;
         }
@@ -1670,47 +1493,40 @@ public abstract class AbstractAgnus {
     private int     frozenVpos = 0;
     private int     frozenHpos = 0;
 
-    // ERSY-freeze (BPLCON0 bit 1 = external resync). Sull'hardware, quando ERSY è
-    // attivo e NON c'è un genlock a fornire il sync esterno, i contatori del pennello
-    // di Agnus si fermano (WinUAE: issyncstopped()/setsyncstoppos() forza hpos=0).
-    // La graphics.library 1.3 sfrutta questo per il rilevamento genlock a $FCAF96:
-    // scrive BPLCON0=$0102 (ERSY), poi legge VHPOSR due volte; se HP è cambiato →
-    // "genlock presente" e imposta GfxBase.system_bplcon0=$0102 (OR-ato in OGNI
-    // BPLCON0 di ogni copper list). Senza modellare il freeze, il pennello avanza,
-    // i due HP differiscono e ogni display eredita ERSY+GAUD ($0102) — LED Storm va
-    // in schermo nero perché il suo copper riscrive $a302 (ERSY) ogni frame.
-    // Non abbiamo mai un genlock, quindi ERSY implica sempre sync-stopped.
-    // ⛔ Qui stava un LATCH — la posizione campionata al primo accesso sotto ERSY — ed era
-    // un'approssimazione: bastava a far coincidere i due HP del rilevamento genlock, ma il
-    // valore era sbagliato. L'oracolo azzera `agnus_hpos` a ogni cck e restituisce QUELLO,
-    // cioè HP = 0 fisso, e `ersy2` lo misura direttamente ($4000 ripetuto). Il latch non
-    // serve più: il vpos è già fermo perché `updateBeam` non lo incrementa.
+    // ERSY freeze (BPLCON0 bit 1 = external resync). When ERSY is on and NO genlock provides
+    // the external sync, Agnus's beam counters stop, with the horizontal counter held at 0.
+    // graphics.library 1.3 relies on it to detect a genlock at $FCAF96: it writes
+    // BPLCON0=$0102 (ERSY), then reads VHPOSR twice; if HP changed it assumes "genlock
+    // present" and sets GfxBase.system_bplcon0=$0102 (ORed into EVERY BPLCON0 of every copper
+    // list). Without the freeze every display inherits ERSY+GAUD ($0102), and LED Storm goes
+    // black because its copper writes $a302 (ERSY) every frame. There is never a genlock, so
+    // ERSY always means sync stopped. HP reads 0 throughout (`ersy2` measures it: $4000
+    // repeated), and vpos stands still because `updateBeam` does not advance it.
 
     /**
-     * {@code syncs_stopped} dell'oracolo: il freeze è <b>in corso</b>.
+     * The freeze is <b>in progress</b>.
      *
-     * <p>⛔ Non coincide con «ERSY è alto». Entra al primo confine di riga con ERSY alto
-     * (vedi {@code updateBeam}), esce <b>subito</b> quando BPLCON0 abbassa il bit (vedi
-     * {@code setBPLCON0}) — la stessa asimmetria di {@code custom.cpp}, dove
-     * {@code checksyncstopped()} in configurazione cycle-exact sa solo spegnere.
+     * <p>Not the same as "ERSY is high". It starts at the first line boundary with ERSY high
+     * (see {@code updateBeam}) and ends <b>at once</b> when BPLCON0 clears the bit (see
+     * {@code setBPLCON0}).
      */
     private boolean syncsStopped = false;
 
     // =========================================================================
-    // Display Window e DMA Fetch
+    // Display window and DMA fetch
     // =========================================================================
 
     /**
-     * DIWSTRT — Display Window Start.
-     * Bit 15-8: linea di inizio (V7-V0).
-     * Bit 7-0:  colonna di inizio (H7-H0), in pixel lores.
+     * DIWSTRT - Display Window Start.
+     * Bit 15-8: start line (V7-V0).
+     * Bit 7-0:  start column (H7-H0), in lores pixels.
      */
     private int diwStrt = 0;
 
     /**
-     * DIWSTOP — Display Window Stop.
-     * Bit 15-8: linea di fine (V7-V0).
-     * Bit 7-0:  colonna di fine (H7-H0), in pixel lores.
+     * DIWSTOP - Display Window Stop.
+     * Bit 15-8: stop line (V7-V0).
+     * Bit 7-0:  stop column (H7-H0), in lores pixels.
      */
     private int diwStop = 0;
 
@@ -1718,9 +1534,8 @@ public abstract class AbstractAgnus {
     private boolean bitplaneVerticalActive = false;
 
     /**
-     * DDFSTRT/DDFSTOP — Data Fetch Start/Stop.
-     * Definiscono la finestra orizzontale del fetch DMA dei bitplane.
-     * In CCK (hpos/2). Solo i bit 7-2 sono significativi (allineamento a 4).
+     * DDFSTRT/DDFSTOP - Data Fetch Start/Stop: the horizontal window of bitplane DMA fetch,
+     * in CCK (hpos/2). Only bits 7-2 count (alignment to 4).
      */
     private int ddfStrt = 0, ddfStop = 0;
     private int ddfCckStart = 0, ddfCckStop = 0;
@@ -1729,152 +1544,117 @@ public abstract class AbstractAgnus {
     private int scrollOdd = 0;
     private int scrollEven = 0;
 
-    /** Puntatori bitplane (registri BPLxPT, scritti dalla CPU). */
+    /** Bitplane pointers (BPLxPT registers, written by the CPU). */
     private final int[] bplPt          = new int[6];
 
-    /** Puntatori bitplane correnti durante il DMA (aggiornati ad ogni fetch). */
+    /** Current bitplane pointers during DMA (updated at every fetch). */
     private final int[] bplPtrInternal = new int[6];
 
-    /** Puntatori sprite (registri SPRxPT). */
+    /** Sprite pointers (SPRxPT registers). */
     private final int[] sprPt          = new int[8];
 
-    /** Puntatori sprite correnti durante il DMA. */
+    /** Current sprite pointers during DMA. */
     private final int[] sprPtrInternal = new int[8];
 
     /**
-     * Latch della decisione presa al <b>primo</b> dei due slot DMA di uno sprite: fa fetch
-     * o no ({@link #sprSlotFetch}) e con quale fase ({@link #sprSlotDataPhase}).
+     * Latch of the decision taken at the <b>first</b> of a sprite's two DMA slots: whether
+     * it fetches ({@link #sprSlotFetch}) and in which phase ({@link #sprSlotDataPhase}).
      *
-     * <p>⛔ <b>Anche il fetch sprite è un SEQUENCER, non un predicato vivo.</b> L'oracolo
-     * (`custom.cpp`, `generate_sprites()`) tiene per ogni sprite un contatore {@code dmacycle}
-     * che vale 1 al primo slot e 2 al secondo, e lo <b>arma solo allo slot 0</b>:
-     * <pre>
-     *   if (slot == 0) {
-     *       if (!s->dmacycle &amp;&amp; s->dmastate)              s->dmacycle = 1;
-     *       if (vpos == s->vstart) { s->dmastate = 1; s->dmacycle = 1; }
-     *       if (vpos == s->vstop)  { s->dmastate = 0; s->dmacycle = 1; }
-     *   }
-     *   if (dmaen(DMA_SPRITE) &amp;&amp; s->dmacycle) { … reg = 0x140 + slot + num*8 + (dmastate ? 4 : 0); }
-     * </pre>
-     * ⇒ fra i due slot la decisione <b>non si rivaluta</b>: una scrittura a SPRxPOS/SPRxCTL
-     * che cade in mezzo cambia {@code vstart}/{@code vstop} ma non ciò che il secondo slot
-     * preleva. Da noi {@code spriteNeedsFetch()} era un predicato letto a ogni slot, e il
-     * secondo vedeva già il valore nuovo.
-     *
-     * <p>È la <b>terza</b> volta che questo progetto trova la stessa forma, dopo il fetch
-     * bitplane e la decisione del DMA sprite due CCK prima dello slot: dove l'oracolo tiene
-     * uno stato, una regola ricalcolata dà la stessa risposta finché nessuno scrive nel
-     * mezzo — ed è esattamente quel che i test `spritedma/interfere*` fanno.
-     *
-     * <p>⚠️ <b>Portata la metà che la misura sostiene</b>: il latch fra i due slot. Il
-     * contatore {@code dmacycle} per intero — che fa dormire uno sprite inattivo invece di
-     * rileggerne il descrittore a ogni riga — è la seconda metà e vuole una misura propria.
+     * <p><b>The sprite fetch is a SEQUENCER too, not a live predicate.</b> Each sprite has a
+     * DMA cycle counter ({@link #sprDmaCycle}), 1 at the first slot and 2 at the second,
+     * <b>armed only at slot 0</b>, so between the two slots the decision is <b>not
+     * re-evaluated</b>: a SPRxPOS/SPRxCTL write falling between them changes VSTART/VSTOP but
+     * not what the second slot fetches. That is exactly what the
+     * {@code spritedma/interfere*} tests do.
      */
     private final boolean[][] sprSlotFetch = new boolean[8][2];
     /**
-     * {@code dmacycle} dell'oracolo: 0 = questo sprite non usa i suoi slot su questa riga,
-     * 1 = primo slot, 2 = secondo. È la <b>seconda metà</b> del sequencer, quella che fa
-     * <b>dormire</b> uno sprite inattivo: {@code if (!dmacycle && dmastate) dmacycle = 1}
-     * non riarma chi ha {@code dmastate == 0}, quindi dopo il fetch POS/CTL della riga di
-     * VSTOP lo sprite <b>non fa più DMA</b> finché {@code vpos == vstart}. Prima
-     * rileggevamo il descrittore a ogni riga.
+     * The sprite's DMA cycle: 0 = this sprite does not use its slots on this line, 1 = first
+     * slot, 2 = second. It puts an inactive sprite <b>to sleep</b>: slot 0 rearms it only
+     * while the sprite is in its data phase, so after the POS/CTL fetch on the VSTOP line the
+     * sprite does <b>no more DMA</b> until {@code vpos == vstart}.
      */
     private final int[] sprDmaCycle = new int[8];
-    /** Fase latchata alla DECISIONE: {@code true} = DATA/DATB, {@code false} = POS/CTL. */
+    /** Phase latched at the DECISION: {@code true} = DATA/DATB, {@code false} = POS/CTL. */
     private final boolean[][] sprSlotDataPhase = new boolean[8][2];
 
     /**
-     * DATA/DATB phase flag per ciascuno sprite.
+     * DATA/DATB phase flag of each sprite.
      *
-     * true  = fase DATA/DATB — fetch dei pixel tra VSTART e VSTOP (esclusa).
-     * false = fase POS/CTL   — fetch del descrittore; avviene alla riga VSTOP.
+     * true  = DATA/DATB phase - pixel fetch between VSTART and VSTOP (excluded).
+     * false = POS/CTL phase   - descriptor fetch, on the VSTOP line.
      *
-     * Segue la logica di vAmiga: alla riga SPRITE_RESET_LINE (25 PAL) tutti i
-     * sprVStop vengono resettati a 25, forzando il primo fetch POS/CTL del frame.
+     * At SPRITE_RESET_LINE (25 PAL) every sprVStop is reset to 25, forcing the frame's first
+     * POS/CTL fetch.
      */
     private final boolean[] sprDmaEnabled = new boolean[8];
 
-    /** Riga PAL in cui il DMA sprite viene resettato per il nuovo frame (vAmiga: 25). */
+    /** PAL line where sprite DMA is reset for the new frame. */
     private static final int SPRITE_RESET_LINE = 25;
 
     /**
-     * VSTART decoded per ciascuno sprite (9 bit).
-     * Bit 8 proviene da SPRxCTL bit 2; bit 7-0 da SPRxPOS bit 15-8.
+     * Decoded VSTART of each sprite (9 bits). Bit 8 comes from SPRxCTL bit 2; bits 7-0 from
+     * SPRxPOS bits 15-8.
      */
     private final int[] sprVStart = new int[8];
 
     /**
-     * VSTOP decoded per ciascuno sprite (9 bit).
-     * Bit 8 proviene da SPRxCTL bit 1; bit 7-0 da SPRxCTL bit 15-8.
+     * Decoded VSTOP of each sprite (9 bits). Bit 8 comes from SPRxCTL bit 1; bits 7-0 from
+     * SPRxCTL bits 15-8.
      */
     private final int[] sprVStop  = new int[8];
 
     /**
-     * BPL1MOD — modulo per bitplane dispari (BPL1, BPL3, BPL5).
-     * Valore con segno (aggiunto al puntatore a fine riga).
+     * BPL1MOD - modulo of the odd bitplanes (BPL1, BPL3, BPL5). Signed (added to the pointer
+     * at the end of the line).
      */
     private int bpl1mod = 0;
 
     /**
-     * BPL2MOD — modulo per bitplane pari (BPL2, BPL4, BPL6).
+     * BPL2MOD - modulo of the even bitplanes (BPL2, BPL4, BPL6).
      */
     private int bpl2mod = 0;
 
     /**
-     * Il modulo che il write-back del fetch somma al puntatore <b>non è il registro
-     * vivo</b>: è quello campionato da {@code bitplane_rga_ptmod()}, la <b>prima</b> cosa
-     * di {@code do_cck()}, un CCK prima del trasferimento — e l'oracolo ne scrive la
-     * ragione: <i>«Because BPL and SPR DMA is decided 1 CCK earlier than others, PT and MOD
-     * need to be loaded in following cycle, cycle when request goes to DMA addressing
-     * logic»</i>.
+     * The modulo the fetch's write-back adds to the pointer is <b>not the live register</b>:
+     * it is the one sampled one CCK before the transfer, when the request goes to the DMA
+     * addressing logic (bitplane and sprite DMA are decided 1 CCK earlier than the others).
      *
-     * <p>⛔ <b>Ma non è un ritardo: è un ORDINE dentro il CCK</b>, e da noi le due
-     * scritture stanno dalla parte sbagliata. Nell'oracolo la sequenza di un CCK è
-     * <pre>CPU(X) → ptmod(X) → rga_out(X) → Copper(X) → CPU(X+1) → ptmod(X+1) → …</pre>
-     * cioè, allo stesso CCK, <b>la scrittura della CPU precede il campionamento e quella
-     * del Copper lo segue</b>; da noi cadono entrambe dopo il fetch e nell'ordine inverso
-     * (prima il Copper in {@code copper.fallingEdge()}, poi la CPU in
-     * {@code handleCpuDataTransferPhase()}). Un solo punto di campionamento non può quindi
-     * riprodurle entrambe — misurato: qualunque ritardo uniforme rende verdi
-     * {@code bplmod5/6} (il Copper esce dalla finestra) e rossi {@code bplmod2/3/4} (la CPU
-     * ne esce con lui).
+     * <p><b>But it is not a delay: it is an ORDER within the CCK.</b> Within one CCK the
+     * sequence is
+     * <pre>CPU(X) -> sample(X) -> RGA out(X) -> Copper(X) -> CPU(X+1) -> sample(X+1) -> ...</pre>
+     * i.e. within the same CCK <b>the CPU's write precedes the sampling and the Copper's
+     * follows it</b>. In this model both fall after the fetch and in the opposite order
+     * (first the Copper in {@code copper.fallingEdge()}, then the CPU in
+     * {@code handleCpuDataTransferPhase()}), so a single sampling point cannot reproduce
+     * both: any uniform delay turns {@code bplmod5/6} green (the Copper leaves the window)
+     * and {@code bplmod2/3/4} red (the CPU leaves it too).
      *
-     * <p>La pipe riproduce l'ordine invece del ritardo: <b>due stadi campionati in cima al
-     * CCK</b> — che tengono fuori la scrittura del Copper del CCK precedente, esattamente
-     * come {@code rga_out} sta dopo {@code ptmod} — più l'<b>iniezione diretta</b> della
-     * scrittura della CPU nello stadio d'ingresso, che è ciò che la fa entrare in tempo per
-     * il fetch del CCK successivo. L'uscita {@code bplXmodFetch} è la sola letta da
-     * {@link #handleBitplaneDMA}; {@code bplXmod} resta il registro vivo, quello che si
-     * rilegge e che il savestate porta.
+     * <p>The pipe reproduces the order instead of a delay: <b>two stages sampled at the top
+     * of the CCK</b>, which keep out the previous CCK's Copper write, plus the <b>direct
+     * injection</b> of the CPU's write into the input stage, which gets it in time for the
+     * next CCK's fetch. The output {@code bplXmodFetch} is the only one
+     * {@link #handleBitplaneDMA} reads; {@code bplXmod} stays the live register, the one read
+     * back and saved in a savestate.
      *
-     * <p>⚠️ Misurato sui due lati con {@code WINUAE_BPLPTLOG} / {@code BplModProbe},
-     * ancorando sul puntatore (stesso valore ⇒ stesso fetch): la scrittura cade a
-     * {@code trasferimento − 1} su entrambi i lati, sia dal Copper sia dalla CPU. La
-     * divergenza era tutta nell'ordine dentro il CCK.
+     * <p>Measured with {@code BplModProbe}, anchored on the pointer (same value = same
+     * fetch): the write lands at {@code transfer - 1}, from the Copper and from the CPU
+     * alike.
      */
     private int bpl1modFetch = 0, bpl2modFetch = 0;
     private int bpl1modStage = 0, bpl2modStage = 0;
 
     /**
-     * Contatore fetch DMA dei bitplane nella riga corrente.
-     * Tiene traccia di quanti fetch sono stati fatti per determinare
-     * quale bitplane fetchare al prossimo slot.
-     */
-
-    /**
-     * ddfCckStart CAMPIONATO all'apertura della finestra di fetch (al primo CCK in
-     * cui CCK == ddfCckStart vivo) e usato — per la fase di fetch e per i confini
-     * della finestra — per tutta la riga. Sull'hardware reale la sequenza di fetch
-     * dei bitplane è "armata" al primo match di DDFSTRT: un cambio di DDFSTRT a metà
-     * riga (split-screen come la barra di stato di Last Battle) NON deve riposizionare
-     * la fase del fetch sulla riga in corso. Senza questo latch, calcolare la fase
-     * come (CCK - ddfCckStart) col registro VIVO produceva una discontinuità di fase
-     * quando il Copper riscriveva DDFSTRT a metà riga ($34→$38): la fase saltava di 4,
-     * inserendo/eliminando un fetch bitplane a seconda dell'esatto CCK della MOVE del
-     * Copper (che oscilla di ±2 CCK fra frame per la contesa DMA degli sprite). Il
-     * puntatore bitplane derivava di ±2 byte a frame alterni → la barra di stato
-     * "sfarfallava" e i piani pari/dispari si disallineavano (sfondo a scacchiera
-     * multicolore invece che uniforme). Vedi "2. Bitplane DMA".
+     * ddfCckStart SAMPLED when the fetch window opens (at the first CCK where CCK equals the
+     * live ddfCckStart) and used for the fetch phase and the window bounds for the whole
+     * line. The bitplane fetch sequence is "armed" at the first DDFSTRT match: a DDFSTRT
+     * change in the middle of the line (a split screen like Last Battle's status bar) must
+     * NOT move the fetch phase of the current line. Computing the phase as
+     * (CCK - ddfCckStart) from the LIVE register made it jump by 4 when the Copper rewrote
+     * DDFSTRT mid-line ($34 -> $38), adding or removing a fetch depending on the exact CCK of
+     * the Copper's MOVE (which moves by +-2 CCK between frames with sprite DMA contention):
+     * the bitplane pointer drifted by +-2 bytes on alternate frames, the status bar
+     * flickered and the odd/even planes went out of alignment.
      */
     private int fetchUnitDdfStart = 0;
 
@@ -1918,22 +1698,20 @@ public abstract class AbstractAgnus {
     private static final int BPLREQ_HIRES = 0x08;
     private static final int BPLREQ_MOD = 0x10;
 
-    /** true se il bus di sistema in questo CCK è occupato da un chip custom. */
+    /** true if the system bus in this CCK is taken by a custom chip. */
     private boolean busTakenByCustom = false;
 
     /**
-     * True se il bus chip in questo CCK è preso da un DMA a priorità superiore al
-     * blitter (refresh/disk/audio/bitplane/sprite/copper). Usato dal null-blit del
-     * Blitter (state INTERNAL): le micro-op BUSIDLE di vAmiga avanzano solo a bus
-     * libero (`busidle && !busIsFree<BLITTER> → return`), così la contention allunga
-     * la durata di BBUSY (è la dinamica testata da bbusy). Il blitter non è esso
-     * stesso un "custom" qui: durante INTERNAL non richiede il bus, quindi questo
-     * flag riflette solo i DMA a priorità maggiore.
+     * True if the chip bus in this CCK is taken by a DMA of higher priority than the blitter
+     * (refresh/disk/audio/bitplane/sprite/copper). Used by the Blitter's null blit (state
+     * INTERNAL): its bus-idle micro-ops advance only on a free bus, so contention lengthens
+     * BBUSY (the dynamics bbusy tests). The blitter itself does not count: during INTERNAL it
+     * does not request the bus, so this flag reflects only higher-priority DMA.
      */
     public boolean isChipBusTakenThisCck() { return busTakenByCustom; }
 
     // =========================================================================
-    // Costruttore
+    // Constructor
     // =========================================================================
 
     protected AbstractAgnus(Motorola68000 cpu,
@@ -1948,9 +1726,9 @@ public abstract class AbstractAgnus {
                  VideoMode mode) {
         Arrays.fill(busOwners, BusOwner.NONE.ordinal());
         this.cpu       = cpu;
-        // Banchi chip-timed (oracolo WinUAE fill_ce_banks, A500): chip RAM+mirror
-        // $000000-$1FFFFF, slow RAM $C00000-$C7FFFF (se presente), $D00000-$DFFFFF
-        // (custom+mirror+dummy). Usato da TAS per il write-drop del ciclo RMW.
+        // Chip-bus timed banks (A500): chip RAM + mirror $000000-$1FFFFF, slow RAM
+        // $C00000-$C7FFFF (if present), $D00000-$DFFFFF (custom + mirror + dummy). Used by
+        // TAS for the write drop of the RMW cycle.
         cpu.setChipBusTargetClassifier(a ->
                 a < 0x200000
                 || (slowRAM != null && a >= 0xC00000 && a < 0xC80000)
@@ -1960,8 +1738,8 @@ public abstract class AbstractAgnus {
         this.cpuBusResp = cpu.getBusResp();
         this.gary      = gary;
         this.chipRAM   = chipRAM;
-        // size() è sempre una potenza di 2 (256/512/1024/2048 KB), quindi size-1 è una
-        // maschera di wrap valida; coerente con il mirror applicato da Gary al 68000.
+        // size() is always a power of 2 (256/512/1024/2048 KB), so size-1 is a valid wrap
+        // mask, consistent with the mirror Gary applies for the 68000.
         final int chipMask = chipRAM.size() - 1;
         this.slowRAM   = slowRAM;
         this.rom       = rom;
@@ -2016,13 +1794,11 @@ public abstract class AbstractAgnus {
         this.ciaB = ciaB;
         if (gary != null) {
             if (rom != null)  gary.setRomSize(rom.size());
-            // La Chip RAM installata la conosce solo Agnus: è il banco che gli passa il
-            // costruttore. Gary ne ha bisogno per sapere dove comincia il mirror dentro
-            // il chip select $000000-$1FFFFF, quindi glielo diciamo qui insieme alla
-            // Slow RAM invece di lasciarlo fare a ogni chiamante: chi costruisse la
-            // macchina dimenticando setChipRamSize otterrebbe una macchina che mirrora
-            // ogni 512 KB (il default di defaultA500) e un Kickstart che misura 512 KB
-            // di Chip qualunque sia la configurazione.
+            // Only Agnus knows the installed Chip RAM: it is the bank its constructor gets.
+            // Gary needs it to know where the mirror starts inside the chip select
+            // $000000-$1FFFFF, so it is told here together with the Slow RAM rather than by
+            // every caller: forgetting setChipRamSize would give a machine mirroring every
+            // 512 KB and a Kickstart measuring 512 KB of Chip whatever the configuration.
             gary.setChipRamSize(chipRAM.size());
             gary.setSlowRamPresent(slowRAM != null);
             gary.setSlowRamSize(slowRAM != null ? slowRAM.size() : 0);
@@ -2032,11 +1808,11 @@ public abstract class AbstractAgnus {
         this.df1 = new FloppyDrive("DF1", FloppyDrive.DriveType.DD_EXT);
         this.df2 = new FloppyDrive("DF2", FloppyDrive.DriveType.DD_EXT);
         this.df3 = new FloppyDrive("DF3", FloppyDrive.DriveType.DD_EXT);
-        // DF1-DF3 non sono fisicamente collegati; rispondono sul bus come "not present"
+        // DF1-DF3 are not physically connected; they answer on the bus as "not present"
         df1.setConnected(false);
         df2.setConnected(false);
         df3.setConnected(false);
-        // Sorgente dei bit di scrittura: lo shift register di Paula.
+        // Source of the write bits: Paula's shift register.
         df0.setWriteBitSource(this::nextDiskWriteBit);
         df1.setWriteBitSource(this::nextDiskWriteBit);
         df2.setWriteBitSource(this::nextDiskWriteBit);
@@ -2050,64 +1826,53 @@ public abstract class AbstractAgnus {
         this.triggerVpos = 0;
         this.hpos = INITIAL_HPOS;
 
-        // Arma il tick E-clock delle CIA come evento (Step 1, event-driven). I test
-        // non chiamano agnus.reset(): l'arm in costruzione garantisce che SLOT_CIAA
-        // scatti dal primo E-clock. internalReset lo ri-arma.
+        // Arms the CIAs' E-clock tick as an event. Tests do not call agnus.reset(): arming it
+        // at construction makes SLOT_CIAA fire from the first E clock. internalReset rearms
+        // it.
         //
-        // ⛔ I master-cycle dell'ancora sono una FASE, non un ritardo, e la fase la
-        // decide DOVE cade la scrittura a un registro CIA. Il clock delle CIA e la fase
-        // E a cui si sincronizza un accesso della CPU sono lo stesso segnale (φ2/10) —
-        // è per questo che la macchina VMA esiste — ma nel modello sono due contatori
-        // mod-10 separati: questo evento e Motorola68000.eClockCounter.
+        // The anchor's master cycles are a PHASE, not a delay, and the phase is decided by
+        // WHERE a write to a CIA register lands. The CIA clock and the E phase a CPU access
+        // synchronises to are the same signal (phi2/10), but the model keeps two separate
+        // mod-10 counters: this event and Motorola68000.eClockCounter.
         //
-        // ⛔ Il 2026-08-24 l'ancora è passata da +9 a +5, INSIEME alla correzione che
-        // sposta il trasferimento del dato di una scrittura CIA da S2 alla fine del
-        // ciclo sincrono (vedi maybeTransferFastBankWrite). Le due cose sono una sola:
-        // finché la scrittura cadeva a S2 arrivava alla CIA a una fase QUALSIASI (fino
-        // a 9 master-cycle prima del punto giusto) e il +9 era la fase che compensava
-        // meglio quel disallineamento. Con la scrittura al posto suo la compensazione
-        // non serve più ed è diventata l'errore: misurata sui 25 test di classe 1 di
-        // vAmigaTS CIA/CIA, l'ancora ha un minimo netto a 5÷6 (7 rossi) contro 16 a 9 e
-        // 14 a 3/4/7 — un altopiano di due valori con le pareti su entrambi i lati.
-        // Fra 5 e 6 il banco non discrimina (esito identico test per test): si prende 5
-        // perché mette la scrittura a metà esatta fra due tick, cioè il punto di
-        // massimo margine. Vedi docs/vamigats-import-order.md §Esiti CIA/CIA classe 1.
+        // With the CIA write delivered at the end of the synchronous cycle (see
+        // maybeTransferFastBankWrite), the 25 class-1 tests of vAmigaTS CIA/CIA have a clear
+        // minimum at an anchor of 5-6 (7 reds) against 16 at 9 and 14 at 3/4/7. Between 5
+        // and 6 the bank does not discriminate (same outcome test by test): 5 puts the write
+        // exactly halfway between two ticks, the point of maximum margin (see
+        // docs/vamigats-import-order.md, CIA/CIA class 1 outcomes). The CPU's synchronous
+        // cycle is untouched: Memory/Ram/memtim1, which measures the timing of CIA accesses,
+        // stays bit-exact.
         //
-        // ⚠️ Non tocca il ciclo sincrono della CPU: Memory/Ram/memtim1, che misura
-        // proprio la temporizzazione degli accessi CIA, resta bit-exact.
+        // The initial value of eClockCounter (9) makes the synchronous cycle last 16 master
+        // cycles and has nothing to do with this phase (see the javadoc of
+        // Motorola68000.eClockCounter and docs/vamigats-import-order.md, memtim1 outcomes).
         //
-        // Il valore iniziale di eClockCounter (9) resta quello del 2026-08-22: serve a
-        // far durare 16 master-cycle il ciclo sincrono e non c'entra con questa fase.
-        // Il perché sta nel javadoc di Motorola68000.eClockCounter e in
-        // docs/vamigats-import-order.md §Esiti memtim1.
-        //
-        // L'invariante è congelata da CiaEClockPhaseTest.
+        // CiaEClockPhaseTest freezes the invariant.
         scheduleAbs(EventSlot.SLOT_CIAA, masterClock + CIA_ANCHOR, EventID.CIA_EXECUTE);
 
-        // Arma la produzione dei sample audio come evento (Step 2). L'evento
-        // SLOT_CH0/AUDIO_MIX si auto-rischedula da solo; questo è solo il primo arm
-        // (come per SLOT_CIAA). internalReset lo ri-arma dopo aver svuotato lo
-        // scheduler.
+        // Arms audio sample production as an event. SLOT_CH0/AUDIO_MIX reschedules itself;
+        // this is only the first arm (as for SLOT_CIAA). internalReset rearms it after
+        // clearing the scheduler.
         if (this.paula != null) {
             scheduleAbs(EventSlot.SLOT_CH0, masterClock + audioSampleInterval(), EventID.AUDIO_MIX);
         }
     }
 
     /**
-     * Intervallo in master-cycle fra due sample di output audio: PAL_SYSTEM_CLOCK /
-     * OUTPUT_RATE ≈ 161. Usato solo per il primo arm dell'evento SLOT_CH0; gli arm
-     * successivi sono calcolati in modo bit-esatto da Paula (accumulatore di fase).
+     * Master cycles between two audio output samples: PAL_SYSTEM_CLOCK / OUTPUT_RATE, about
+     * 161. Used only for the first arm of SLOT_CH0; Paula computes the following ones exactly
+     * (phase accumulator).
      */
     private static long audioSampleInterval() {
         return Math.max(1, 7_093_790L / io.github.zolfrik.amija.custom.audio.JavaSoundAudioOutput.OUTPUT_RATE);
     }
 
     /**
-     * Collega un'espansione Fast RAM Zorro II (AutoConfig). Da chiamare subito dopo
-     * il costruttore. Se la scheda è presente, abilita in Gary la decodifica dello
-     * spazio di AutoConfig ($E80000) così che il Kickstart possa rilevarla e
-     * assegnarle un indirizzo base. Passare {@code null} (o una scheda vuota)
-     * lascia la macchina nella configurazione A500 base senza Fast RAM.
+     * Attaches a Zorro II Fast RAM expansion (AutoConfig), right after the constructor. With
+     * the board present, Gary decodes the AutoConfig space ($E80000) so the Kickstart can
+     * find it and give it a base address. {@code null} (or an empty board) leaves the base
+     * A500 configuration without Fast RAM.
      */
     public void setFastRam(FastRam fastRam) {
         this.fastRam = (fastRam != null && fastRam.present()) ? fastRam : null;
@@ -2118,10 +1883,9 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Collega uno o più controller hard disk (schede Zorro II con AutoConfig). Da
-     * chiamare subito dopo il costruttore. Ogni controller "plugged in" partecipa
-     * alla catena di AutoConfig dopo la Fast RAM e, una volta configurato dal
-     * Kickstart, espone la propria boot ROM in una pagina da 64 KB.
+     * Attaches one or more hard disk controllers (Zorro II boards with AutoConfig), right
+     * after the constructor. Every controller plugged in joins the AutoConfig chain after the
+     * Fast RAM and, once the Kickstart has configured it, shows its boot ROM in a 64 KB page.
      */
     public void setHdControllers(java.util.List<HdController> controllers) {
         hdControllers.clear();
@@ -2139,7 +1903,7 @@ public abstract class AbstractAgnus {
         }
     }
 
-    /** Abilita lo spazio di AutoConfig se è presente almeno una scheda (Fast RAM o HD). */
+    /** Enables the AutoConfig space if at least one board (Fast RAM or HD) is present. */
     private void updateAutoconfigPresence() {
         if (gary != null) {
             gary.setAutoconfigSpacePresent(fastRam != null || !hdControllers.isEmpty());
@@ -2147,9 +1911,8 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Prima scheda della catena di AutoConfig ancora in attesa di configurazione
-     * (Fast RAM, poi i controller hard disk in ordine). {@code null} se nessuna
-     * scheda risponde più nello spazio $E8xxxx.
+     * First board of the AutoConfig chain still waiting to be configured (Fast RAM, then the
+     * hard disk controllers in order). {@code null} if no board answers in $E8xxxx any more.
      */
     private AutoConfigDevice currentAutoConfigDevice() {
         if (fastRam != null && fastRam.autoconfiguring()) return fastRam;
@@ -2160,10 +1923,10 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Le schede AutoConfig di questa macchina, nell'ordine della catena: prima la Fast
-     * RAM (se c'è), poi i controller hard disk. Serve al save state, che deve
-     * fotografarne lo stato di configurazione — {@code state} e {@code baseAddr} — e non
-     * può arrivarci da solo: il walker riflessivo non segue riferimenti a oggetto.
+     * This machine's AutoConfig boards in chain order: the Fast RAM first (if any), then the
+     * hard disk controllers. For the savestate, which must capture their configuration state
+     * ({@code state} and {@code baseAddr}) and cannot reach it on its own: the reflective
+     * walker does not follow object references.
      */
     public java.util.List<Object> autoConfigDevicesForState() {
         java.util.List<Object> out = new java.util.ArrayList<>();
@@ -2173,17 +1936,14 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Ricostruisce le Region di Gary per le schede AutoConfig a partire dallo stato
-     * (già ripristinato) delle schede stesse.
+     * Rebuilds Gary's Regions for the AutoConfig boards from the (already restored) state of
+     * the boards.
      *
-     * <p>⛔ Serve al load di uno save state. La mappa di memoria di Gary è una
-     * {@code List<Region>}, cioè un riferimento a oggetto, e lo snapshot per costruzione
-     * non ci entra: senza questo passo uno stato salvato DOPO l'AutoConfig si
-     * ripristinava in una macchina che ha la Fast RAM configurata a $200000 ma un Gary
-     * che a $200000 non ha nulla — quegli indirizzi rispondevano open bus, con il
-     * Kickstart convinto del contrario. Il fingerprint della configurazione non poteva
-     * intercettarlo: due macchine con la stessa {@code amiga.properties} differiscono
-     * comunque per <i>quando</i> si è salvato.
+     * <p>For loading a savestate. Gary's memory map is a {@code List<Region>}, an object
+     * reference the snapshot does not enter: without this step a state saved AFTER
+     * AutoConfig restored into a machine with the Fast RAM configured at $200000 but a Gary
+     * with nothing at $200000, so those addresses answered as open bus while the Kickstart
+     * believed otherwise.
      */
     public void rebuildAutoconfigMapping() {
         if (gary == null) return;
@@ -2196,20 +1956,20 @@ public abstract class AbstractAgnus {
             if (!c.autoconfiguring()) gary.mapHdController(c.configuredBaseAddr());
         }
         updateAutoconfigPresence();
-        cpuRouteCacheValid = false; // la mappa di memoria è cambiata
+        cpuRouteCacheValid = false; // the memory map has changed
     }
 
-    /** Mappa una scheda appena configurata all'indirizzo base che ha ricevuto. */
+    /** Maps a board just configured at the base address it received. */
     private void mapConfiguredDevice(AutoConfigDevice dev) {
         if (dev == fastRam) {
             gary.mapFastRam(fastRam.baseAddr(), fastRam.sizeBytes());
         } else if (dev instanceof HdController hd) {
             gary.mapHdController(hd.configuredBaseAddr());
         }
-        cpuRouteCacheValid = false; // la mappa di memoria è cambiata
+        cpuRouteCacheValid = false; // the memory map has changed
     }
 
-    /** Controller hard disk la cui pagina contiene {@code addr} (64 KB allineata), o null. */
+    /** Hard disk controller whose (64 KB aligned) page contains {@code addr}, or null. */
     private HdController hdControllerAt(int addr) {
         int base = addr & 0xFF0000;
         for (HdController c : hdControllers) {
@@ -2218,7 +1978,7 @@ public abstract class AbstractAgnus {
         return null;
     }
 
-    /** Lettura byte dalla RAM Amiga (chip/slow/fast) per i controller hard disk. */
+    /** Byte read from Amiga RAM (chip/slow/fast) for the hard disk controllers. */
     private int hdReadByte(int addr) {
         addr &= 0xFFFFFF;
         if (addr < 0x200000) {
@@ -2236,7 +1996,7 @@ public abstract class AbstractAgnus {
         return 0;
     }
 
-    /** Scrittura byte nella RAM Amiga (chip/slow/fast) per i controller hard disk. */
+    /** Byte write to Amiga RAM (chip/slow/fast) for the hard disk controllers. */
     private void hdWriteByte(int addr, int value) {
         addr &= 0xFFFFFF;
         if (addr < 0x200000) {
@@ -2256,10 +2016,10 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Trasferimento in blocco {@code src→RAM} per il controller hard disk. Quando l'intero
-     * range ricade in un singolo banco senza wrap usa {@code System.arraycopy} (come il
-     * {@code mem.patch} di vAmiga); altrimenti ripiega sulla copia byte-per-byte, che gestisce
-     * il wrap della Chip RAM e gli indirizzi non mappati esattamente come {@link #hdWriteByte}.
+     * Block transfer {@code src->RAM} for the hard disk controller. When the whole range lies
+     * in one bank without wrapping it uses {@code System.arraycopy}; otherwise it falls back
+     * to a byte copy, which handles the Chip RAM wrap and unmapped addresses exactly like
+     * {@link #hdWriteByte}.
      */
     private void hdWriteBlock(int addr, byte[] src, int srcOff, int len) {
         addr &= 0xFFFFFF;
@@ -2277,7 +2037,7 @@ public abstract class AbstractAgnus {
         for (int i = 0; i < len; i++) hdWriteByte(addr + i, src[srcOff + i] & 0xFF);
     }
 
-    /** Trasferimento in blocco {@code RAM→dst} per il controller hard disk (vedi {@link #hdWriteBlock}). */
+    /** Block transfer {@code RAM->dst} for the hard disk controller (see {@link #hdWriteBlock}). */
     private void hdReadBlock(int addr, byte[] dst, int dstOff, int len) {
         addr &= 0xFFFFFF;
         if (addr < 0x200000) {
@@ -2295,12 +2055,11 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Tick principale
+    // Main tick
     // =========================================================================
 
     /**
-     * Fronte di salita del clock di sistema.
-     * Chiamato una volta per system clock (7.09 MHz PAL).
+     * Rising edge of the system clock, once per system clock (7.09 MHz PAL).
      */
     public void risingEdge() {
         masterClock++;
@@ -2310,33 +2069,25 @@ public abstract class AbstractAgnus {
         }
 
 
-        // ── CPU RESET instruction ──────────────────────────────────────────
+        // -- CPU RESET instruction --------------------------------------------
         if (cpuBusReq.resetLine && !lastResetSignal) {
             this.softReset();
-            // Ri-asserisce SUBITO OVL/LED dopo il reset dei CIA (DDRA torna input →
-            // pull-up esterno → /OVL HIGH → overlay ON). La parte OVL/LED è altrimenti
-            // aggiornata a granularità E-clock in serviceCiaEvent, ma il path di reboot
-            // (RESET; MOVEA.L $4,A0; JMP (A0)) rilegge il reset vector entro pochi
-            // cicli e DEVE vedere la ROM rimappata a $0 — non può attendere il prossimo
-            // E-clock (fino a 10 cicli dopo), altrimenti tornerebbe il guru blink.
+            // Re-assert OVL/LED AT ONCE after the CIA reset (DDRA back to input -> external
+            // pull-up -> /OVL high -> overlay on). OVL/LED is otherwise updated at E-clock
+            // granularity in serviceCiaEvent, but the reboot path (RESET; MOVEA.L $4,A0;
+            // JMP (A0)) rereads the reset vector within a few cycles and MUST see the ROM
+            // mapped at $0; it cannot wait up to 10 cycles for the next E clock.
             updateCiaOvlLed();
         }
         lastResetSignal = cpuBusReq.resetLine;
 
-        // ── CIA timer clock ─────────────────────────────────────────────────
-        // I CIA 8520 dell'Amiga sono cloccati dall'E-clock = clock di sistema / 10.
-        // Ora gestito come evento auto-rischedulante su SLOT_CIAA (serviceCiaEvent),
-        // schedulato in costruzione e ri-armato a fine internalReset. Il vecchio
-        // accumulatore ciaTimerPhase (polling incondizionato) è stato rimosso:
-        // l'evento scatta agli stessi master-cycle (multipli di 10) a costo zero
-        // nei cicli intermedi (piano event-driven-agnus.md, Step 1).
+        // -- CIA timer clock: the 8520s run on the E clock (system clock / 10), a
+        // self-rescheduling event on SLOT_CIAA (serviceCiaEvent).
 
-        // ── Floppy ──────────────────────────────────────────────────────────
-        // PERF: i 4 drive venivano tick-ati e update-ati ad OGNI master-cycle
-        // (28M/s) anche da fermi. Ora si lavora solo quando qualcosa può cambiare:
-        // o un drive è attivo (motore/seek/selezione) oppure i segnali di controllo
-        // CIA-B (PRB) sono variati. A regime (in gioco, drive fermi) il costo → ~0.
-        // Lettura del PRB priva di effetti collaterali.
+        // -- Floppy -----------------------------------------------------------
+        // PERF: work is done only when something can change: a drive is active
+        // (motor/seek/selection) or the CIA-B control lines (PRB) have changed. With the
+        // drives idle the cost is ~0. Reading PRB has no side effects.
         if (lastCiabPrb < 0) floppySelectSet();
         byte ciab_prb = ciaB != null ? ciaB.peekPortB() : 0;
         boolean prbChanged = (ciab_prb & 0xFF) != lastCiabPrb;
@@ -2364,7 +2115,7 @@ public abstract class AbstractAgnus {
             floppyAccumCycles = 0;
         }
 
-        // ── Read shifter with no drive turning ─────────────────────────────
+        // -- Read shifter with no drive turning -----------------------------
         // With no connected drive selected the floppy data line rests at its pull-up
         // (zeros on the A500), yet Paula's read shift register keeps shifting at the
         // nominal cell rate: the comparator keeps comparing, and a read DMA keeps
@@ -2386,73 +2137,60 @@ public abstract class AbstractAgnus {
             }
         }
 
-        // ── Paula tick (solo period-counter dei canali audio) ───────────────
-        // La produzione dei sample di output (accumulatore outputSamplePhase) NON è
-        // più qui: è stata spostata su un evento auto-rischedulante (SLOT_CH0 /
-        // AUDIO_MIX, vedi paula.serviceAudioSampleEvent), eliminando una matematica
-        // double eseguita incondizionatamente ad ogni master-cycle (~7.09M/s).
-        // tick(1) avanza solo i period-counter dei canali audio ATTIVI (gating su
-        // activeAudioMask): a regime senza audio è quasi a costo zero, ad audio attivo
-        // è lavoro necessario per il timing esatto del DMA/interrupt audio (invariato).
+        // -- Paula tick (audio channels' period counters only) ------------------
+        // Output samples are produced by a self-rescheduling event (SLOT_CH0 / AUDIO_MIX,
+        // see paula.serviceAudioSampleEvent). tick(1) advances only the period counters of
+        // the ACTIVE audio channels (gated on activeAudioMask): almost free without audio,
+        // necessary work for exact audio DMA/interrupt timing with it.
         if (paula != null) paula.tick(1);
 
-        // ── Aggiornamento segnali CIA / floppy / interrupt ──────────────────
+        // -- CIA / floppy / interrupt line updates -----------------------------
         if (processFloppy) {
             lastCiabPrb = ciab_prb & 0xFF;
             updateFloppy(ciab_prb, prbChanged);
-            // Ricalcola lo stato "busy" dopo aver applicato i fronti: determina se
-            // serve continuare a lavorare nei prossimi cicli.
+            // Recompute the "busy" state after applying the edges: it decides whether
+            // work is needed in the next cycles.
             floppyBusy = isFloppyDriveBusy(df0) || isFloppyDriveBusy(df1)
                     || isFloppyDriveBusy(df2) || isFloppyDriveBusy(df3);
         }
-        // (Il fronte di discesa del TOD di CIA-A è ora in updateBeam(), accanto a quello
-        // di salita: entrambi vivono sulla riga CIAA_TOD_VPOS.)
-        // updateInterrupts(); // Moved to fallingEdge()
+        // (The falling edge of CIA-A's TOD is in updateBeam(), next to the rising one:
+        // both live on line CIAA_TOD_VPOS.)
 
-        // Reset della contention all'inizio di ogni CCK (hpos pari), così un DMA che
-        // prende il CCK blocca la CPU per ENTRAMBI i system-clock del CCK (2 cicli,
-        // pari). Questo è il modello cycle-exact validato contro WinUAE
-        // (`dma_cycle`, attesa un color-clock alla volta): la contention è a
-        // CCK pieno, non a 1 system-clock. Un reset per-master-cycle (il vecchio modello)
-        // sotto-stimava la contention (1 SC) facendo flippare la fase del bus CPU e
-        // pagare l'odd-wait `(hpos&1)` a ~metà accessi.
+        // Contention is reset at the start of every CCK (even hpos), so a DMA taking the CCK
+        // blocks the CPU for BOTH system clocks of the CCK: the CPU waits one colour clock
+        // at a time. A per-master-cycle reset underestimated contention (1 SC), flipping
+        // the phase of the CPU bus and paying the odd-cycle wait on about half the accesses.
         boolean cckEdge = (hpos & 1) == 0;
         int cck = hpos >> 1;
         if (cckEdge) {
             busTakenByCustom = false;
-            // La CPU ruba un ciclo al Blitter dopo aver atteso il bus abbastanza a lungo,
-            // e solo con BLTPRI spento. La soglia e' dell'ORACOLO, non di vAmiga:
-            // blitter.cpp, `#define BLIT_NASTY_CPU_STEAL_CYCLE_COUNT 3` e
-            // `bstreq = blt_info.nasty_cnt >= BLIT_NASTY_CPU_STEAL_CYCLE_COUNT && !pri`.
-            // `nasty_cnt` lo incrementa `dma_cycle()` una volta per CCK negato e lo azzera
-            // quando la CPU ottiene il bus — cioe' esattamente `cpuBusWaitCck`.
-            // Calcolato PRIMA dell'arbitraggio, dal conteggio accumulato nei CCK scorsi.
+            // The CPU steals a cycle from the Blitter after waiting for the bus long enough,
+            // and only with BLTPRI off: the count of consecutive denied CCKs
+            // (`cpuBusWaitCck`, reset when the CPU gets the bus) reaches
+            // BLIT_NASTY_CPU_STEAL_CYCLE_COUNT. Computed BEFORE the arbitration, from the
+            // count of the previous CCKs.
             bls = cpuBusWaitCck >= BLIT_NASTY_CPU_STEAL_CYCLE_COUNT;
-            // Latenza di avvio BBUSY del Blitter (vAmiga BLT_STRT1/STRT2): la
-            // scrittura di BLTSIZE arma il blit, ma BBUSY si attiva 2 CCK dopo.
-            // Il countdown avanza qui (una volta per CCK), prima dell'arbitraggio
-            // del bus blitter più sotto, così quando scade il blit può subito
-            // contendere il CCK corrente.
+            // Blitter BBUSY start latency: the BLTSIZE write arms the blit, but BBUSY comes
+            // on 2 CCK later. The countdown advances here (once per CCK), before the blitter
+            // bus arbitration below, so when it expires the blit can contend for the
+            // current CCK at once.
             if (blitter != null) blitter.tickStartCountdown();
         }
 
-        // ── DMA slot (in CCK = hpos pari) ────────────────────────────────────
+        // -- DMA slots (in CCK = even hpos) -------------------------------------
         if (cckEdge) {
             BusOwner owner = BusOwner.NONE;
 
-            // ⛔ Sotto freeze ERSY Agnus non alloca NESSUN ciclo DMA. Il contatore
-            // orizzontale è fermo a inizio riga per tutta la durata del freeze, quindi
-            // nessuna posizione fa match: niente DDFSTRT, niente slot fisso, nessuna
-            // parità su cui il Copper possa chiedere il bus. Il bus resta della CPU e
-            // del Blitter, che di posizione non hanno bisogno.
-            // Lo misura `Agnus/Registers/VPOS/ersy2`: con le righe che scorrevano, i
-            // ~125 CCK di freeze prelevavano 16 word per piano, e da lì in poi il quadro
-            // usciva sfalsato di 32 byte — il testo dei valori spostato di 8 caratteri.
+            // Under the ERSY freeze Agnus allocates NO DMA cycle. The horizontal counter is
+            // held at the start of the line for the whole freeze, so no position matches: no
+            // DDFSTRT, no fixed slot, no parity for the Copper to request the bus on. The bus
+            // stays with the CPU and the Blitter, which need no position.
+            // `Agnus/Registers/VPOS/ersy2` measures it: with the lines running, the ~125 CCK
+            // of freeze fetched 16 words per plane, and the picture came out 32 bytes off.
             final boolean beamFrozen = syncsStopped;
 
-            // `bitplane_rga_ptmod()`: il caricamento del modulo è la PRIMA cosa del CCK,
-            // prima di qualunque slot. Vedi il campo bpl1modFetch per il perché di due
-            // stadi e dell'iniezione della scrittura CPU.
+            // Loading the modulo is the FIRST thing of the CCK, before any slot. See the
+            // bpl1modFetch field for the two stages and the injection of the CPU write.
             bpl1modFetch = bpl1modStage;
             bpl2modFetch = bpl2modStage;
             bpl1modStage = bpl1mod;
@@ -2460,15 +2198,13 @@ public abstract class AbstractAgnus {
 
             handleBitplaneDrawEvent(cck);
 
-            // ⛔ L'emissione dei pixel è INCREMENTALE e non è gated dal DMA: gli shift
-            // register di Denise continuano a scorrere anche se BPLEN si spegne a metà
-            // word, esattamente come il vecchio modello a blocchi aveva già scritto tutti
-            // e 16 i pixel all'istante del draw. Gated qui sarebbe una differenza in più,
-            // e questo rifacimento ne deve avere UNA sola. Vedi AbstractDenise.srCount.
+            // Pixel output is INCREMENTAL and not gated by DMA: Denise's shift registers keep
+            // shifting even if BPLEN goes off in the middle of a word. See
+            // AbstractDenise.srCount.
             //
-            // Questa è la PRIMA mezza-CCK; la seconda è nel fronte di discesa, subito dopo
-            // il Copper, perché la risoluzione entra in Denise mezzo color clock prima del
-            // resto di BPLCON0 (oracolo: expand_drga_early). Vedi emitBitplaneHalfCck().
+            // This is the FIRST half CCK; the second is in the falling edge, right after the
+            // Copper, because the resolution reaches Denise half a colour clock before the
+            // rest of BPLCON0. See emitBitplaneHalfCck().
             if (denise != null) denise.emitBitplaneHalfCck();
 
             // The bitplane request fetched in this CCK (decided two CCKs ago; see
@@ -2489,8 +2225,8 @@ public abstract class AbstractAgnus {
             final boolean dasAllocated = dasSlotAllocated;
             dasSlotAllocated = !beamFrozen && allocateDasSlot(cck + 1);
 
-            // 1. Slot fissi ad alta priorità (DAS: refresh/disk/audio) — tipo di
-            //    slot letto dalla tabella sequencer precomputata DMA_SLOT_TABLE.
+            // 1. High-priority fixed slots (DAS: refresh/disk/audio); slot type from the
+            //    precomputed sequencer table DMA_SLOT_TABLE.
             switch (beamFrozen ? DMASLOT_NONE
                     : cck == strobeCck() ? DMASLOT_REFRESH : DMA_SLOT_TABLE[cck]) {
                 case DMASLOT_REFRESH:
@@ -2522,14 +2258,14 @@ public abstract class AbstractAgnus {
                     break;
             }
 
-            // 2. Bitplane DMA — generate_bpl() dell'oracolo.
+            // 2. Bitplane DMA.
             //
-            // ⛔ La finestra di fetch NON è un intervallo di posizioni: è un SEQUENCER.
-            // La fase la porta `bprunCycle`, un contatore che parte quando la macchina
-            // si arma e avanza a ogni CCK finché `bprun` è acceso — non `cck - DDFSTRT`.
-            // I due coincidono finché la riga va dritta da DDFSTRT a DDFSTOP, e divergono
-            // esattamente dove il banco `Agnus/Registers/DMACON` guarda: quando BPLEN si
-            // spegne e si riaccende dentro la riga. Vedi decideBpl().
+            // The fetch window is NOT a range of positions: it is a SEQUENCER. The phase is
+            // `bprunCycle`, a counter that starts when the machine arms and advances at every
+            // CCK while `bprun` is on, not `cck - DDFSTRT`. The two agree while the line runs
+            // straight from DDFSTRT to DDFSTOP, and diverge exactly where the
+            // `Agnus/Registers/DMACON` bank looks: when BPLEN goes off and on again within
+            // the line. See decideBpl().
             //
             // The decision and the fetch are two CCKs apart: the sequencer decides the plane
             // of a slot at CCK c, the pointer is captured at c+1 and the word is fetched at
@@ -2554,17 +2290,12 @@ public abstract class AbstractAgnus {
                 // Plane count and resolution are the sequencer's own copy of BPLCON0, which
                 // every write reaches two CCKs later (queueSequencerBplcon0): live, not latched.
                 drainSequencerBplcon0();
-                // ⛔ La RISOLUZIONE che conta qui è quella della copia del sequencer, non quella viva.
-                // Non è una scelta nostra: nell'oracolo BPLCON0 arriva ad Agnus da
-                // `pipelined_custom_write(BPLCON0_delayed, v, 2)` e **solo** il gestore
-                // ritardato chiama `setup_fmodes()`, che è ciò che fissa `bplcon0_res`,
-                // `fetchstart_mask`, `fm_maxplane` e `bpl_sequence`. Cioè maschera e
-                // sequenza del sequencer cambiano con lo stesso ritardo del BPU, e per la
-                // stessa ragione: vengono dalla stessa scrittura e dalla stessa pipeline.
-                //
-                // ⚠️ Leggendola viva il cambio di risoluzione a metà riga entrava 4 CCK
-                // troppo presto, ed è tutto il residuo di `DMACON/resmod1÷4` — che di
-                // DMACON non hanno niente: scrivono `BPLCON0 $A200 → $2200`.
+                // The RESOLUTION that counts here is the sequencer's copy, not the live one:
+                // the fetch mask, the maximum plane count and the fetch sequence change with
+                // the same delay as BPU, since they come from the same write through the
+                // same pipeline. Read live, a mid-line resolution change came in 4 CCK too
+                // early: the whole residue of `DMACON/resmod1-4`, which write
+                // `BPLCON0 $A200 -> $2200`.
                 boolean hires = (seqBplcon0 & 0x8000) != 0;
                 boolean lastOfBlock = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
                 if (dmaconBplSeq) {
@@ -2578,36 +2309,25 @@ public abstract class AbstractAgnus {
                 }
                 if (sequencerClock(cck)) bprunCycle++;
                 if (lastOfBlock) {
-                    // `if (ddf_stopping == 2) bpl_dma_normal_stop(); if (ddf_stopping == 1)
-                    // ddf_stopping = 2;` — in quest'ordine: il blocco che chiude con
-                    // ddf_stopping a 1 ne fa ancora UNO prima di fermarsi.
+                    // In this order: a block that ends with ddfStopping at 1 does ONE more
+                    // before stopping.
                     if (ddfStopping == 2) bplDmaNormalStop();
                     if (ddfStopping == 1) ddfStopping = 2;
                 }
             }
 
-            // Il DMA sprite è attivo solo nell'area [SPRITE_RESET_LINE, maxVpos):
-            // durante il VBlank in alto (righe < 25 PAL) e sull'ultima riga gli sprite
-            // NON fanno fetch. Senza questo gate, uno sprite il cui VSTOP è caduto su
-            // una riga del VBlank in alto (es. cursore col VSTOP che "wrappa" a 3
-            // perché il gioco non setta EV8 quando VSTART+altezza>255) fa un fetch
-            // POS/CTL spurio prima del reset di riga 25, disallineando il puntatore
-            // DMA e alternando frame puliti/corrotti (lo sprite "lampeggia" e cambia
-            // forma). Cfr. WinUAE do_sprites (vpos<sprite_vblank_endline → return) e
-            // vAmiga Sequencer (disable sprites se v<25 || v>=vMax).
-            // ⛔ Il bit di DMA sprite che conta qui è quello DECISO DUE CCK PRIMA, non
-            // quello vivo — vedi spriteDmaSeq. L'oracolo lo dichiara: in `handle_dmal()`
-            // i tap degli sprite nello shift register stanno due posizioni più avanti
-            // («sprites have earlier DMA decisions»), quindi `generate_sprites()` legge
-            // `dmaen(DMA_SPRITE)` al CCK S−2 e il trasferimento cade al CCK S.
-            // ⛔ La DECISIONE dello sprite sta DUE CCK PRIMA del suo slot, e con essa TUTTA
-            // la macchina a stati: `generate_sprites()` è chiamata da `handle_dmal()`, dove
-            // i tap degli sprite nello shift register stanno due posizioni più avanti
-            // («sprites have earlier DMA decisions»). È la stessa ancora già misurata per il
-            // bit di DMA (§12 classe D) — qui ci passa anche il confronto VSTART/VSTOP.
-            // ⚠️ Si prende anche quando il ciclo non sarà allocato (bitplane o Blitter lo
-            // rubano): di là `generate_sprites()` gira comunque, è solo il trasferimento a
-            // essere gated da `dmaen()`. Vedi sprSlotFetch.
+            // Sprite DMA is active only in [SPRITE_RESET_LINE, maxVpos): during the top
+            // vertical blank (lines < 25 PAL) and on the last line sprites do NOT fetch.
+            // Without this gate a sprite whose VSTOP fell on a line of the top blank (e.g. a
+            // cursor whose VSTOP wraps to 3 because the game does not set EV8 when
+            // VSTART+height > 255) makes a spurious POS/CTL fetch before the line-25 reset,
+            // misaligning the DMA pointer and alternating clean and corrupt frames.
+            // The sprite's DECISION falls TWO CCKs before its slot, and with it the WHOLE
+            // state machine (VSTART/VSTOP comparison included): sprites have earlier DMA
+            // decisions, their taps in the DMA request shift register sit two positions
+            // ahead. The DMA bit that counts is the one decided then (see spriteDmaSeq). The
+            // decision is taken even when the cycle will not be allocated (bitplane or
+            // Blitter take it): only the transfer is gated by DMA. See sprSlotFetch.
             final int sprDecideCck = cck + SPRITE_DECISION_LEAD_CCK;
             if (!beamFrozen && sprDecideCck < DMA_SLOT_TABLE.length
                     && DMA_SLOT_TABLE[sprDecideCck] == DMASLOT_SPRITE) {
@@ -2617,21 +2337,18 @@ public abstract class AbstractAgnus {
                     if (latchSub == 0) {
                         generateSpritesSlot0(latchIdx);
                     }
-                    // ⛔ E alla decisione si guarda anche il SEQUENCER BITPLANE: lo sprite
-                    // rinuncia allo slot quando il fetch bitplane e' IN CORSA, e la
-                    // condizione e' dell'oracolo per intero (generate_sprites):
-                    //   bool bplconflict = false;
-                    //   if (bprun && ddf_stopping == 2 && islastbplseq()) bplconflict = true;
-                    //   if (bprun != 1 || bplconflict) dodma = true;
-                    // ⚠️ Non e' «il bitplane ha preso questo CCK»: e' lo STATO di bprun DUE
-                    // CCK PRIMA. E' la differenza che i test `blocked*` misurano allargando
-                    // la finestra DDF sopra gli slot sprite (issue #799 di vAmiga).
+                    // The decision also looks at the BITPLANE SEQUENCER: the sprite gives up
+                    // its slot while the bitplane fetch is RUNNING, except at the last
+                    // sequence step of a stopping fetch. It is not "the bitplane took this
+                    // CCK" but the STATE of bprun TWO CCKs earlier: the difference the
+                    // `blocked*` tests measure by widening the DDF window over the sprite
+                    // slots.
                     final boolean lastBplSeq = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
                     final boolean bplConflict = bprun != 0 && ddfStopping == 2 && lastBplSeq;
                     sprSlotFetch[latchIdx][latchSub] =
                             sprDmaCycle[latchIdx] != 0 && (bprun != 1 || bplConflict);
                     sprSlotDataPhase[latchIdx][latchSub] = sprDmaEnabled[latchIdx];
-                    // Coda di generate_sprites(), quindi alla decisione e non al trasferimento.
+                    // The DMA cycle advances at the decision, not at the transfer.
                     if (sprDmaCycle[latchIdx] != 0) {
                         sprDmaCycle[latchIdx]++;
                         if (sprDmaCycle[latchIdx] > 2) {
@@ -2641,11 +2358,11 @@ public abstract class AbstractAgnus {
                 }
             }
 
-            // ⛔ Le condizioni di allocazione dello slot — VBlank, DMA sprite deciso due CCK
-            // prima, sequencer di canale, e l'accensione di SPREN che lascia lo slot «deciso
-            // ma NON allocato» — stanno tutte in spriteSlotAllocated(), perché la stessa
-            // domanda la fa anche sprPointerWriteIsLost(): dove non c'è slot non c'è cattura
-            // del puntatore, e la scrittura del Copper sopravvive.
+            // The slot's allocation conditions (vertical blank, sprite DMA decided two CCKs
+            // earlier, channel sequencer, and SPREN coming on, which leaves the slot "decided
+            // but NOT allocated") all live in spriteSlotAllocated(), because
+            // sprPointerWriteIsLost() asks the same question: where there is no slot there is
+            // no pointer capture, and the Copper write survives.
             // A slot left decided but not allocated stays free, and the sprite whose slot it
             // was keeps its pointer register tied to it (see the Blitter below).
             int sprUnallocatedIdx = -1;
@@ -2661,30 +2378,13 @@ public abstract class AbstractAgnus {
                 }
             }
 
-            // 3. Copper — CADENZA PARI (modello vAmiga; Fase 1 refactoring timing, C1/C2/A2).
-            //    Su hardware reale il Copper opera con cadenza di 2 CCK e NON si sveglia
-            //    mai su un CCK dispari: in vAmiga (CopperEvents.cpp COP_REQ_DMA/WAKEUP/
-            //    FETCH) ogni stato fa `if (IS_ODD(pos.h)) reschedule()` e le transizioni
-            //    sono schedulate a `delay=2` CCK. Nel nostro loop per-CCK questo si
-            //    realizza tickando il Copper SOLO sui CCK pari: i CCK dispari vengono
-            //    saltati (equivalente al reschedule +1 di vAmiga che ri-atterra su pari).
-            //    Il vecchio commento "il Copper non ha restrizione di parità" era ERRATO.
-            //
-            //    Coerenza di parità nel nostro sequencer: gli slot DMA fissi disk/audio/
-            //    sprite stanno sui CCK DISPARI (disk 1/5/9, audio 15/17/19/21, sprite
-            //    23..53 dispari — come vAmiga DAS $07..$33) e i bitplane (≤4 piani) sui
-            //    CCK dispari relativi a DDFSTRT (LORES_FETCH: slot liberi ai relCck pari
-            //    0/4).
-            //
-            //    ⚠️ Il Copper va tickato a OGNI CCK, non solo sui pari (com'era in Fase 1):
-            //    in vAmiga il vincolo di parità (`IS_ODD(pos.h) → reschedule`) esiste SOLO
-            //    negli stati di wakeup (`COP_REQ_DMA`/`COP_WAKEUP`/`COP_WAKEUP_BLIT`) e in
-            //    NESSUN altro; dopo un diniego del bus si ritenta a +1 CCK
-            //    (`reschedule(delay=1)`), quindi anche su un CCK DISPARI. La cadenza pari
-            //    dei fetch è un'emergenza di `schedule(delay=2)`, non una regola. Il gate
-            //    pari faceva slittare al pari successivo il fetch rifiutato dal BLOCKED di
-            //    $E0, rubando 2 CCK alla CPU (root di §S2). La parità vive ora dentro la
-            //    FSM (Copper.risingEdge), che riceve `evenCck`.
+            // 3. Copper.
+            //    The Copper is ticked at EVERY CCK. Its parity constraint applies ONLY in the
+            //    wake-up states; after a bus denial it retries one CCK later, odd CCKs
+            //    included. The even cadence of its fetches comes from its two-CCK steps, not
+            //    from a rule: gating it to even CCKs pushed a fetch refused by the blocked
+            //    $E0 cycle to the next even CCK, stealing 2 CCK from the CPU. The parity
+            //    lives inside the FSM (Copper.risingEdge).
             // A Copper cycle is allocated one CCK before it acts, and COPEN is checked at
             // the allocation: a cycle allocated while COPEN was on still acts after COPEN
             // goes off.
@@ -2695,12 +2395,11 @@ public abstract class AbstractAgnus {
                 copper.armFrameStrobe();
             }
             if (copperTickEnabled) {
-                // busFree = vAmiga busIsFree<COPPER>(): nessun DMA a priorità
-                // superiore ha già preso lo slot e non è il ciclo $E0 (bloccato).
-                // Gli stati idle della FSM Copper (REQ_DMA/WAIT*/SKIP*/JMP*)
-                // avanzano solo se il bus è libero; gli stati di lettura memoria
-                // (FETCH/MOVE/WAIT_OR_SKIP) assertano comunque la richiesta e la
-                // concessione è decisa qui sotto.
+                // busFree: no higher-priority DMA has taken the slot and it is not the
+                // blocked $E0 cycle. The Copper FSM's idle states (REQ_DMA/WAIT*/SKIP*/JMP*)
+                // advance only on a free bus; the memory-reading states
+                // (FETCH/MOVE/WAIT_OR_SKIP) assert the request anyway and the grant is
+                // decided below.
                 final boolean copperBlocked = cck == copperBlockedCck();
                 boolean copperBusFree = !busTakenByCustom && !copperBlocked;
                 copper.risingEdge(copperBusFree, copperRequestParity(cck), copperBlocked);
@@ -2723,17 +2422,16 @@ public abstract class AbstractAgnus {
                 }
             }
 
-            // 4. Blitter — motore a micro-programmi single-phase (Fase 3, B1/B4).
-            //    Il blitter esegue UNA micro-op per CCK (stepCck): le micro-op BUS/BUSIDLE
-            //    stallano se il bus non è libero, le NOTHING (coda di drain della pipeline
-            //    D) avanzano comunque. Per questo il blitter è tickato ANCHE quando il bus
-            //    è già preso da un DMA a priorità superiore (busTakenByCustom): in quel caso
-            //    busFree=false e solo le NOTHING progrediscono. La precedenza CPU segue il
-            //    modello vAmiga `bls`: quando la CPU è in attesa del bus da ≥2 CCK, e BLTPRI
-            //    è spento, il blitter cede lo slot (`busIsFree<BLITTER>` nega).
-            // Clear BBUSY differito del line mode: matura ANCHE dopo endBlit e
-            // deve girare PRIMA dello step del blitter, così il countdown armato
-            // a LINE_LAST_BUS viene processato dal cck SUCCESSIVO in poi.
+            // 4. Blitter: single-phase micro-program engine.
+            //    The blitter runs ONE micro-op per CCK (stepCck): BUS/BUSIDLE micro-ops stall
+            //    if the bus is not free, NOTHING ones (the drain of the D pipeline) advance
+            //    anyway. So the blitter is ticked EVEN when a higher-priority DMA has the bus
+            //    (busTakenByCustom): then busFree=false and only NOTHING ops progress. CPU
+            //    precedence follows `bls`: with the CPU waiting for the bus and BLTPRI off,
+            //    the blitter yields the slot.
+            // The deferred BBUSY clear of line mode matures EVEN after endBlit and must run
+            // BEFORE the blitter step, so the countdown armed at LINE_LAST_BUS is processed
+            // from the NEXT CCK on.
             if (blitter != null) blitter.tickBusyClear();
             if (isBlitterEnabled() && blitter.isRunning()) {
                 boolean cpuWantsBus   = cpuBusReq.as && !cpuBusReq.iack;
@@ -2761,35 +2459,34 @@ public abstract class AbstractAgnus {
             busOwners[cck] = owner.ordinal();
             diagDmaOwners[cck] = owner.ordinal(); // DIAG-TEMP
 
-            // ⚠️ DOPO l'arbitraggio, non prima: in `do_cck()` l'ordine è
-            // `generate_dma_requests()` (che contiene `generate_bpl`) e POI
-            // `decide_bpl(agnus_hpos)`. Una macchina armata al CCK X decide il primo slot
-            // al CCK X+1, e la word di quello slot arriva due CCK dopo (bplReqNext).
+            // AFTER the arbitration, not before: the DMA requests of the CCK are generated
+            // first and the bitplane sequencer decides after. A machine armed at CCK X decides
+            // its first slot at CCK X+1, and that slot's word arrives two CCKs later
+            // (bplReqNext).
             if (!beamFrozen) decideBpl(cck);
 
-            // Lo SPRITE ha un latch a due stadi: la DECISIONE sta due CCK prima del
-            // trasferimento.
+            // The SPRITE DMA bit has a two-stage latch: the DECISION is two CCKs before the
+            // transfer.
             spriteDmaSeq = spriteDmaPipe;
             spriteDmaPipe = spriteDmaEnabled;
         }
 
-        // 5. CPU — il clock del 68000 non si ferma mai.
+        // 5. CPU: the 68000's clock never stops.
         //
-        // Su hardware reale Agnus non gate il clock della CPU: la CPU avanza
-        // il proprio stato interno ad ogni ciclo. Ciò che si blocca è /DTACK:
-        // se il bus è occupato dal DMA, o se l'accesso alla Chip RAM non è
-        // allineato al CCK boundary, Agnus nega /DTACK e la CPU entra in
-        // wait state (stati S4-S5 ripetuti internamente) senza avanzare oltre.
+        // Agnus does not gate the CPU's clock: the CPU advances its internal state at every
+        // cycle. What stalls is /DTACK: if DMA has the bus, or a Chip RAM access is not
+        // aligned to a CCK boundary, Agnus withholds /DTACK and the CPU waits (states S4-S5
+        // repeated) without going further.
         //
-        // handleCpuBusCycle() implementa questa logica:
-        //   — bus preso dal DMA       → cpuBusResp.ack = false  (stall DMA)
-        //   — hpos dispari + Chip RAM → cpuBusResp.ack = false  (CCK sync wait)
-        //   — altrimenti              → DTACK garantito normalmente
+        // handleCpuBusCycle() implements it:
+        //   - bus taken by DMA       -> cpuBusResp.ack = false  (DMA stall)
+        //   - odd hpos + Chip RAM    -> cpuBusResp.ack = false  (CCK sync wait)
+        //   - otherwise              -> DTACK granted
         cpu.risingEdge();
         handleCpuBusCycle();
 
-        // Registra la CPU come proprietaria del bus (solo su CCK) e azzera
-        // il contatore di stallo blitter quando la CPU ottiene il bus con successo.
+        // Record the CPU as bus owner (on CCKs only) and clear the blitter stall counter
+        // when the CPU gets the bus.
         if (cpuBusReq.as && cpuBusResp.ack) {
             cpuBlockedByBlitterCount = 0;
             if (cckEdge) {
@@ -2809,77 +2506,52 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Fronte di discesa del clock di sistema.
+     * Falling edge of the system clock.
      *
-     * IMPORTANTE: updateInterrupts() e updateCpuIpl() devono essere chiamati
-     * PRIMA di cpu.fallingEdge(), perché è in fallingEdge() che la CPU
-     * campiona latchedIpl = busResp.ipl. Se un CIA ha generato un IRQ nel
-     * risingEdge di questo stesso ciclo (e.g. timer A underflow), il fronte
-     * del pin /IRQ CIA-A potrebbe non essere stato ancora rilevato da
-     * updateInterrupts() se il CIA tick è avvenuto troppo tardi nel risingEdge.
-     * Chiamandolo qui prima della CPU garantiamo il campionamento corretto.
+     * updateInterrupts() and updateCpuIpl() run BEFORE cpu.fallingEdge(), because the CPU
+     * samples its IPL in fallingEdge(): a CIA IRQ raised in this cycle's risingEdge (e.g. a
+     * timer A underflow) reaches Paula and the CPU before that sample.
      */
     public void fallingEdge() {
-        // Il fallingEdge deve restare ACCOPPIATO al risingEdge, che ticka il Copper a OGNI
-        // CCK: `hpos & 1 == 0` seleziona ogni confine di CCK (cck = hpos>>1). Era
-        // `hpos & 3 == 0` (= solo CCK pari) finché anche il risingEdge era gated sui pari;
-        // lasciarlo a 3 ora sopprimerebbe il consumo della word sui CCK DISPARI, dove il
-        // Copper può legittimamente ottenere il bus dopo un diniego (reschedule +1) — è
-        // esattamente il fetch a 225 dopo il BLOCKED di $E0=224. La cadenza +2 fra fetch
-        // riusciti è imposta da Copper.tickDelay, non più dal gate.
+        // Coupled with risingEdge, which ticks the Copper at EVERY CCK: `hpos & 1 == 0`
+        // selects every CCK boundary. Odd CCKs matter: the Copper can get the bus there after
+        // a denial (e.g. the fetch at 225 after the blocked $E0 = 224). The +2 cadence
+        // between successful fetches is set by Copper.tickDelay, not by this gate.
         if ((hpos & 1) == 0 && copperTickEnabled) {
             copper.fallingEdge();
         }
 
-        // SECONDA mezza-CCK di Denise, subito DOPO il Copper: la parte risoluzione di
-        // BPLCON0 entra uno stadio RGA prima del resto (oracolo: expand_drga_early legge
-        // idx0, expand_drga legge idx1), cioè mezzo color clock, ed è ciò che fa cadere la
-        // commutazione di `hilo` al sub-pixel giusto. Vedi AbstractDenise.emitBitplaneHalfCck.
+        // SECOND half CCK of Denise, right AFTER the Copper: the resolution part of BPLCON0
+        // reaches Denise one RGA stage before the rest, i.e. half a colour clock, which puts
+        // the `hilo` switch on the right sub-pixel. See AbstractDenise.emitBitplaneHalfCck.
         if ((hpos & 1) == 0 && denise != null) denise.emitBitplaneHalfCck();
-        // Il Blitter è single-phase (Fase 3): tutta la sua logica (accesso a memoria,
-        // avanzamento micro-op) avviene in stepCck() nel risingEdge; nessun fallingEdge.
+        // The Blitter is single-phase: all its logic (memory access, micro-op advance)
+        // happens in stepCck() in risingEdge; it has no falling edge.
 
-        // ── Aggiorna interrupt PRIMA del campionamento IPL della CPU ──────────
-        // Il CIA tick è già avvenuto nel risingEdge. Se ha generato un nuovo
-        // fronte /IRQ, dobbiamo propagarlo a Paula e alla CPU prima che la CPU
-        // campioni latchedIpl nel suo fallingEdge().
+        // -- Interrupts updated BEFORE the CPU samples IPL ---------------------
+        // The CIA tick already happened in risingEdge. A new /IRQ edge must reach Paula and
+        // the CPU before the CPU samples its IPL in fallingEdge().
         updateInterrupts();
         updateCpuIpl();
 
-        // PERF (Fase 2): la seconda chiamata a handleCpuBusCycle() qui era ridondante.
-        // La FSM bus del 68000 avanza un solo stato per fronte (advanceBusCycleRising
-        // in cpu.risingEdge, advanceBusCycleFalling in cpu.fallingEdge); poiché
-        // cpu.fallingEdge() non è ancora stato chiamato, lo stato bus è IDENTICO a
-        // quello già visto dalla handleCpuBusCycle() del risingEdge di QUESTO ciclo, e
-        // tutti gli input di decideCpuDtack (cpuBusReq, busTakenByCustom, hpos, route
-        // in cache) sono invariati tra le due fasi — busTakenByCustom si scrive solo in
-        // risingEdge, hpos avanza solo in updateBeam() (a fine fallingEdge). Inoltre
-        // advanceBusCycleFalling NON legge ack/vpa/berr: quei segnali li consuma il
-        // cpu.risingEdge() del ciclo SUCCESSIVO, e il loro ultimo scrittore resta la
-        // handleCpuBusCycle() del risingEdge corrente con valore identico. Rimuoverla è
-        // bit-exact (verificato: golden CRC 832316F5 + IkPlus/NorthSouth/LastBattle +
-        // BbusyTest tutti INVARIATI rispetto al baseline) e dimezza le invocazioni del
-        // path bus CPU (~7M/s in meno).
-        cpu.fallingEdge(); // campiona latchedIpl = busResp.ipl qui
+        // No second handleCpuBusCycle() here: the 68000's bus FSM advances one state per
+        // edge, cpu.fallingEdge() has not run yet, and all the inputs of decideCpuDtack are
+        // unchanged since this cycle's risingEdge (busTakenByCustom is written only in
+        // risingEdge, hpos advances only in updateBeam()). The falling-edge bus step does not
+        // read ack/vpa/berr either.
+        cpu.fallingEdge(); // samples the IPL here
 
-        // Il trasferimento dati vive sullo slot che Agnus ha CONCESSO, non mezzo CCK dopo.
+        // The data transfer lives on the slot Agnus GRANTED, not half a CCK later. DTACK
+        // matures in decideCpuDtack() at an EVEN hpos (CCK boundary) while the CPU is in S4;
+        // performing the transfer in the next risingEdge's handleCpuBusCycle() (S6, odd hpos)
+        // put it half a CCK after the granted slot, while the Copper and the chip interrupts
+        // commit on the boundary: the phase CpuBeamPhaseTest measures (48 odd phi out of 48,
+        // all even on the hardware; audio plan section 6.1.1).
         //
-        // Oracolo WinUAE `wait_cpu_cycle_write` (custom.cpp:12452): `dma_cycle()` attende lo
-        // slot di chip-bus e SUBITO DOPO fa `put_word(addr, v)` — la scrittura cade sul CCK
-        // concesso, e infatti ogni riga di WINUAE_COLORLOG ha `clk` PARI (multiplo di CCK)
-        // sia per le scritture della CPU sia per quelle del Copper.
-        //
-        // Da noi il DTACK matura in decideCpuDtack() a `hpos` PARI (confine di CCK) mentre
-        // la CPU e' in S4, ma il trasferimento veniva eseguito dalla handleCpuBusCycle() del
-        // risingEdge SUCCESSIVO, quando lo stato e' S6 e hpos e' gia' DISPARI: mezzo CCK
-        // dopo lo slot concesso. Il Copper e gli interrupt dei chip commitano invece sul
-        // confine, e da qui la fase misurata da CpuBeamPhaseTest — 48 phi su 48 dispari dove
-        // l'oracolo li ha tutti pari (piano vamigats-paula-audio §6.1.1).
-        //
-        // Chiamandolo qui, dopo cpu.fallingEdge() (che porta la FSM bus in S5) e PRIMA di
-        // updateBeam(), il trasferimento cade nello stesso master-cycle del DTACK. La FSM
-        // della CPU, l'arbitraggio e la contesa non si muovono di un ciclo: cambia solo
-        // l'istante in cui l'effetto del trasferimento diventa visibile.
+        // Called here, after cpu.fallingEdge() (which takes the bus FSM to S5) and BEFORE
+        // updateBeam(), the transfer falls in the master cycle of DTACK. The CPU FSM,
+        // arbitration and contention do not move: only the instant the transfer's effect
+        // becomes visible changes.
         handleCpuDataTransferPhase();
 
         if (!copperBusReq.as)  copperBusProcessed  = false;
@@ -2893,23 +2565,22 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Impulsi TOD (tod_inc_delay)
+    // TOD pulses
     // =========================================================================
 
-    /** {@code hpos} del fronte di salita/discesa dell'impulso TOD della riga; -1 = nessuno. */
+    /** {@code hpos} of the rising/falling edge of the line's TOD pulse; -1 = none. */
     private int todRiseHposA = -1, todFallHposA = -1, todRiseHposB = -1, todFallHposB = -1;
 
     /**
-     * {@code tod_inc_delay()} dell'oracolo ({@code cia.cpp}): dove cade l'incremento del TOD
-     * <b>dentro la riga</b>, in CCK dall'inizio della riga.
+     * Where the TOD increment falls <b>within the line</b>, in CCK from the start of the
+     * line.
      *
-     * <p>⛔ <b>Non è una costante e non può esserlo</b>, ed è il banco stesso a dirlo:
-     * {@code toddelay1÷3} sono lo stesso programma con la WAIT del Copper a tre hpos diversi,
-     * cioè una sonda di fase, e uno sweep su tutta la riga rompe {@code toddelay2} a 96 CCK e
-     * {@code toddelay3} a 114 — i due estremi dell'intervallo dell'oracolo. L'oracolo non usa
-     * un valore fisso: allinea l'incremento a una griglia di <b>quattro E-clock</b>
-     * ({@link #TOD_ALIGN_CCK}) ricavata dal contatore <b>assoluto</b> dei CCK, e 227 non è
-     * multiplo di 20, quindi la posizione ruota di 7 CCK a ogni riga.
+     * <p><b>Not a constant, and it cannot be</b>: {@code toddelay1-3} are the same program
+     * with the Copper's WAIT at three different hpos, a phase probe, and a sweep over the
+     * whole line breaks {@code toddelay2} at 96 CCK and {@code toddelay3} at 114. The
+     * increment aligns to a grid of <b>four E clocks</b> ({@link #TOD_ALIGN_CCK}) taken from
+     * the <b>absolute</b> CCK counter, and 227 is not a multiple of 20, so the position turns
+     * by 7 CCK at every line.
      *
      * <pre>
      * hoff   = hoffset + 1                    // the HSYNC/VSYNC pin is one CCK late
@@ -2952,12 +2623,10 @@ public abstract class AbstractAgnus {
      * {@code hpos}: horizontal position {@code p} is our CCK {@code p - 4}, so the CCK is
      * {@code offset - TOD_OFFSET_TO_CCK} and {@code hpos} counts system clocks.
      *
-     * @return -1 se l'impulso non ci sta nella riga. ⚠️ In PAL e in NTSC <b>non succede</b>:
-     *         l'offset vale al massimo 114 CCK per CIA-B e 211 per CIA-A contro i 227 della
-     *         riga. L'oracolo tratta il caso diversamente per le due CIA — CIA-B salta
-     *         l'incremento ({@code delayedevent = false}), CIA-A lo rimanda alla riga dopo
-     *         ({@code tod_event_state = 4}) — e qui non è modellato perché non è raggiungibile:
-     *         servirebbe una riga programmata con {@code BEAMCON0}, che non emuliamo.
+     * @return -1 if the pulse does not fit in the line. In PAL and NTSC this <b>cannot
+     *         happen</b>: the offset is at most 114 CCK for CIA-B and 211 for CIA-A against
+     *         the line's 227. It would take a line programmed through {@code BEAMCON0}, which
+     *         is not emulated.
      */
     private int todPulseRiseHpos(int offsetCck) {
         final int rise = 2 * (offsetCck - TOD_OFFSET_TO_CCK);
@@ -2965,16 +2634,13 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Aggancio del <b>vsync</b> a inizio riga: alza e abbassa {@link #vsyncActive} come
-     * {@code agnus_vsync} dell'oracolo e, sul fronte di salita, latcha
-     * {@link #displayRowShift} per tutto il fotogramma.
+     * <b>Vsync</b> lock at the start of the line: raises and lowers {@link #vsyncActive} and,
+     * on the rising edge, latches {@link #displayRowShift} for the whole frame.
      *
-     * <p>⛔ Il latch è il punto: {@code vhpos4} scrive VPOSW <b>a fotogramma già
-     * cominciato</b>, e se ricalcolassimo lo scorrimento riga per riga il quadro si
-     * spezzerebbe a metà. In {@code custom.cpp} {@code vsync_mark()} azzera
-     * {@code linear_vpos} una volta sola, quando {@code agnus_vsync} passa da falso a
-     * vero, e da lì in poi il fotogramma è ancorato lì qualunque cosa faccia
-     * {@code lof_store}.
+     * <p>The latch is the point: {@code vhpos4} writes VPOSW <b>after the frame has
+     * started</b>, and recomputing the shift line by line would break the picture in two.
+     * The framebuffer row is reset once, when vsync goes from false to true, and from then
+     * on the frame is anchored there whatever LOF does.
      */
     private void updateVsyncPhase() {
         final boolean pal = !beamNtsc;
@@ -2985,8 +2651,8 @@ public abstract class AbstractAgnus {
 
         if (!vsyncActive && vpos == startVpos) {
             vsyncActive = true;
-            // La riga del framebuffer conta dal vsync; le nostre costanti di crop sono
-            // tarate sul fotogramma LUNGO, dove il vsync sta a VSYNC_START_VPOS_PAL_LONG.
+            // The framebuffer row counts from vsync; the crop constants are set for the
+            // LONG frame, where vsync starts at VSYNC_START_VPOS_PAL_LONG.
             displayRowShift = VSYNC_START_VPOS_PAL_LONG - startVpos;
         } else if (vsyncActive && vpos == endVpos) {
             vsyncActive = false;
@@ -2994,27 +2660,26 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Di quante righe il quadro scende nel framebuffer rispetto a {@code vpos}.
+     * How many rows the picture moves down in the framebuffer against {@code vpos}.
      *
-     * <p>Vale <b>0</b> quasi sempre e <b>+1</b> sul fotogramma corto PAL, perché lì il
-     * vsync — a cui il display è agganciato — comincia una riga prima (vpos 2 invece di
-     * 3): vedi {@link #VSYNC_START_VPOS_PAL_LONG}. Misurato sul banco
-     * {@code Agnus/Registers/VPOS}: {@code lof1} (VPOSW $8001, frame lungo) è bit-exact
-     * con {@code shift = 0}, {@code lof2} (VPOSW $0001, frame corto) lo è con
-     * {@code shift = +1} — nel riferimento dell'oracolo il quadro comincia alla riga 23
-     * invece che alla 22.
+     * <p><b>0</b> almost always and <b>+1</b> on a short PAL frame, because there vsync, which
+     * the display locks to, starts one line earlier (vpos 2 instead of 3): see
+     * {@link #VSYNC_START_VPOS_PAL_LONG}. Measured on the {@code Agnus/Registers/VPOS} bank:
+     * {@code lof1} (VPOSW $8001, long frame) is bit-exact with {@code shift = 0}, {@code lof2}
+     * (VPOSW $0001, short frame) with {@code shift = +1}: the picture starts at row 23
+     * instead of 22.
      */
     public int getDisplayRowShift() {
         return displayRowShift;
     }
 
-    /** Calcola gli impulsi TOD della riga che comincia. */
+    /** Computes the TOD pulses of the line that starts. */
     private void armTodPulses(long lineStartCck) {
         todRiseHposB = todPulseRiseHpos(todIncOffsetCck(TOD_HOFFSET_CIAB, lineStartCck));
         todFallHposB = todRiseHposB < 0 ? -1 : todRiseHposB + TOD_PULSE_WIDTH_SC;
 
         if (vpos == CIAA_TOD_VPOS) {
-            // lof_store ? 132 : 18 — da noi LOF=1 è field==0 (vedi longFrame in updateBeam).
+            // LOF ? 132 : 18; LOF=1 is field==0 (see longFrame in updateBeam).
             final int hoffset = (field == 0) ? TOD_HOFFSET_CIAA_LONG : TOD_HOFFSET_CIAA_SHORT;
             todRiseHposA = todPulseRiseHpos(todIncOffsetCck(hoffset, lineStartCck));
             todFallHposA = todRiseHposA < 0 ? -1 : todRiseHposA + TOD_PULSE_WIDTH_SC;
@@ -3025,29 +2690,27 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Aggiornamento raster
+    // Raster update
     // =========================================================================
 
     /**
-     * Avanza la posizione del raster di 1 system clock.
+     * Advances the raster position by 1 system clock.
      *
-     * Gestisce:
-     *   - Fine riga: reset hpos, moduli bitplane, incremento vpos
-     *   - Fine frame: reset vpos, VERTB, COPJMP1 (the DMA pointers are counters: nothing reloads them)
-     *   - TOD CIA-A: impulso a inizio di ogni nuovo frame (segnale di rete 50 Hz)
+     * Handles:
+     *   - end of line: hpos reset, vpos increment;
+     *   - end of frame: vpos reset, VERTB, COPJMP1 (the DMA pointers are counters: nothing
+     *     reloads them);
+     *   - the TOD pulses of the two CIAs.
      */
     private void updateBeam() {
         int nextHpos = hpos + 1;
         hpos = nextHpos;
 
-        // ⛔ Il reset dei chip custom RI-ANCORA il contatore orizzontale all'istante del
-        // reset: la riga in corso finisce lì e i CCK che le restavano spariscono, mentre
-        // il contatore verticale avanza come a un normale confine di riga. Oracolo:
-        // `custom_reset` fa `agnus_hpos = 0` (fuori da `if (hardreset)`) insieme a
-        // `agnus_hsync_start`/`hsync_counter`, e `custom_trigger_start()` — che contiene
-        // `vpos++` — gira al CCK dopo, su `agnus_hpos == 1`. Misurato sul ColdReboot della
-        // demo Jesus On E's: reset a `hpos 155` di 227, e il fotogramma dura 70 979 invece
-        // di 71 051, cioè 72 CCK in meno. Vedi docs/vamigats-import-order.md §26.
+        // The custom-chip reset RE-ANCHORS the horizontal counter at the instant of the
+        // reset: the current line ends there and its remaining CCKs vanish, while the vertical
+        // counter advances as at a normal line boundary, one CCK later. Measured on the
+        // ColdReboot of the demo Jesus On E's: reset at hpos 155 of 227, and the frame lasts
+        // 70 979 CCK instead of 71 051, 72 fewer (docs/vamigats-import-order.md section 26).
         if (resetRowPending && nextHpos == 1) {
             resetRowPending = false;
             resetDriveHsyncPending = true;
@@ -3055,12 +2718,11 @@ public abstract class AbstractAgnus {
             advanceRow();
         }
 
-        // ── Impulsi TOD verso le due CIA ────────────────────────────────────
-        // Quale RIGA porta l'impulso lo decide la sorgente (CIA-B: ogni hsync; CIA-A:
-        // la fine del vsync, riga CIAA_TOD_VPOS). DOVE cade dentro la riga lo calcola
-        // todIncOffsetCck(), il tod_inc_delay() dell'oracolo: prima stava fisso a
-        // inizio riga. L'arm è a nextHpos == 1, cioè un system clock dopo lo wrap,
-        // che è il punto in cui l'oracolo chiama cia_hsync_do().
+        // -- TOD pulses to the two CIAs -----------------------------------------
+        // WHICH line carries the pulse is decided by the source (CIA-B: every hsync; CIA-A:
+        // the end of vsync, line CIAA_TOD_VPOS). WHERE it falls within the line is computed
+        // by todIncOffsetCck(). The arm is at nextHpos == 1, one system clock after the
+        // wrap, where the line's CIA handler runs.
         if (nextHpos == 1) {
             armTodPulses((masterClock - 1) >> 1);
         }
@@ -3081,8 +2743,8 @@ public abstract class AbstractAgnus {
             }
         }
 
-        // ⛔ La riga dell'ORACOLO avanza TRE CCK prima del nostro wrap di hpos:
-        // è dove chiama custom_trigger_start(). Vedi TRIGGER_VPOS_LEAD_HPOS.
+        // The line counter that the hardware exposes advances THREE CCKs before our wrap of
+        // hpos. See TRIGGER_VPOS_LEAD_HPOS.
         if (nextHpos == maxHpos - TRIGGER_VPOS_LEAD_HPOS) {
             advanceTriggerVpos();
         }
@@ -3093,85 +2755,61 @@ public abstract class AbstractAgnus {
         }
 
         if (nextHpos < maxHpos) {
-            // Ancora nella stessa riga — nessuna azione rilevante
+            // Still within the same line: nothing to do
             return;
         }
 
-        // ── Fine riga ──────────────────────────────────────────────────────
+        // -- End of line --------------------------------------------------------
 
-        // ⛔ IL DRAW BITPLANE NON SI FERMA AL CONFINE DI RIGA. La griglia degli eventi di
-        // draw prosegue nella riga seguente, ma i primi sub-pixel che ne escono
-        // appartengono ancora al buffer di QUESTA riga: sono le colonne raw 836÷839
-        // (`cck 227`), la stessa cella su cui vive la «colonna del wrap» del §16 — che per
-        // il BORDO è già modellata (`VirtualCRT.borderCck0Rgb`) e per il PLAYFIELD non lo
-        // era. Con lo scroll grosso il blocco finale cade proprio lì: `BPLCON1/overscan`
-        // scrive BPLCON1 ai cicli DMA alti apposta per metterlo a cavallo del confine, e
-        // senza questo evento quella word non esce mai — un pixel per riga, 1 px in hires
-        // e 2 in lores, su 21 righe di ognuno dei dodici test.
-        // ⚠️ UN solo CCK, non di più: `rgbLine` è larga 912 = 228 CCK a partire da
-        // `cck 18`, quindi `cck 227` è l'ultima cella che le appartiene.
+        // THE BITPLANE DRAW DOES NOT STOP AT THE LINE BOUNDARY. The grid of draw events
+        // continues into the next line, but the first sub-pixels coming out of it still
+        // belong to THIS line's buffer: raw columns 836-839 (CCK 227), the same cell as the
+        // wrap column of section 16 (modelled for the border by `VirtualCRT.borderCck0Rgb`).
+        // With a large scroll the final block falls right there: `BPLCON1/overscan` writes
+        // BPLCON1 at high DMA cycles precisely to put it across the boundary, and without
+        // this event that word never comes out (one pixel per line on 21 lines of each of
+        // the twelve tests). ONE CCK only: `rgbLine` is 912 = 228 CCK wide from CCK 18, so
+        // CCK 227 is its last cell.
         handleBitplaneDrawEvent(maxHpos >> 1);
 
         scheduleSyncEvent(EVFL_HSYNC);
         scheduleSyncEvent(EVFL_EOL);
 
-        // ⛔ Il freeze ERSY ENTRA QUI, non alla scrittura di BPLCON0. Oracolo,
-        // `custom.cpp` do_cck: il ramo che chiama `setsyncstopped()` sta dentro
-        // `if (agnus_hpos == maxhpos || agnus_hpos == maxhpos_long)`, cioè al confine di
-        // riga, e solo `if (!lol)`. Sulla scrittura, `checksyncstopped()` accende il freeze
-        // solo nel ramo `!cpu_memory_cycle_exact || m68k_speed < 0` — che in configurazione
-        // cycle-exact (la nostra, e quella dell'oracolo del banco) è falso.
-        // ⚠️ Non è un dettaglio: un ERSY acceso e spento DENTRO la stessa riga non congela
-        // niente. È il caso di `Agnus/Registers/VPOS/ersy1`, dove il Copper alza il bit a
-        // hpos $31 e lo riabbassa a $B1 sedici volte di fila.
+        // The ERSY freeze STARTS HERE, at the line boundary (and not on an NTSC long line),
+        // not at the BPLCON0 write. An ERSY switched on and off WITHIN the same line freezes
+        // nothing: `Agnus/Registers/VPOS/ersy1`, where the Copper raises the bit at hpos $31
+        // and lowers it at $B1 sixteen times in a row.
         if (!syncsStopped && ersyActive() && !lol) {
             syncsStopped = true;
         }
 
-        // LOL: su Agnus NTSC la riga alterna 227/228 CCK. Il toggle vale per la riga
-        // che sta per iniziare (WinUAE: toggle nell'hsync handler, poi setmaxhpos()).
-        // ⛔ La condizione è quella dell'oracolo per intero:
-        //   if (!(new_beamcon0 & BEAMCON0_PAL) && !(new_beamcon0 & BEAMCON0_LOLDIS))
-        //       lol = !lol; else lol = false;
-        // cioè NTSC *e* LOLDIS spento; altrimenti la riga torna corta e ci resta. Il modo
-        // lo decide BEAMCON0, non la macchina (vedi beamNtsc).
+        // LOL: on an NTSC Agnus the line alternates 227/228 CCK. The toggle applies to the
+        // line about to start, only with NTSC *and* LOLDIS clear; otherwise the line goes
+        // back to short and stays there. BEAMCON0 decides the mode, not the machine (see
+        // beamNtsc).
         updateLineLength(beamNtsc && (beamcon0 & BEAMCON0_LOLDIS) == 0 && !lol);
 
         hpos = 0;
 
-        // Sblocca il latch light pen dopo la riga 20
-        // (il Kickstart usa vpos >= 20 come condizione di reset del freeze)
+        // Unlock the light pen latch after line 20 (the Kickstart uses vpos >= 20 as the
+        // freeze reset condition).
         if (vpos == 20) vposFrozen = false;
 
-        // Applica i moduli bitplane a fine riga, MA solo se la riga ha effettivamente
-        // prelevato bitplane (finestra di fetch aperta). Una riga entro la finestra
-        // verticale che NON ha fatto fetch — es. la riga di transizione in cui il Copper
-        // riconfigura DDFSTRT/puntatori a metà riga, dopo che il CCK ha superato il nuovo
-        // ddfCckStart, così la finestra non si apre — NON deve far avanzare i puntatori.
-        // (Pinball Fantasies: a vpos 72 il Copper carica i puntatori del tavolo e sposta
-        // DDFSTRT; quella riga non preleva, ma applicando comunque il modulo BPL1 finiva
-        // 120 byte oltre i suoi dati, nei gap a zero → bit0 perso → solo colori a indice
-        // pari → palette del tavolo "sballata".) Allineato a WinUAE/vAmiga: il modulo è
-        // parte della sequenza DMA bitplane e segue gli effettivi fetch della riga.
-        // I moduli bitplane NON si applicano più qui a fine riga: sono aggiunti
-        // per-piano all'ULTIMO fetch della riga (handleBitplaneDMA, `domod`
-        // WinUAE). Il gate lineDidFetch (Pinball Fantasies) è assorbito: una riga
-        // senza fetch non raggiunge mai l'unità finale e non applica alcun modulo.
-        // (L'impulso TOD di CIA-A non sta più qui: vedi CIAA_TOD_VPOS in updateBeam().)
+        // The bitplane moduli are not applied at the end of the line: they are added per
+        // plane at the LAST fetch of the line (handleBitplaneDMA), so a line that fetched
+        // nothing applies no modulo. (Pinball Fantasies: at vpos 72 the Copper loads the
+        // table's pointers and moves DDFSTRT; that line does not fetch, and a modulo applied
+        // anyway took BPL1 120 bytes past its data.)
 
-        // ERSY (BPLCON0 bit 1) senza genlock: il generatore di sync di Agnus aspetta un
-        // sync esterno che non arriva e il CONTATORE VERTICALE SI FERMA. In WinUAE è
-        // `custom_trigger_start()` — la funzione che contiene `vpos++` — a non essere
-        // chiamata affatto mentre `syncs_stopped` (custom.cpp, "if (!syncs_stopped)"),
-        // mentre `fakehsync_handler` continua a generare hsync così che le righe, e con
-        // loro il resto della macchina, non si fermino. Qui è la stessa cosa: la fine
-        // riga fa tutto il suo lavoro, solo vpos non avanza e il frame non si chiude.
+        // ERSY (BPLCON0 bit 1) without a genlock: Agnus's sync generator waits for an
+        // external sync that never comes and the VERTICAL COUNTER STOPS, while hsyncs keep
+        // coming so the lines, and the rest of the machine, do not stop. The end of line does
+        // all its work; only vpos does not advance and the frame does not close.
         //
-        // Non è un dettaglio da poco: la graphics.library 1.3 accende ERSY per il
-        // rilevamento genlock ($FCAF96) e lo tiene su ~4881 CCK, cioè 21,5 righe. Senza
-        // il freeze il nostro pennello si portava avanti di altrettanto rispetto
-        // all'oracolo, e da lì in poi ogni attesa del Kickstart agganciata al raster
-        // cadeva altrove. Misurato in docs/vamigats-paula-audio-plan.md §13.6.
+        // graphics.library 1.3 switches ERSY on for the genlock detection ($FCAF96) and keeps
+        // it for ~4881 CCK, 21.5 lines. Without the freeze the beam ran ahead by as much, and
+        // every raster-locked wait of the Kickstart fell elsewhere
+        // (docs/vamigats-paula-audio-plan.md section 13.6).
         if (syncsStopped) {
             return;
         }
@@ -3180,21 +2818,18 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Avanza il contatore verticale di una riga e, se il fotogramma finisce, lo chiude.
-     * È la coda normale della fine riga; la chiama anche il reset software, che ri-ancora
-     * il contatore orizzontale e fa contare la riga interrotta (vedi {@code resetRowPending}).
+     * Advances the vertical counter by one line and closes the frame when it ends. The normal
+     * tail of the end of line; the software reset calls it too, re-anchoring the horizontal
+     * counter and counting the interrupted line (see {@code resetRowPending}).
      */
     private void advanceRow() {
         vpos++;
 
-        // Numero di righe del frame dipendente da LOF (Long Frame), come hardware:
-        //  - frame LUNGO (LOF=1) = maxVpos+1 righe → vpos raggiunge maxVpos
-        //    (PAL: 312, NTSC: 262);
-        //  - frame CORTO = maxVpos righe → vpos max maxVpos-1.
-        // Anche in non-interlace LOF alterna: in PAL la media diventa 312,5 righe,
-        // mantenendo il rapporto corretto fra VBL e E-clock CIA. Necessario anche
-        // perché vari giochi (es. Future Wars) attendono in polling che VPOSR
-        // raggiunga vpos==312; ciò accade sui frame lunghi.
+        // Lines per frame depend on LOF (Long Frame):
+        //  - LONG frame (LOF=1) = maxVpos+1 lines -> vpos reaches maxVpos (PAL 312, NTSC 262);
+        //  - SHORT frame = maxVpos lines -> vpos at most maxVpos-1.
+        // Some games (e.g. Future Wars) poll VPOSR for vpos==312, which happens on long
+        // frames.
         boolean longFrame = field == 0;
         int wrapAt = longFrame ? (maxVpos + 1) : maxVpos;
 
@@ -3204,43 +2839,35 @@ public abstract class AbstractAgnus {
             return;
         }
 
-        // ── Fine frame (Start of Line 0) ───────────────────────────────────
+        // -- End of frame (start of line 0) ---------------------------------------
         vpos = 0;
         frameCount++;
         updateVsyncPhase();
 
-        // VERTB (Paula INTREQ bit 5, IPL 3): asserito all'inizio della riga 0,
-        // come l'hardware reale (cfr. vAmiga serviceVBLEvent: PAL OCS → pos.v==0,
-        // pos.h==0). NON va anticipata alla riga 311: farlo manda in esecuzione la
-        // ISR vblank del gioco proprio mentre il pennello è sulla riga 312, così un
-        // main-loop che attende in polling vpos==312 (es. la protezione di
-        // Future Wars, $C088B2: cmp.l #$00013800,(VPOSR)) non la osserva mai e si
-        // blocca. Con VERTB a riga 0 la ISR gira sulle prime righe e il main-loop
-        // ha tutto il resto del frame (riga 312 inclusa, nei frame lunghi) per
-        // campionare la posizione del pennello.
+        // VERTB (Paula INTREQ bit 5, IPL 3): asserted at the start of line 0. NOT earlier at
+        // line 311: that runs the game's vblank ISR while the beam is on line 312, so a main
+        // loop polling for vpos==312 (e.g. Future Wars' protection, $C088B2:
+        // cmp.l #$00013800,(VPOSR)) never sees it and hangs. With VERTB at line 0 the ISR
+        // runs on the first lines and the main loop has the rest of the frame (line 312
+        // included, on long frames) to sample the beam position.
         if (paula != null) paula.assertVertbInterrupt();
         lastCompletedFrameHadLateBitplaneDma = bitplaneDmaEnabledLateThisFrame;
-        lastCompletedFrameField = field;   // salvato prima del toggle, usato da VirtualCRT
+        lastCompletedFrameField = field;   // saved before the toggle, used by VirtualCRT
         bitplaneDmaEnabledLateThisFrame = false;
 
-        // Nuovo frame: tutti gli sprite in fase POS/CTL (sprDmaEnabled=false).
+        // New frame: every sprite in the POS/CTL phase (sprDmaEnabled=false).
         Arrays.fill(sprDmaEnabled, false);
 
         updateSpriteDMA(0);
 
-        // Notifica il Copper del VBlank (Copper restarts from COP1LC at beam 0,0)
+        // Tell the Copper about the vertical blank (it restarts from COP1LC at beam 0,0)
         copper.onVBlank(isCopperEnabled());
 
-        // LOF (Long Frame) alterna SOLO in interlace, come WinUAE, che lo tocca
-        // unicamente dentro `if (bplcon0 & 4)` a fine frame (custom.cpp). In
-        // non-interlace il bit NON alterna: field resta al suo valore, che dal reset
-        // è 1 (LOF=0, frame CORTO — vedi reset()) e diventa 0 quando il software
-        // scrive VPOSW con il bit 15.
-        // PRIMA alternavamo field a ogni frame anche in non-interlace ("media
-        // 312,5"): ciò faceva variare la lunghezza del frame 313/312 a frame
-        // alterni e quindi la fase CPU↔raster, producendo uno sfarfallio a
-        // periodo 2 nei programmi che si sincronizzano sul raster (es. il test
-        // bbusy della suite vAmigaTS, che vAmiga rende invece stabile).
+        // LOF (Long Frame) toggles ONLY in interlace, at the end of the frame. Without
+        // interlace the bit does NOT toggle: field keeps its value, which is 1 from reset
+        // (LOF=0, SHORT frame) and becomes 0 when software writes VPOSW with bit 15.
+        // Toggling it every frame made the frame length alternate 313/312 and with it the
+        // CPU/raster phase: a period-2 flicker in raster-synchronised programs (e.g. bbusy).
         boolean interlaced = denise != null && (denise.getBplcon0() & 0x0004) != 0;
         if (interlaced) {
             field = (field == 0) ? 1 : 0;
@@ -3249,33 +2876,25 @@ public abstract class AbstractAgnus {
             if (denise != null) denise.setField(0);
         }
 
-        // Nota: CIA-B TOD è pilotato dall'indice floppy, non dal vsync.
-        // Vedi updateFloppy() / updateFromDrive().
     }
 
     // =========================================================================
-    // Segnali CIA
+    // CIA lines
     // =========================================================================
 
     /**
-     * Aggiorna i segnali CIA che dipendono dallo stato del sistema.
+     * Updates the lines derived from CIA-A's PRA/DDRA latch:
      *
-     * OVL (Overlay ROM):
-     *   Il bit 0 del registro PRA della CIA-A controlla il segnale /OVL che va a Gary.
-     *   PA0=1 → overlay attivo (ROM visibile a $000000).
-     *   PA0=0 → overlay disattivo (Chip RAM a $000000).
-     *   La direzione del pin (DDR) deve essere OUTPUT per avere effetto.
+     * OVL (ROM overlay): PA0 drives the /OVL line to Gary.
+     *   PA0=1 -> overlay on (ROM visible at $000000).
+     *   PA0=0 -> overlay off (Chip RAM at $000000).
      *
-     * LED / Audio filter:
-     *   PA1 della CIA-A controlla il LED di alimentazione e il filtro audio.
-     *   PA1=1 → LED spento, filtro off; PA1=0 → LED acceso, filtro on.
-     */
-    /**
-     * Aggiorna i segnali derivati dal latch PRA/DDRA di CIA-A: /OVL (ROM overlay
-     * verso Gary) e LED/filtro audio. Chiamato a granularità E-clock da
-     * {@link #serviceCiaEvent()} (i bit cambiano solo in risposta a scritture CIA,
-     * sincronizzate all'E-clock su hardware reale) e — per il path di reboot via
-     * istruzione CPU RESET — direttamente da {@link #risingEdge()} dopo softReset.
+     * LED / audio filter: PA1 drives the power LED and the audio filter.
+     *   PA1=1 -> LED off, filter off; PA1=0 -> LED on, filter on.
+     *
+     * Called at E-clock granularity by {@link #serviceCiaEvent()} (the bits change only on
+     * CIA writes, which are synchronised to the E clock) and, for the reboot path through the
+     * CPU's RESET instruction, directly by {@link #risingEdge()} after softReset.
      */
     private void updateCiaOvlLed() {
         if (ciaA == null || gary == null) return;
@@ -3319,26 +2938,19 @@ public abstract class AbstractAgnus {
     // =========================================================================
 
     /**
-     * Aggiorna i bit PORTS e EXTER di INTREQ in base allo stato dei pin IRQ CIA.
+     * Updates INTREQ's PORTS and EXTER bits from the state of the CIA IRQ pins:
+     *   - CIA-A /IRQ low -> sets INTREQ PORTS (bit 3)
+     *   - CIA-B /IRQ low -> sets INTREQ EXTER (bit 13)
      *
-     * Su hardware reale:
-     *   - Il pin /IRQ della CIA-A scende (LOW) → setta INTREQ PORTS (bit 3)
-     *   - Il pin /IRQ della CIA-B scende (LOW) → setta INTREQ EXTER (bit 13)
-     *
-     * Il bit INTREQ NON viene azzerato automaticamente quando la CIA rilascia
-     * il proprio IRQ. Il software deve azzerarlo scrivendo su INTREQ (CLR).
-     * Questo è il comportamento hardware corretto (INTREQ è latched).
-     *
-     * Nota: non azzerare PORTS/EXTER qui evita il problema di azzeramento
-     * prematuro che causerebbe interrupt mancati.
+     * The INTREQ bit is NOT cleared when the CIA releases its IRQ: software clears it by
+     * writing INTREQ (CLR). INTREQ is latched.
      */
     private void updateInterrupts() {
         if (paula == null) return;
 
-        // Su hardware Amiga, gli interrupt CIA sono level-triggered tramite Paula.
-        // Se il pin /IRQ della CIA è LOW, il corrispondente bit in INTREQ di Paula
-        // deve essere mantenuto a 1. Se il software tenta di azzerare il bit in
-        // INTREQ ma il pin /IRQ della CIA è ancora LOW, il bit deve tornare a 1.
+        // CIA interrupts are level-triggered through Paula: while a CIA's /IRQ pin is low
+        // the INTREQ bit is held at 1, and if software clears it while the pin is still low
+        // it comes back.
         if (ciaA != null) {
             boolean ciaAIrq = ciaA.getPinSet().getIrqPin().getPinState();
             if (!ciaAIrq && !paula.isPortsInterruptAsserted()) {
@@ -3356,11 +2968,9 @@ public abstract class AbstractAgnus {
 
     private void updateCpuIpl() {
         if (paula != null) {
-            // Il pin IPL della CPU vede il valore RITARDATO in cima alla pipe IPL di
-            // Paula (cfr. vAmiga), NON calculateIPL() live: i cambi di livello si
-            // propagano a 1 CCK/stadio (~2-3 CCK di latenza), come l'hardware. La
-            // pipe è pilotata da Paula.checkInterrupt() a ogni scrittura INTREQ/INTENA
-            // e da updateInterrupts() per i fronti /IRQ dei CIA.
+            // The CPU's IPL pin sees Paula's IPL pipe (stage 0, see getCpuIplFromPipe),
+            // driven by Paula.checkInterrupt() at every INTREQ/INTENA write and by
+            // updateInterrupts() for the CIA /IRQ edges.
             cpuBusResp.ipl = paula.getCpuIplFromPipe();
         }
     }
@@ -3369,18 +2979,6 @@ public abstract class AbstractAgnus {
     // Floppy
     // =========================================================================
 
-    /**
-     * Aggiorna i segnali CIA-B in base allo stato dei drive floppy.
-     *
-     * @param prbChanged true se il PRB di CIA-B è cambiato rispetto all'ultimo
-     *        valore elaborato. df.update() applica solo i FRONTI dei segnali di
-     *        controllo: a PRB invariato non c'è alcun fronte (prevStep==step,
-     *        prevSelected==selected, side invariato), quindi le 4 chiamate sono un
-     *        no-op costoso e si saltano. Ogni transizione reale dei segnali è un
-     *        cambio di PRB → prbChanged=true → i fronti vengono comunque colti
-     *        (preserva il fix side-select di SpeedBall II). Lo stato (rdy/tk0/index)
-     *        è invece campionato SEMPRE, perché evolve nel tempo a PRB fermo.
-     */
     /** The CIA-B control lines reach the drives: selection, motor latch, step, side. */
     private void applyFloppyLines(byte ciab_prb) {
         if (ciaA == null || ciaB == null) return;
@@ -3395,6 +2993,12 @@ public abstract class AbstractAgnus {
         df3.update((ciab_prb & 0x40) == 0, mtr, step, dir, side);
     }
 
+    /**
+     * Publishes the selected drives' status lines on the CIA pins.
+     *
+     * @param prbChanged true if CIA-B's PRB changed since the last value processed: then
+     *        selection and pull-ups may have changed too.
+     */
     private void updateFloppy(byte ciab_prb, boolean prbChanged) {
         if (ciaA == null || ciaB == null) return;
 
@@ -3404,16 +3008,12 @@ public abstract class AbstractAgnus {
         boolean sel2 = (ciab_prb & 0x20) == 0;
         boolean sel3 = (ciab_prb & 0x40) == 0;
 
-        // PERF: i 5 segnali di stato (/RDY //TK0 //WPRO //CHNG //INDEX) venivano
-        // ricampionati dai drive e ri-pubblicati sui pin CIA ad OGNI CCK di drive
-        // attivo (~3,5M volte/s × 5 letture). A regime — motore a piena velocità
-        // durante un caricamento — restano però costanti per milioni di cicli: la
-        // pubblicazione è identica a sé stessa e si può saltare. Ogni drive alza il
-        // proprio flag (FloppyDrive.isStatusDirty) quando uno dei 5 PUÒ essere
-        // cambiato, ed è conservativo: resta alto per tutta la rampa del motore,
-        // dove /RDY dipende dal tempo e non da una scrittura di campo.
-        // Il PRB non è cambiato (prbChanged==false) ⇒ anche selezione e pull-up
-        // sono invariati, quindi nulla da ripubblicare.
+        // PERF: the five status lines (/RDY /TK0 /WPRO /CHNG /INDEX) stay constant for
+        // millions of cycles with the motor up to speed during a load, so republishing them
+        // can be skipped. Each drive raises its flag (FloppyDrive.isStatusDirty) when one of
+        // the five MAY have changed, conservatively: it stays raised through the whole motor
+        // ramp, where /RDY depends on time and not on a field write. With PRB unchanged,
+        // selection and pull-ups are unchanged too, so there is nothing to republish.
         boolean anyDirty = (sel0 && df0.isStatusDirty()) || (sel1 && df1.isStatusDirty())
                         || (sel2 && df2.isStatusDirty()) || (sel3 && df3.isStatusDirty());
         if (!prbChanged && !anyDirty && !FLOPPY_STATUS_VERIFY) {
@@ -3421,7 +3021,7 @@ public abstract class AbstractAgnus {
         }
 
         // State signals multiplexed on the bus (wired-OR active LOW logic)
-        // STEP 8: riusa l'istanza pre-allocata invece di allocarne una nuova.
+        // Reuses the preallocated instance instead of allocating a new one.
         FloppyStatus status = floppyStatus;
         status.rdy = status.tk0 = status.wpro = status.chng = status.index = false;
         boolean anySelected = false;
@@ -3451,15 +3051,15 @@ public abstract class AbstractAgnus {
             pinsB.getFlagPin().setExternalInput(true); // /INDEX
         }
 
-        // Pubblicato: i drive selezionati ripartono "puliti".
+        // Published: the selected drives start "clean" again.
         if (sel0) df0.clearStatusDirty();
         if (sel1) df1.clearStatusDirty();
         if (sel2) df2.clearStatusDirty();
         if (sel3) df3.clearStatusDirty();
 
-        // Verifica esaustiva (-Damiga.floppyverify=true): quando lo skip SAREBBE
-        // scattato, la pubblicazione appena calcolata deve coincidere con l'ultima.
-        // Una sola discrepanza significa un sito di mutazione non marcato.
+        // Exhaustive check (-Damiga.floppyverify=true): when the skip WOULD have fired, the
+        // publication just computed must match the last one. A single mismatch means a
+        // mutation site that is not marked.
         if (FLOPPY_STATUS_VERIFY) {
             int packed = (anySelected ? 1 : 0)
                     | (status.rdy ? 2 : 0) | (status.tk0 ? 4 : 0) | (status.wpro ? 8 : 0)
@@ -3474,12 +3074,12 @@ public abstract class AbstractAgnus {
         }
     }
 
-    /** Verifica esaustiva dell'invalidazione dei segnali floppy (diagnostica). */
+    /** Exhaustive check of the floppy line invalidation (diagnostics). */
     private static final boolean FLOPPY_STATUS_VERIFY = Boolean.getBoolean("amiga.floppyverify");
     private int  lastPublishedFloppyStatus = -1;
     private long floppyVerifyMismatches;
 
-    /** Numero di discrepanze rilevate in modalità {@code -Damiga.floppyverify}. */
+    /** Number of mismatches found in {@code -Damiga.floppyverify} mode. */
     public long getFloppyVerifyMismatches() { return floppyVerifyMismatches; }
 
     private void updateFromDrive(FloppyDrive df, FloppyStatus status) {
@@ -3490,9 +3090,7 @@ public abstract class AbstractAgnus {
         if (df.isIndexActiveRaw())   status.index = true;
     }
 
-    // PERF: consumer di bit MFM pre-allocato. Prima veniva creata una nuova lambda
-    // (cattura paula) ad ogni tick di un drive selezionato. Riusarne una sola evita
-    // l'allocazione nel percorso di caricamento.
+    // PERF: preallocated MFM bit consumer, so a selected drive's tick allocates nothing.
     private final IntConsumer diskBitConsumer = this::shiftDiskBit;
 
     private void shiftDiskBit(int bit) {
@@ -3503,15 +3101,14 @@ public abstract class AbstractAgnus {
         if (paula != null) paula.slipDiskShifterBit(bit);
     }
 
-    /** Cella MFM successiva da scrivere sul supporto (vedi Paula.nextWriteBit). */
+    /** Next MFM cell to write to the medium (see Paula.nextWriteBit). */
     private int nextDiskWriteBit() {
         return paula != null ? paula.nextWriteBit() : Paula.WRITE_BIT_END;
     }
 
     /**
-     * Almeno un drive <b>connesso</b> e' selezionato? E' il complemento del
-     * {@code (selected | disabled) == 15} dell'oracolo (disk.cpp): le linee /SELx del PRB
-     * di CIA-B sono attive basse, e un drive non connesso e' il suo {@code disabled}.
+     * Is at least one <b>connected</b> drive selected? The /SELx lines of CIA-B's PRB are
+     * active low, and a drive that is not connected does not count.
      */
     private boolean isAnyDriveSelected(byte ciabPrb) {
         return (df0 != null && df0.isConnected() && (ciabPrb & 0x08) == 0)
@@ -3566,20 +3163,20 @@ public abstract class AbstractAgnus {
         return drive != null && drive.isConnected() && drive.isBusy();
     }
 
-    // PERF: stato per il gating del lavoro floppy per-ciclo (vedi risingEdge).
-    // lastCiabPrb=-1 e floppyBusy=true forzano l'esecuzione al primo ciclo finché
-    // lo stato non si assesta. floppyBusy=true finché un drive è attivo.
+    // PERF: state for gating the per-cycle floppy work (see risingEdge). lastCiabPrb=-1
+    // and floppyBusy=true force the work at the first cycle until the state settles;
+    // floppyBusy stays true while a drive is active.
     private int lastCiabPrb = -1;
     // The PRB value whose control lines the drives last received.
     private int appliedCiabPrb = -1;
     private boolean floppyBusy = true;
-    // PERF: accumulatore per processare il floppy a granularità CCK (2 master-cycle)
-    // invece che ad ogni master-cycle. Vedi il blocco floppy in risingEdge().
+    // PERF: accumulator to process the floppy at CCK granularity (2 master cycles). See
+    // the floppy block in risingEdge().
     private int floppyAccumCycles = 0;
 
-    /** Durata di una cella MFM in master-cycle: 7 CCK, come FloppyDrive.CYCLES_PER_BIT. */
+    /** Length of an MFM cell in master cycles: 7 CCK, as FloppyDrive.CYCLES_PER_BIT. */
     private static final int IDLE_DISK_CYCLES_PER_BIT = 14;
-    /** Cadenza dello shifter a riposo (vedi il blocco omonimo in risingEdge). */
+    /** Cadence of the idle shifter (see the block of the same name in risingEdge). */
     private int idleDiskBitAccum = 0;
 
     private static class FloppyStatus {
@@ -3587,10 +3184,8 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * STEP 8 (PERFORMANCE_REPORT_FINAL): istanza riutilizzabile di FloppyStatus.
-     * updateFloppy() allocava un nuovo oggetto ad ogni invocazione (~7M/s).
-     * L'oggetto non sfugge dal metodo (single-thread, sincrono), quindi si può
-     * riusare resettando i 5 campi all'inizio di updateFloppy().
+     * PERF: reusable FloppyStatus instance. It never escapes updateFloppy() (single thread,
+     * synchronous), which resets its five fields at the start.
      */
     private final FloppyStatus floppyStatus = new FloppyStatus();
 
@@ -3679,8 +3274,7 @@ public abstract class AbstractAgnus {
     protected int chipRamBytes() { return chipRAM.size(); }
 
     /**
-     * Gestisce un fetch DMA del disco.
-     * Legge una word dalla Chip RAM e la invia al controller disco di Paula.
+     * A disk DMA slot: moves one word between Chip RAM and Paula's disk controller.
      */
     private void handleDiskDMA(int cck) {
         if (paula == null) return;
@@ -3699,13 +3293,11 @@ public abstract class AbstractAgnus {
         }
         if (!paula.isDiskDmaEnabled()) return;
 
-        // WRITE: Chip RAM → drive. Una word viene prelevata solo quando lo shift
-        // register di scrittura di Paula si è svuotato (16 celle MFM), così il
-        // trasferimento procede al ritmo di rotazione del supporto e non a quello
-        // degli slot DMA.
+        // WRITE: Chip RAM -> drive. A word is fetched only when Paula's write FIFO has room,
+        // so the transfer follows the rotation of the medium, not the DMA slots.
         if (!paula.isWriteWordNeeded()) return;
         int data = dmaReadWord(addr);
-        openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
+        openBusLatch = data & 0xFFFF; // the DMA fetch drives the data bus
         paula.loadWriteWord(data);
         paula.setDiskDmaPointer(addr);
         paula.advanceDiskDma();
@@ -3720,17 +3312,16 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Gestisce un fetch DMA audio.
-     * Legge una word di campioni audio dalla Chip RAM e la invia a Denise/Paula.
+     * An audio DMA slot: reads a word of samples from Chip RAM and hands it to Paula.
      *
-     * I slot audio: 0→cck15, 1→cck17, 2→cck19, 3→cck21.
+     * Audio slots: channel 0 -> CCK 13, 1 -> 15, 2 -> 17, 3 -> 19.
      */
     private void handleAudioDMA(int cck) {
         if (paula != null) {
             int chan = (cck - SLOT_AUDIO_0) / 2;
             int addr = paula.getAudioDmaAddress(chan);
             int data = dmaReadWord(addr);
-            openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
+            openBusLatch = data & 0xFFFF; // the DMA fetch drives the data bus
             paula.receiveAudioDmaWord(chan, data);
         }
     }
@@ -3759,46 +3350,43 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Gestisce il fetch DMA degli sprite.
+     * A sprite DMA slot.
      *
-     * Ogni sprite occupa 2 slot CCK per riga:
-     *   Slot N   (subSlot=0): SPRxPOS  (fase POS/CTL)  oppure  SPRxDATA  (fase DATA/DATB)
-     *   Slot N+2 (subSlot=1): SPRxCTL  (fase POS/CTL)  oppure  SPRxDATB  (fase DATA/DATB)
+     * Each sprite has 2 CCK slots per line:
+     *   slot N   (subSlot=0): SPRxPOS (POS/CTL phase)  or  SPRxDATA (DATA/DATB phase)
+     *   slot N+2 (subSlot=1): SPRxCTL (POS/CTL phase)  or  SPRxDATB (DATA/DATB phase)
      *
-     * Fase POS/CTL  → durante VBlank e dopo VSTOP: Agnus fetcha il descrittore.
-     * Fase DATA/DATB → tra VSTART e VSTOP: Agnus fetcha i pixel dello sprite.
-     *
-     * Le transizioni di fase avvengono leggendo SPRxCTL (fine POS/CTL → DATA/DATB
-     * se vpos >= VSTART) e alla riga di VSTOP (DATA/DATB → POS/CTL).
+     * POS/CTL phase: during the vertical blank and after VSTOP, Agnus fetches the descriptor.
+     * DATA/DATB phase: between VSTART and VSTOP, Agnus fetches the sprite's pixels.
      */
     private void handleSpriteDMA(int cck) {
         if (denise == null) return;
 
         int relCck  = cck - SLOT_SPRITE_0;
-        int sprIdx  = relCck / 4;         // quale sprite (0-7)
-        int subSlot = (relCck % 4) / 2;   // 0 = primo slot (N), 1 = secondo slot (N+2)
+        int sprIdx  = relCck / 4;         // which sprite (0-7)
+        int subSlot = (relCck % 4) / 2;   // 0 = first slot (N), 1 = second slot (N+2)
 
         if (sprIdx < 0 || sprIdx > 7) return;
 
         int addr = sprPtrInternal[sprIdx];
         int data = dmaReadWord(addr);
-        openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
+        openBusLatch = data & 0xFFFF; // the DMA fetch drives the data bus
         sprPtrInternal[sprIdx] += 2;
         markDeniseDmaSlot(cck);
 
         if (!sprSlotDataPhase[sprIdx][subSlot]) {
-            // ── Fase POS/CTL: fetch del descrittore sprite ──────────────────
+            // -- POS/CTL phase: sprite descriptor fetch ---------------------------
             if (subSlot == 0) {
-                // Primo slot: SPRxPOS
+                // First slot: SPRxPOS
                 writeSPRxPOS(sprIdx, data);
                 denise.writeRegister(0x140 + sprIdx * 8, data); // SPRxPOS
             } else {
-                // Secondo slot: SPRxCTL — aggiorna VSTART/VSTOP per updateSpriteDMA
+                // Second slot: SPRxCTL, updates VSTART/VSTOP
                 writeSPRxCTL(sprIdx, data);
                 denise.writeRegister(0x142 + sprIdx * 8, data); // SPRxCTL
             }
         } else {
-            // ── Fase DATA/DATB: fetch dei pixel sprite ───────────────────────
+            // -- DATA/DATB phase: sprite pixel fetch -------------------------------
             if (subSlot == 0) {
                 denise.writeRegister(0x144 + sprIdx * 8, data); // SPRxDATA
             } else {
@@ -3808,19 +3396,15 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Lo {@code slot == 0} di {@code generate_sprites()} (custom.cpp): l'<b>unico</b> punto
-     * in cui il sequencer degli sprite si arma.
+     * Slot 0 of a sprite's decision: the <b>only</b> point where the sprite sequencer arms.
      *
-     * <p>⛔ <b>L'ancora è lo SLOT, non il confine di riga.</b> Prima VSTART/VSTOP li
-     * valutava {@code updateSpriteDMA()} al cambio di {@code vpos}; l'oracolo lo fa qui, al
-     * primo dei due slot di <i>quello</i> sprite — che per lo sprite <i>n</i> cade al CCK
-     * {@code 21 + 4n}. Fra il confine di riga e quel CCK ci stanno le scritture del Copper,
-     * ed è precisamente lì che vivono i test `spritedma/interfere*`.
+     * <p><b>The anchor is the SLOT, not the line boundary.</b> VSTART/VSTOP are evaluated at
+     * the first of <i>that</i> sprite's two slots, CCK {@code 21 + 4n} for sprite <i>n</i>.
+     * The Copper's writes fall between the line boundary and that CCK, and that is exactly
+     * where the {@code spritedma/interfere*} tests live.
      *
-     * <p>⚠️ La riga di reset (25 PAL) è il {@code agnus_vb_active_end_line} dell'oracolo:
-     * ferma lo sprite e gli fa rileggere il descrittore, ed è quel che prima ottenevamo
-     * riscrivendo {@code sprVStop[i] = 25}. Qui è una condizione, non una scrittura a un
-     * registro di stato.
+     * <p>The reset line (25 PAL), the end of Agnus's vertical blank, stops the sprite and
+     * makes it reread its descriptor: a condition here, not a write to a state register.
      */
     private void generateSpritesSlot0(int idx) {
         if (sprDmaCycle[idx] == 0 && sprDmaEnabled[idx]) {
@@ -3838,19 +3422,11 @@ public abstract class AbstractAgnus {
 
 
     /**
-     * Aggiorna sprDmaEnabled per la riga nextVpos, seguendo la logica vAmiga:
-     * <ul>
-     *   <li>A SPRITE_RESET_LINE (25 PAL): tutti i sprVStop vengono resettati a 25,
-     *       forzando il primo fetch POS/CTL del frame su quella stessa riga.</li>
-     *   <li>Per le righe visibili: sprDmaEnabled[i] viene attivato a sprVStart[i]
-     *       e disattivato a sprVStop[i].</li>
-     * </ul>
-     * Deve essere chiamato DOPO l'incremento di vpos, con nextVpos = nuovo vpos.
+     * Sprite DMA at the line change, called AFTER the vpos increment with the new vpos.
      */
     private void updateSpriteDMA(int nextVpos) {
-        // ⛔ La valutazione di VSTART/VSTOP NON sta più qui: sta allo slot 0 di ciascuno
-        // sprite (generateSpritesSlot0), dove la mette l'oracolo. Resta il solo spegnimento
-        // di fine quadro, che di là è il gate `vpos < maxvpos` dell'arbitraggio.
+        // VSTART/VSTOP are evaluated at each sprite's slot 0 (generateSpritesSlot0). Only
+        // the end-of-frame switch-off is left here.
         if (nextVpos >= maxVpos) {
             Arrays.fill(sprDmaEnabled, false);
             Arrays.fill(sprDmaCycle, 0);
@@ -3890,42 +3466,37 @@ public abstract class AbstractAgnus {
 
         int addr = bplPtrInternal[bplIdx];
         int data = dmaReadWord(addr);
-        openBusLatch = data & 0xFFFF; // il fetch DMA pilota il bus dati (vAmiga busData)
+        openBusLatch = data & 0xFFFF; // the DMA fetch drives the data bus
         denise.writeRegisterAtPixel(0x110 + bplIdx * 2, data, cck * 4 - 70); // BPLxDAT
         markDeniseDmaSlot(cck);
         bplPtrInternal[bplIdx] += 2;
-        // Modulo bitplane hardware-exact (WinUAE generate_bpl/bitplane_rga_ptmod):
-        // BPLxMOD è aggiunto al puntatore AL MOMENTO dell'ULTIMO fetch del piano
-        // nella riga (fetch-unit finale, `domod`), col valore del registro campionato
-        // in quel CCK — NON a fine riga. La differenza è osservabile: Arte (Sanity)
-        // scrive i moduli via Copper a WAIT h=222, DOPO l'ultimo fetch (~cck 210) ma
-        // PRIMA della fine riga: sull'hardware la scrittura vale per la riga
-        // SUCCESSIVA; col vecchio modello a fine riga metà delle MOVE (2 in
-        // sequenza, a cavallo del wrap) veniva applicata una riga in anticipo,
-        // desincronizzando i piani di una riga bitmap a scanline alterne (glitch
-        // "scintille"/righe chiare, docs/glitch1.png / glitch2.png).
-        // In hires il domod copre solo la SECONDA metà dell'unità finale da 8 CCK
-        // (fm_maxplane==4 && cycle>=4): ogni piano prende il modulo una sola volta.
+        // BPLxMOD is added to the pointer AT the LAST fetch of the plane in the line (final
+        // fetch unit, `domod`), with the register value sampled in that CCK, NOT at the end
+        // of the line. The difference shows: Arte (Sanity) writes the moduli through the
+        // Copper at WAIT h=222, AFTER the last fetch (~CCK 210) but BEFORE the end of the
+        // line, so the write applies to the NEXT line; applied at the end of the line, half
+        // of the MOVEs (2 in a row, across the wrap) came one line early, desynchronising
+        // the planes by one bitmap row on alternate scanlines.
+        // In hires domod covers only the SECOND half of the final 8-CCK unit: each plane
+        // takes the modulo once.
         //
-        // ⛔ Quale sia l'ultimo blocco lo dice il SEQUENCER, non la posizione: è
-        // `ddf_stopping == 2`, lo stato in cui la macchina entra dopo che DDFSTOP è
-        // passato (generate_bpl). Col vecchio confronto posizionale
-        // `cck >= effStop - (hires?4:8)` una riga che spegne e riaccende BPLEN nel mezzo
-        // applicava il modulo dove capitava, perche' `effStop` non sa niente di quel che
-        // e' successo dentro la riga. Lo stato è quello della DECISIONE dello slot, che
-        // precede il fetch di due CCK: arriva qui con la richiesta (domod).
+        // Which block is the last is told by the SEQUENCER, not by the position: it is
+        // `ddfStopping == 2`, the state the machine enters after DDFSTOP has passed. With a
+        // positional comparison
+        // `cck >= effStop - (hires?4:8)`, a line that switches BPLEN off and on again midway
+        // applied the modulo wherever it happened, since `effStop` knows nothing of what
+        // happened within the line. The state is the one of the slot's DECISION, two CCKs
+        // before the fetch: it arrives here with the request (domod).
         if (domod) {
-            // ⛔ Il modulo è quello CAMPIONATO in cima al CCK (`bitplane_rga_ptmod`), non
-            // il registro vivo: vedi bpl1modFetch. Leggendolo vivo, una scrittura del
-            // Copper caduta nel CCK precedente entrava un CCK troppo presto.
+            // The modulo is the one SAMPLED at the top of the CCK, not the live register:
+            // see bpl1modFetch. Read live, a Copper write in the previous CCK came in one
+            // CCK too early.
             int mod = (bplIdx % 2 == 0) ? bpl1modFetch : bpl2modFetch;
-            // Il modulo si somma SENZA maschera: il wrap entro la Chip RAM installata è
-            // di dmaReadWord, al momento della fetch (oracolo WinUAE: bitplane_rga_ptmod
-            // fa `bplpt[i] += mod` e solo chipmem_agnus_wget applica chipmem_full_mask).
-            // Qui c'era un `& 0xFFFFF` cablato a 1 MB: con 2 MB di Chip RAM un piano
-            // sopra $0FFFFF perdeva il bit 20 a ogni riga e il display collassava nel
-            // primo megabyte — è il caso di WHDLoad, che riserva la Chip bassa al gioco
-            // e alloca lo schermo Workbench più in alto.
+            // The modulo is added WITHOUT a mask: wrapping within the installed Chip RAM is
+            // dmaReadWord's job, at the fetch. A mask hard-wired to 1 MB made a plane above
+            // $0FFFFF lose bit 20 at every line with 2 MB of Chip RAM, collapsing the display
+            // into the first megabyte (WHDLoad reserves low Chip for the game and puts the
+            // Workbench screen higher up).
             bplPtrInternal[bplIdx] = bplPtrInternal[bplIdx] + mod;
             rgaSlotBplMod[(int) (masterClock >> 1) & 3] = mod;
         } else {
@@ -3933,13 +3504,6 @@ public abstract class AbstractAgnus {
         }
     }
 
-    /**
-     * A bitplane fetch and a disk or audio cycle allocated in the same slot. The two requests
-     * merge into one cycle whose register address is the AND of theirs, which names neither
-     * channel: the plane receives no data, the disk or audio word is not moved and that
-     * channel's pointer stays where it was, while the plane pointer takes the other channel's
-     * pointer plus one word and the modulo left in this slot buffer.
-     */
     /**
      * A bitplane fetch and a sprite cycle allocated in the same slot, which happens when the
      * sprite keeps its slot at the end of the bitplane fetch. The two pointers merge into their
@@ -3996,35 +3560,29 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * ⛔ <b>BPL1DAT è il TRIGGER del display, ed è una SCRITTURA DI REGISTRO</b>: il DMA di
-     * bitplane è solo il suo fornitore abituale, non la sua condizione. Con BPLEN
-     * <b>spento</b> e il Copper (o la CPU) che scrive BPL1DAT a mano, Denise fa uscire quella
-     * word lo stesso — l'oracolo lo tratta come un trigger a sé ({@code bpl1dat_trigger},
-     * {@code bpl1dat_enable_bpls()} sul {@code case 0x110} di {@code expand_drga_early}), e
-     * non guarda DMACON.
+     * <b>BPL1DAT is the display TRIGGER, and it is a REGISTER WRITE</b>: bitplane DMA is only
+     * its usual supplier, not its condition. With BPLEN <b>off</b> and the Copper (or the CPU)
+     * writing BPL1DAT by hand, Denise outputs that word all the same, whatever DMACON says.
      *
-     * <p>⚠️ Il gate qui era {@code isBitplaneDMAActive()}, e faceva sparire <b>tutto</b>
-     * l'output del banco {@code Denise/Registers/BPL0DAT}, dove il DMA di bitplane non è mai
-     * acceso: quattro test in cui non disegnavamo un pixel. Il gate giusto è «c'è una word
-     * armata», che con il DMA acceso è vero esattamente quando lo era prima — il fetch
-     * scrive BPL1DAT e arma. La condizione è quindi <b>additiva</b>: tutto ciò che disegnava
-     * prima disegna ancora, e in più disegna il caso a DMA spento.
+     * <p>The gate is therefore "a word is armed", which with DMA on is true exactly when the
+     * fetch wrote BPL1DAT. Gating on DMA made the whole output of the
+     * {@code Denise/Registers/BPL0DAT} bank disappear (bitplane DMA is never on there).
      */
     private void handleBitplaneDrawEvent(int cck) {
         if (denise == null) return;
         if (!isBitplaneDMAActive() && !denise.isBitplaneArmed()) return;
 
         int bplcon0Val = denise.getBplcon0();
-        // Piani DISEGNATI, non prelevati: qui si decide se Denise fa uscire qualcosa,
-        // e la soglia è la sua (AbstractDenise.deniseBpu) — più di 4 piani in hires
-        // significa nessun piano, non quattro.
+        // Planes DRAWN, not fetched: this decides whether Denise outputs anything, and the
+        // threshold is Denise's own (AbstractDenise.deniseBpu): more than 4 planes in hires
+        // means no planes, not four.
         if (denise.getBpu() <= 0) return;
 
         boolean hires = (bplcon0Val & 0x8000) != 0;
         int cycleLen = hires ? 4 : 8;
         int mask = cycleLen - 1;
-        // Parte GROSSA dello scroll: quanti CCK ritardare il blocco. Vedi scrollSubPixels
-        // per la regola unica e per perché in hires non è la stessa di lores.
+        // COARSE part of the scroll: how many CCKs to delay the block. See scrollSubPixels
+        // for the single rule and why hires differs from lores.
         int subOdd  = scrollSubPixels(bplcon1, hires);
         int subEven = scrollSubPixels(bplcon1 >> 4, hires);
         // The scroll is matched against Denise's own horizontal counter. On a line whose
@@ -4036,14 +3594,10 @@ public abstract class AbstractAgnus {
         boolean drawOdd = (phase & mask) == ((subOdd >> 2) & mask);
         boolean drawEven = (phase & mask) == ((subEven >> 2) & mask);
         if (drawOdd || drawEven) {
-            // ⛔ Lo scroll dei piani PARI viene da PF2H SEMPRE, in entrambe le parti e in
-            // entrambi i modi. Qui la parte fine veniva da PF1H in single playfield — «i
-            // piani pari scrollano coi dispari» — e non è vero: `update_bplcon1()` calcola
-            // `bplcon1_shift[1]` dal solo nibble alto, senza mai guardare il dual playfield.
-            // Con PF1H == PF2H l'asimmetria non si vedeva, ed è il caso di tutti i giochi;
-            // la distingue `Denise/Misc/ThirdParty/losso`, che tiene PF1H a 0 e spazza PF2H
-            // da 0 a 15. Lì perdevamo i due sub-pixel di ogni PF2H DISPARI, cioè un pixel
-            // lores sul gruppo pari e su una banda ogni due: 5590 px.
+            // The EVEN planes' scroll ALWAYS comes from PF2H, in both parts and in both
+            // modes, never from PF1H in single playfield. With PF1H == PF2H (every game) it
+            // does not show; `Denise/Misc/ThirdParty/losso` holds PF1H at 0 and sweeps PF2H
+            // from 0 to 15.
             int fineEven = subEven & 3;
             denise.drawBitplanesAtPixel(cck * 4 - 70, drawOdd, drawEven,
                     subOdd & 3, fineEven);
@@ -4087,9 +3641,9 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Lettura di memoria SINCRONA per il blitter in modalità immediate: instrada via
-     * Gary ed esegue subito la lettura, senza consumare cicli di bus emulati (il blit
-     * immediate completa tutto alla scrittura di BLTSIZE). Vedi {@link Blitter#setImmediateMode}.
+     * SYNCHRONOUS memory read for the blitter in immediate mode: done at once, without using
+     * emulated bus cycles (an immediate blit completes at the BLTSIZE write). See
+     * {@link Blitter#setImmediateMode}.
      */
     public int blitterImmediateRead(int address) {
         final int data = dmaReadWord(address);
@@ -4097,7 +3651,7 @@ public abstract class AbstractAgnus {
         return data;
     }
 
-    /** Scrittura di memoria sincrona per il blitter immediate (vedi {@link #blitterImmediateRead}). */
+    /** Synchronous memory write for the immediate blitter (see {@link #blitterImmediateRead}). */
     public void blitterImmediateWrite(int address, int data) {
         dmaWriteWord(address, data);
         openBusLatch = data & 0xFFFF;
@@ -4105,7 +3659,7 @@ public abstract class AbstractAgnus {
 
     private void handleCpuBusCycle() {
         if (!cpuBusReq.as) {
-            // Azzeramento idempotente: una sola volta alla discesa di AS (vedi cpuBusIdle).
+            // Idempotent clearing: once, when AS falls (see cpuBusIdle).
             if (!cpuBusIdle) {
                 cpuBusResp.clearHandshake();
                 cpuBusResp.vpa = false;
@@ -4119,20 +3673,12 @@ public abstract class AbstractAgnus {
         }
         cpuBusIdle = false;
 
-        // Interrupt acknowledge cycle (IACK): ciclo autovettorizzato (AVEC) a durata
-        // FISSA (DTACK immediato, 4 clock), NON sincronizzato all'E-clock.
-        //
-        // PRIMA segnalavamo `vpa=true` → la CPU passava in S_VMA e attendeva la fase
-        // dell'E-clock (come un ciclo 6800 sincrono). Ciò rendeva la latenza di entrata
-        // interrupt DIPENDENTE dalla fase dell'E-clock libero (CLK/10). Su un frame PAL
-        // a campo lungo costante (313 righe × 454 SC = 142102 SC), 142102 mod 10 = 2:
-        // la fase E-clock precede di +2 SC ogni frame → orbita a periodo 5. Questo è
-        // l'UNICO percorso E-clock-dipendente nel loop di servizio interrupt di bbusy0,
-        // ed è la causa esatta del "flicker" a periodo 5 (synccpu entra a una hpos diversa
-        // ogni frame). I riferimenti NON sincronizzano l'IACK autovettorizzato all'E-clock:
-        //   • vAmiga (Moira execInterrupt): SYNC a durata fissa, nessuna dipendenza E-clock.
-        //   • WinUAE (iack_cycle): x_do_cycles(4) fisso.
-        // Allineiamo: ACK immediato (S4→S5, 4 clock fissi), vettore ancora autovettorizzato.
+        // Interrupt acknowledge cycle (IACK): an autovectored cycle of FIXED length (DTACK at
+        // once, 4 clocks), NOT synchronised to the E clock. Synchronising it made the
+        // interrupt entry latency depend on the phase of the free-running E clock (CLK/10):
+        // on a constant long PAL frame (313 lines x 454 SC = 142102 SC, 142102 mod 10 = 2) the
+        // phase moves by +2 SC per frame, a period-5 orbit, and the period-5 flicker of
+        // bbusy0 (synccpu entering at a different hpos every frame).
         if (cpuBusReq.iack) {
             cpuBusResp.iackAutovector = true;
             cpuBusResp.ack = true;
@@ -4140,25 +3686,17 @@ public abstract class AbstractAgnus {
             return;
         }
 
-        // ── FSM bus UNIFICATA (refactor allineamento CCK) ────────────────────
-        // Agnus NON mantiene più una seconda FSM (ex `cpuBusState` S0-S7) parallela
-        // a quella della CPU. Quella doppia FSM, con durata diversa da quella della
-        // CPU (2 vs 4 hpos dopo lo skip del lead-up di FIX 1), sfasava la fase ai
-        // confini di istruzione: gli accessi del loop "firework" di IK+ cadevano su
-        // hpos dispari e pagavano l'odd-wait di allineamento `(hpos&1)`, accumulando
-        // un over-charge (~+44 cyc/iter) che faceva sforare il gestore VERTB → reset.
-        //
-        // Ora Agnus è puramente COMBINATORIA rispetto al ciclo bus della CPU
-        // (`cpu.getBusCycleState()`, verificato cycle-exact dai vettori JSON):
-        //   • S2-S4 → calcola la route e decide DTACK (ack/vpa/berr), inclusa la
-        //             contention DMA e l'allineamento CCK. La CPU campiona DTACK al
-        //             proprio S4; ri-valutare durante gli wait-state in S4 è corretto
-        //             (ri-arbitraggio finché il bus non è libero/allineato).
-        //   • S5-S7 → esegue il trasferimento dati UNA volta (latch
-        //             `cpuAccessTransferred`), così la CPU ha il dato pronto quando
-        //             latcha al proprio S6.
-        // L'accesso dura quindi esattamente il ciclo bus naturale (pari) della CPU:
-        // nessun mismatch di durata → la fase non deriva più verso dispari.
+        // -- One bus FSM -------------------------------------------------------
+        // Agnus keeps no second bus FSM next to the CPU's: it is purely COMBINATIONAL on the
+        // CPU's bus cycle (`cpu.getBusCycleState()`, cycle-exact against the JSON vectors):
+        //   - S2-S4 -> compute the route and decide DTACK (ack/vpa/berr), DMA contention and
+        //             CCK alignment included. The CPU samples DTACK at its S4; re-evaluating
+        //             during the S4 wait states re-arbitrates until the bus is free/aligned.
+        //   - S5-S7 -> perform the data transfer ONCE (latch `cpuAccessTransferred`), so the
+        //             data is ready when the CPU latches it at its S6.
+        // The access lasts exactly the CPU's natural (even) bus cycle. A second FSM of a
+        // different length moved the phase at instruction boundaries: IK+'s firework loop
+        // paid the odd-cycle wait on every access and its VERTB handler overran.
         switch (cpu.getBusCycleState()) {
             case S2, S3, S4 -> decideCpuDtack();
             case S5, S6, S7 -> {
@@ -4167,75 +3705,55 @@ public abstract class AbstractAgnus {
                     cpuAccessTransferred = true;
                 }
             }
-            default -> { /* IDLE/S0/S_VMA: niente da decidere o trasferire qui */ }
+            default -> { /* IDLE/S0/S_VMA: nothing to decide or transfer here */ }
         }
     }
 
     /**
-     * {@code ce_banktype} di WinUAE: l'accesso è CHIP16 (contesa DMA + quantizzazione al
-     * CCK) o FAST16 (DTACK immediato). Vedi il commento esteso in {@link #decideCpuDtack()}.
+     * Whether the access is chip-bus timed (DMA contention + CCK quantisation) or fast (DTACK
+     * at once). See the comment in {@link #decideCpuDtack()}.
      */
     private static boolean isChipBusSyncAddress(int physAddr, Gary.Target target) {
-        // $D00000-$DFFFFF: CHIP16 incondizionato, chiunque risponda (fill_ce_banks).
+        // $D00000-$DFFFFF: chip-bus timed unconditionally, whoever answers.
         if (physAddr >= 0xD00000 && physAddr < 0xE00000) return true;
-        // $C00000-$CFFFFF: FAST16 di suo, ma la Slow RAM INSTALLATA se lo riprende
-        // (setmemorywidth + bogomem.chipramtiming). Il target lo dice già: Gary rende
-        // SLOW_RAM solo dove c'è RAM vera, e i mirror dei custom sopra di essa sono
-        // CUSTOM_REGS.
+        // $C00000-$CFFFFF: fast on its own, but the INSTALLED Slow RAM is chip-bus timed.
+        // The target says it: Gary returns SLOW_RAM only where there is real RAM, and the
+        // custom mirrors above it are CUSTOM_REGS.
         if (physAddr >= 0xC00000) return target == Gary.Target.SLOW_RAM;
         return physAddr < 0x200000
                 && (target == Gary.Target.CHIP_RAM || target == Gary.Target.OPEN_BUS);
     }
 
     /**
-     * Scrittura su un banco <b>FAST16</b>: il dato lo prende il destinatario all'INIZIO del
-     * ciclo bus, non a metà.
+     * Write to a <b>fast</b> bank: the target takes the data at the START of the bus cycle,
+     * not in the middle. A fast-bank write lasts as long as a chip-bus one (2 CCK), but its
+     * data lands <b>one CCK earlier</b>. On a bank without side effects it does not show; on
+     * the custom register mirrors at {@code $C00000-$CFFFFF} (fast) it does: vAmigaTS
+     * {@code Memory/Rom/mirror/custC}, where every COLOR00 of the bank fell at -3 CCK instead
+     * of -4, and back to -4 exactly at iteration 1024, where the address enters
+     * {@code $D00000} and is chip-bus timed again.
      *
-     * <p>Oracolo WinUAE, {@code mem_access_delay_word_write} (newcpu.cpp:8275): i due rami
-     * non differiscono solo per l'attesa, differiscono per l'ORDINE.
-     * <pre>
-     *   CHIP16: x_do_cycles_pre(CYCLE_UNIT); dma_cycle(); put_word(); x_do_cycles_post(CYCLE_UNIT);
-     *   FAST16: put_word();                                          x_do_cycles_post(4*cpucycleunit);
-     * </pre>
-     * Stessa durata (2 CCK), ma la {@code put_word} del ramo FAST16 cade <b>un CCK prima</b>.
-     * Su un banco senza effetti collaterali non si vede; sui mirror dei registri custom di
-     * {@code $C00000-$CFFFFF} (FAST16 per {@code fill_ce_banks}) si vede eccome, ed è il
-     * residuo che restava a vAmigaTS {@code Memory/Rom/mirror/custC}: misurato con la sonda
-     * gemella di {@code WINUAE_COLORLOG}, ogni COLOR00 del banco cadeva a −3 CCK dalla
-     * convenzione dell'oracolo invece che a −4, e tornava a −4 esattamente all'iterazione
-     * 1024, cioè dove l'indirizzo entra in {@code $D00000} ed è di nuovo CHIP16.
+     * <p>The point is <b>S2</b>, the first edge with /AS asserted: before it
+     * {@code handleCpuBusCycle} takes the bus-idle branch, which clears the route and
+     * {@code cpuAccessTransferred}. It is one {@code hpos} before the S4 of a chip-bus
+     * transfer, and {@code hpos} is what Denise quantises into CCKs: enough to bring the
+     * write back into the previous CCK.
      *
-     * <p>Il punto è <b>S2</b>, cioè il primo fronte in cui /AS è asserito: prima di lì
-     * {@code handleCpuBusCycle} esce sul ramo bus-idle, che azzera route e
-     * {@code cpuAccessTransferred}. È un {@code hpos} prima dell'S4 dove cade il
-     * trasferimento chip-bus, e l'{@code hpos} è ciò che Denise quantizza in CCK: basta a
-     * riportare la scrittura nel CCK precedente, che è dove l'oracolo la mette.
-     *
-     * <p>Solo le SCRITTURE: uds/lds a questo punto valgono per una scrittura
-     * ({@code applyBusSignalsS0} li ha copiati all'S0) e il dato letto lo latcha comunque
-     * la CPU al proprio S6 — anticipare una lettura non sposterebbe nulla di osservabile.
+     * <p>WRITES only: uds/lds here are valid for a write ({@code applyBusSignalsS0} copied
+     * them at S0), and the CPU latches read data at its own S6 anyway, so anticipating a read
+     * would change nothing observable.
      */
     private void maybeTransferFastBankWrite() {
         if (cpuAccessTransferred || cpuBusReq.read || cpuBusReq.iack) return;
         routeCpuCurrentBusRequest();
         if (cpuCurrentRoute == null || !cpuCurrentRoute.ok) return;
-        // ⛔ Una CIA NON è un banco FAST16: il suo è un ciclo SINCRONO (6800), e il dato
-        // lo latcha sul fronte dell'E-clock, in fondo al ciclo VMA — non all'inizio.
-        // Passando di qui la scrittura arrivava al chip a S2, cioè al primo fronte con
-        // /AS asserito e a una fase E QUALSIASI: misurato su vAmigaTS CIA/CIA, le quattro
-        // scritture di un handler cadevano a masterClock mod 10 = 2, 0, 4, 0, fino a 9
-        // master-cycle prima del punto in cui l'oracolo le consegna. Un timer armato lì
-        // parte fino a due E-clock in anticipo, e l'interrupt che ne segue arriva 5÷10 CCK
-        // prima: è tutta la «classe 1» del banco (21 rossi su 35).
-        //
-        // Oracolo, cia.cpp: `cia_bput` fa `cia_wait_pre()` — che con `get_cia_sync_cycles`
-        // porta il clock al punto di sync dell'E-clock e ci aggiunge `e_clock_start` —
-        // e SOLO DOPO chiama `WriteCIAA/WriteCIAB`; `cia_wait_post` paga il resto del
-        // ciclo. La scrittura cade quindi sempre alla stessa fase, ed è lì che
-        // `CIA_calctimers` ri-ancora la griglia del clock CIA.
-        //
-        // Le letture non passavano di qui (il ramo è per le sole scritture) ed erano già
-        // giuste: uscendo, le due direzioni tornano simmetriche.
+        // A CIA is NOT a fast bank: its cycle is SYNCHRONOUS (6800) and it latches the data
+        // on the E-clock edge, at the end of the VMA cycle, not at the start. Delivered here,
+        // at S2, the write reached the chip at ANY E phase: on vAmigaTS CIA/CIA the four
+        // writes of a handler fell at masterClock mod 10 = 2, 0, 4, 0, up to 9 master cycles
+        // early; a timer armed there started up to two E clocks early and its interrupt came
+        // 5-10 CCK early (the whole "class 1" of the bank, 21 reds out of 35). The write falls
+        // at the same E phase every time, and that is where the CIA clock grid re-anchors.
         if (cpuCurrentRoute.target == Gary.Target.CIA_A
                 || cpuCurrentRoute.target == Gary.Target.CIA_B
                 || cpuCurrentRoute.target == Gary.Target.CIA_BOTH) return;
@@ -4245,11 +3763,10 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Decide DTACK per l'accesso CPU corrente mentre la CPU presenta il ciclo
-     * (stati S2-S4 della sua FSM). Calcola la route e imposta ack/vpa/berr in base a
-     * target, contention DMA e allineamento CCK. Idempotente: ri-calcolata a ogni
-     * fronte finché la CPU resta in S4 (wait-state), così l'accesso è concesso non
-     * appena il chip-bus è libero e allineato.
+     * Decides DTACK for the current CPU access while the CPU presents the cycle (states
+     * S2-S4 of its FSM): computes the route and sets ack/vpa/berr from the target, DMA
+     * contention and CCK alignment. Idempotent: recomputed at every edge while the CPU waits
+     * in S4, so the access is granted as soon as the chip bus is free and aligned.
      */
     private void decideCpuDtack() {
         routeCpuCurrentBusRequest();
@@ -4258,16 +3775,16 @@ public abstract class AbstractAgnus {
             if (cpuCurrentRoute.busError) {
                 cpuBusResp.berr = true;
             } else {
-                // Open bus: DTACK immediato, dato = ultimo valore visto sul bus dati.
+                // Open bus: DTACK at once, data = last value seen on the data bus.
                 cpuBusResp.ack = true;
                 if (cpuBusReq.read) cpuBusResp.dataIn = lastBusData;
-                cpuAccessTransferred = true; // nessun trasferimento in memoria
+                cpuAccessTransferred = true; // no memory transfer
             }
             return;
         }
 
-        // Accesso CIA: ciclo sincrono. Agnus asserisce VPA; la sincronizzazione
-        // E-clock/VMA è gestita interamente dalla FSM della CPU (stato S_VMA).
+        // CIA access: synchronous cycle. Agnus asserts VPA; the E-clock/VMA synchronisation
+        // is handled entirely by the CPU's FSM (state S_VMA).
         if (cpuCurrentRoute.target == Gary.Target.CIA_A
                 || cpuCurrentRoute.target == Gary.Target.CIA_B
                 || cpuCurrentRoute.target == Gary.Target.CIA_BOTH) {
@@ -4276,62 +3793,47 @@ public abstract class AbstractAgnus {
             return;
         }
 
-        // Sincronizzazione al chip-bus (contesa DMA + quantizzazione al CCK).
+        // Chip-bus synchronisation (DMA contention + CCK quantisation).
         //
-        // ⛔ La decide il BANCO, cioè `ce_banktype` di WinUAE, e non basta leggerne
-        // l'inizializzazione. `fill_ce_banks` (memory.cpp:2746) parte da tutto
-        // CE_MEMBANK_FAST16 e mette CHIP16 su $000000-$1FFFFF (solo se a 0 c'è davvero la
-        // chip RAM, cioè a overlay spento) e su $D00000-$DFFFFF, questa incondizionata —
-        // ma poi, in CODA alla stessa funzione, `setmemorywidth(&currprefs.bogomem, ...)`
-        // (memory.cpp:2720) riporta a `ce_banktype[0]`, cioè a CHIP16, le pagine della
-        // Slow RAM effettivamente INSTALLATA, perché `bogomem.chipramtiming` è `true` nei
-        // default (cfgfile.cpp:8767; lo spengono solo A1000 e Velvet).
+        // The BANK decides it: $000000-$1FFFFF and $D00000-$DFFFFF (unconditionally) are
+        // chip-bus timed, the rest is fast, except the pages of the Slow RAM actually
+        // INSTALLED, which are chip-bus timed too. So $C00000-$CFFFFF has both natures: where
+        // the trapdoor RAM is it is chip-bus timed, and the custom register mirrors ABOVE it
+        // are fast: the CPU writes there paying neither contention nor alignment.
         //
-        // Quindi in $C00000-$CFFFFF convivono le due nature: dove c'è la trapdoor è
-        // CHIP16, e i mirror dei registri custom che stanno SOPRA di essa sono FAST16 —
-        // la CPU ci scrive senza pagare né contesa né allineamento. È il banco a
-        // decidere: `mem_access_delay_word_write` (newcpu.cpp:8275) chiama
-        // `wait_cpu_cycle_write` per CHIP16 e per FAST16 fa `put_word` + 4 cicli secchi.
+        // Tying the choice to the TARGET (SLOW_RAM/CUSTOM_REGS always synchronised) made the
+        // mirrors pay a contention they do not pay: in vAmigaTS Memory/Rom/mirror/custC the
+        // drift grew up to 3 CCK towards the bottom of the screen. Treating them ALL as fast
+        // instead removes contention from the real Slow RAM too and moves the boot chain:
+        // CpuTimingTestSuite goes red on almost every test (docs/vamigats-import-order.md,
+        // Memory/Rom outcomes).
         //
-        // Legare la scelta al TARGET (SLOW_RAM/CUSTOM_REGS sempre sincronizzati) faceva
-        // pagare ai mirror una contesa che l'oracolo non paga: in vAmigaTS
-        // Memory/Rom/mirror/custC la deriva cresceva fino a 3 CCK verso il fondo dello
-        // schermo. ⚠️ Trattarli invece TUTTI come FAST16 — la lettura della sola
-        // `fill_ce_banks` — toglie la contesa anche alla Slow RAM vera e sposta la catena
-        // di boot: CpuTimingTestSuite passa da 253/0 a rosso su quasi tutti i test.
-        // Vedi docs/vamigats-import-order.md §Esiti Memory/Rom.
+        // With OVL on, Chip RAM at 0 stays chip-bus timed here, where ROM answers there and
+        // would be fast: a known divergence, not measured by this bank.
         //
-        // ⚠️ L'overlay resta come prima: a OVL attivo WinUAE ha kickmem a 0 e quindi
-        // FAST16 anche lì, noi manteniamo CHIP16 sul target CHIP_RAM. È una
-        // divergenza nota, di un'altra materia (chi risponde a 0), non misurata da
-        // questo banco e non toccata qui.
-        //
-        // Root storica di G1/NEG2l: l'handler irq6 fa `neg.l $DDF180`, indirizzo
-        // open-bus ma dentro $D00000-$DFFFFF; saltando la contesa gli accessi
-        // comprimevano a passo 2 CCK invece di quantizzarsi sugli slot liberi
-        // (BPU=6) → marker bianco −8 CCK vs WinUAE.
+        // The irq6 handler of G1/NEG2l does `neg.l $DDF180`, an open-bus address inside
+        // $D00000-$DFFFFF: skipping the contention compressed the accesses to a 2-CCK step
+        // instead of quantising them on the free slots (BPU=6), moving the white marker by
+        // -8 CCK.
         int physAddr = cpuBusReq.address & 0xFFFFFF;
         boolean needsChipBusSync = isChipBusSyncAddress(physAddr, cpuCurrentRoute.target);
 
         if (needsChipBusSync) {
-            // Bloccato se: (a) il bus è preso da un DMA in questo CCK (incluso un fetch
-            // bitplane), oppure (b) l'accesso non è allineato al CCK (hpos dispari).
+            // Blocked if: (a) a DMA has the bus in this CCK (bitplane fetch included), or
+            // (b) the access is not aligned to the CCK (odd hpos).
             //
-            // NB: in lores con ≤4 piani (≤2 in hires) il bitplane occupa solo gli slot
-            // CCK dispari del fetch-unit; il 68000 prende NATURALMENTE quelli pari liberi
-            // (lì busTakenByCustom è false), ottenendo la giusta banda ~50%. NON va
-            // aggiunta un'eccezione "bitplane non-bloccante" sugli slot OCCUPATI: farlo
-            // raddoppia la banda CPU nell'area di display e fa correre il loop di blit
-            // dei giochi davanti al pennello → corruzione a bande dei piani (es. Altered
-            // Beast). Vedi memoria altered-beast-bitplane-contention.
+            // In lores with <= 4 planes (<= 2 in hires) the bitplanes take only the odd CCK
+            // slots of the fetch unit, and the 68000 NATURALLY gets the free even ones
+            // (busTakenByCustom false there): the right ~50% bandwidth. No "non-blocking
+            // bitplane" exception on TAKEN slots: it would double the CPU's bandwidth in the
+            // display area and let games' blit loops run ahead of the beam (banded plane
+            // corruption, e.g. Altered Beast).
             //
-            // odd-wait `(hpos&1)`: la CPU campiona DTACK solo al CCK boundary (hpos
-            // pari). È l'allineamento CCK-granulare del 68000 al chip-bus, equivalente
-            // al modello di vAmiga (`pos.h` in CCK) / WinUAE (`do_cck`): NON è un hack,
-            // fa parte del modello cycle-exact. Con la contention a CCK pieno (reset su
-            // hpos pari, vedi sopra) la fase del ciclo bus CPU si auto-mantiene allineata
-            // e l'odd-wait scatta raramente — misurato 0 blocchi odd-wait nel loop
-            // "firework" di IK+ (Fase F, vedi docs/cpu-chipbus-alignment-fix.md).
+            // Odd wait `(hpos&1)`: the CPU samples DTACK only at a CCK boundary (even hpos),
+            // the 68000's CCK-granular alignment to the chip bus. With contention reset per
+            // whole CCK the CPU's bus cycle phase stays aligned on its own and the odd wait
+            // rarely fires (0 odd-wait blocks measured in IK+'s firework loop,
+            // docs/cpu-chipbus-alignment-fix.md).
             boolean oddWait = (hpos & 1) != 0;
             boolean blocked = busTakenByCustom || oddWait;
             cpuBusResp.ack = !blocked;
@@ -4350,7 +3852,7 @@ public abstract class AbstractAgnus {
                 }
             }
         } else {
-            // ROM o altro target non contendibile: DTACK immediato.
+            // ROM or another target with no contention: DTACK at once.
             cpuBusResp.ack = true;
         }
     }
@@ -4380,9 +3882,9 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Esegue il trasferimento dati della CPU sullo slot appena concesso (fase di discesa,
-     * FSM bus in S5). Stessa condizione del ramo S5-S7 di {@link #handleCpuBusCycle()}, che
-     * resta come rete per i casi in cui la CPU arrivi in S5 senza passare di qui.
+     * Performs the CPU's data transfer on the slot just granted (falling edge, bus FSM in
+     * S5). Same condition as the S5-S7 branch of {@link #handleCpuBusCycle()}, which remains
+     * as a safety net for a CPU reaching S5 without passing here.
      */
     private void handleCpuDataTransferPhase() {
         if (!cpuBusReq.as || cpuBusReq.iack || cpuAccessTransferred) {
@@ -4413,9 +3915,9 @@ public abstract class AbstractAgnus {
             writeCiaData(cpuCurrentRoute.target, cpuBusReq.address, cpuBusReq.dataOut & 0xFFFF);
             ciaWriteDone = true;
         }
-        // Banco FAST16: la scrittura cade all'inizio del ciclo bus, un CCK prima dello slot
-        // chip-bus. Sta PRIMA del controllo sulla route perché a S2 la route non c'è ancora:
-        // la calcola maybeTransferFastBankWrite(). Vedi il suo javadoc.
+        // Fast bank: the write lands at the start of the bus cycle, one CCK before the chip
+        // bus slot. It comes BEFORE the route check because at S2 there is no route yet:
+        // maybeTransferFastBankWrite() computes it. See its javadoc.
         if (cpu.getBusCycleState() == Motorola68000.BusCycleState.S2) {
             maybeTransferFastBankWrite();
             return;
@@ -4424,10 +3926,9 @@ public abstract class AbstractAgnus {
             return;
         }
         switch (cpu.getBusCycleState()) {
-            // S4 con DTACK gia' concesso in questo stesso master-cycle: e' LO SLOT concesso.
-            // La CPU consuma l'ack solo al fronte di salita successivo (advanceBusCycleRising
-            // case S4 -> S5), quindi senza questo ramo il trasferimento scivolerebbe di un
-            // master-cycle, cioe' di mezzo CCK.
+            // S4 with DTACK already granted in this same master cycle: this IS the granted
+            // slot. The CPU consumes the ack only at the next rising edge (S4 -> S5), so
+            // without this branch the transfer would slip by one master cycle, half a CCK.
             case S4 -> {
                 if (cpuBusResp.ack) {
                     handleCpuDataTransfer();
@@ -4438,30 +3939,28 @@ public abstract class AbstractAgnus {
                 handleCpuDataTransfer();
                 cpuAccessTransferred = true;
             }
-            default -> { /* non ancora concesso */ }
+            default -> { /* not granted yet */ }
         }
     }
 
     private void handleCpuDataTransfer() {
-        // La CPU pre-splitta i long-word in due word distinte (Motorola68000
-        // .scheduleRead/scheduleWriteLong): Agnus vede sempre accessi byte/word,
-        // quindi l'indirizzo è quello richiesto e UDS/LDS sono i segnali reali.
+        // The CPU splits long words into two words beforehand
+        // (Motorola68000.scheduleRead/scheduleWriteLong): Agnus always sees byte/word
+        // accesses, so the address is the one requested and UDS/LDS are the real lines.
         int addr = cpuBusReq.address;
         boolean busUds = cpuBusReq.uds;
         boolean busLds = cpuBusReq.lds;
 
-        // Determina se il target corrente è una CIA (calcolato una sola volta).
+        // Whether the current target is a CIA (computed once).
         boolean isCia = (cpuCurrentRoute.target == Gary.Target.CIA_A
                 || cpuCurrentRoute.target == Gary.Target.CIA_B
                 || cpuCurrentRoute.target == Gary.Target.CIA_BOTH);
 
         if (cpuBusReq.read) {
-            // ── LETTURA ──────────────────────────────────────────────────────────
+            // -- READ -------------------------------------------------------------
             //
-            // readCiaData() legge internamente cpuBusReq.uds/lds; per un accesso
-            // long-word il 68000 asserisce entrambi, quindi il comportamento è
-            // identico a quello di un accesso word (entrambe le CIA vengono selezionate
-            // se il Gary ha riportato CIA_BOTH come target).
+            // readCiaData() reads cpuBusReq.uds/lds itself; with both asserted both CIAs
+            // are selected when Gary reported CIA_BOTH as the target.
             int word;
             if (isCia) {
                 word = ciaReadSampled ? ciaReadSample : readCiaData(cpuCurrentRoute.target, addr);
@@ -4475,15 +3974,15 @@ public abstract class AbstractAgnus {
             cpuBusResp.dataIn = word;
 
         } else {
-            // ── SCRITTURA ────────────────────────────────────────────────────────
+            // -- WRITE ------------------------------------------------------------
             //
-            // La CPU duplica un byte su entrambe le corsie del bus dati; UDS/LDS
-            // seleziona la lane. Per word/byte la parola pilotata è dataOut intero.
+            // The CPU duplicates a byte on both lanes of the data bus; UDS/LDS select the
+            // lane. The driven word is the whole dataOut.
             int word = cpuBusReq.dataOut & 0xFFFF;
 
             if (isCia) {
-                // writeCiaData() usa internamente cpuBusReq.uds/lds per selezionare
-                // CIA-A (LDS, lane bassa) o CIA-B (UDS, lane alta).
+                // writeCiaData() uses cpuBusReq.uds/lds to select CIA-A (LDS, low lane) or
+                // CIA-B (UDS, high lane).
                 if (!ciaWriteDone) writeCiaData(cpuCurrentRoute.target, addr, word);
                 ciaWriteDone = false;
             } else {
@@ -4500,45 +3999,37 @@ public abstract class AbstractAgnus {
                 if (rgaSlotTaken) denise.setRgaSlotTaken(false);
             }
 
-            // lastBusData riflette i 16 bit effettivamente pilotati sul bus dati
-            // in questo ciclo — mai il long-word a 32 bit nella sua interezza.
+            // lastBusData is the 16 bits actually driven on the data bus in this cycle.
             lastBusData = word;
         }
     }
 
     // =========================================================================
-    // Lettura/scrittura CIA
+    // CIA read/write
     // =========================================================================
 
     /**
-     * Legge un registro CIA.
+     * Reads a CIA register. The register is selected by address bits A11-A8:
+     * {@code reg = (address >> 8) & 0x0F}.
      *
-     * CIA-A risponde agli indirizzi dispari ($BFExxx), byte alto del bus (D15-D8).
-     * CIA-B risponde agli indirizzi pari ($BFDxxx), byte basso del bus (D7-D0).
+     * CIA-A answers at odd addresses ($BFExxx), on the low byte of the bus (D7-D0), LDS.
+     * CIA-B answers at even addresses ($BFDxxx), on the high byte of the bus (D15-D8), UDS.
      *
-     * Il registro interno CIA è selezionato dai bit A11-A8 dell'indirizzo:
-     *   reg = (address >> 8) & 0x0F
-     *
-     * CIA-A: i dati sono sul byte basso del bus (D7-D0) ma l'indirizzo è dispari.
-     *   Il 68000 usa LDS per CIA-A (indirizzi dispari).
-     * CIA-B: i dati sono sul byte alto del bus (D15-D8), indirizzo pari.
-     *   Il 68000 usa UDS per CIA-B.
-     *
-     * La parola a 16 bit restituita ha il byte non CIA = 0xFF (pull-up).
+     * The byte of the word no CIA drives keeps the last value on the bus.
      */
     private int readCiaData(Gary.Target target, int address) {
         int reg = (address >> 8) & 0x0F;
         int result = lastBusData; // Pull-up or last data on the bus
 
         if (target == Gary.Target.CIA_A || target == Gary.Target.CIA_BOTH) {
-            // CIA-A: Byte basso (D7-D0) su LDS (indirizzi dispari)
+            // CIA-A: low byte (D7-D0) on LDS (odd addresses)
             if (cpuBusReq.lds) {
                 int cv = ciaA.readRegister(reg) & 0xFF;
                 result = (result & 0xFF00) | cv;
             }
         }
         if (target == Gary.Target.CIA_B || target == Gary.Target.CIA_BOTH) {
-            // CIA-B: Byte alto (D15-D8) su UDS (indirizzi pari)
+            // CIA-B: high byte (D15-D8) on UDS (even addresses)
             if (cpuBusReq.uds) {
                 int cv = ciaB.readRegister(reg) & 0xFF;
                 result = (result & 0x00FF) | (cv << 8);
@@ -4551,13 +4042,13 @@ public abstract class AbstractAgnus {
         int reg = (address >> 8) & 0x0F;
 
         if (target == Gary.Target.CIA_A || target == Gary.Target.CIA_BOTH) {
-            // CIA-A: Byte basso (D7-D0) su LDS
+            // CIA-A: low byte (D7-D0) on LDS
             if (cpuBusReq.lds) {
                 ciaA.writeRegister(reg, (byte)(data & 0xFF));
             }
         }
         if (target == Gary.Target.CIA_B || target == Gary.Target.CIA_BOTH) {
-            // CIA-B: Byte alto (D15-D8) su UDS
+            // CIA-B: high byte (D15-D8) on UDS
             if (cpuBusReq.uds) {
                 ciaB.writeRegister(reg, (byte)((data >> 8) & 0xFF));
             }
@@ -4565,65 +4056,49 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Lettura/scrittura bus generale
+    // General bus read/write
     // =========================================================================
-    /**
-     * Legge una word a 16 bit dal bus.
-     *
-     * Sul bus Amiga, la memoria pilota sempre tutti i 16 bit del bus dati
-     * durante un ciclo di lettura: UDS/LDS non sono rilevanti per il target di
-     * memoria — è la CPU a selezionare internamente il byte corretto per
-     * accessi byte. Il parametro addr è mantenuto solo per accedere ai registri
-     * custom tramite route.effectiveAddress (che per CUSTOM_REGS è il registro
-     * canonico).
-     */
-    /** Ultimo valore (word) pilotato sul bus dati. Alimenta la riletura dei registri
-     *  custom write-only ({@link #faultyCustomRead}) e i fetch DMA. */
+
+    /** Last word driven on the data bus. Feeds the readback of write-only custom registers
+     *  ({@link #faultyCustomRead}) and the DMA fetches. */
     private int openBusLatch = 0xFFFF;
 
     /**
-     * Valore che la CPU legge da un indirizzo dove non risponde nessun dispositivo.
-     *
-     * <p>Oracolo WinUAE {@code dummy_get_safe} (memory.cpp): su 68000/68010 il valore
-     * <em>non</em> è l'ultimo dato transitato sul bus, ma
+     * The value the CPU reads from an address where no device answers. On the 68000 it is
+     * <em>not</em> the last data seen on the bus, but
      * <ul>
-     *   <li><b>0</b> se il codice che accede sta girando <b>da ROM</b>;</li>
-     *   <li>altrimenti {@code regs.irc}, cioè la word già nella coda di prefetch
-     *       (byte invertiti se l'indirizzo è dispari).</li>
+     *   <li><b>0</b> if the code making the access runs <b>from ROM</b>;</li>
+     *   <li>otherwise the word already in the prefetch queue (bytes swapped at an odd
+     *       address).</li>
      * </ul>
      *
-     * <p>La distinzione conta e non è un dettaglio: prima restituivamo
-     * {@link #openBusLatch}, che dopo una scrittura contiene <em>il dato appena
-     * scritto</em>. Un test di memoria "scrivi e rileggi" — esattamente quello con cui
-     * il Kickstart dimensiona la RAM — riusciva quindi su indirizzi dove non c'è
-     * nulla, e il Kickstart 1.2 concludeva che la Slow RAM arrivasse fino a $DBFFFF,
-     * ci piazzava lo stack supervisore ($DBFFF2) e moriva con lo schermo giallo appena
-     * lo usava. Con la regola di WinUAE il dimensionamento gira da ROM, legge 0, e la
-     * RAM fantasma sparisce.
+     * <p>Returning {@link #openBusLatch}, which after a write holds <em>the data just
+     * written</em>, made a "write and read back" memory test (exactly how the Kickstart sizes
+     * RAM) succeed where there is nothing: Kickstart 1.2 concluded the Slow RAM reached
+     * $DBFFFF, put the supervisor stack at $DBFFF2 and died with a yellow screen. The sizing
+     * runs from ROM, reads 0, and the phantom RAM disappears.
      *
-     * <p>Il ramo "da RAM" resta non-zero, che è ciò a cui si appoggiano i programmi che
-     * usano lo spazio non mappato come scratch (p.es. Hollywood Poker Pro scrive $FFFF
-     * a $219E5E e ne testa la riletura per decidere se caricare la directory).
+     * <p>The "from RAM" branch stays non-zero, which programs using unmapped space as scratch
+     * rely on (e.g. Hollywood Poker Pro writes $FFFF at $219E5E and tests the readback to
+     * decide whether to load its directory).
      */
     private int floatingBusRead(int addr) {
         if (isExecutingFromRom()) return 0;
-        // Il valore è l'ultima word PRELEVATA dalla prefetch (WinUAE dummy_get_safe:
-        // `v = regs.irc`). Quando `irc` è stato consumato e la prefetch che deve
-        // riempirlo è ancora in volo, `ircValid` è false e `irc` contiene un residuo
-        // di parecchie word prima: l'ultima word realmente prelevata è allora `ird`.
-        // Senza questa guardia una CMPI/CMP con più extension word verso un indirizzo
-        // non mappato leggeva il PROPRIO operando immediato invece della word
-        // successiva. È il caso della protezione di Pinball Dreams (IPF originale),
-        // `CMPI.W #$1111,$00F00000` a $7ABC8: leggendo $1111 il confronto riusciva e
-        // il gioco eseguiva la sua routine di autodistruzione (CLR.B (A0)+ a ciclo).
+        // The value is the last word FETCHED by the prefetch. When `irc` has been consumed
+        // and the prefetch refilling it is still in flight, `ircValid` is false and `irc`
+        // holds a leftover from several words back: the last word really fetched is then
+        // `ird`. Without this guard a CMPI/CMP with several extension words aimed at an
+        // unmapped address read its OWN immediate operand instead of the next word: Pinball
+        // Dreams' protection (original IPF), `CMPI.W #$1111,$00F00000` at $7ABC8, then
+        // matched and ran its self-destruct routine (CLR.B (A0)+ in a loop).
         int v = (cpu.isIRCValid() ? cpu.getIRC() : cpu.getIRD()) & 0xFFFF;
         return ((addr & 1) != 0) ? (((v << 8) | (v >>> 8)) & 0xFFFF) : v;
     }
 
     /**
-     * true se il PC corrente sta dentro una ROM: la finestra del socket Kickstart, il
-     * suo mirror a $E00000, oppure la Chip RAM mentre l'overlay è attivo (subito dopo
-     * il reset, prima che il Kickstart abbassi OVL).
+     * true if the current PC is inside a ROM: the Kickstart socket window, its mirror at
+     * $E00000, or Chip RAM while the overlay is on (right after reset, before the Kickstart
+     * clears OVL).
      */
     private boolean isExecutingFromRom() {
         int pc = cpu.getOpcodeAddress() & 0xFFFFFF;
@@ -4641,7 +4116,7 @@ public abstract class AbstractAgnus {
             case KICKSTART_ROM, OVERLAY_ROM ->
                 rom.readWord(alignedEff);
             case CUSTOM_REGS ->
-                readCustomRegister(eff);   // usa eff, non addr grezzo
+                readCustomRegister(eff);   // eff, not the raw addr
             case SLOW_RAM ->
                 (slowRAM != null && alignedEff < slowRAM.size())
                         ? slowRAM.readWord(alignedEff) : floatingBusRead(addr);
@@ -4649,47 +4124,43 @@ public abstract class AbstractAgnus {
                 (fastRam != null && alignedEff < fastRam.sizeBytes())
                         ? fastRam.ram().readWord(alignedEff) : floatingBusRead(addr);
             case AUTOCONFIG -> {
-                // Spazio AutoConfig: nibble di configurazione sui bit alti del bus
-                // (D15-D12). La CPU legge sempre su indirizzo pari (UDS): il dato va
-                // nel byte alto della word. $FF se nessuna scheda risponde. Risponde
-                // la prima scheda della catena ancora non configurata.
+                // AutoConfig space: configuration nibble on the high bits of the bus
+                // (D15-D12). The CPU always reads at an even address (UDS): the data goes
+                // in the high byte of the word. $FF if no board answers. The first board of
+                // the chain not yet configured answers.
                 AutoConfigDevice dev = currentAutoConfigDevice();
                 int acf = (dev != null) ? dev.peekConfigByte(addr) : 0xFF;
                 yield (acf << 8) | 0xFF;
             }
             case HD_CONTROLLER -> {
-                // Come la RAM, la memoria pilota sempre tutti i 16 bit: la word va
-                // letta all'offset di pagina ALLINEATO; è la CPU a selezionare il
-                // byte (UDS/LDS) per gli accessi byte. Senza l'allineamento le
-                // letture byte su indirizzo dispari restituirebbero il byte sbagliato.
+                // Like RAM, the memory drives all 16 bits: the word is read at the ALIGNED
+                // page offset and the CPU selects the byte (UDS/LDS) for byte accesses.
                 HdController hd = hdControllerAt(addr);
                 yield (hd != null) ? hd.peekWord((addr & 0xFFFF) & ~1) : floatingBusRead(addr);
             }
             case RTC ->
                 readRtcBusData(route, addr);
             default ->
-                // Open bus: nessun dispositivo pilota il bus dati. Vedi floatingBusRead().
+                // Open bus: no device drives the data bus. See floatingBusRead().
                 floatingBusRead(addr);
         };
 
-        // Latch del valore sul bus dati per la prossima lettura open-bus.
+        // Latch the value on the data bus for the next open-bus read.
         if (route.target != Gary.Target.OPEN_BUS) openBusLatch = busLatchValue(value, route.uds, route.lds);
         return value;
     }
 
     /**
-     * Valore da latchare in {@link #openBusLatch} per un accesso di bus.
+     * Value to latch in {@link #openBusLatch} for a bus access.
      *
-     * Un accesso BYTE lascia sul latch solo il byte trasferito, zero-esteso: vAmiga
-     * assegna {@code dataBus} dal valore a 8 bit ({@code peek8: dataBus = READ_CHIP_8(addr)},
-     * {@code peekCustom8: dataBus = HI_BYTE/LO_BYTE(peekCustom16(...))}, {@code poke8:
-     * dataBus = value}), non dalla word intera. La differenza è osservabile solo tramite
-     * un read faulty successivo (registro write-only → {@link #faultyCustomRead}), che
-     * ripropaga il latch nel registro: i test vAmigaTS ADDXb/CMPMb leggono il byte di
-     * COLOR00 e rendono visibile il byte alto azzerato.
+     * A BYTE access leaves only the transferred byte on the latch, zero-extended, not the
+     * whole word. The difference is observable only through a later faulty read (a
+     * write-only register, {@link #faultyCustomRead}), which feeds the latch back into the
+     * register: the vAmigaTS tests ADDXb/CMPMb read the byte of COLOR00 and show the cleared
+     * high byte.
      */
     private static int busLatchValue(int value, boolean uds, boolean lds) {
-        if (uds && lds) return value & 0xFFFF;   // accesso word: l'intera word pilota il bus
+        if (uds && lds) return value & 0xFFFF;   // word access: the whole word drives the bus
         if (uds)        return (value >> 8) & 0xFF;
         if (lds)        return value & 0xFF;
         return value & 0xFFFF;
@@ -4708,17 +4179,16 @@ public abstract class AbstractAgnus {
 
     private void writeBusData(Gary.Route route, int addr, int data, boolean uds, boolean lds) {
         int eff = route.effectiveAddress;
-        // Il dato scritto pilota il bus → prossimo open-bus. Una scrittura BYTE lascia sul
-        // latch il solo byte (vAmiga poke8: dataBus = value), TRANNE verso i registri custom:
-        // lì poke8 delega a pokeCustom16(addr, HI_LO(v,v)), che ri-pilota il bus con il byte
-        // duplicato su entrambe le lane → il latch resta la word.
+        // The written data drives the bus for the next open-bus read. A BYTE write leaves
+        // only the byte on the latch, EXCEPT towards the custom registers, which are written
+        // with the byte duplicated on both lanes: there the latch keeps the word.
         openBusLatch = (route.target == Gary.Target.CUSTOM_REGS)
                 ? (data & 0xFFFF)
                 : busLatchValue(data, uds, lds);
 
         switch (route.target) {
             case CHIP_RAM:
-            case OVERLAY_ROM:  // Scritture durante overlay vanno alla Chip RAM
+            case OVERLAY_ROM:  // writes during overlay go to Chip RAM
                 if (uds && lds) {
                     chipRAM.writeWord(eff & ~1, data);
                 } else if (uds) {
@@ -4729,15 +4199,11 @@ public abstract class AbstractAgnus {
                 break;
 
             case CUSTOM_REGS:
-                // I registri custom sono a 16 bit. Per le scritture BYTE il 68000
-                // duplica il byte su ENTRAMBE le metà del bus dati, e il chip custom
-                // (word-only) latcha l'intera word: il byte finisce quindi replicato
-                // su upper E lower. Vale per indirizzo pari (UDS) e dispari (LDS).
-                // Cfr. vAmiga Memory::pokeCustom8 → pokeCustom16(addr&0x1FE, HI_LO(v,v)).
-                // Bug precedente: la lane UDS scriveva solo (data & 0xFF00) azzerando il
-                // lower byte → una "MOVE.B #$40,AUD0VOL" (indirizzo pari $DFF0A8) dava
-                // $4000 → volume (bit 0-6) = 0 → effetto sonoro muto (es. lo sparo di
-                // Persian Gulf Inferno). Replicando il byte si ottiene $4040 → vol 64.
+                // Custom registers are 16-bit. For BYTE writes the 68000 duplicates the byte
+                // on BOTH halves of the data bus, and the (word-only) custom chip latches the
+                // whole word: the byte ends up replicated in upper AND lower, at even (UDS)
+                // and odd (LDS) addresses alike. "MOVE.B #$40,AUD0VOL" (even address
+                // $DFF0A8) gives $4040, volume 64 (Persian Gulf Inferno's gunshot).
                 if (uds && lds) {
                     writeCustomRegister(eff, data);
                 } else if (uds) {
@@ -4775,17 +4241,17 @@ public abstract class AbstractAgnus {
                 break;
 
             case AUTOCONFIG:
-                // Il Kickstart assegna l'indirizzo base scrivendo i registri $48/$4A.
-                // La CPU scrive byte su indirizzo pari (UDS) → byte alto del bus.
-                // Scrive la prima scheda della catena ancora non configurata.
+                // The Kickstart assigns the base address by writing registers $48/$4A. The
+                // CPU writes bytes at even addresses (UDS), the high byte of the bus. The
+                // first board of the chain not yet configured takes the write.
                 AutoConfigDevice dev = currentAutoConfigDevice();
                 if (dev != null && gary != null) {
                     boolean configured = false;
                     if (uds) configured |= dev.pokeConfigByte(addr & ~1, (data >> 8) & 0xFF);
                     if (lds) configured |= dev.pokeConfigByte(addr | 1, data & 0xFF);
                     if (configured) {
-                        // Mappa la scheda all'indirizzo appena assegnato; la scheda
-                        // successiva (se presente) comincia ora a rispondere su $E8xxxx.
+                        // Map the board at the address just assigned; the next board (if
+                        // any) now starts answering at $E8xxxx.
                         mapConfiguredDevice(dev);
                     }
                 }
@@ -4806,102 +4272,64 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Copper write (accesso con restrizioni di sicurezza)
+    // Copper write (access with safety restrictions)
     // =========================================================================
 
     /**
-     * Scrittura da parte del Copper su un registro custom.
+     * A Copper write to a custom register.
      *
-     * Restrizioni hardware:
-     *   $000–$03E: VIETATI (mai accessibili al Copper)
-     *   $040–$07E: accessibili solo se CDANG=1 in COPCON
-     *   $080–$1FE: sempre accessibili
+     * Hardware restrictions:
+     *   $000-$03E: FORBIDDEN (never reachable by the Copper)
+     *   $040-$07E: reachable only with CDANG=1 in COPCON
+     *   $080-$1FE: always reachable
      */
     private boolean __inCopperWrite = false; // DEBUG TEMP
     public boolean isInCopperWrite() { return __inCopperWrite; }
-    // VPOSR/VHPOSR restituiscono la posizione del pennello qualche CCK IN ANTICIPO rispetto
-    // alla posizione corrente del DMA engine (proprietà dell'Agnus reale: i comparatori di
-    // posizione sono pipeline-ati). vAmiga Agnus::peekVHPOSR/peekVPOSR restituisce
-    // `auto pos = agnus.pos + 5` campionato al ciclo di lettura S4 della CPU.
-    //   if (cck >= lineCck) wrap a riga successiva (v++);  if (cck <= 1) usa il vpos VECCHIO.
-    // Senza questo anticipo i loop di sincronizzazione CPU↔pennello che attendono HP==0
-    // (es. bbusy0 .synccpu3: `andi.w #$FF,VHPOSR; bne`) non escono mai.
+    // VPOSR/VHPOSR return the beam position a few CCKs AHEAD of the DMA engine's current
+    // position, wrapping to the next line at the end of the line; in cycles 0 and 1 of the
+    // line the vertical field still reads the OLD vpos. Without this lead the CPU/beam sync
+    // loops that wait for HP==0 (e.g. bbusy0 .synccpu3: `andi.w #$FF,VHPOSR; bne`) never
+    // exit.
     //
-    // [Phase B11] Offset = 4 (non 5). La nostra FSM bus trasferisce il dato della
-    // lettura custom in S5-S7 (`cpuAccessTransferred`), cioè ~1 CCK DOPO il punto S4 in
-    // cui vAmiga campiona la posizione. Per riprodurre il VALORE `pos+5` di vAmiga al
-    // nostro punto di campionamento (1 CCK più avanti) l'offset memorizzato dev'essere 4.
-    // Misurato sul test bbusy0: +5→6.58%, +4→5.92% (synccpu1 converge: il write 606
-    // passa da cck105 a cck170). +3/+6 rompono synccpu3 (buco CCK).
-    // CRC golden invariato (832316F5), NorthSouth/IkPlus/LastBattle PASS, frame period-1.
-    // NB: a B7 (pre-B9/B10) +5 batteva +4; l'IACK fisso (B9) e l'interrupt-entry a 44 mc
-    // (B10) hanno spostato la fase e +4 era corretto a fine speed-work.
-    // FASE 4 (2026-07-04, refactoring timing): ri-sweep con il Copper FSM (Fase 2) +
-    // Blitter micro-programmi (Fase 3) attivi → l'ottimo si è RISPOSTATO a +5 (bbusy0
-    // {+3:3.40%, +4:2.61%, +5:1.45%, +6:75% rompe synccpu3, +7:2.85%}). Il nuovo timing
-    // Copper/Blitter ha spostato di nuovo la fase: +5 vince ora. Configurabile via
-    // -Damiga.beamahead per future ri-valutazioni (default 5, CRC golden invariato).
-    //
-    // ⛔ 2026-08-31 — QUESTO E' UNA TARATURA, NON UN MODELLO, ed e' dichiarato.
-    // La provenienza e' vAmiga, che non e' un oracolo, e il metodo era uno sweep sul
-    // CONTEGGIO DI PIXEL di bbusy0 — una metrica che questo progetto ha imparato a non
-    // trattare come una distanza. L'oracolo dice un'altra cosa: `VHPOSR()` (custom.cpp)
-    // prende `GETHPOS()` — in cycle-exact e' `agnus_hpos` — e gli applica `incpos()`, che
-    // fa `hp++`. Restituisce quindi `agnus_hpos + 1`; poiche' il nostro hpos va un CCK
-    // indietro rispetto ad agnus_hpos (vedi INITIAL_HPOS), l'equivalente sarebbe 2.
-    // ⛔ PROVATO E REVOCATO: a 2, 3 e 4 `BbusyTest` crolla da 17/0 a 0/17, e a 2
-    // `TodTestSuite` da 14/19 a 8/25. bbusy0 e' generato da WinUAE: e' un veto, non un
-    // rosso da negoziare.
-    // ✅ 2026-09-02 — L'ANELLO E' CHIUSO, E IL 5 HA UNA DECOMPOSIZIONE.
-    // La sonda che mancava esiste (`tools/vamiga-oracle/winuae-vhposlog-patch.py`,
-    // `WINUAE_VHPOSLOG`, neutra verificata) e la corsa legge i due rami condizionali
-    // invece di dedurli: su 146 letture di `bplmod5` e' sempre `cpu_memory_cycle_exact=1`,
-    // `eventtab[ev_sync].active=0` e `syncs_stopped=0`, quindi `GETHPOS() == agnus_hpos`
-    // e il ritorno e' `agnus_hpos + 1`. Regola confermata.
-    // ⛔ Ma il valore che ne segue -- 3, con l'ancora `agnus_hpos = nostro_cck + 2`
-    // misurata dal sequencer -- resta REVOCATO: a 3 `BbusyTest` va 17/0 -> 0/17 e
-    // `BplModTest` 4/2 -> 0/6. Il 5 non e' pero' piu' un numero da sweep:
-    //     5 = 3 (la regola dell'oracolo al SUO istante di lettura)
-    //       + 2 (il nostro: la FSM di bus consegna il dato della lettura custom in
-    //            S5-S7, l'oracolo campiona a S4 -- due CCK prima).
-    // Il residuo ha quindi un nome, ed e' il PUNTO DI CONSEGNA di una lettura custom,
-    // non VHPOSR. Toccarlo sposta la fase di ogni test che legge VHPOSR.
-    // ✅ Controprova: i marcatori di `synccpu` (COLOR00 $F0F/$606/$A0A/$404) misurati
-    // sui due lati con `WINUAE_COLORLOG` e `SynccpuProbe` danno uno scarto COSTANTE di
-    // +4 su tutti gli stadi, sia su `bplmod5` sia su `sprdiscpu1`: al valore corrente la
-    // nostra `synccpu` riproduce l'oracolo ciclo per ciclo.
-    // Vedi docs/vamigats-import-order.md §synccpu.
+    // The 5 decomposes as
+    //     5 = 3 (position + 1 at the instant a custom read is sampled, i.e. our CCK + 2 + 1)
+    //       + 2 (the bus FSM delivers a custom read's data in S5-S7, two CCKs after the S4
+    //            where the position is sampled).
+    // The residue is therefore the DELIVERY POINT of a custom read, not VHPOSR: touching it
+    // moves the phase of every test that reads VHPOSR. At 2, 3 or 4 `BbusyTest`
+    // collapses from 17/0 to 0/17, and at 3 `BplModTest` goes 4/2 -> 0/6. The
+    // `synccpu` markers (COLOR00 $F0F/$606/$A0A/$404) measured with `SynccpuProbe` match
+    // the reference cycle by cycle on `bplmod5` and `sprdiscpu1` at this value
+    // (docs/vamigats-import-order.md, synccpu).
     private static final int BEAM_AHEAD_CCK =
             Integer.getInteger("amiga.beamahead", 5);
 
     /**
-     * Imposta LOL e con esso la lunghezza della riga corrente (WinUAE
-     * {@code setmaxhpos}: {@code maxhpos = maxhpos_short + lol}).
+     * Sets LOL and with it the length of the current line.
      */
     private void updateLineLength(boolean longLine) {
         lol = longLine;
         maxHpos = longLine ? MAXHPOS_SHORT + 2 : MAXHPOS_SHORT;   // +1 CCK = +2 SC
     }
 
-    /** Posizione H (in CCK) restituita da VHPOSR: hpos corrente + BEAM_AHEAD_CCK, con wrap di riga. */
+    /** H position (in CCK) returned by VHPOSR: current hpos + BEAM_AHEAD_CCK, wrapped at the line end. */
     private int beamPosHAhead(int hLores) {
-        int lineCck = maxHpos >> 1;                 // 227, o 228 sulla riga lunga NTSC
+        int lineCck = maxHpos >> 1;                 // 227, or 228 on an NTSC long line
         int cck = (hLores >> 1) + BEAM_AHEAD_CCK;
         if (cck >= lineCck) cck -= lineCck;
         return cck;
     }
 
-    // ── ERSY / syncs_stopped ────────────────────────────────────────────────────
-    // Vero se BPLCON0 ha ERSY (bit 1) attivo. Non emuliamo genlock, quindi ERSY
-    // implica sempre "sync fermo" (WinUAE issyncstopped: (con0&2) && !genlock).
+    // -- ERSY / sync stopped -----------------------------------------------------
+    // True if BPLCON0 has ERSY (bit 1) on. No genlock is emulated, so ERSY always means
+    // "sync stopped".
     private boolean ersyActive() {
         return denise != null && (denise.getBplcon0() & 0x0002) != 0;
     }
 
     /**
-     * Vpos che VPOSR/VHPOSR riportano <b>mentre il freeze è in corso</b>: quello vero, che
-     * non avanza più perché {@code updateBeam} non lo incrementa. Oracolo: {@code GETVPOS()}
-     * restituisce {@code vpos} e {@code incpos()} esce subito con {@code syncs_stopped}.
+     * Vpos that VPOSR/VHPOSR report <b>while the freeze is in progress</b>: the real one,
+     * which no longer advances because {@code updateBeam} does not increment it.
      */
     private int frozenReadVpos() {
         return vposFrozen ? frozenVpos : vpos;
@@ -4921,7 +4349,7 @@ public abstract class AbstractAgnus {
         return vposFrozen ? frozenHpos : hpos;
     }
 
-    /** Vpos restituito da VPOSR/VHPOSR per la posizione 5 CCK in anticipo. */
+    /** Vpos returned by VPOSR/VHPOSR for the position BEAM_AHEAD_CCK ahead. */
     private int beamPosVAhead(int vLines, int hLores) {
         int lineCck = maxHpos >> 1;
         int cck = (hLores >> 1) + BEAM_AHEAD_CCK;
@@ -4930,31 +4358,23 @@ public abstract class AbstractAgnus {
             cck -= lineCck;
             v = vLines + 1;
             int frameMaxV = (field == 0) ? maxVpos : (maxVpos - 1);
-            if (v > frameMaxV) v = 0;               // wrap di frame (vAmiga: v > vMax → 0)
+            if (v > frameMaxV) v = 0;               // frame wrap
         }
-        // "In cycle 0 and 1, return old posv": all'inizio riga il vpos sul chip non è
-        // ancora incrementato, quindi si usa il vpos vecchio per il campo verticale.
+        // In cycles 0 and 1 the chip's vpos has not been incremented yet, so the vertical
+        // field uses the old vpos.
         return (cck <= 1) ? vLines : v;
     }
     /**
-     * Scrittura di un registro custom fatta dal <b>Copper</b>.
+     * A custom register write made by the <b>Copper</b>.
      *
-     * <p>⛔ <b>Qui non c'è nessun filtro sull'indirizzo, e non deve tornarci.</b> Quale
-     * registro il Copper possa toccare lo decide {@code Copper.isIllegalAddress()}, che è
-     * l'unico sito della regola — come nell'oracolo, dove è la sola
-     * {@code test_copper_dangerous()}:
-     * <pre>
-     * addr &lt; ((copcon &amp; 2) ? (ecs_agnus ? 0 : 0x40) : 0x80)
-     * </pre>
-     * cioè con CDANG=1 su <b>ECS non è vietato niente</b>, su OCS solo {@code < $40}; con
-     * CDANG=0 tutto {@code < $80}. Ed è una regola con un effetto: l'indirizzo vietato
-     * <b>ferma il Copper</b>, non gli fa saltare una scrittura.
-     *
-     * <p>⚠️ Qui stava un <b>doppione</b> della regola, nella forma sbagliata: un
-     * {@code if (regAddr < 0x040) return;} incondizionato, che su ECS con CDANG buttava via
-     * scritture del tutto lecite. Lo smaschera {@code Agnus/Registers/VPOS/probe11÷13}, dove
-     * il Copper scrive VPOSW ($02A) per accorciare il fotogramma: la scrittura spariva, i
-     * nostri fotogrammi restavano lunghi e a fine corsa il pennello era 129 righe fuori.
+     * <p><b>There is no address filter here, and there must not be one.</b> Which registers
+     * the Copper may touch is decided by {@code Copper.isIllegalAddress()}, the one place of
+     * the rule: with CDANG=1 <b>nothing is forbidden on ECS</b>, only {@code < $40} on OCS;
+     * with CDANG=0 everything {@code < $80}. And the rule has an effect: a forbidden address
+     * <b>stops the Copper</b>, it does not just skip a write. An unconditional
+     * {@code < $40} filter here threw away legal writes on ECS with CDANG:
+     * {@code Agnus/Registers/VPOS/probe11-13}, where the Copper writes VPOSW ($02A) to
+     * shorten the frame.
      */
     public void copperWrite(int regAddr, int value) {
         regAddr &= 0x1FE;
@@ -4963,7 +4383,7 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Lettura registri custom
+    // Custom register reads
     // =========================================================================
 
     /** package-private for testing */
@@ -4974,24 +4394,20 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Vero mentre è in corso una {@link #peekCustomRegister(int)}: sopprime gli effetti
-     * collaterali che una lettura di registro custom ha sull'hardware vero.
-     *
-     * <p>⛔ Non è un dettaglio cosmetico. {@link #faultyCustomRead} — la lettura di un
-     * write-only OCS — <b>riscrive il registro</b> col valore del bus flottante, ed è
-     * comportamento voluto (vAmiga {@code peekCustomFaulty16}). Ma {@link #peekByte} e
-     * {@link #peekWord} sono gli accessori del disassemblatore e del debugger: un dump di
-     * memoria che attraversasse {@code $DFFxxx} riscriveva registri sprite e palette
-     * dell'immagine che stava osservando. Le CIA la promessa la mantenevano già
-     * ({@code peekCiaData}); i custom no.
+     * True during a {@link #peekCustomRegister(int)}: suppresses the side effects a custom
+     * register read has on the hardware. {@link #faultyCustomRead}, the read of an OCS
+     * write-only register, <b>rewrites the register</b> with the floating bus value, as the
+     * hardware does; but {@link #peekByte} and {@link #peekWord} serve the disassembler and
+     * debugger, and a memory dump crossing {@code $DFFxxx} would rewrite the sprite and
+     * palette registers of the picture being inspected.
      */
     private boolean peeking = false;
 
     /**
-     * Lettura di un registro custom <b>priva di effetti collaterali</b>, per
-     * disassemblatore, debugger e harness d'indagine. Copre i tre siti che mutano:
-     * la lettura "faulty" dei write-only, i registri strobe e i tre registri di Paula
-     * che consumano stato ({@code Paula.peekRegister}).
+     * Custom register read <b>without side effects</b>, for the disassembler, the debugger and
+     * investigation harnesses. Covers the three places that change state: the "faulty" read
+     * of write-only registers, the strobe registers, and the three Paula registers that
+     * consume state ({@code Paula.peekRegister}).
      */
     public int peekCustomRegister(int regAddr) {
         boolean saved = peeking;
@@ -5004,24 +4420,20 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Lettura di un registro custom write-only OCS ("faulty"): riproduce
-     * {@code Memory::peekCustomFaulty16} di vAmiga — la lettura restituisce
-     * l'ultimo valore sul bus dati (floating) e, come effetto collaterale,
-     * riscrive quel valore NEL registro ({@code pokeCustom16(addr, dataBus)}).
-     */
-    /**
-     * Se true, le letture "faulty" restituiscono (e ri-scrivono) 0 invece del valore
-     * flottante del bus dati. Serve SOLO ai test di regressione vAmigaTS: i riferimenti
-     * {@code .raw} sono rigenerati con WinUAE configurato con la stessa neutralizzazione
-     * ({@code custom_wget_1}: {@code v = 0} invece di {@code regs.chipset_latch_rw}),
-     * così il confronto isola il TIMING e non i valori del floating bus, che sono
-     * comportamento analogico indefinito e differiscono fra emulatori.
+     * If true, "faulty" reads return (and rewrite) 0 instead of the floating data bus value.
+     * For the vAmigaTS regression tests ONLY: their references are generated with the same
+     * neutralisation, so the comparison isolates TIMING and not the floating bus values,
+     * which are undefined analog behaviour.
      *
-     * <p>Default false: i giochi mantengono il floating bus reale (necessario, vedi
-     * i fix storici su COPJMP1 / NBCD / ADDXb).
+     * <p>Default false: games keep the real floating bus (needed by COPJMP1 / NBCD / ADDXb
+     * cases).
      */
     public static volatile boolean neutralFloatingBus = false;
 
+    /**
+     * Read of an OCS write-only custom register ("faulty"): it returns the last value on the
+     * (floating) data bus and, as a side effect, rewrites that value INTO the register.
+     */
     private int faultyCustomRead(int regAddr) {
         int busVal = neutralFloatingBus ? 0 : (openBusLatch & 0xFFFF);
         if (!peeking) writeCustomRegister(regAddr, busVal);
@@ -5031,31 +4443,27 @@ public abstract class AbstractAgnus {
     private int readCustomRegisterImpl(int regAddr) {
         regAddr &= 0x1FE;
 
-        // DENISEID ($07C) su OCS: il registro NON ESISTE, e la lettura non vale 0xFFFF — e'
-        // una lettura write-only "faulty" come per ogni altro registro assente. Lo dice
-        // WinUAE (custom.cpp, DENISEID()): su OCS Denise con un 68000 compatible o
-        // cycle-exact la funzione alza *missing e il chiamante fa `goto writeonly`, cioe'
-        // prende la stessa strada di un registro solo-scrittura. Restituire 0xFFFF accendeva
-        // tutte e 16 le barre di vAmigaTS Denise/Misc/Id/deniseid.
-        // ⚠️ Il README di vAmigaTS avverte che sull'A500 vero il valore NON e' deterministico
-        // ("in most cases 0xFFFF, but not always"): e' proprio la firma di un bus flottante.
+        // DENISEID ($07C) on OCS: the register does NOT EXIST, and the read is not 0xFFFF but
+        // a "faulty" write-only read like any other missing register. Returning 0xFFFF lit
+        // all 16 bars of vAmigaTS Denise/Misc/Id/deniseid. The vAmigaTS README warns that on
+        // a real A500 the value is NOT deterministic ("in most cases 0xFFFF, but not
+        // always"): the signature of a floating bus.
         if (regAddr == 0x07C && denise != null && !denise.isECS()) {
             return faultyCustomRead(regAddr);
         }
 
-        // Denise (registri leggibili: JOY0/1DAT, CLXDAT, DENISEID, BPLCONx su ECS)
+        // Denise (readable registers: JOY0/1DAT, CLXDAT, DENISEID, BPLCONx on ECS)
         if (regAddr == 0x00A || regAddr == 0x00C || regAddr == 0x00E || regAddr == 0x07C
                 || (regAddr >= 0x100 && regAddr <= 0x106) || regAddr == 0x10C
                 || (regAddr >= 0x110 && regAddr <= 0x11A)) {
             return denise != null ? denise.readRegister(regAddr) : 0xFFFF;
         }
 
-        // Sprite pos/ctl/data + registri colore ($140-$1BE). Su ECS Denise i colori
-        // sono rileggibili (comportamento diagnostico attuale); su OCS sono write-only
-        // → vAmiga peekCustomFaulty16 (Memory.cpp): la lettura restituisce il dato sul
-        // bus (floating) E riscrive quel valore NEL registro. È ciò che rende visibili
-        // i colori "spazzatura" quando un handler fa una RMW su un custom write-only
-        // (es. nbcd (a4) con a4=$DFF181 nei test vAmigaTS CPU/Timing).
+        // Sprite pos/ctl/data + colour registers ($140-$1BE). On an ECS Denise the colours
+        // read back (diagnostic behaviour); on OCS they are write-only: the read returns the
+        // (floating) bus value AND rewrites it INTO the register. That is what makes
+        // "garbage" colours visible when a handler does an RMW on a write-only custom
+        // register (e.g. nbcd (a4) with a4=$DFF181 in the vAmigaTS CPU/Timing tests).
         if (regAddr >= 0x140 && regAddr <= 0x1BE) {
             if (denise != null && denise.isECS()) {
                 return denise.readRegister(regAddr);
@@ -5081,14 +4489,14 @@ public abstract class AbstractAgnus {
                 return lastBusData;
             case 0x002: // DMACONR
             case 0x096: {
-                int res = dmacon & 0x07FF; // Bit 10-0 leggibili
+                int res = dmacon & 0x07FF; // bits 10-0 readable
                 if (blitter.isBusy()) res |= 0x4000; // BBUSY
                 if (blitter.isZero()) res |= 0x2000; // BZERO
                 return res;
             }
             case 0x004: { // VPOSR
                 if (syncsStopped) {
-                    // Freeze ERSY: nessun anticipo, nessun avanzamento. Vedi VHPOSR sotto.
+                    // ERSY freeze: no lead, no advance. See VHPOSR below.
                     int result = agnusIdBits() << 8;
                     if ((frozenReadVpos() & 0x100) != 0) result |= 0x0001;
                     if (field == 0) result |= 0x8000;
@@ -5100,32 +4508,27 @@ public abstract class AbstractAgnus {
                 // Bit 15: LOF (Long Frame)
                 // Bit 14-8: Chip ID
                 // Bit 0: V8 (Vertical position bit 8)
-                // La posizione restituita è 5 CCK in anticipo (come Agnus reale,
-                // cfr. vAmiga peekVPOSR/peekVHPOSR: `pos = agnus.pos + 5`).
+                // The position returned is BEAM_AHEAD_CCK ahead (see BEAM_AHEAD_CCK).
                 int vAhead = beamPosVAhead(v, h);
                 int result = agnusIdBits() << 8;
                 if ((vAhead & 0x100) != 0) result |= 0x0001; // V8
-                // LOF=1 sui frame lunghi. Il bit alterna anche in non-interlace,
-                // pur senza spostare verticalmente il display.
+                // LOF=1 on long frames.
                 if (field == 0) result |= 0x8000;
                 return result;
             }
             case 0x006: { // VHPOSR
                 if (syncsStopped) {
-                    // ⛔ Sotto freeze HP vale **0**, non la posizione latchata al primo
-                    // accesso, e non c'è l'anticipo di 5 CCK. Oracolo: `setsyncstoppos()`
-                    // azzera `agnus_hpos` a ogni cck, `GETHPOS()` lo restituisce così com'è
-                    // quando `syncs_stopped`, e `incpos()` esce senza toccare niente.
-                    // Lo misura `ersy2`: i suoi `expected` passano da $40BF,$40C9,$40D3,$40DD
-                    // — la posizione che corre — a **$4000** ripetuto, appena il confine di
-                    // riga fa scattare il freeze.
+                    // Under the freeze HP is **0** (the horizontal counter is held at the
+                    // start of the line), with no lead. `ersy2` measures it: its expected
+                    // values go from $40BF,$40C9,$40D3,$40DD (the running position) to
+                    // **$4000** repeated as soon as the line boundary starts the freeze.
                     return (frozenReadVpos() & 0xFF) << 8;
                 }
                 int v = beamReadVpos();
                 int h = beamReadHpos();
-                // VHPOSR: bit 15-8 = VP7-VP0, bit 7-0 = HP8-HP1 (hpos in CCK).
-                // Posizione 5 CCK in anticipo (vedi VPOSR sopra). Il valore H avanzato
-                // determina sia il campo HP sia (con wrap a fine riga) il vpos restituito.
+                // VHPOSR: bits 15-8 = VP7-VP0, bits 7-0 = HP8-HP1 (hpos in CCK).
+                // Position BEAM_AHEAD_CCK ahead (see VPOSR above). The advanced H value
+                // decides both the HP field and (with the wrap at the line end) the vpos.
                 return ((beamPosVAhead(v, h) & 0xFF) << 8) | (beamPosHAhead(h) & 0xFF);
             }
             case 0x108: return bpl1mod & 0xFFFF;
@@ -5146,33 +4549,30 @@ public abstract class AbstractAgnus {
                 int sidx = (regAddr - 0x122) / 4;
                 return sprPt[sidx] & 0xFFFF;
             }
-            // INTENAR / INTREQR letti tramite Paula
+            // INTENAR / INTREQR read through Paula
             case 0x09A:
                 return paula != null ? paula.readRegister(0x01C) : 0xFFFF;
             case 0x09C:
                 return paula != null ? paula.readRegister(0x01E) : 0xFFFF;
-            case 0x02E: // COPCON (write-only su OCS, ma restituisce lo stato corrente per compatibilità test)
-                // Su hardware OCS COPCON è write-only e la lettura restituisce bus noise.
-                // Restituiamo il valore corrente del registro per supportare test di diagnostica
-                // che verificano lo stato del CDANG bit dopo il reset.
+            case 0x02E: // COPCON
+                // Write-only on the hardware, where a read returns bus noise. The current
+                // CDANG state is returned for diagnostic tests that check it after reset.
                 return copper.isDanger() ? 0x0002 : 0x0000;
             case 0x1DC: // BEAMCON0 (ECS)
                 return beamcon0;
             default:
-                // Registri custom write-only / non mappati: la lettura restituisce il
-                // valore floating del bus dati (e lo riscrive nel registro), come vAmiga
-                // peekCustom16 → peekCustomFaulty16 (default). Prima ritornavamo un $FFFF
-                // fisso: sbagliato per i test che leggono uno strobe write-only e ne usano
-                // il valore (es. vAmigaTS BCHG `move.w COPJMP1(a1),d0` → d0 = floating bus
-                // → il numero di bit toggolato dalla bchg successiva dipende da d0). Anche
-                // l'effetto strobe della poke-back è corretto: accedere a COPJMP1 (read o
-                // write) fa saltare il Copper sull'hardware reale.
+                // Write-only / unmapped custom registers: the read returns the floating
+                // data bus value (and rewrites it into the register). Tests read a
+                // write-only strobe and use the value (e.g. vAmigaTS BCHG
+                // `move.w COPJMP1(a1),d0`: the bit the next bchg toggles depends on d0). The
+                // strobe effect of the write-back is right too: accessing COPJMP1 (read or
+                // write) makes the Copper jump.
                 return faultyCustomRead(regAddr);
         }
     }
 
     // =========================================================================
-    // Scrittura registri custom
+    // Custom register writes
     // =========================================================================
 
     public void writeCustomRegister(int regAddr, int value) {
@@ -5214,14 +4614,11 @@ public abstract class AbstractAgnus {
                 || regAddr == 0x104 || regAddr == 0x106 || regAddr == 0x10C
                 || (regAddr >= 0x110 && regAddr <= 0x11A)
                 || (regAddr >= 0x140 && regAddr <= 0x1BE)) {
-            // SPRxPOS/SPRxCTL ($140-$17E) non riguardano solo Denise: VSTART/VSTOP
-            // vivono in AGNUS e pilotano la macchina a stati del DMA sprite. Una
-            // scrittura da Copper/CPU deve quindi aggiornare anche sprVStart/sprVStop
-            // (WinUAE SPRxPOS()/SPRxCTL() → sprstartstop + SPRxCTLPOS). Senza questo
-            // i giochi che (ri)posizionano gli sprite scrivendo POS/CTL dalla Copper
-            // list — invece che nel descrittore in Chip RAM — non li vedono mai
-            // partire: il solo fetch POS/CTL alla riga 25 legge un descrittore nullo
-            // e lo sprite resta spento per tutto il frame (es. Superfrog).
+            // SPRxPOS/SPRxCTL ($140-$17E) are not Denise's alone: VSTART/VSTOP live in
+            // AGNUS and drive the sprite DMA state machine, so a Copper/CPU write updates
+            // sprVStart/sprVStop too. Games that (re)position sprites by writing POS/CTL
+            // from the Copper list rather than in the descriptor in Chip RAM rely on it
+            // (e.g. Superfrog).
             if (regAddr >= 0x140 && regAddr <= 0x17E) {
                 int sidx = (regAddr - 0x140) >> 3;
                 int sub  = (regAddr - 0x140) & 7;
@@ -5232,26 +4629,26 @@ public abstract class AbstractAgnus {
             return;
         }
 
-        // Paula (include POTGO $034)
+        // Paula (POTGO $034 included)
         if (regAddr == 0x024 || regAddr == 0x026
                 || regAddr == 0x030 || regAddr == 0x032 || regAddr == 0x034
                 || regAddr == 0x07E
                 || regAddr == 0x09A || regAddr == 0x09C || regAddr == 0x09E
                 || (regAddr >= 0x0A0 && regAddr <= 0x0DF)) {
-            // INTENA ($09A) / INTREQ ($09C) arrivano a Paula SUBITO: il mezzo CCK di
-            // ritardo non è della scrittura, è della sola copia da cui si calcola l'IPL,
-            // e vive in Paula (INTREQ_SHADOW_DELAY_MC). Vedi Paula.intreq2.
+            // INTENA ($09A) / INTREQ ($09C) reach Paula AT ONCE: the delay belongs only to
+            // the copy the IPL is computed from, and lives in Paula
+            // (INTREQ_SHADOW_DELAY_MC). See Paula.intreq2.
             if (paula != null) paula.writeRegister(regAddr, value);
             return;
         }
 
-        // Strobe Denise
+        // Denise strobes
         if (regAddr == 0x038 || regAddr == 0x03A || regAddr == 0x03C || regAddr == 0x03E) {
             if (denise != null) denise.writeRegister(regAddr, value);
             return;
         }
 
-        // Registri Agnus
+        // Agnus registers
         switch (regAddr) {
             case 0x020: // DSKPTH
                 dskpt = (dskpt & 0x0000FFFF) | ((value << 16) & dmaPtrHiMask);
@@ -5266,9 +4663,8 @@ public abstract class AbstractAgnus {
                 if ((value & 0x8000) != 0) field = 0; else field = 1;
                 vpos = (vpos & 0xFF) | ((value & 1) << 8);
                 triggerVpos = vpos;
-                // "LOL is always reset when VPOSW is written to. Implemented in all
-                // NTSC Agnus versions and ECS/AGA Agnus in NTSC mode" (WinUAE
-                // custom.cpp, VPOSW): la riga corrente torna corta.
+                // LOL is always reset when VPOSW is written to (all NTSC Agnus versions
+                // and ECS Agnus in NTSC mode): the current line goes back to short.
                 if (lol) updateLineLength(false);
                 break;
             case 0x02C: // VHPOSW
@@ -5294,8 +4690,8 @@ public abstract class AbstractAgnus {
             case 0x08E: // DIWSTRT
                 diwStrt = value;
                 diwVStart = (diwStrt >> 8) & 0xFF;
-                // `calcvdiw()` → need_vdiw_check: il confronto verticale rigira SUBITO,
-                // a riga in corso. Vedi recheckBitplaneVerticalWindow().
+                // The vertical comparison runs again AT ONCE, within the current line. See
+                // recheckBitplaneVerticalWindow().
                 recheckBitplaneVerticalWindow();
                 if (denise != null) denise.writeRegister(0x08E, value);
                 break;
@@ -5326,7 +4722,7 @@ public abstract class AbstractAgnus {
                 if (!refreshSlotAllocatedAt(hpos >> 1)) refptr = refptrFromRegister(value);
                 break;
 
-            // Puntatori bitplane (BPLxPTH/BPLxPTL)
+            // Bitplane pointers (BPLxPTH/BPLxPTL)
             case 0x0E0: case 0x0E4: case 0x0E8: case 0x0EC: case 0x0F0: case 0x0F4: {
                 int bidx = (regAddr - 0x0E0) / 4;
                 if (bplPointerWriteIsLost(bidx)) break;
@@ -5342,9 +4738,9 @@ public abstract class AbstractAgnus {
                 break;
             }
 
-            // BPL1MOD/BPL2MOD: il registro vivo si aggiorna sempre; lo stadio d'ingresso
-            // della pipe SOLO se a scrivere è la CPU, perché nell'oracolo è la sola delle
-            // due a girare PRIMA del campionamento dello stesso CCK. Vedi bpl1modFetch.
+            // BPL1MOD/BPL2MOD: the live register is always updated; the pipe's input stage
+            // ONLY when the CPU writes, since it is the only one of the two that acts BEFORE
+            // the same CCK's sampling. See bpl1modFetch.
             case 0x108: // BPL1MOD
                 bpl1mod = (short) (value & 0xFFFE);
                 if (!__inCopperWrite) bpl1modStage = bpl1mod;
@@ -5354,12 +4750,10 @@ public abstract class AbstractAgnus {
                 if (!__inCopperWrite) bpl2modStage = bpl2mod;
                 break;
 
-            // Puntatori sprite (SPRxPTH/SPRxPTL). SPRxPT è il puntatore DMA LIVE:
-            // una scrittura (CPU o Copper) cambia da dove il prossimo accesso DMA
-            // sprite preleva, esattamente come i bitplane qui sopra (HW Agnus non ha
-            // spr[num].pt = ...). Senza l'aggiornamento di sprPtrInternal i giochi
-            // che riposizionano gli sprite via Copper a inizio frame (es. Silkworm)
-            // prelevano dati stantii e gli sprite non compaiono.
+            // Sprite pointers (SPRxPTH/SPRxPTL). SPRxPT is the LIVE DMA pointer: a write
+            // (CPU or Copper) changes where the next sprite DMA access fetches from, like
+            // the bitplanes above. Games repositioning sprites through the Copper at the
+            // start of the frame (e.g. Silkworm) rely on it.
             case 0x120: case 0x124: case 0x128: case 0x12C:
             case 0x130: case 0x134: case 0x138: case 0x13C: {
                 int sidx = (regAddr - 0x120) / 4;
@@ -5377,31 +4771,30 @@ public abstract class AbstractAgnus {
                 break;
             }
 
-            case 0x1DC: // BEAMCON0 (ECS-only): su OCS la scrittura è ignorata.
+            case 0x1DC: // BEAMCON0 (ECS only): ignored on OCS.
                 if (beamcon0Writable()) {
                     final int prev = beamcon0;
                     beamcon0 = value;
-                    // `BEAMCON0()` dell'oracolo chiama `init_beamcon0()` SUBITO quando il
-                    // valore cambia, e li' `maxvpos` e' riassegnato nel CCK stesso della
-                    // scrittura. Il resto del modo (lol, fase del vsync) segue da se',
-                    // perche' e' letto da beamNtsc a ogni riga.
+                    // A changed value applies AT ONCE: maxVpos is reassigned in the CCK of
+                    // the write. The rest of the mode (lol, vsync phase) follows, since it
+                    // reads beamNtsc at every line.
                     if (value != prev) applyBeamcon0();
                 }
                 break;
 
-            case 0x1E4: // DIWHIGH (ECS-only): estende DIWSTRT/STOP. No-op su OCS.
+            case 0x1E4: // DIWHIGH (ECS only): extends DIWSTRT/STOP. No-op on OCS.
                 writeDIWHIGH(value);
                 break;
         }
     }
 
     // =========================================================================
-    // Notifiche da chip interni
+    // Notifications from internal chips
     // =========================================================================
 
     /**
-     * Chiamato dal Blitter quando ha completato l'operazione.
-     * Genera l'interrupt BLIT (bit 6 di INTREQ, IPL 3).
+     * Called by the Blitter when it has completed: raises the BLIT interrupt (INTREQ bit 6,
+     * IPL 3).
      */
     public void blitterFinished() {
         if (paula != null) paula.assertBlitInterrupt();
@@ -5420,24 +4813,23 @@ public abstract class AbstractAgnus {
             masterClock = 0;
             vpos = 0;
             triggerVpos = 0;
-            hpos = INITIAL_HPOS;         // la prima riga dura 1 CCK: vedi INITIAL_HPOS
+            hpos = INITIAL_HPOS;         // the first line is short: see INITIAL_HPOS
             frameCount = 1;
-            // Gli impulsi TOD sono calcolati per la riga in corso: quella riga non c'è più.
+            // The TOD pulses were computed for the current line, which no longer exists.
             todRiseHposA = todFallHposA = todRiseHposB = todFallHposB = -1;
         }
         Arrays.fill(trigger, NEVER);
         Arrays.fill(eventIds, EventID.EVENT_NONE);
         activeSlotMask = 0L;
         nextTrigger = NEVER;
-        cpuBusIdle = false; // forza un azzeramento handshake al primo ciclo idle post-reset
-        // Ri-arma il tick E-clock CIA: lo scheduler è appena stato azzerato e l'evento
-        // SLOT_CIAA non si auto-rischedula più (lo faceva il polling). Senza questo le
-        // CIA si fermerebbero dopo un'istruzione CPU RESET (softReset).
-        // ⛔ +8 e non +10: è la stessa fase dell'arm in costruzione, e va cambiata
-        // insieme a quella. Vedi la nota estesa lì e CiaEClockPhaseTest.
+        cpuBusIdle = false; // forces a handshake clear at the first idle cycle after reset
+        // Rearm the CIA E-clock tick: the scheduler has just been cleared. Without it the
+        // CIAs would stop after a CPU RESET instruction (softReset). The anchor is the same
+        // phase as the arm at construction and must change with it: see the note there and
+        // CiaEClockPhaseTest.
         scheduleAbs(EventSlot.SLOT_CIAA, masterClock + CIA_ANCHOR, EventID.CIA_EXECUTE);
-        // Ri-arma la produzione dei sample audio (SLOT_CH0): come SLOT_CIAA, l'evento
-        // si auto-rischedula ma lo scheduler è appena stato azzerato.
+        // Rearm audio sample production (SLOT_CH0): like SLOT_CIAA, the event reschedules
+        // itself but the scheduler has just been cleared.
         if (paula != null) {
             scheduleAbs(EventSlot.SLOT_CH0, masterClock + audioSampleInterval(), EventID.AUDIO_MIX);
         }
@@ -5449,23 +4841,22 @@ public abstract class AbstractAgnus {
         updateDmaFlags();
         bitplaneDmaEnabledLateThisFrame = false;
         lastCompletedFrameHadLateBitplaneDma = false;
-        // LOF=0 SOLO all'accensione, cioè frame CORTO (312 righe PAL, 262 NTSC). Il frame
-        // diventa lungo quando il software scrive VPOSW con il bit 15, ed è così che il
-        // bootblock del Kickstart ci passa; l'intera fase CPU↔pennello del boot dipende
-        // da qui (docs/vamigats-paula-audio-plan.md §13.3).
-        // ⛔ Il bit NON appartiene al reset dei chip custom: la linea /RES che l'istruzione
-        // CPU RESET porta ai peripheral non lo tocca. Azzerarlo anche sul soft reset dava
-        // 312 righe per fotogramma finché il Kickstart non riscriveva VPOSW — un centinaio
-        // di fotogrammi dopo ogni ColdReboot, con lo sfasamento in tempo assoluto che ne
-        // segue (docs/vamigats-import-order.md §26). Il valore d'accensione sta nella
-        // dichiarazione di `field`, perché la costruzione non passa da qui.
+        // LOF=0 ONLY at power-on, i.e. a SHORT frame (312 lines PAL, 262 NTSC). The frame
+        // becomes long when software writes VPOSW with bit 15, which is how the Kickstart's
+        // bootblock runs; the whole CPU/beam phase of the boot depends on it
+        // (docs/vamigats-paula-audio-plan.md section 13.3).
+        // The bit is NOT part of the custom-chip reset: the /RES line the CPU's RESET
+        // instruction brings to the peripherals does not touch it. Clearing it on a soft reset
+        // too gave short frames until the Kickstart rewrote VPOSW, about a hundred frames
+        // after every ColdReboot (docs/vamigats-import-order.md section 26). The power-on
+        // value is in the declaration of `field`, since construction does not pass here.
         if (hardware) {
             field = 1;
         }
         vsyncActive = false;
         displayRowShift = 0;
         syncsStopped = false;
-        updateLineLength(false);             // LOL: si riparte sempre da riga corta
+        updateLineLength(false);             // LOL: always restart from a short line
         vposFrozen = false; frozenVpos = 0; frozenHpos = 0;
         cpuAccessTransferred = false; copperBusProcessed = false; ciaReadSampled = false; ciaWriteDone = false;
         cpuRouteCacheValid = false;
@@ -5486,7 +4877,7 @@ public abstract class AbstractAgnus {
         bitplaneVerticalActive = false;
         Arrays.fill(bplPt, 0); Arrays.fill(sprPt, 0);
         Arrays.fill(bplPtrInternal, 0); Arrays.fill(sprPtrInternal, 0);
-        Arrays.fill(sprDmaEnabled, false);   // tutti gli sprite in fase POS/CTL
+        Arrays.fill(sprDmaEnabled, false);   // every sprite in the POS/CTL phase
         Arrays.fill(sprVStart, 0);
         Arrays.fill(sprVStop, 0);
         bpl1mod = 0; bpl2mod = 0;
@@ -5499,16 +4890,15 @@ public abstract class AbstractAgnus {
         if (denise  != null) denise.reset(hardware);
         if (paula   != null) paula.reset(hardware);
 
-        // Le CIA vengono resettate sia all'hard reset che via istruzione CPU RESET.
+        // The CIAs are reset both at a hard reset and by the CPU RESET instruction.
         if (ciaA != null) ciaA.reset();
         if (ciaB != null) ciaB.reset();
 
         if (hardware) {
-            // Gary reset solo su hard reset (power-on).
-            // L'istruzione RESET della CPU non deve resettare Gary né il flip-flop OVL:
-            // su hardware reale la CPU RESET resetta solo i chip periferici sul bus,
-            // non il gate array Gary. Il flip-flop OVL si azzera solo alla prima scrittura
-            // sul bus dopo il power-on, oppure viene controllato dal CIA-A PA0.
+            // Gary is reset only at a hard reset (power-on). The CPU RESET instruction
+            // resets only the peripheral chips on the bus, not the Gary gate array nor the
+            // OVL flip-flop, which is cleared only by the first bus write after power-on or
+            // driven by CIA-A PA0.
             if (gary != null) gary.reset();
         }
         if (df0  != null) df0.reset();
@@ -5518,10 +4908,10 @@ public abstract class AbstractAgnus {
         // The CIA-B reset leaves PRB = 0: the drives take it without acting on its edges.
         floppySelectSet();
 
-        // Fast RAM: l'istruzione RESET della CPU resetta anche il bus Zorro, quindi
-        // la scheda torna in attesa di AutoConfig (sia su hard che su soft reset) e
-        // il Kickstart la riconfigura. Smappiamo la regione Fast RAM finché non
-        // verrà riassegnato un indirizzo base; lo spazio di AutoConfig resta attivo.
+        // Fast RAM: the CPU RESET instruction resets the Zorro bus too, so the board waits
+        // for AutoConfig again (hard and soft reset alike) and the Kickstart reconfigures
+        // it. The Fast RAM region is unmapped until a base address is assigned again; the
+        // AutoConfig space stays active.
         if (fastRam != null) {
             fastRam.reset();
             if (gary != null) {
@@ -5529,17 +4919,17 @@ public abstract class AbstractAgnus {
             }
         }
 
-        // Controller hard disk: come la Fast RAM, l'istruzione RESET resetta il bus
-        // Zorro e le schede tornano in attesa di AutoConfig. Smappiamo le pagine
-        // finché non verranno riassegnati gli indirizzi base.
+        // Hard disk controllers: like the Fast RAM, RESET resets the Zorro bus and the boards
+        // wait for AutoConfig again. Their pages are unmapped until base addresses are
+        // assigned again.
         if (!hdControllers.isEmpty()) {
             for (HdController c : hdControllers) c.reset();
             if (gary != null) gary.unmapHdControllers();
         }
 
-        // ⛔ Il /RES che l'istruzione CPU RESET porta ai chip custom ri-ancora il contatore
-        // orizzontale: la riga in corso finisce qui. Non all'accensione, dove l'origine del
-        // pennello è INITIAL_HPOS per costruzione. Vedi updateBeam() e §26 del piano.
+        // The /RES the CPU RESET instruction brings to the custom chips re-anchors the
+        // horizontal counter: the current line ends here. Not at power-on, where the beam's
+        // origin is INITIAL_HPOS by construction. See updateBeam().
         if (!hardware && poweredOn) {
             hpos = 0;
             resetRowPending = true;
@@ -5554,15 +4944,15 @@ public abstract class AbstractAgnus {
     // =========================================================================
 
     /**
-     * Verifica se la posizione (hpos, vpos) è all'interno della Display Window.
+     * Whether the position (hpos, vpos) is inside the display window.
      *
-     * @param hpos Posizione orizzontale in system clock (SC)
-     * @param vpos Posizione verticale in righe
+     * @param hpos horizontal position in system clocks (SC)
+     * @param vpos vertical position in lines
      */
     public boolean isInsideDIW(int hpos, int vpos) {
         // Horizontal: H[7:0] from the register is directly in SC (system clock) units.
-        // hstart = {0, H[7:0]} → plain 8-bit value (bit8=0, range 0..255)
-        // hstop  = {1, H[7:0]} → +256 (bit8=1, range 256..511)
+        // hstart = {0, H[7:0]} -> plain 8-bit value (bit8=0, range 0..255)
+        // hstop  = {1, H[7:0]} -> +256 (bit8=1, range 256..511)
         int hstart = diwStrt & 0xFF;
         int hstop  = (diwStop & 0xFF) + 256;
         // Vertical: vstop bit8 = NOT bit15 of DIWSTOP register
@@ -5578,9 +4968,9 @@ public abstract class AbstractAgnus {
     // =========================================================================
 
     /**
-     * Ricalcola i flag DMA cache da dmacon. Va chiamato ad ogni modifica di
-     * dmacon. bitplaneDmaActive dipende anche da bitplaneVerticalActive, quindi
-     * viene riaggiornato sia qui sia in updateBitplaneVerticalWindow().
+     * Recomputes the cached DMA flags from dmacon, at every dmacon change.
+     * bitplaneDmaActive also depends on bitplaneVerticalActive, so it is updated both here
+     * and in updateBitplaneVerticalWindow().
      */
     private void updateDmaFlags() {
         final boolean sprWas = spriteDmaEnabled;
@@ -5588,9 +4978,8 @@ public abstract class AbstractAgnus {
         bitplaneDmaEnabled = dmaMasterEnabled && (dmacon & 0x0100) != 0; // BPLEN
         spriteDmaEnabled   = dmaMasterEnabled && (dmacon & 0x0020) != 0; // SPREN
         if (!sprWas && spriteDmaEnabled) {
-            // Vedi spriteDmaOnDecisionCck: il CCK di DECISIONE che questa accensione
-            // rende "deciso ma non allocato". L'oracolo lo scrive come
-            // `sprite_dma_change_cycle_on = get_cycles() + CYCLE_UNIT`.
+            // See spriteDmaOnDecisionCck: the DECISION CCK this switch-on leaves "decided but
+            // not allocated", one CCK after the write.
             spriteDmaOnDecisionCck = (masterClock >> 1) + 1;
         }
         diskDmaEnabled     = dmaMasterEnabled && (dmacon & 0x0010) != 0; // DSKEN
@@ -5605,28 +4994,22 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Quanto {@link #triggerVpos} — la riga dell'oracolo — precede il wrap di
-     * {@code hpos}, in unità di mezzo-CCK: <b>3 CCK</b>.
+     * How far {@link #triggerVpos}, the line the hardware's line trigger uses, precedes the
+     * wrap of {@code hpos}, in half-CCK units: <b>3 CCK</b>.
      *
-     * <p>⛔ <b>Misurato sui due lati il 2026-09-06</b> (sonde {@code WINUAE_COPLOG} e
-     * {@code WINUAE_SPRLOG} contro le stesse da noi). La griglia fra le due macchine è
-     * {@code agnus_hpos = nostro_cck + 4}: lo dicono gli slot sprite (i nostri a cck 21/23,
-     * quelli dell'oracolo a hpos 25/27) e lo confermano, uno per uno, i sei MOVE del Copper
-     * di {@code Agnus/DIW/OLDDIW/diw4}, che cadono all'ISTANTE IDENTICO. Ma l'oracolo
-     * valuta la finestra verticale in {@code custom_trigger_start()}, chiamata ad
-     * {@code agnus_hpos == 1} ({@code HARDWIRED_DMA_TRIGGER_HPOS}) — cioè al nostro cck
-     * <b>224</b>, tre CCK prima del nostro confine di riga, e col vpos GIÀ incrementato.
+     * <p>Measured on 2026-09-06 (Copper and sprite logs on both sides): the sprite slots and
+     * the six Copper MOVEs of {@code Agnus/DIW/OLDDIW/diw4} fall at the IDENTICAL instant,
+     * but the vertical window is evaluated at the line trigger, at our CCK <b>224</b>, three
+     * CCKs before our line boundary and with vpos ALREADY incremented. That is what
+     * {@code diw4}/{@code diw5} measure: a Copper MOVE to DIWSTOP in those three CCKs is on
+     * the NEW line (after the comparison, which already closed the window with the old
+     * value).
      *
-     * <p>È esattamente ciò che {@code diw4}/{@code diw5} misurano: una MOVE del Copper a
-     * DIWSTOP che cade in quei tre CCK: l'oracolo la vede sulla riga NUOVA (dopo il
-     * confronto, che quindi ha già chiuso la finestra col valore vecchio) e noi sulla
-     * VECCHIA (prima del confronto, che quindi usa il valore nuovo).
-     *
-     * <p>⛔ <b>Perché si spostano solo i CONSUMATORI e non {@code vpos} stesso.</b>
-     * Spostare il contatore intero è stato provato ed è un <b>veto della rete</b>:
-     * {@code Agnus/Copper} 94/20 → 87/27 ({@code cross2}, {@code steal7}, {@code coptim4/5},
-     * {@code oldcoptim3/5}), {@code Paula/Interrupts} 82/0 → 77/5 (i cinque
-     * {@code intreqcia}), {@code Agnus/Registers} 123/3 → 122/4.
+     * <p><b>Only the CONSUMERS move, not {@code vpos} itself.</b> Moving the whole counter was
+     * tried and is a <b>veto of the net</b>: {@code Agnus/Copper} 94/20 -> 87/27
+     * ({@code cross2}, {@code steal7}, {@code coptim4/5}, {@code oldcoptim3/5}),
+     * {@code Paula/Interrupts} 82/0 -> 77/5 (the five {@code intreqcia}),
+     * {@code Agnus/Registers} 123/3 -> 122/4.
      *
      * <p>The Copper is one of the consumers that must stay on {@code vpos}: its vertical
      * comparator has to see the old line at the Copper slot of CCK 225 and the new one at
@@ -5638,17 +5021,14 @@ public abstract class AbstractAgnus {
     private static final int TRIGGER_VPOS_LEAD_HPOS = 6;
 
     /**
-     * Il {@code vpos} dell'ORACOLO nella nostra griglia: {@code vpos} portato avanti di
-     * {@link #TRIGGER_VPOS_LEAD_HPOS}. Coincide con {@code vpos} per tutta la riga tranne
-     * i tre CCK finali, dove vale già quello della riga che sta per iniziare.
+     * The line trigger's {@code vpos}: {@code vpos} brought forward by
+     * {@link #TRIGGER_VPOS_LEAD_HPOS}. It equals {@code vpos} for the whole line except the
+     * last three CCKs, where it already holds the line about to start.
      *
-     * <p>Lo leggono i consumatori per cui la misura esiste, uno alla volta: la FINESTRA
-     * VERTICALE di display ({@link #updateBitplaneVerticalWindow()} /
-     * {@link #compareBitplaneVerticalWindow()}) e {@link #sprStartStop(int)}, che
-     * nell'oracolo è {@code sprstartstop()} e legge lo stesso {@code vpos} già
-     * incrementato da {@code custom_trigger_start()}. <b>Non</b> lo leggono i consumatori
-     * interni alla riga (la macchina a stati del DMA sprite allo slot 0, p.es.), dove
-     * {@code triggerVpos == vpos} e la distinzione non si osserva.
+     * <p>Read by the consumers the measurement exists for: the VERTICAL display window
+     * ({@link #updateBitplaneVerticalWindow()} / {@link #compareBitplaneVerticalWindow()})
+     * and {@link #sprStartStop(int)}. Consumers inside the line (the sprite DMA state machine
+     * at slot 0, e.g.) do <b>not</b> read it: there {@code triggerVpos == vpos}.
      */
     private int triggerVpos = 0;
 
@@ -5672,9 +5052,8 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Il {@code custom_trigger_start()} dell'oracolo: porta {@link #triggerVpos} alla riga
-     * che sta per iniziare, tre CCK prima del nostro confine di riga, e rivaluta lì la
-     * finestra verticale ({@code check_bpl_vdiw()}).
+     * The line trigger: brings {@link #triggerVpos} to the line about to start, three CCKs
+     * before our line boundary, and re-evaluates the vertical window there.
      */
     private void advanceTriggerVpos() {
         if (syncsStopped) {
@@ -5731,10 +5110,10 @@ public abstract class AbstractAgnus {
         final boolean end = triggerVpos == diwVStop || forceOff;
         if (start && !end) {
             bitplaneVerticalActive = true;
-            // Stato del DMA bitplane all'APERTURA della finestra di display: serve a
-            // distinguere un frame parziale (bitplane spenti in cima, accesi più giù →
-            // mano insert-disk del KS) da uno split-screen legittimo (bitplane accesi
-            // in cima, commutati a metà → pannello verbi/inventario di Monkey Island 2).
+            // Bitplane DMA state when the display window OPENS: it tells a partial frame
+            // (bitplanes off at the top, on further down: the Kickstart's insert-disk hand)
+            // from a legitimate split screen (bitplanes on at the top, toggled midway: Monkey
+            // Island 2's verb/inventory panel).
             bitplaneDmaOnAtWindowStart = bitplaneDmaEnabled;
         } else if (end) {
             bitplaneVerticalActive = false;
@@ -5742,26 +5121,20 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * ⛔ <b>La finestra verticale si rivaluta ALLA SCRITTURA, non solo a inizio riga.</b>
-     * Nell'oracolo una scrittura a DIWSTRT/DIWSTOP/DIWHIGH chiama {@code calcvdiw()}, che
-     * aggiorna {@code plffirstline}/{@code plflastline} e alza <b>{@code need_vdiw_check}</b>;
-     * il flag è consumato dentro {@code do_cck()}, <b>dopo</b> {@code decide_bpl()}, quindi il
-     * confronto rigira <b>a riga in corso</b> e il nuovo stato vale dal CCK successivo.
+     * <b>The vertical window is re-evaluated AT THE WRITE, not only at the start of the
+     * line.</b> A write to DIWSTRT/DIWSTOP/DIWHIGH reruns the comparison <b>within the current
+     * line</b>, after the bitplane decision of its own CCK, and the new state applies from the
+     * next CCK.
      *
-     * <p>Senza questa rivalutazione, un valore che coincide con la riga <b>corrente</b> non
-     * apre mai la finestra — e siccome quel valore resta per il resto del fotogramma, non la
-     * apre più nemmeno dopo. È tutta la classe A del banco {@code Agnus/DIW}: su
-     * {@code diwv10÷12} non disegnavamo un pixel di playfield da vpos 58 in giù, mentre
-     * l'oracolo disegnava tutto.
+     * <p>Without it, a value equal to the <b>current</b> line never opens the window, and
+     * since the value stays for the rest of the frame it never opens it later either: the
+     * whole class A of the {@code Agnus/DIW} bank ({@code diwv10-12} drew no playfield pixel
+     * from vpos 58 down).
      *
-     * <p>⚠️ <b>Perché qui basta chiamarlo subito e non serve un flag «al CCK dopo».</b>
-     * L'unica cosa che l'attesa dell'oracolo garantisce è che la scrittura <i>non</i> influenzi
-     * la decisione di fetch del proprio CCK ({@code decide_bpl} è già girata). Da noi le due
-     * scritture possibili — Copper in {@code copper.fallingEdge()} e CPU in
-     * {@code handleCpuDataTransferPhase()} — stanno <b>entrambe</b> nel fronte di discesa,
-     * cioè dopo l'arbitraggio degli slot del CCK corrente: la garanzia c'è già per
-     * costruzione. Un secondo stadio di pipe sarebbe un CCK di ritardo in più, non una
-     * traduzione.
+     * <p>Calling it at once is enough: the write must only <i>not</i> affect the fetch
+     * decision of its own CCK, and both possible writers (the Copper in
+     * {@code copper.fallingEdge()}, the CPU in {@code handleCpuDataTransferPhase()}) act in the
+     * falling edge, after the current CCK's slot arbitration.
      */
     private void recheckBitplaneVerticalWindow() {
         compareBitplaneVerticalWindow();
@@ -5783,9 +5156,9 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Il COPEN <b>come lo vede l'arbitraggio</b>: finche' il CCK corrente non ha superato
-     * {@link #copperDmaChangeCck} vale il valore <b>precedente</b>. E' {@code is_copper_dma()}
-     * dell'oracolo; la soglia la fissa la scrittura a DMACON — vedi il commento la'.
+     * COPEN <b>as the arbitration sees it</b>: until the current CCK has passed
+     * {@link #copperDmaChangeCck} it is the <b>previous</b> value. The DMACON write sets the
+     * threshold: see the comment there.
      */
     public boolean isCopperEnabled() {
         if ((masterClock >> 1) <= copperDmaChangeCck) {
@@ -5795,8 +5168,8 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * CCK fino al quale (compreso) l'arbitraggio deve usare il COPEN <b>vecchio</b>.
-     * {@code Long.MIN_VALUE} = nessun cambio in sospeso.
+     * CCK up to which (inclusive) the arbitration uses the <b>old</b> COPEN.
+     * {@code Long.MIN_VALUE} = no change pending.
      */
     private long copperDmaChangeCck = Long.MIN_VALUE;
 
@@ -5808,8 +5181,8 @@ public abstract class AbstractAgnus {
     private boolean copperTickEnabled, copperAllocEnabled;
 
     public boolean isOCS() {
-        // Se Agnus ID (VPOSR bit 14-8) ha il bit 13 (0x20) a 0 siamo su OCS, altrimenti
-        // su ECS. L'ID è fornito dal hook agnusIdBits(), specializzato per sottoclasse.
+        // With bit 13 (0x20) of the Agnus ID (VPOSR bits 14-8) clear it is OCS, otherwise
+        // ECS. The ID comes from the agnusIdBits() hook, specialised per subclass.
         return (agnusIdBits() & 0x20) == 0;
     }
 
@@ -5818,70 +5191,61 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Hook di specializzazione del chipset
+    // Chipset specialisation hooks
     // =========================================================================
-    // Punti in cui Agnus differisce fra OCS e ECS. I default di questa classe
-    // riproducono ESATTAMENTE il comportamento OCS storico (così OcsAgnus è un
-    // no-op semantico); EcsAgnus li ridefinisce. Sono volutamente su percorsi di
-    // configurazione/registro (NON per-pixel) per non gravare sull'hot path.
+    // Points where Agnus differs between OCS and ECS. The defaults of this class are the
+    // OCS behaviour (so OcsAgnus is a semantic no-op); EcsAgnus overrides them. They sit on
+    // configuration/register paths (NOT per pixel) so as not to weigh on the hot path.
 
     /**
-     * Maschera applicata ai bit bassi di DDFSTRT/DDFSTOP. OCS = 0xFC (granularità
-     * 4 CCK), ECS = 0xFE (passo di fetch più fine, 2 CCK in hires). Rif. vAmiga
-     * {@code Agnus::ddfMask()}, WinUAE {@code custom.cpp} ({@code ddf_mask}).
+     * Mask applied to the low bits of DDFSTRT/DDFSTOP. OCS = 0xFC (4-CCK granularity), ECS =
+     * 0xFE (finer fetch step, 2 CCK in hires).
      */
     protected int ddfMask() { return 0xFC; }
 
     /**
-     * CCK del limite HARD di fine fetch bitplane. Agnus attiva la condizione DDFSTOP
-     * a $D7 anche quando DDFSTOP è programmato oltre: è ciò che tiene la finestra di
-     * fetch dentro la riga. Rif. WinUAE {@code decide_bpl()}, {@code hpos == 0xd7}.
+     * CCK of the HARD end-of-fetch limit. Agnus raises the DDFSTOP condition at $D7 even when
+     * DDFSTOP is programmed further: that keeps the fetch window within the line.
      */
     protected static final int DDF_HARD_STOP_CCK = 0xD7;
 
     /**
-     * Limite hard di INIZIO fetch: a CCK {@code $18} Agnus rilascia la condizione DDFSTOP
-     * ereditata dalla riga precedente ({@code decide_bpl}: {@code if (hpos == 0x18)
-     * ddf_limit_in = false;}). È l'altro estremo di {@link #DDF_HARD_STOP_CCK}.
+     * Hard START-of-fetch limit: at CCK {@code $18} Agnus releases the DDFSTOP condition
+     * inherited from the previous line. The other end of {@link #DDF_HARD_STOP_CCK}.
      */
     protected static final int DDF_HARD_START_CCK = 0x18;
 
     /**
-     * {@code true} se i limiti HARD della finestra di fetch sono disattivati. Su OCS
-     * non lo sono mai; su ECS li disabilitano BEAMCON0 VARBEAMEN/HARDDIS e i bit
-     * UHRES/SHRES di BPLCON0 (WinUAE {@code harddis_h}).
+     * {@code true} if the HARD limits of the fetch window are disabled. Never on OCS; on ECS
+     * BEAMCON0 VARBEAMEN/HARDDIS and the UHRES/SHRES bits of BPLCON0 disable them.
      */
     protected boolean ddfHardLimitsDisabled() { return false; }
 
     /**
-     * Bit 14-8 dell'ID Agnus restituito da VPOSR ($004). OCS: {@code 0x00} (PAL) o
-     * {@code 0x10} (NTSC); ECS aggiunge il bit 13 ({@code 0x20}). {@link #isOCS()} e
-     * {@link #isECS()} derivano da qui. Rif. vAmiga {@code Agnus::idBits()}.
+     * Bits 14-8 of the Agnus ID returned by VPOSR ($004). OCS: {@code 0x00} (PAL) or
+     * {@code 0x10} (NTSC); ECS adds bit 13 ({@code 0x20}). {@link #isOCS()} and
+     * {@link #isECS()} derive from it.
      */
     protected int agnusIdBits() {
         return (mode == VideoMode.PAL) ? ID_OCS_PAL : ID_OCS_NTSC;
     }
 
     /**
-     * {@code true} se BEAMCON0 ($1DC) è scrivibile. È un registro ECS-only: su OCS
-     * la scrittura è ignorata (default {@code false}). Rif. vAmiga
-     * {@code Agnus::pokeBEAMCON0} ({@code if (isOCS()) return;}).
+     * {@code true} if BEAMCON0 ($1DC) is writable. An ECS-only register: on OCS the write is
+     * ignored (default {@code false}).
      */
     protected boolean beamcon0Writable() { return false; }
 
     /**
-     * Applica il modo scritto in BEAMCON0 al pennello — l'{@code init_beamcon0()}
-     * dell'oracolo, ridotto a quel che modelliamo: {@code maxvpos} e il modo
-     * {@link #beamNtsc} da cui dipendono {@link #lol} e la fase del VSYNC.
+     * Applies the mode written to BEAMCON0 to the beam, reduced to what is modelled: the line
+     * count and the {@link #beamNtsc} mode that {@link #lol} and the VSYNC phase depend on.
      *
-     * <p>⚠️ Il numero di righe cambia <b>nel CCK della scrittura</b>, non al fotogramma
-     * dopo: se il pennello è già oltre la nuova ultima riga, il fotogramma corrente si
-     * chiude alla prima occasione utile — che è esattamente quel che fa l'oracolo, dove
-     * `maxvpos` è una variabile letta a ogni confronto di riga.
+     * <p>The line count changes <b>in the CCK of the write</b>, not at the next frame: if the
+     * beam is already past the new last line, the current frame closes at the first
+     * opportunity.
      *
-     * <p>⛔ Non modelliamo il resto di `init_beamcon0()`: i modi programmati
-     * (VARBEAMEN/VTOTAL/HTOTAL), i sync variabili e il ricalcolo della finestra di
-     * visualizzazione sono materia del display, non del contatore.
+     * <p>The programmed modes (VARBEAMEN/VTOTAL/HTOTAL), variable syncs and the recomputed
+     * display window are not modelled.
      */
     private void applyBeamcon0() {
         final boolean ntsc = (beamcon0 & BEAMCON0_PAL_BIT) == 0;
@@ -5894,18 +5258,17 @@ public abstract class AbstractAgnus {
 
 
     /**
-     * Gestisce la scrittura di DIWHIGH ($1E4), registro ECS-only che estende i bit
-     * alti V di DIWSTRT/STOP (lato Agnus) e inoltra la parte H (HSTART/HSTOP bit 8)
-     * a Denise. No-op su OCS (gate {@link #isECS()}). Layout DIWHIGH (maschera 0x2727):
-     * bit 0-2 = VSTART V8-V10, bit 5 = HSTART H8, bit 8-10 = VSTOP V8-V10, bit 13 =
-     * HSTOP H8. Rif. vAmiga {@code Agnus::pokeDIWHIGH} (value &amp;= 0x2727).
+     * A write to DIWHIGH ($1E4), the ECS-only register that extends the high V bits of
+     * DIWSTRT/STOP (Agnus side) and passes the H part (HSTART/HSTOP bit 8) on to Denise.
+     * No-op on OCS. Layout (mask 0x2727): bits 0-2 = VSTART V8-V10, bit 5 = HSTART H8,
+     * bits 8-10 = VSTOP V8-V10, bit 13 = HSTOP H8.
      */
     protected void writeDIWHIGH(int value) {
-        if (!isECS()) return; // DIWHIGH è ECS-only: su OCS la scrittura è ignorata.
+        if (!isECS()) return; // DIWHIGH is ECS-only: ignored on OCS.
         value &= 0x2727;
         diwVStart = (diwVStart & 0xFF) | ((value & 0x07) << 8);
         diwVStop  = (diwVStop  & 0xFF) | (((value >> 8) & 0x07) << 8);
-        // Anche DIWHIGH passa da calcvdiw(): stesso trattamento di DIWSTRT/DIWSTOP.
+        // Same vertical re-check as DIWSTRT/DIWSTOP.
         recheckBitplaneVerticalWindow();
         if (denise != null) denise.writeRegister(0x1E4, value);
     }
@@ -5919,25 +5282,20 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Slot bitplane
+    // Bitplane slots
     // =========================================================================
 
     /**
-     * Determina quale bitplane fetchare nel CCK corrente.
+     * Which bitplane to fetch in the current CCK.
      *
-     * @return Indice del bitplane (0-5) o -1 se lo slot non è usato.
+     * @return bitplane index (0-5) or -1 if the slot is unused.
      */
     private int getBitplaneIndexForRasterPosition(int hpos, int bplCount, boolean hires) {
         int cck = hpos >> 1;
-        // La finestra di fetch è SEMI-APERTA: [ddfCckStart, getEffectiveDdfStopCck).
-        // getEffectiveDdfStopCck() restituisce ddfCckStart + (numero di CCK della
-        // finestra, arrotondato all'unità di fetch), cioè il primo CCK *fuori* dalla
-        // finestra. Con un confronto inclusivo (cck > stop) si prelevava un CCK extra:
-        // in hires (unità da 4 CCK, sequenza piani {3,1,2,0}) quel CCK in più cadeva
-        // sempre sul piano 3, che così faceva 41 fetch/riga contro 40 degli altri →
-        // il puntatore del piano 3 derivava di +2 byte/riga e l'immagine veniva
-        // "traslata" progressivamente solo sulle componenti colore che usano quel
-        // piano (es. la banda verde della schermata 640x512 di DiagROM).
+        // The fetch window is HALF-OPEN: [ddfCckStart, getEffectiveDdfStopCck), the second
+        // being the first CCK *outside* the window. An inclusive comparison fetched one CCK
+        // too many: in hires it always fell on plane 3, whose pointer drifted by +2
+        // bytes/line (e.g. the green band of DiagROM's 640x512 screen).
         int limit = bitplaneDmaPlaneLimit(bplCount, hires);
         if (cck < fetchUnitDdfStart || cck >= getEffectiveDdfStopCck(hires) || limit <= 0) return -1;
         if ((hpos & 1) != 0) return -1;
@@ -5947,26 +5305,18 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Quanti piani il DMA di bitplane preleva davvero, dato il BPU grezzo di BPLCON0.
+     * How many planes bitplane DMA really fetches, given BPLCON0's raw BPU.
      *
-     * <p>⛔ <b>Non è un troncamento al numero di slot: quando i piani non ci stanno, il
-     * DMA di bitplane si spegne del tutto.</b> È {@code real_bitplane_number} di WinUAE
-     * ({@code custom.cpp create_cycle_diagram_table}), letto da {@code GET_PLANES_LIMIT}
-     * e usato in {@code generate_bpl()} come {@code plane <= bplcon0_planes_limit}:
-     * <pre>
-     *   int rplanes = planes;
-     *   if (rplanes &gt; max_planes) rplanes = 0;                          // niente DMA
-     *   if (rplanes == 7 &amp;&amp; fm == 0 &amp;&amp; res == 0 &amp;&amp; !aga_mode) rplanes = 4;
-     * </pre>
-     * con {@code max_planes = fm_maxplanes[fm*4+res]} = 8 in lores, <b>4 in hires</b>
-     * (2 in SuperHires, che non modelliamo). Quindi cinque o sei piani in hires — la
-     * configurazione illegale di {@code BPLPTR/drop5x}, {@code drop6x} e
-     * {@code dropcpu6x} — non prelevano niente e lasciano liberi tutti gli slot.
+     * <p><b>Not a truncation to the slot count: when the planes do not fit, bitplane DMA
+     * turns off altogether.</b> The maximum is 8 in lores and <b>4 in hires</b>; more than
+     * that fetches nothing, and 7 planes in lores fetch 4. So five or six planes in hires
+     * (the illegal configuration of {@code BPLPTR/drop5x}, {@code drop6x} and
+     * {@code dropcpu6x}) fetch nothing and leave every slot free.
      *
-     * <p>⚠️ Il caso {@code 7 → 4} è il motivo per cui qui arriva il BPU <b>grezzo</b>
-     * ({@link AbstractDenise#getRawBpu()}) e non quello di Denise: i due chip hanno la
-     * stessa soglia ma non la stessa tabella, e sette piani in lores sono quattro fetch
-     * con sei piani disegnati (i due alti tengono il dato vecchio).
+     * <p>The {@code 7 -> 4} case is why the <b>raw</b> BPU arrives here
+     * ({@link AbstractDenise#getRawBpu()}) and not Denise's: the two chips have the same
+     * threshold but not the same table, and seven planes in lores are four fetches with six
+     * planes drawn (the two high ones keep their old data).
      */
     static int bitplaneDmaPlaneLimit(int rawBpu, boolean hires) {
         if (hires) return rawBpu > 4 ? 0 : rawBpu;
@@ -5974,55 +5324,42 @@ public abstract class AbstractAgnus {
     }
 
     private int getEffectiveDdfStopCck(boolean hires) {
-        // Limite HARD di fine fetch: a CCK $D7 Agnus attiva comunque la condizione
-        // DDFSTOP, anche se DDFSTOP è programmato più a destra. WinUAE decide_bpl():
-        // `if (hpos == 0xd7) { if (bprun && !ddf_stopping) ddf_stopping = 1; }` sul
-        // ramo OCS, e `if (!harddis_h) ddf_limit_in = true;` su quello ECS — cioè
-        // esattamente un min() fra DDFSTOP e $D7. Senza questo tetto un DDFSTOP
-        // oltre $D7 (Crack, LINEL 1988: DDFSTRT=$30, DDFSTOP=$DF) allargava la
-        // finestra di un'unità di fetch intera, con due conseguenze:
-        //  - l'unità in più era troncata dalla fine riga, quindi il solo piano che
-        //    ha lo slot subito dopo il confine (indice 3 in lores, CCK+1) faceva un
-        //    fetch di troppo e derivava di 2 byte/riga;
-        //  - il modulo BPLxMOD, che si applica nell'ULTIMA unità, cadeva in
-        //    quell'unità fantasma e quindi NON veniva mai applicato agli altri
-        //    piani: avanzavano 44 byte/riga invece di 64.
+        // HARD end-of-fetch limit: at CCK $D7 Agnus raises the DDFSTOP condition anyway,
+        // even if DDFSTOP is programmed further right: a min() between DDFSTOP and $D7.
+        // Without this ceiling a DDFSTOP beyond $D7 (Crack, LINEL 1988: DDFSTRT=$30,
+        // DDFSTOP=$DF) widened the window by a whole fetch unit:
+        //  - the extra unit was cut by the end of the line, so only the plane whose slot is
+        //    right after the boundary fetched one word too many and drifted 2 bytes/line;
+        //  - BPLxMOD, applied in the LAST unit, fell in that phantom unit and was never
+        //    applied to the other planes: they advanced 44 bytes/line instead of 64.
         int stop = ddfCckStop;
         if (!ddfHardLimitsDisabled()) {
             stop = Math.min(stop, DDF_HARD_STOP_CCK + 8);
         }
-        // Ancorato allo start CAMPIONATO (fetchUnitDdfStart), non al registro vivo:
-        // l'arrotondamento all'unità di 8 CCK deve usare la stessa origine della fase
-        // di fetch, altrimenti un cambio di DDFSTRT a metà riga sfaserebbe il confine.
+        // Anchored to the SAMPLED start (fetchUnitDdfStart), not the live register: the
+        // rounding to 8-CCK units must use the same origin as the fetch phase.
         int relStop = Math.max(0, stop - fetchUnitDdfStart);
-        // I fetch bitplane sono raggruppati in unità da 8 CCK. Se DDFSTOP non è
-        // allineato all'unità (relativamente a DDFSTRT) la DMA completa comunque
-        // l'unità in corso, producendo un fetch extra. Questo allinea la larghezza
-        // di riga del display a quella del buffer prodotto dal Blitter: i cracktro
-        // (es. "Tv sports basket") usano DDFSTOP dispari ($D4) con DDFSTRT=$30 e
-        // senza l'arrotondamento il display avanza 2 byte/riga in meno del blit,
-        // producendo uno shear progressivo (testo scroller sfasato/illeggibile).
-        // Il ramo hires faceva già questo arrotondamento; ora è coerente anche in lores.
+        // Bitplane fetches come in units of 8 CCK. If DDFSTOP is not aligned to the unit
+        // (relative to DDFSTRT) the DMA completes the current unit anyway, one fetch more.
+        // That matches the display line width to the buffer the Blitter produced: cracktros
+        // (e.g. "Tv sports basket") use an odd DDFSTOP ($D4) with DDFSTRT=$30, and without
+        // the rounding the display advanced 2 bytes/line less than the blit (progressive
+        // shear).
         return fetchUnitDdfStart + ((relStop + 7) & ~7);
     }
 
-    // PERF: tabelle di fetch pre-allocate. Prima erano allocate come array literal
-    // a OGNI chiamata (hot path del fetch bitplane, ~milioni/s) → churn di allocazioni
-    // = principale sorgente di garbage → pause GC stop-the-world = cali sporadici di
-    // frame rate. Rese static final: zero allocazioni, comportamento identico.
+    // PERF: preallocated fetch tables (hot path of the bitplane fetch).
     private static final int[] HIRES_FETCH = { 3, 1, 2, 0 };
     private static final int[] LORES_FETCH = { -1, 3, 5, 1, -1, 2, 4, 0 };
 
     // =========================================================================
-    // Sequencer dei bitplane — decide_bpl()/generate_bpl() dell'oracolo
+    // Bitplane sequencer
     // =========================================================================
 
     /**
-     * Il blocco di fetch dura <b>otto</b> CCK in tutte le risoluzioni: è
-     * {@code fetchunits[] = {8,8,8,...}} di WinUAE con {@code fetchmode 0}. Quel che cambia
-     * con la risoluzione è la lunghezza della <b>sequenza</b> dentro il blocco
-     * ({@code fetchstarts[]}: 8 CCK in lores, 4 in hires) e quanti piani ci stanno
-     * ({@code fm_maxplanes[]}: 8 e 4).
+     * The fetch block lasts <b>eight</b> CCKs in every resolution. What changes with the
+     * resolution is the length of the <b>sequence</b> within the block (8 CCK in lores, 4 in
+     * hires) and how many planes fit (8 and 4).
      */
     private static final int FETCHUNIT_MASK = 7;
 
@@ -6046,13 +5383,6 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Whether the Copper may issue a new request whose cycle lands at this CCK. Copper
-     * requests are made on odd values of the horizontal counter and act one CCK later, so
-     * the eligible CCKs follow the counter's parity rather than ours: in the body of the
-     * line they are our even CCKs, but across the wrap of an odd-length line the counter
-     * repeats a parity and the slot after CCK 222 is 225, not 226.
-     */
-    /**
      * The Copper's frame restart enters its strobe pipeline two CCKs before the line wrap
      * that closes the frame, and restarts the machine on the first Copper slot of line 0.
      * A strobe that reaches the pipeline around it merges with it.
@@ -6065,6 +5395,13 @@ public abstract class AbstractAgnus {
         return vpos == wrapAt - 1 && !syncsStopped && !(ersyActive() && !lol);
     }
 
+    /**
+     * Whether the Copper may issue a new request whose cycle lands at this CCK. Copper
+     * requests are made on odd values of the horizontal counter and act one CCK later, so
+     * the eligible CCKs follow the counter's parity rather than ours: in the body of the
+     * line they are our even CCKs, but across the wrap of an odd-length line the counter
+     * repeats a parity and the slot after CCK 222 is 225, not 226.
+     */
     private boolean copperRequestParity(int cck) {
         final int lineCck = maxHpos >> 1;
         int h = cck - SEQ_PHASE - 1;
@@ -6072,45 +5409,44 @@ public abstract class AbstractAgnus {
         return (h & 1) != 0;
     }
 
-    /** Quale piano tocca al CCK di fase {@code bprunCycle}; -1 se lo slot è libero. */
+    /** Which plane is fetched at phase {@code bprunCycle}; -1 if the slot is free. */
     private static int bplSequence(int bprunCycle, boolean hires) {
         return hires ? HIRES_FETCH[bprunCycle & 0x3] : LORES_FETCH[bprunCycle & 0x7];
     }
 
-    /** Stato di {@code bprun}: 0 = fermo, 1 = in corsa, 2/3 = spegnimento in due CCK. */
+    /** {@code bprun} state: 0 = stopped, 1 = running, 2/3 = switching off over two CCKs. */
     private int bprun;
-    /** Fase della sequenza di fetch: avanza a ogni CCK di {@code bprun}, non con hpos. */
+    /** Phase of the fetch sequence: advances at every CCK of {@code bprun}, not with hpos. */
     private int bprunCycle;
     /**
-     * Condizione «DDFSTOP passato»: 0 = no, 1 = appena scattata, 2 = ultimo blocco (è qui
-     * che si applicano i moduli). ⚠️ Non si azzera a fine riga: la azzera solo
-     * {@link #bplDmaNormalStop()}, come nell'oracolo.
+     * "DDFSTOP passed" condition: 0 = no, 1 = just raised, 2 = last block (where the moduli
+     * are applied). It is not cleared at the end of the line: only
+     * {@link #bplDmaNormalStop()} clears it.
      */
     private int ddfStopping;
-    /** ECS: vero fra il match di DDFSTRT e quello di DDFSTOP. */
+    /** ECS: true between the DDFSTRT match and the DDFSTOP match. */
     private boolean ddfEnableOn;
-    /** Limite hard $18÷$D7, campionato con un CCK di ritardo ({@code ddf_limit_out}). */
+    /** Hard limit $18-$D7, sampled with one CCK of delay. */
     private boolean ddfLimitIn, ddfLimitOut;
 
     /**
-     * ⛔ <b>DDFSTRT e DDFSTOP non entrano in vigore subito</b>, e finche' non lo fanno il
-     * confronto usa il valore <b>vecchio</b>. L'oracolo lo dichiara nel commento dei due
-     * handler — <i>«new value is available after 2 CCKs»</i> — e lo realizza tenendo il valore
-     * precedente accanto al nuovo, col CCK della scrittura come discriminante:
+     * <b>DDFSTRT and DDFSTOP do not take effect at once</b>, and until they do the comparison
+     * uses the <b>old</b> value (the new value is available after 2 CCKs). The previous value
+     * is kept next to the new one, with the CCK of the write deciding between them:
      *
      * <pre>{
-     * // scrittura:  ddfstrt_val_old = ddfstrt_val;  ddfstrt_cycle = get_cycles() + CYCLE_UNIT;
-     * (hpos == ddfstrt_val && cyc >  ddfstrt_cycle) || (hpos == ddfstrt_val_old && cyc <  ddfstrt_cycle)
-     * (hpos == ddfstop     && cyc >  ddfstop_cycle) || (hpos == ddfstop_old     && cyc <= ddfstop_cycle)
+     * // write:  oldStart = start;  startCycle = now + 1 CCK;
+     * (h == start && cyc >  startCycle) || (h == oldStart && cyc <  startCycle)
+     * (h == stop  && cyc >  stopCycle)  || (h == oldStop  && cyc <= stopCycle)
      * }</pre>
      *
-     * ⚠️ <b>I due non hanno lo stesso operatore, e non è una svista</b>: DDFSTOP usa { <=} e
-     * DDFSTRT { <}. ⇒ al CCK <b>esattamente uguale</b> a { ddfstrt_cycle} nessuna delle
-     * due condizioni di DDFSTRT è vera — <b>né il valore vecchio né quello nuovo</b> fanno match e
-     * la riga non parte affatto. È il caso che il README del §14 dichiara per { ddftimcop9}
-     * (<i>«the write cycle matches the trigger cycle which causes neither the old nor the new
-     * value to match»</i>, con una riga mancante nell'immagine), e cade fuori dai due operatori
-     * invece che da una regola a parte. ⇒ { ddftimcop9} è <b>bit-exact</b>.
+     * <b>The two do not use the same operator, deliberately</b>: DDFSTOP uses {@code <=} and
+     * DDFSTRT {@code <}. At the CCK <b>exactly equal</b> to the start cycle neither condition
+     * of DDFSTRT is true, <b>neither the old nor the new value</b> matches and the line does
+     * not start at all: the case the README of section 14 states for {@code ddftimcop9} ("the
+     * write cycle matches the trigger cycle which causes neither the old nor the new value to
+     * match", with a line missing from the picture), which falls out of the two operators
+     * rather than from a rule of its own. {@code ddftimcop9} is <b>bit-exact</b>.
      *
      * <p>The write and the match are on the same grid (see {@link #SEQ_PHASE}), so the
      * delay is the one CCK of the register itself.
@@ -6120,22 +5456,17 @@ public abstract class AbstractAgnus {
     private long ddfStrtChangeCck = Long.MIN_VALUE, ddfStopChangeCck = Long.MIN_VALUE;
 
     /**
-     * ⛔ <b>Il contatore della riga è CIRCOLARE, e il confronto DDF non deve uscirne.</b>
-     * L'oracolo confronta {@code agnus_hpos} con {@code ddfstrt_val}; la nostra griglia è
-     * spostata di {@link #SEQ_PHASE}, quindi per le coordinate <b>vicinissime a zero</b> la
-     * sottrazione porta il punto di match <b>fuori dalla riga</b> e il match non avviene mai.
+     * <b>The line counter is CIRCULAR, and the DDF comparison must not leave it.</b> Our grid
+     * is shifted by {@link #SEQ_PHASE}, so for values <b>very close to zero</b> the
+     * subtraction would put the match point <b>outside the line</b> and the match would never
+     * happen.
      *
-     * <p>Il caso è reale e il banco §14 lo isola: {@code hwstop1/7/8} scrivono
-     * {@code DDFSTRT = DDFSTOP = $00} per una manciata di righe, quindi
-     * {@code ddfstrt_val = ($00 & $FC) | 1 = 1}. L'oracolo fa match a {@code hpos == 1} e
-     * arma la riga da lì fino all'hard stop; da noi {@code 1 + SEQ_PHASE = −1} non esiste, e
-     * quelle righe restavano <b>vuote</b> — 358 pixel per riga, sei righe nella metà lores e
-     * sei in quella hires. ⚠️ E la controprova è nel banco stesso: {@code hwstop3} ha le
-     * <b>stesse</b> coordinate `LEFT`/`RIGHT` ma scrive {@code $08} invece di {@code $00}, ed
-     * era già verde.
-     *
-     * <p>⚠️ È la stessa forma del §17 classe B — <i>il contatore gira, e un modello che non lo
-     * segue perde esattamente i valori vicini al wrap</i>.
+     * <p>The section 14 bank isolates the case: {@code hwstop1/7/8} write
+     * {@code DDFSTRT = DDFSTOP = $00} for a few lines, so the start value is
+     * {@code ($00 & $FC) | 1 = 1}, which matches at horizontal position 1 and arms the line
+     * from there to the hard stop; {@code 1 + SEQ_PHASE = -1} does not exist, and those lines
+     * stayed <b>empty</b>. {@code hwstop3} has the <b>same</b> LEFT/RIGHT coordinates but
+     * writes {@code $08}, and was already green.
      */
     private int ddfMatchCck(int val) {
         int c = val + SEQ_PHASE;
@@ -6155,9 +5486,9 @@ public abstract class AbstractAgnus {
     }
 
 
-    /** Valore precedente di {@code hwi}: la macchina parte sul FRONTE, non sul livello. */
+    /** Previous value of {@code hwi}: the machine starts on the EDGE, not the level. */
     private boolean hwiOld;
-    /** OCS: BPLEN arriva al sequencer con un CCK di ritardo in più che su ECS. */
+    /** OCS: BPLEN reaches the sequencer one CCK later than on ECS. */
     private boolean dmaconBpl2;
 
     /**
@@ -6170,82 +5501,70 @@ public abstract class AbstractAgnus {
     private boolean dmaconBplSeq;
 
     /**
-     * Il bit di DMA sprite <b>come stava due CCK prima</b> dello slot che lo usa.
+     * The sprite DMA bit <b>as it was two CCKs before</b> the slot that uses it.
      *
-     * <p>⛔ Non è un latch di comodo: nell'oracolo la decisione degli sprite è
-     * <b>anticipata per costruzione</b>. Gli slot escono da uno shift register
-     * ({@code dmal_shifter}) i cui tap degli sprite stanno due posizioni più avanti di
-     * quelli di audio e disco — {@code handle_dmal()} lo dichiara nel commento
-     * <i>«sprites have earlier DMA decisions»</i> — e {@code generate_sprites()} legge
-     * {@code dmaen(DMA_SPRITE)} lì, scrivendo la richiesta nella pipeline RGA; il
-     * trasferimento cade due CCK dopo.
+     * <p>Sprite decisions are <b>early by construction</b>: their taps in the DMA request
+     * shift register sit two positions ahead of the audio and disk ones (sprites have earlier
+     * DMA decisions), the decision reads the sprite DMA bit there, and the transfer falls two
+     * CCKs later.
      *
-     * <p>⚠️ È esattamente ciò che il banco {@code DMACON/sprdiscpu*} misura: quando la CPU
-     * spegne il DMA sprite <b>fra la decisione e il trasferimento</b>, l'oracolo fa il
-     * fetch lo stesso e noi no. Misurato su {@code sprdiscpu1} con
-     * {@code WINUAE_SPRLOG}/{@link io.github.zolfrik.amija.probe.SpriteDmaProbe}: alla riga
-     * 65 la scrittura cade a {@code h=24}, fra la decisione di SPRxDATA ({@code h=23}) e il
-     * suo trasferimento ({@code h=25}), e l'oracolo preleva SPRxDATA ma non SPRxDATB.
-     * Leggendo il bit vivo noi non prelevavamo nessuno dei due, e SPRxDATA/SPRxDATB
-     * finivano a righe diverse — due pixel di colore 17 e 18 dove ce n'è uno di colore 19.
+     * <p>That is what the {@code DMACON/sprdiscpu*} bank measures: when the CPU switches
+     * sprite DMA off <b>between the decision and the transfer</b>, the fetch happens anyway.
+     * Measured on {@code sprdiscpu1} ({@link io.github.zolfrik.amija.probe.SpriteDmaProbe}):
+     * at line 65 the write falls at {@code h=24}, between the decision of SPRxDATA
+     * ({@code h=23}) and its transfer ({@code h=25}): SPRxDATA is fetched, SPRxDATB is not.
+     * Reading the live bit fetched neither, and SPRxDATA/SPRxDATB ended up on different lines.
      */
     private boolean spriteDmaSeq, spriteDmaPipe;
 
     /**
-     * CCK di <b>decisione</b> reso inefficace dall'accensione del DMA sprite, oppure −1.
+     * The <b>decision</b> CCK made void by sprite DMA being switched on, or -1.
      *
-     * <p>⛔ Seconda regola dello stesso meccanismo, e l'oracolo la commenta parola per
-     * parola: <i>«If sprite DMA is switched on just when sprite DMA is decided, channel is
-     * still decided but it is not allocated!»</i>. Accendere SPREN al CCK {@code W} fissa
-     * {@code sprite_dma_change_cycle_on = W + 1}; lo slot la cui <b>decisione</b> cade
-     * proprio lì entra nella pipeline RGA con {@code alloc = 0} — quindi <b>non preleva e
-     * non fa avanzare il puntatore</b>, e il ciclo resta libero per il Blitter.
+     * <p>If sprite DMA is switched on just when sprite DMA is decided, the channel is still
+     * decided but it is not allocated. Switching SPREN on at CCK {@code W} makes the slot
+     * whose <b>decision</b> falls at {@code W + 1} enter the pipeline unallocated: it
+     * <b>fetches nothing and does not advance the pointer</b>, and the cycle stays free for
+     * the Blitter.
      *
-     * <p>Poiché la decisione sta due CCK prima del trasferimento (vedi {@link #spriteDmaSeq}),
-     * lo slot saltato è quello a {@code W + 3}. Misurato su {@code sprenacpu2}, sprite 4,
-     * riga 125: l'accensione cade a {@code h=40}, la decisione dello slot B a {@code h=41},
-     * e l'oracolo <b>non</b> preleva — il puntatore resta a {@code $0705BA} e la riga
-     * successiva riparte da lì. Senza questa regola facevamo un prelievo in più e
-     * SPRxDATA/SPRxDATB restavano sfasati di una word per tutto lo sprite.
+     * <p>With the decision two CCKs before the transfer (see {@link #spriteDmaSeq}), the
+     * skipped slot is the one at {@code W + 3}. Measured on {@code sprenacpu2}, sprite 4,
+     * line 125: the switch-on at {@code h=40}, the decision of slot B at {@code h=41}, no
+     * fetch: the pointer stays at {@code $0705BA} and the next line restarts from there.
+     * Without this rule there was one fetch too many and SPRxDATA/SPRxDATB stayed a word out
+     * of step for the whole sprite.
      */
     private long spriteDmaOnDecisionCck = -1;
 
     /**
-     * {@code decide_bpl()} dell'oracolo: la macchina a stati che decide se il sequencer dei
-     * bitplane è in corsa. Va chiamata <b>dopo</b> aver deciso lo slot del CCK corrente —
-     * in {@code do_cck()} l'ordine è {@code generate_dma_requests()} (che contiene
-     * {@code generate_bpl}) e <b>poi</b> {@code decide_bpl(agnus_hpos)} — quindi una
-     * macchina armata al CCK X decide il primo slot al CCK X+1 (e lo preleva a X+3).
+     * The state machine that decides whether the bitplane sequencer runs. Called <b>after</b>
+     * deciding the current CCK's slot, so a machine armed at CCK X decides its first slot at
+     * CCK X+1 (and fetches it at X+3).
      *
-     * <p>⛔ <b>Il cuore è che BPRUN parte sul FRONTE di salita di una condizione
-     * composta</b>, non sul suo livello:
+     * <p><b>BPRUN starts on the RISING EDGE of a compound condition</b>, not on its level:
      * <pre>
-     *   hwi = dma &amp;&amp; diw &amp;&amp; ddf_enable_on &amp;&amp; (!ddf_limit_out || harddis_h);
-     *   if (!bprun &amp;&amp; hwi &amp;&amp; !hwi_old)      { bprun = 1; bprun_cycle = 0; }
-     *   else if (bprun &amp;&amp; !hwi &amp;&amp; hwi_old)  { if (!ddf_stopping) ddf_stopping = 1; }
+     *   hwi = dma &amp;&amp; diw &amp;&amp; ddfEnableOn &amp;&amp; (!ddfLimitOut || harddis);
+     *   if (!bprun &amp;&amp; hwi &amp;&amp; !hwiOld)      { bprun = 1; bprunCycle = 0; }
+     *   else if (bprun &amp;&amp; !hwi &amp;&amp; hwiOld)  { if (!ddfStopping) ddfStopping = 1; }
      * </pre>
-     * Il commento dell'oracolo lo dice: <i>«BPRUN can only start if DMA, DIW or DDF state
-     * has changed since last time»</i>. Da qui viene il <b>baco del sequencer</b> che
-     * {@code DMACON/bpoffbug1} e {@code reenable2/3} misurano: spegnere BPLEN dentro la
-     * finestra fa scattare {@code ddf_stopping = 1} sul fronte di discesa, e quando BPLEN
-     * torna la sequenza riparte ma si ferma alla fine del blocco in corso — «early
-     * termination», che il README del banco descrive come un baco di Agnus.
+     * BPRUN can only start if the DMA, DIW or DDF state has changed since last time. That is
+     * the <b>sequencer bug</b> {@code DMACON/bpoffbug1} and {@code reenable2/3} measure:
+     * switching BPLEN off inside the window sets {@code ddfStopping = 1} on the falling edge,
+     * and when BPLEN comes back the sequence restarts but stops at the end of the current
+     * block ("early termination", which the bank's README describes as an Agnus bug).
      *
-     * <p>⚠️ E lo spegnimento non è immediato: {@code (!dma || !diw) && bprun == 1} porta
-     * {@code bprun} a 2, e da lì 2→3→0, cioè <b>due CCK</b> di coda.
+     * <p>The switch-off is not immediate either: {@code (!dma || !diw) && bprun == 1} takes
+     * {@code bprun} to 2, and from there 2 -> 3 -> 0, <b>two CCKs</b> of tail.
      *
-     * <p>⚠️ OCS e ECS sono due rami diversi nell'oracolo e restano due qui. Su OCS BPLEN
-     * arriva con un CCK di ritardo in più ({@code dmacon_bpl2}), la partenza è sul
-     * <b>match</b> di DDFSTRT invece che sul fronte di {@code hwi}, e sono DDFSTOP e il
-     * limite hard a far scattare {@code ddf_stopping} invece della discesa di {@code hwi}.
+     * <p>OCS and ECS are two different branches. On OCS BPLEN arrives one CCK later
+     * ({@code dmaconBpl2}), the start is on the DDFSTRT <b>match</b> rather than on the edge of
+     * {@code hwi}, and DDFSTOP and the hard limit raise {@code ddfStopping} rather than the
+     * fall of {@code hwi}.
      */
     private void decideBpl(int cck) {
         // The last line of the field closes the vertical window itself (see
         // updateBitplaneVerticalWindow), so the sequencer needs no gate of its own there.
-        // ⛔ Il `| 1`: l'oracolo confronta contro `ddfstrt_val = (ddfstrt & ddf_mask) | 1`
-        // (DDFSTRT(), commento «DDFSTRT (odd cycle)»), mentre DDFSTOP resta pari. Il modello
-        // posizionale non aveva mai avuto bisogno di saperlo perché non confrontava una
-        // posizione con un match, ricavava una fase da una sottrazione.
+        // The DDFSTRT value is compared with bit 0 set (DDFSTRT matches on an odd cycle),
+        // while DDFSTOP stays even.
         final long cyc = masterClock >> 1;
         final boolean vdiw = cyc == vdiwTriggerCck ? vdiwBeforeTrigger : bitplaneVerticalActive;
         final boolean diw = vdiw;
@@ -6282,7 +5601,7 @@ public abstract class AbstractAgnus {
             if ((!dma || !diw) && bprun == 1) bprun = 2;
 
         } else {
-            // OCS: BPLENA ritardata di un CCK in più rispetto a ECS/AGA.
+            // OCS: BPLEN delayed by one more CCK than on ECS.
             final boolean dma = dmaconBpl2;
             dmaconBpl2 = dmaconBplSeq;
 
@@ -6298,8 +5617,8 @@ public abstract class AbstractAgnus {
             }
 
             if (bprun == 2) {
-                // Se DDF è già passato si salta all'ultimo blocco (cracktro di Scoopex
-                // «Crash Landing», citato dall'oracolo).
+                // If DDF has already passed, jump to the last block (Scoopex's "Crash
+                // Landing" cracktro).
                 if (ddfStopping == 1) ddfStopping = 2;
                 bprun = 0;
             }
@@ -6315,9 +5634,8 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * {@code bpl_dma_normal_stop()}: fine regolare della sequenza. ⚠️ Su OCS ri-arma anche
-     * il limite hard, che è quel che impedisce a una seconda finestra di aprirsi nella
-     * stessa riga.
+     * Normal end of the sequence. On OCS it also rearms the hard limit, which keeps a second
+     * window from opening in the same line.
      */
     private void bplDmaNormalStop() {
         ddfStopping = 0;
@@ -6334,7 +5652,7 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Accessori pubblici
+    // Public accessors
     // =========================================================================
 
     public String getArbitrationReason() {
@@ -6381,15 +5699,15 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Mette in scrittura il drive selezionato (DSKLEN con bit DMAEN+WRITE).
-     * La sorgente dei bit è Paula: il drive la interroga una volta per cella MFM.
+     * Puts the selected drive into write mode (DSKLEN with DMAEN+WRITE). Paula is the source
+     * of the bits: the drive queries it once per MFM cell.
      */
     public void startFloppyWriting() {
         FloppyDrive drive = getSelectedDrive();
         if (drive != null) drive.setWriting(true);
     }
 
-    /** Termina la scrittura su tutti i drive (DSKLEN azzerato): flush della traccia. */
+    /** Ends writing on every drive (DSKLEN cleared): the track is flushed. */
     public void stopFloppyWriting() {
         df0.setWriting(false);
         df1.setWriting(false);
@@ -6410,9 +5728,8 @@ public abstract class AbstractAgnus {
     public int  getLastCompletedFrameField() { return lastCompletedFrameField; }
     public boolean lastCompletedFrameHadLateBitplaneDma() { return lastCompletedFrameHadLateBitplaneDma; }
     /**
-     * Il Blitter come lo vede il COPPER (BFD): resta occupato per <b>un CCK in piu</b>
-     * di quanto lo veda la CPU via DMACONR. E' { blit_busy(false)} dell'oracolo -
-     * vedi { Blitter#isBusyForCopper}.
+     * The Blitter as the COPPER sees it (BFD): busy for <b>one CCK more</b> than the CPU sees
+     * through DMACONR. See {@link Blitter#isBusyForCopper}.
      */
     public boolean isBlitterFinished() { return !blitter.isBusyForCopper(); }
     public FloppyDrive getDf0()      { return df0; }
@@ -6426,23 +5743,22 @@ public abstract class AbstractAgnus {
     public int     getDMACON()       { return dmacon; }
 
     /**
-     * Lettura diagnostica diretta dalla Chip RAM (nessun side effect di bus/Gary).
-     * Restituisce 0 fuori dal range della Chip RAM.
+     * Direct diagnostic read from Chip RAM (no bus/Gary side effects). Returns 0 outside
+     * the memory it covers.
      */
     public int peekChipWord(int addr) {
         addr &= 0xFFFFFF;
-        // Chip RAM, per quanta ne è installata ($000000 in su).
+        // Chip RAM, as much as is installed ($000000 up).
         if (chipRAM != null && addr >= 0 && addr + 1 < chipRAM.size()) {
             return chipRAM.readWord(addr) & 0xFFFF;
         }
-        // Slow RAM ($C00000-$C7FFFF, 512 KB) — molti giochi vi caricano il codice.
+        // Slow RAM ($C00000-$C7FFFF, 512 KB): many games load their code there.
         if (slowRAM != null && addr >= 0xC00000 && addr + 1 < 0xC80000) {
             return slowRAM.readWord(addr - 0xC00000) & 0xFFFF;
         }
-        // Kickstart ROM, finestra del socket $F80000-$FFFFFF — per disassemblare codice
-        // ROM. L'offset si ricava mascherando, come fa Gary: una ROM da 256 KB si
-        // specchia due volte nella finestra, una da 512 KB la riempie tutta. Sottrarre
-        // una base fissa funzionerebbe solo per una delle due.
+        // Kickstart ROM, socket window $F80000-$FFFFFF, to disassemble ROM code. The offset
+        // is masked as Gary does: a 256 KB ROM mirrors twice in the window, a 512 KB one
+        // fills it.
         if (rom != null && addr >= 0xF80000) {
             return rom.readWord(addr & (rom.size() - 1)) & 0xFFFF;
         }
@@ -6452,7 +5768,7 @@ public abstract class AbstractAgnus {
         return (peekChipWord(addr) << 16) | peekChipWord(addr + 2);
     }
 
-    /** Stato live del display per la diagnostica (puntatori bitplane, finestra DDF/DIW). */
+    /** Live display state for diagnostics (bitplane pointers, DDF/DIW window). */
     public String getDisplayStateString() {
         int bc0 = denise != null ? denise.getBplcon0() : 0;
         return String.format(
@@ -6467,7 +5783,7 @@ public abstract class AbstractAgnus {
             bpl1mod, bpl2mod, bplcon1 & 0xFFFF, dmacon & 0xFFFF);
     }
 
-    /** Traccia fisica del drive selezionato (diagnostica disco); -1 se nessuno. */
+    /** Physical track of the selected drive (disk diagnostics); -1 if none. */
     public int getSelectedDriveTrack() {
         FloppyDrive d = getSelectedDrive();
         return d != null ? d.getPhysicalTrack() : -1;
@@ -6498,7 +5814,7 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Memory accessors usati dal disassemblatore / debugger
+    // Memory accessors for the disassembler / debugger
     // =========================================================================
 
     public int peekByte(int address) {
@@ -6537,10 +5853,10 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Lettura di uno spazio CIA per il debugger. Passa da {@code MOS8520.peekRegister},
-     * non da {@code readRegister}: quest'ultima, sull'ICR, rilascia la linea /IRQ e arma
-     * il pipeline di ack — cioè un dump di memoria che attraversi $BFExxx cancellerebbe
-     * un interrupt pendente della macchina osservata.
+     * Read of a CIA space for the debugger. It goes through {@code MOS8520.peekRegister}, not
+     * {@code readRegister}: on the ICR the latter releases the /IRQ line and arms the ack
+     * pipeline, so a memory dump crossing $BFExxx would clear a pending interrupt of the
+     * machine being inspected.
      */
     private int peekCiaData(Gary.Target target, int address) {
         int reg = (address >> 8) & 0x0F;
