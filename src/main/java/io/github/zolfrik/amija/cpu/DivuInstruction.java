@@ -31,6 +31,9 @@ public class DivuInstruction extends AbstractM68kInstruction {
         this.m68010 = m68010;
     }
 
+    /** Clocks of one quotient-bit step, indexed by previous quotient bit, MSB and new quotient bit. */
+    private static final int[] STEP_CLOCKS = {8, 8, 4, 6, 6, 6, 4, 4};
+
     private static final int EXT1 = 0;
     private static final int EXT2 = 1;
     private static final int SRC_VAL = 2;
@@ -161,8 +164,7 @@ public class DivuInstruction extends AbstractM68kInstruction {
                     int next_msw = ((msw << 1) | bit) & 0x1FFFF;
                     int q = 0;
                     if (next_msw >= divisor) { next_msw = (next_msw - divisor) & 0xFFFF; q = 1; }
-                    int[] T = {8, 8, 4, 6, 6, 6, 4, 4};
-                    int timing = T[pq * 4 + msb * 2 + q];
+                    int timing = STEP_CLOCKS[pq * 4 + msb * 2 + q];
                     loopCounter--;
                     setTemp(cpu, ACC, (next_msw << 16) | (next_lsw | q));
                     setTemp(cpu, PQ, q);

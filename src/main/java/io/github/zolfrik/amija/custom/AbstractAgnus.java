@@ -994,27 +994,11 @@ public abstract class AbstractAgnus {
     // (eolHandler). 0 == BusOwner.NONE.ordinal(), so the int default is NONE.
     // 228, not 227: the NTSC long line (LOL) has one more CCK, index 227.
     private final int[] busOwners = new int[228];
-    public final int[] diagDmaOwners = new int[228]; // DIAG-TEMP
-
-
-    /** DIAG: for the accesses of a PC window (default IK+'s firework loop, $3000-$31FF),
-     *  how many DTACK decisions are blocked and by WHICH DMA owner (busOwners[]) or by the
-     *  odd-cycle wait. */
-    public static volatile boolean diagBlockTally = false;
-    public static final long[] diagBlk = new long[25];
-    public static long diagBlkOdd = 0, diagBlkTot = 0;
-
-    /** DIAG: raster-keyed capture of the events that place the bbusy bars (COLOR00 $180,
-     *  INTREQ $09C, BLTSIZE $058). hpos logged in CCK (hpos>>1). */
-    public static volatile boolean diagBb = false;
-    public static int diagBbCap = 60000;
-    public static final java.util.List<String> diagBbCol = new java.util.ArrayList<>();
-    public static final java.util.List<String> diagBbInt = new java.util.ArrayList<>();
-    public static final java.util.List<String> diagBbBlt = new java.util.ArrayList<>();
-    /** PC window (opcodeAddress) diagBlockTally samples. Default = IK+'s firework loop
-     *  ($3000-$3200). */
-    public static volatile int diagBlkPcLo = 0x3000;
-    public static volatile int diagBlkPcHi = 0x3200;
+    /**
+     * The DMA owner of every CCK of the line, before the CPU: unlike {@link #busOwners}, a CCK
+     * the CPU used for a fast access while a DMA held the chip bus keeps the DMA's name here.
+     */
+    public final int[] dmaOwners = new int[228];
 
 
     /**
@@ -2432,7 +2416,7 @@ public abstract class AbstractAgnus {
             }
 
             busOwners[cck] = owner.ordinal();
-            diagDmaOwners[cck] = owner.ordinal(); // DIAG-TEMP
+            dmaOwners[cck] = owner.ordinal();
 
             // AFTER the arbitration, not before: the DMA requests of the CCK are generated
             // first and the bitplane sequencer decides after. A machine armed at CCK X decides
@@ -3810,20 +3794,6 @@ public abstract class AbstractAgnus {
             boolean oddWait = (hpos & 1) != 0;
             boolean blocked = busTakenByCustom || oddWait;
             cpuBusResp.ack = !blocked;
-
-            if (diagBlockTally
-                    && cpu.getBusCycleState() == AbstractMotorola.BusCycleState.S4) {
-                int oa = cpu.getOpcodeAddress() & 0xFFFFFF;
-                if (oa >= diagBlkPcLo && oa < diagBlkPcHi) {
-                    diagBlkTot++;
-                    if (blocked) {
-                        if (busTakenByCustom) {
-                            int own = busOwners[hpos >> 1];
-                            if (own >= 0 && own < diagBlk.length) diagBlk[own]++;
-                        } else if (oddWait) diagBlkOdd++;
-                    }
-                }
-            }
         } else {
             // ROM or another target with no contention: DTACK at once.
             cpuBusResp.ack = true;
@@ -4550,25 +4520,6 @@ public abstract class AbstractAgnus {
 
     public void writeCustomRegister(int regAddr, int value) {
         regAddr &= 0x1FE;
-
-        if (diagBb) {
-            int cck = hpos >> 1;
-            if (regAddr == 0x180 && diagBbCol.size() < diagBbCap)
-                diagBbCol.add("COL v=" + vpos + " h=" + cck + " " + Integer.toHexString(value & 0xFFF));
-            else if (regAddr == 0x09C && (value & 0x8000) != 0 && diagBbInt.size() < diagBbCap)
-                diagBbInt.add("INT v=" + vpos + " h=" + cck + " bits=" + Integer.toHexString(value & 0x7FFF));
-            else if (regAddr == 0x058 && diagBbBlt.size() < diagBbCap) {
-                int bv = (value >> 6) & 0x3FF, bh = value & 0x3F;
-                if (bv == 0) bv = 1024;
-                if (bh == 0) bh = 64;
-                diagBbBlt.add("BLT v=" + vpos + " h=" + cck + " " + bh + "x" + bv);
-            }
-        }
-
-        /*if (regAddr == 0x180) {
-            int oldVal = denise != null ? denise.getPaletteColor(0) : 0;
-        }*/
-
 
         // Blitter
         if (regAddr >= 0x040 && regAddr <= 0x074) {
