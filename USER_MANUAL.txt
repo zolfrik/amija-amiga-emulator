@@ -291,7 +291,26 @@ CONTENTS
      Values . . . . . absolute path      Applies . . . BOOT
 
   +-------------------------------------------------------------------------+
-  |  Chip RAM:                                                   chipram.kb  |
+  |  Processor:                                                   cpu.model  |
+  +-------------------------------------------------------------------------+
+     The A500's 68000, or its drop-in successor the 68010: a little faster on
+     some instructions, with a movable vector table, a loop mode that runs a
+     one-instruction DBcc loop without fetching it again, and MOVEC, MOVES and
+     RTD. MOVE from SR is privileged on the 68010, so a few old games written
+     for the 68000 stop there; WHDLoad and hard disk software are happy with
+     either.
+     Values . . . . . 68000 / 68010     Applies . . . RESTART (automatic on OK)
+
+  +-------------------------------------------------------------------------+
+  |  Chipset:                                                       chipset  |
+  +-------------------------------------------------------------------------+
+     Custom chip generation. OCS is the original A500; ECS adds the enhanced
+     Agnus/Denise and their extra registers (BEAMCON0, DIWHIGH, BPLCON3,
+     productivity modes) and is what ECS-only titles expect.
+     Values . . . . . OCS / ECS         Applies . . . RESTART (automatic on OK)
+
+  +-------------------------------------------------------------------------+
+  |  Chip RAM:                                                chipram.kb  |
   +-------------------------------------------------------------------------+
      Memory shared by CPU and custom chips, from $000000 upwards. 512 KB is the
      stock A500; 1 MB or 2 MB is what most WHDLoad titles ask for.
@@ -357,25 +376,6 @@ CONTENTS
      NTSC (60 Hz, 262 lines). It sets the colour clock, the number of raster
      lines per frame and the Agnus ID the Kickstart reads.
      Values . . . . . PAL / NTSC        Applies . . . RESTART (automatic on OK)
-
-  +-------------------------------------------------------------------------+
-  |  Chipset:                                                       chipset  |
-  +-------------------------------------------------------------------------+
-     Custom chip generation. OCS is the original A500; ECS adds the enhanced
-     Agnus/Denise and their extra registers (BEAMCON0, DIWHIGH, BPLCON3,
-     productivity modes) and is what ECS-only titles expect.
-     Values . . . . . OCS / ECS         Applies . . . RESTART (automatic on OK)
-
-  +-------------------------------------------------------------------------+
-  |  Processor:                                                   cpu.model  |
-  +-------------------------------------------------------------------------+
-     The A500's 68000, or its drop-in successor the 68010: a little faster on
-     some instructions, with a movable vector table, a loop mode that runs a
-     one-instruction DBcc loop without fetching it again, and MOVEC, MOVES and
-     RTD. MOVE from SR is privileged on the 68010, so a few old games written
-     for the 68000 stop there; WHDLoad and hard disk software are happy with
-     either.
-     Values . . . . . 68000 / 68010     Applies . . . RESTART (automatic on OK)
 
   ---------------------------------------------------------------------------
   3.3   DRIVES (AUTOMATIC MODE)

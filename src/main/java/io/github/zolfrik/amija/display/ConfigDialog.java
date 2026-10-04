@@ -284,37 +284,38 @@ public final class ConfigDialog {
         tip("label.kickstart31", ks31Label, ks31Field);
         addRow(system, 3, ks31Label, ks31Field, ks31Browse);
 
-        // The five entries below describe the machine's hardware. With Expert off the
+        // The six entries below describe the machine's hardware. With Expert off the
         // emulator decides them and the rows disappear entirely: someone who does not know
         // the Amiga has no way to choose between OCS and ECS, and seeing them read-only does
         // not help. They reappear, editable, as soon as Expert is switched on.
+
+        // Processor (68000/68010): a change requires a cold restart.
+        JComboBox<CpuModel> cpuCombo = new JComboBox<>(CpuModel.values());
+        cpuCombo.setSelectedItem(config.cpuModel());
+        cpuCombo.setMaximumSize(dim(160, 26));
+        JLabel cpuLabel = addRow(system, 4, "label.cpu", cpuCombo, null);
+
+        // OCS/ECS chipset: like the processor, a change requires a cold restart.
+        JComboBox<Chipset> chipsetCombo = new JComboBox<>(Chipset.values());
+        chipsetCombo.setSelectedItem(config.chipset());
+        chipsetCombo.setMaximumSize(dim(160, 26));
+        JLabel chipsetLabel = addRow(system, 5, "label.chipset", chipsetCombo, null);
+
         JComboBox<Integer> chipCombo = kbCombo(CHIP_RAM_OPTIONS, config.chipRamKb());
-        JLabel chipLabel = addRow(system, 4, "label.chipram", chipCombo, null);
+        JLabel chipLabel = addRow(system, 6, "label.chipram", chipCombo, null);
 
         JComboBox<Integer> slowCombo = kbCombo(SLOW_RAM_OPTIONS, config.slowRamKb());
-        JLabel slowLabel = addRow(system, 5, "label.slowram", slowCombo, null);
+        JLabel slowLabel = addRow(system, 7, "label.slowram", slowCombo, null);
 
         JComboBox<Integer> fastCombo = kbCombo(FAST_RAM_OPTIONS, config.fastRamKb());
-        JLabel fastLabel = addRow(system, 6, "label.fastram", fastCombo, null);
+        JLabel fastLabel = addRow(system, 8, "label.fastram", fastCombo, null);
 
         // PAL/NTSC video mode: changing it requires restarting the emulator (handled by
         // Amija: an OK with a different mode forces a cold restart).
         JComboBox<VideoMode> videoModeCombo = new JComboBox<>(VideoMode.values());
         videoModeCombo.setSelectedItem(config.videoMode());
         videoModeCombo.setMaximumSize(dim(160, 26));
-        JLabel videoLabel = addRow(system, 7, "label.videomode", videoModeCombo, null);
-
-        // OCS/ECS chipset: like the video mode, a change requires a cold restart.
-        JComboBox<Chipset> chipsetCombo = new JComboBox<>(Chipset.values());
-        chipsetCombo.setSelectedItem(config.chipset());
-        chipsetCombo.setMaximumSize(dim(160, 26));
-        JLabel chipsetLabel = addRow(system, 8, "label.chipset", chipsetCombo, null);
-
-        // Processor (68000/68010): like the chipset, a change requires a cold restart.
-        JComboBox<CpuModel> cpuCombo = new JComboBox<>(CpuModel.values());
-        cpuCombo.setSelectedItem(config.cpuModel());
-        cpuCombo.setMaximumSize(dim(160, 26));
-        JLabel cpuLabel = addRow(system, 9, "label.cpu", cpuCombo, null);
+        JLabel videoLabel = addRow(system, 9, "label.videomode", videoModeCombo, null);
 
         // -------------------------------------------------------------------
         // Section: Game ports
