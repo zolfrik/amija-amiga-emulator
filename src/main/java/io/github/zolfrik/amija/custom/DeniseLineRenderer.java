@@ -1,0 +1,1603 @@
+/*
+ * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * Copyright (C) 2026 zolfrik
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+package io.github.zolfrik.amija.custom;
+
+import static io.github.zolfrik.amija.custom.AbstractDenise.COLCHANGE_KILLEHB;
+import static io.github.zolfrik.amija.custom.AbstractDenise.amigaToRGB;
+import static io.github.zolfrik.amija.custom.AbstractDenise.deniseBpu;
+import static io.github.zolfrik.amija.custom.AbstractDenise.deniseSpecials;
+import static io.github.zolfrik.amija.custom.AbstractDenise.dualPlayfieldIndex;
+import static io.github.zolfrik.amija.custom.AbstractDenise.isDualPlayfield;
+import static io.github.zolfrik.amija.custom.AbstractDenise.isEHB;
+import static io.github.zolfrik.amija.custom.AbstractDenise.isHAM;
+import static io.github.zolfrik.amija.custom.AbstractDenise.isHamActive;
+
+import io.github.zolfrik.amija.custom.AbstractDenise.RegChange;
+import io.github.zolfrik.amija.custom.AbstractDenise.RegChangeRecorder;
+import java.util.Arrays;
+
+/**
+ * The end-of-line half of Denise: turns a completed line into RGB pixels and collision bits.
+ *
+ * <p>{@link AbstractDenise} is the front end. During the line it holds the live registers,
+ * shifts the bitplane words out into the line's index buffer and records every register write
+ * with the pixel at which it acts. At the end of the line it hands all of that over in a
+ * {@link DeniseLineJob}, and this class does the rest: the horizontal window mask, the BPL1DAT gates,
+ * playfield priority, the sprites, the collisions and the colours.
+ *
+ * <p>The renderer reads nothing but its jobs and its own state, which carries from one line to
+ * the next (the start-of-line snapshots, the window flip-flop, the plane maximum...). The
+ * registers it replays (palette, sprites) are its own copies, started from the live values the
+ * job carries. Its output for a sequence of jobs is therefore fixed by that sequence alone.
+ */
+final class DeniseLineRenderer {
+
+    private static final int HPIXELS    = AbstractDenise.RAW_LINE_PIXELS;
+    private static final int HBLANK_MIN = 0x12;
+
+    private boolean isECS;
+
+    void setEcs(boolean ecs) {
+        this.isECS = ecs;
+    }
+
+    // Inputs of the line being rendered, taken from its job.
+    private byte[] dBuffer;
+    private RegChangeRecorder conChanges, diwChanges, colChanges;
+    private RegChangeRecorder[] sprChanges;
+    private int maxHpos;
+    private int hcounterRenderHead;
+
+    /**
+     * Snapshot of the registers at the start of the current scanline. Used by
+     * translate/colorize to stay consistent when the Copper changes the registers mid-line.
+     */
+    // There is no initialBplcon1: the fine scroll is read live, see drawBitplanesAtPixel.
+    // BPLCON0 and BPLCON2 are start-of-line snapshots.
+    private int initialBplcon0, initialBplcon2;
+    private int lastRenderedBplcon0;
+
+    /**
+     * <b>The state of HSTRT/HSTOP at the START of the line; without it a mid-line write
+     * would apply backwards.</b> {@link #updateBorderBuffer()} runs at the end of the line,
+     * when the live HSTRT/HSTOP already hold the <b>new</b> value: starting from those, the
+     * pixels <i>before</i> the write would be masked with a coordinate not yet written, and
+     * {@link #diwChanges}, which reinserts it at its pixel, could not notice, since it would
+     * set a value already in use.
+     *
+     * <p>The difference shows only when the window moves within a line. The
+     * {@code Denise/DIW} bank (section 17) makes it observable: {@code diwtim.i} rewrites
+     * DIWSTOP twice per line alternating two coordinates 32 lores pixels apart, and on every
+     * line where the write falls <b>after</b> the counter has passed both, the old one must
+     * still apply. On {@code diwtim1} the window would close at 571 instead of 507: 64
+     * pixels of crop, i.e. exactly {@code $80 - $60}.
+     *
+     * <p>The opposite of the fine scroll, which is read live: what decides is <b>who consumes
+     * the value</b>. The fine scroll enters the output cursor while the line runs; the DIW
+     * mask is rebuilt all at once at the end of the line and so needs its own initial state.
+     */
+    private int     hstrtLineStart, hstopLineStart;
+    private boolean hflop = true;
+    private int     borderBufferIsDirty;
+    private int     borderColor;
+    /**
+     * True when the line being rendered is all border: the BPL1DAT gate never opens in it
+     * (see {@link #computeBpl1datGate}), so neither the playfield nor the sprites come out.
+     */
+    private boolean lineIsVBorder;
+    private int clxcon,  clxdat;
+    // PERF: mask of the sprites that drew pixels on the current scanline (cleared in
+    // hsyncHandler). Used to skip useless collision loops.
+    private int spritesOnLineMask;
+
+    /**
+     * The pixels the sprites emit on the line, recorded in the order they are produced.
+     *
+     * <p>The sprite shift registers ({@link #scanSprites}) run <b>before</b>
+     * {@link #translate()}, because the end of a sprite's display window is one of the
+     * instants at which Denise re-selects its rendering configuration (see
+     * {@link #renderPlanes}). The composition onto {@code mBuffer}/{@code zBuffer} must stay
+     * <b>after</b>, because the depth comparison reads the playfield's z: the emitted pixels
+     * accumulate here and {@link #blitSprites()} pours them downstream.
+     *
+     * <p>One entry per call: {@code sprEmitPos} is the raw pixel, {@code sprEmitValZ} packs
+     * the colour index (low 8 bits) and the depth (from bit 8). The pair of sub-pixels each
+     * emission covers is rebuilt by the blit.
+     */
+    private int[] sprEmitPos  = new int[1024];
+    private int[] sprEmitValZ = new int[1024];
+    private int   sprEmitCount;
+
+    /**
+     * The sprite state transitions on the line, which {@link #translate()} consumes to know
+     * <b>when</b> Denise re-selects its rendering configuration (see {@link #renderPlanes}).
+     * One entry per transition: the raw pixel and, packed, the sprite index (bits 0-2), the
+     * direction (bit 3) and which of the two states changes (bit 4: 0 = <i>armed</i>, i.e.
+     * SPRxDATA/SPRxCTL, 1 = <i>drawing</i>, i.e. the shift register loading or emptying).
+     *
+     * <p>Transitions are produced pair by pair, so out of order; {@link #scanSprites()} sorts
+     * them by pixel before handing them to {@link #translate()}.
+     */
+    private int[] sprStateEvtPos = new int[64];
+    private int[] sprStateEvtKey = new int[64];
+    private int   sprStateEvtCount;
+    /** Sprites drawing at the start of the line (shift register not empty). */
+    private int   armedsLineStart;
+
+    private static final int SPR_EVT_UP     = 0x08;
+    private static final int SPR_EVT_ARMEDS = 0x10;
+
+    private void recordSprStateEvt(int pos, int key) {
+        if (pos >= HPIXELS) return;
+        if (sprStateEvtCount == sprStateEvtPos.length) {
+            sprStateEvtPos = java.util.Arrays.copyOf(sprStateEvtPos, sprStateEvtCount * 2);
+            sprStateEvtKey = java.util.Arrays.copyOf(sprStateEvtKey, sprStateEvtCount * 2);
+        }
+        sprStateEvtPos[sprStateEvtCount] = pos;
+        sprStateEvtKey[sprStateEvtCount] = key;
+        sprStateEvtCount++;
+    }
+    /** The colour registers as colorize() replays them; they start from the job's live values. */
+    private final int[] palette = new int[32];
+    // State of the colour registers at the START of the current scanline (= end of the
+    // previous one). The live COLOR00..31 already hold every write of the line when it ends,
+    // but colorize() must rebuild each segment from the colour INHERITED from the previous
+    // line and apply the changes at their triggers. Without this snapshot the segment
+    // BEFORE the first change would use the post-write value, and a MOVE COLOR00 in the
+    // middle of a visible line (e.g. vAmigaTS synccpu) would colour the whole left part
+    // with the new colour. The colour counterpart of initialBplcon0.
+    private final int[] paletteLineStart = new int[32];
+
+    /**
+     * Start-of-line snapshot of the sprite registers: the exact twin of
+     * {@link #paletteLineStart}, for the same reason.
+     *
+     * <p>{@link #drawSpritePair} replays the register changes at their pixel triggers,
+     * starting from this snapshot. Starting from the <b>live</b> values, which at the end of
+     * the line already hold ALL of the line's writes, the segment before the first change
+     * would use the state after every change: a mid-line MOVE to SPRxDATA would arm the
+     * sprite to the left of where it was armed, a MOVE to SPRxCTL would disarm it to the
+     * left where it still has to draw, and the starting horizontal position (sprhppos, from
+     * POS/CTL) and the attach bit (SPRxCTL bit 7 of the odd sprite) would be those of the
+     * end of the line for the whole first chunk.
+     *
+     * <p>sprhppos is not in the snapshot because it is derived: {@link #updateSprHCoords}
+     * recomputes it from POS/CTL on restore.
+     */
+    private int       armedLineStart;
+    private final int[] sprposLineStart  = new int[8];
+    private final int[] sprctlLineStart  = new int[8];
+    private final int[] sprdataLineStart = new int[8];
+    private final int[] sprdatbLineStart = new int[8];
+    // The sprite registers as the sprite pass replays them; they start from the job's live
+    // values.
+    private final int[] sprdata  = new int[8];
+    private final int[] sprdatb  = new int[8];
+    private final int[] sprpos   = new int[8];
+    private final int[] sprctl   = new int[8];
+    private final int[] sprhppos = new int[8];  // horizontal start, precomputed in pixels
+    private final int[] ssra     = new int[8];  // shift register A per sprite
+    private final int[] ssrb     = new int[8];  // shift register B per sprite
+    private int armed;                 // bitmask of the armed sprites, replayed like the registers
+    private int spriteClipEnd;
+    /*
+     * BPL1DAT does not only arm the bitplanes, it also unblocks the sprites. A sprite comes
+     * out only when two conditions hold: it is inside the horizontal window (the bBuffer mask
+     * in colorize) and the BPL1DAT gate below is open.
+     */
+
+    /** The pixels of the BPL1DAT writes of the line, in the order they came (from the job). */
+    private final int[] bpl1datPixels = new int[64];
+    private int bpl1datCount;
+
+    /**
+     * A BPL1DAT gate: a flip-flop that a BPL1DAT write opens and the start of the horizontal
+     * blank closes. The blank starts where Denise's horizontal counter reaches
+     * {@link #hblankStartCounter()}, so it is a position of the line only when the counter was
+     * reset: on a line whose strobe did not reset it the close falls elsewhere, or nowhere, and
+     * the gate state crosses the line boundary. Denise has two, closed together: one lets the
+     * playfield out, the other the sprites, and on OCS Denise a BPL1DAT during the colour burst
+     * opens only the first.
+     *
+     * <p>For the line being rendered, in raw pixels before the enable offsets, the gate is open
+     * over [{@code openA}, {@code closeA}) and from {@code openB} on. {@code openA} is
+     * {@link Integer#MIN_VALUE} when the gate comes open from the previous line, and an absent
+     * interval has its start at {@link Integer#MAX_VALUE}. A BPL1DAT in the colour clock of the
+     * close comes before it: Denise takes the register at the start of the clock and compares
+     * the counter after, so the close wins.
+     */
+    private static final class Bpl1datGate {
+        private int openA = Integer.MAX_VALUE, closeA = Integer.MAX_VALUE, openB = Integer.MAX_VALUE;
+        /** The state at the end of the last rendered line. */
+        private boolean carried;
+        private int firstBefore, firstAfter;
+
+        void begin() {
+            firstBefore = Integer.MAX_VALUE;
+            firstAfter = Integer.MAX_VALUE;
+        }
+
+        void add(int pixel, int close) {
+            if (pixel <= close) firstBefore = Math.min(firstBefore, pixel);
+            else                firstAfter  = Math.min(firstAfter, pixel);
+        }
+
+        void end(int close) {
+            openA  = carried ? Integer.MIN_VALUE : firstBefore;
+            closeA = close;
+            openB  = firstAfter;
+            carried = firstAfter != Integer.MAX_VALUE
+                    || (close == Integer.MAX_VALUE && openA != Integer.MAX_VALUE);
+        }
+
+        /** Whether the gate is open at {@code pos}, opening {@code offset} pixels late. */
+        boolean openAt(int pos, int offset) {
+            if (openA != Integer.MAX_VALUE && pos < closeA
+                    && (openA == Integer.MIN_VALUE || pos >= openA + offset)) {
+                return true;
+            }
+            return openB != Integer.MAX_VALUE && pos >= openB + offset;
+        }
+
+        /** Whether the gate opens anywhere in the first {@code len} pixels. */
+        boolean opensWithin(int offset, int len) {
+            final boolean a = openA != Integer.MAX_VALUE && closeA > 0
+                    && (openA == Integer.MIN_VALUE || (long) openA + offset < Math.min(closeA, len));
+            final boolean b = openB != Integer.MAX_VALUE && (long) openB + offset < len;
+            return a || b;
+        }
+
+        /** Zeroes {@code buf} wherever the gate, opening {@code offset} pixels late, is closed. */
+        void clearWhereClosed(byte[] buf, int offset) {
+            final int len = buf.length;
+            int pos = 0;
+            if (openA != Integer.MAX_VALUE) {
+                final long start = openA == Integer.MIN_VALUE ? Long.MIN_VALUE : (long) openA + offset;
+                final int s = (int) Math.max(0, Math.min(len, start));
+                final int e = (int) Math.max(0, Math.min(len, (long) closeA));
+                if (s > pos) Arrays.fill(buf, pos, s, (byte) 0);
+                pos = Math.max(pos, Math.max(s, e));
+            }
+            if (openB != Integer.MAX_VALUE) {
+                final int s = (int) Math.max(0, Math.min(len, (long) openB + offset));
+                if (s > pos) Arrays.fill(buf, pos, s, (byte) 0);
+                pos = len;
+            }
+            if (len > pos) Arrays.fill(buf, pos, len, (byte) 0);
+        }
+    }
+
+    private final Bpl1datGate playfieldGate = new Bpl1datGate();
+    private final Bpl1datGate spriteGate    = new Bpl1datGate();
+
+    /** The counter value at which the horizontal blank starts. */
+    private int hblankStartCounter() {
+        return isECS ? 0x10 : 0x0F;
+    }
+
+    /**
+     * Whether the colour burst is on at counter value {@code counter}, as the counter reads at a
+     * BPL1DAT pixel. OCS Denise only: a BPL1DAT then does not let the sprites out.
+     */
+    private boolean burstAt(int counter) {
+        return !isECS && counter >= BURST_FIRST_COUNTER && counter <= BURST_LAST_COUNTER;
+    }
+
+    private static final int BURST_FIRST_COUNTER = 0x41;
+    private static final int BURST_LAST_COUNTER  = 0x53;
+
+    /**
+     * The two gates of the line being rendered and the state they leave to the next line. The
+     * close is the pixel at which the line's counter reaches the start of the horizontal blank;
+     * a line covers 454 of the 512 counter values, and when it misses that one the gates are not
+     * closed at all.
+     */
+    private void computeBpl1datGate() {
+        final int lineSteps = maxHpos;
+        final int s = (hblankStartCounter() - hcounterRenderHead) & 0x1FF;
+        final int close = s < lineSteps ? 2 * (s - HDIW_HEAD_STEPS) : Integer.MAX_VALUE;
+        final int mainCounter = (hcounterRenderHead + HDIW_HEAD_STEPS) & 0x1FF;
+        playfieldGate.begin();
+        spriteGate.begin();
+        for (int k = 0; k < bpl1datCount; k++) {
+            final int p = bpl1datPixels[k];
+            playfieldGate.add(p, close);
+            if (!burstAt((mainCounter + (p >> 1)) & 0x1FF)) spriteGate.add(p, close);
+        }
+        playfieldGate.end(close);
+        spriteGate.end(close);
+        bpl1datCount = 0;
+    }
+
+    /**
+     * Distance between the BPL1DAT write and the pixel from which the sprite becomes
+     * visible again, in raw pixels (2 per half CCK). <b>Measured</b>: see the plan, section
+     * 20, class A.
+     */
+    private static final int SPRITE_ENABLE_OFFSET = 0;
+
+    /**
+     * The same gap for the PLAYFIELD, which comes back one colour clock after the sprite:
+     * the bitplane output resumes from the CCK that follows the BPL1DAT write, in raw
+     * pixels (4 per CCK). MEASURED and bracketed on both sides - 2 leaves a lores pixel
+     * of playfield that should not be there, 6 eats one that should.
+     */
+    private static final int BPL_ENABLE_OFFSET = 4;
+
+    /** Total pixels rendered per sprite in the current frame (reset at every vsync). */
+    private final long[] spritePixelsThisFrame = new long[8];
+    /** Total pixels rendered per sprite in the most recently completed frame. */
+    private final long[] spritePixelsLastFrame = new long[8];
+
+    // =========================================================================
+    // Line buffer
+    // =========================================================================
+
+    /**
+     * dBuffer: raw bitplane colour index (before priority), the job's.
+     * bBuffer: border/DIW mask. 0xFF = inside DIW, otherwise the border colour.
+     * mBuffer: final colour index after priority resolution.
+     * zBuffer: depth buffer (higher value = closer to the viewer).
+     */
+    private final byte[] bBuffer = new byte[HPIXELS + 64 + 8];
+    private final byte[] mBuffer = new byte[HPIXELS + 64 + 8];
+    private final int[]  zBuffer = new int [HPIXELS + 64 + 8];
+    private int[]        rgbLine = new int[HPIXELS];   // the job's, once a line has been rendered
+
+    // =========================================================================
+    // Z-buffer constants (priority/depth)
+    // Higher value = layer closer to the front.
+    //
+    // Order (nearest to farthest):
+    //   Z_0 > Z_SP0 > Z_SP1 > Z_1 > Z_SP2 > Z_SP3 > Z_2 >
+    //   Z_SP4 > Z_SP5 > Z_3 > Z_SP6 > Z_SP7 > Z_4
+    //
+    // zPF maps the PFxP field of BPLCON2:
+    //   PFP = 0 -> Z_4 (behind every sprite)
+    //   PFP = 4 -> Z_0 (in front of every sprite)
+    //
+    // The values are distinct powers of 2, so the OR of a set of Z constants keeps the
+    // highest-priority level as its MSB. That makes "z > zBuffer[p]" a correct priority
+    // test even when zBuffer accumulates several layers through OR.
+    //
+    // The auxiliary masks used by translateDPF (0x01-0x07) all fall below Z_4 (0x0008), so
+    // they never interfere with the Z_SP comparisons.
+    // =========================================================================
+
+    private static final int Z_0   = 0x8000;
+    private static final int Z_SP0 = 0x4000;
+    private static final int Z_SP1 = 0x2000;
+    private static final int Z_1   = 0x1000;
+    private static final int Z_SP2 = 0x0800;
+    private static final int Z_SP3 = 0x0400;
+    private static final int Z_2   = 0x0200;
+    private static final int Z_SP4 = 0x0100;
+    private static final int Z_SP5 = 0x0080;
+    private static final int Z_3   = 0x0040;
+    private static final int Z_SP6 = 0x0020;
+    private static final int Z_SP7 = 0x0010;
+    private static final int Z_4   = 0x0008;
+
+    /** All eight sprite depth bits. */
+    private static final int Z_SP_ALL = Z_SP0 | Z_SP1 | Z_SP2 | Z_SP3 | Z_SP4 | Z_SP5 | Z_SP6 | Z_SP7;
+
+    /** How many pixels before the opening of the display window the sprite output is taken. */
+    private static final int DIW_OPEN_SPRITE_SAMPLE_PX = 1;
+
+    /** Pixel sampled for the display-window opening collision, -1 if none on this line. */
+    private int diwOpenSamplePx = -1;
+    /** Depth bits of the sprites that had a pixel there, whether clipped or not. */
+    private int diwOpenSpriteZ;
+
+    private static final int[] Z_SP = {
+        Z_SP0, Z_SP1, Z_SP2, Z_SP3, Z_SP4, Z_SP5, Z_SP6, Z_SP7
+    };
+
+    /**
+     * Mask covering the Z bits of all 8 sprites (used by colorizeHAM).
+     */
+    private static final int Z_ALL_SPRITES =
+        Z_SP0 | Z_SP1 | Z_SP2 | Z_SP3 | Z_SP4 | Z_SP5 | Z_SP6 | Z_SP7;
+    // = 0x4000|0x2000|0x0800|0x0400|0x0100|0x0080|0x0020|0x0010 = 0x6BB0
+    /**
+     * The MAXIMUM number of planes since the last decay.
+     *
+     * <p><b>It does not rise when BPLCON0 changes: it rises when Denise re-selects its
+     * rendering configuration</b> ({@link #selectLts}). The two almost always coincide (a
+     * change in the number of planes always re-selects), but they are different rules, and
+     * the difference shows at the line boundary. If the plane count decreases mid-scanline,
+     * old data in the higher planes' shifters must still be shifted out.
+     *
+     * <p>It decays at the <b>start</b> of every drawn line, back to the live count, and that
+     * decay does <b>not</b> re-select anything in lores: that is exactly why
+     * {@link #renderPlanes} can stay higher for part of the next line.
+     */
+    private int deniseMaxPlanes = 0;
+
+    /**
+     * The planes with which the current <b>rendering configuration</b> was chosen, and the
+     * value that decides whether the two undocumented functions of priority >= 5 apply;
+     * see {@link AbstractDenise#deniseSpecials}.
+     *
+     * <p><b>It survives the line boundary.</b> It is the snapshot of
+     * {@link #deniseMaxPlanes} taken at the last {@link #selectLts}, and nothing refreshes it
+     * until the next one: the start-of-line decay lowers the maximum but does not
+     * re-select, so a line can begin with a five-plane configuration while composing four.
+     *
+     * <p>That is why this value cannot be read live inside {@link #translate()}: the point
+     * where it returns to the real count is not a hardware position but the first
+     * re-selection instant, and on a line with sprites that instant is the <b>end of the
+     * display window</b> of the last sprite that was drawing.
+     */
+    private int renderPlanes = 0;
+
+    /**
+     * {@code true} if the current rendering configuration is the variant <b>with
+     * sprites</b>: {@link #selectLts} chooses it by whether at that instant at least one
+     * sprite was armed or drawing, and it decides whether a disarm counts as a re-selection.
+     */
+    private boolean spriteLtsSelected = false;
+
+    /**
+     * Re-selection of Denise's rendering configuration.
+     *
+     * @param planesNow  the <b>live</b> planes at the instant of the re-selection
+     * @param armedCnt   sprites armed (SPRxDATA written, SPRxCTL not yet)
+     * @param armedsCnt  sprites <b>drawing</b> at this instant
+     */
+    private void selectLts(int planesNow, int armedCnt, int armedsCnt) {
+        if (planesNow > deniseMaxPlanes) deniseMaxPlanes = planesNow;
+        renderPlanes      = deniseMaxPlanes;
+        spriteLtsSelected = armedCnt > 0 || armedsCnt > 0;
+    }
+    private void updateSprHCoords(int x) {
+        sprhppos[x] = spriteStart(((sprpos[x] & 0xFF) << 1) | (sprctl[x] & 0x01));
+    }
+
+    /**
+     * Where a sprite with horizontal start {@code hstart} loads in the line being rendered:
+     * the buffer position at which Denise's horizontal counter reaches it, one lores pixel
+     * later. The counter of the line starts at {@link #hcounterRenderHead}, so on a line whose
+     * strobe did not reset it the sprite moves, or does not come out at all. A start in the
+     * head of the line is a negative position.
+     */
+    private int spriteStart(int hstart) {
+        int d = (hstart - ((hcounterRenderHead + HDIW_HEAD_STEPS) & 0x1FF)) & 0x1FF;
+        if (d >= 0x200 - HDIW_HEAD_STEPS) d -= 0x200;
+        return 2 * d + 2;
+    }
+    // =========================================================================
+    // Main rendering pipeline (one job per completed line)
+    // =========================================================================
+
+    /**
+     * Renders the line {@code job} carries and leaves its buffers ready for reuse: the bitplane
+     * buffer cleared and every change recorder emptied.
+     */
+    void render(DeniseLineJob job) {
+        final int vpos = job.vpos;
+        dBuffer            = job.dBuffer;
+        rgbLine            = job.rgb;
+        conChanges         = job.conChanges;
+        diwChanges         = job.diwChanges;
+        colChanges         = job.colChanges;
+        sprChanges         = job.sprChanges;
+        clxcon             = job.clxcon;
+        hcounterRenderHead = job.hcounterRenderHead;
+        maxHpos            = job.maxHpos;
+        System.arraycopy(job.bpl1datPixels, 0, bpl1datPixels, 0, job.bpl1datCount);
+        bpl1datCount       = job.bpl1datCount;
+        // The registers the replays start from are the line's live end state, as Denise holds
+        // them when the line closes; the replays bring them back to that state.
+        System.arraycopy(job.palette, 0, palette, 0, 32);
+        System.arraycopy(job.sprpos,  0, sprpos,  0, 8);
+        System.arraycopy(job.sprctl,  0, sprctl,  0, 8);
+        System.arraycopy(job.sprdata, 0, sprdata, 0, 8);
+        System.arraycopy(job.sprdatb, 0, sprdatb, 0, 8);
+        armed = job.armed;
+        // A DIW write in the line invalidates the cached border mask for this line and the next.
+        if (!diwChanges.isEmpty()) borderBufferIsDirty = Math.max(borderBufferIsDirty, 2);
+
+        lastRenderedBplcon0 = initialBplcon0;
+        if (vpos == 0) {
+            System.arraycopy(spritePixelsThisFrame, 0, spritePixelsLastFrame, 0, 8);
+            Arrays.fill(spritePixelsThisFrame, 0L);
+        }
+        // rgbLine is not pre-filled here: both branches below already cover the WHOLE
+        // rgbLine[0..HPIXELS): the visible branch through colorize() (colorizeNormal/
+        // colorizeHAM write every pixel, borders included, because the colChanges segments
+        // tile [0,HPIXELS)), the VBlank branch through fillVBlankLine().
+
+        updateBorderBuffer();
+        computeBpl1datGate();
+
+        if (job.visible) {
+            // Visible scanline: full pipeline.
+            // OCS: sprites are visible only on lines that produced bitplane output. A line
+            // without bitplanes (vertical border, even inside the DIW, e.g. North & South
+            // turns the bitplanes off below the flags but leaves the DIW open until line
+            // 299) is all border: the cursor/sprite does NOT appear on it (sprites in the
+            // border only with BRDSPRT on ECS).
+            // A line on which the BPL1DAT gate never opens is all border. See
+            // computeBpl1datGate: the gate can also come open from the previous line.
+            lineIsVBorder = !playfieldGate.opensWithin(SPRITE_ENABLE_OFFSET, HPIXELS);
+            findDiwOpeningSample();
+            // The sprite shift registers run BEFORE the playfield: the end of their display
+            // window is one of the instants at which Denise re-selects the rendering
+            // configuration translate() consumes (see renderPlanes). The composition onto
+            // the buffers stays downstream, because it compares the playfield's z.
+            scanSprites();
+            translate();
+            blitSprites();
+            checkCollisions();
+            colorize(vpos);
+        } else {
+            lineIsVBorder = false;
+            // VBlank: fill with the background colour to avoid a black band.
+            fillVBlankLine(vpos);
+
+            // In VBlank scanSprites() is NOT called: rendering would consume the
+            // sprChanges and could dirty mBuffer/zBuffer for the first visible scanline.
+            // The recorders are still emptied explicitly, so the sprite events recorded
+            // during VBlank do not accumulate.
+            for (int i = 0; i < 4; i++) sprChanges[i].clear();
+
+            colChanges.clear();
+            conChanges.clear();
+        }
+
+        // The decay of the plane maximum is NOT here: it is at the start of the DRAWN line,
+        // inside translate(), after the start-of-line re-selection. See deniseMaxPlanes.
+
+        // Buffer cleanup for the next scanline.
+        //
+        //  - dBuffer: written with |= by the front end's shift-register emission and read
+        //    ENTIRELY by translate (arraycopy dBuffer -> mBuffer). Needs a full clear before
+        //    it goes back to the front end.
+        //  - zBuffer: translate() ASSIGNS (not OR) zBuffer[0..HPIXELS) on every visible line
+        //    before any read; the tail [HPIXELS, length) is not touched by translate but is
+        //    used by blitSprites (|=) and by the reads, so only the tail is cleared.
+        //  - mBuffer: translate() overwrites it ENTIRELY through arraycopy at the start of
+        //    the pipeline, before any read: no clear needed.
+        //
+        // In VBlank the buffers are not read (see the else branch above), so leaving
+        // [0,HPIXELS) of zBuffer uncleared is safe across the VBlank -> visible line
+        // transition too (translate reassigns before reading).
+        Arrays.fill(dBuffer, (byte) 0);
+        Arrays.fill(zBuffer, HPIXELS, zBuffer.length, 0);
+        for (int i = 0; i < 8; i++) { ssra[i] = 0; ssrb[i] = 0; }
+        spritesOnLineMask = 0;
+
+        // Sprites can be visible anywhere on the active line; the horizontal position is
+        // already filtered by sprhppos (negative when in blanking).
+        spriteClipEnd   = HPIXELS + 32;
+
+        // Snapshot of the registers: the "initial" state of the scanline about to start,
+        // before any update.
+        initialBplcon0 = job.bplcon0;
+        initialBplcon2 = job.bplcon2;
+        // Same reasoning as the palette, for the horizontal window: updateBorderBuffer() has
+        // just consumed the line, so the live values are those the NEXT line inherits. See
+        // hstrtLineStart.
+        hstrtLineStart = job.hstrt;
+        hstopLineStart = job.hstop;
+        // Snapshot of the colour registers at the END of the line (= start of the next): in
+        // the visible branch colorize() has just brought palette[] back to the end-of-line
+        // state; in the VBlank branch palette[] already holds the live values. Either way it
+        // is the state the next scanline inherits.
+        System.arraycopy(palette, 0, paletteLineStart, 0, 32);
+        // Same reasoning for the sprite registers: in the visible branch scanSprites() has
+        // just brought the registers back to the end-of-line state by replaying the changes,
+        // in the VBlank branch they are already live. Either way it is the state the next
+        // scanline inherits. See armedLineStart.
+        armedLineStart = armed;
+        System.arraycopy(sprpos,  0, sprposLineStart,  0, 8);
+        System.arraycopy(sprctl,  0, sprctlLineStart,  0, 8);
+        System.arraycopy(sprdata, 0, sprdataLineStart, 0, 8);
+        System.arraycopy(sprdatb, 0, sprdatbLineStart, 0, 8);
+
+        diwChanges.clear();
+        conChanges.clear();
+        colChanges.clear();
+
+        // The results the output stage reads, besides the pixels already in job.rgb.
+        job.lastRenderedBplcon0 = lastRenderedBplcon0;
+        job.vBorder = lineIsVBorder;
+        int mask = 0;
+        for (int k = 0; k < 4; k++) {
+            if (isPlayfieldAt(AbstractDenise.RIGHT_HBLANK_WRAP_COL + k)) mask |= 1 << k;
+        }
+        job.wrapPlayfieldMask = mask;
+    }
+
+    // =========================================================================
+    // VBlank fill
+    // =========================================================================
+
+    /**
+     * Fills a scanline in the VBlank area with the current background colour. Without it,
+     * the pixels left uninitialised would show black.
+     */
+    private void fillVBlankLine(int vpos) {
+        int bgRGB    = amigaToRGB(palette[0]);
+        Arrays.fill(rgbLine, bgRGB);
+    }
+    // =========================================================================
+    // Phase 2: updateBorderBuffer, computes bBuffer (DIW/border mask)
+    // =========================================================================
+
+    /**
+     * Counter steps of the head of a line: after the strobe resets the counter to 2, the steps
+     * before the rendered buffer starts at {@code 2 * HBLANK_MIN}.
+     */
+    private static final int HDIW_HEAD_STEPS = 2 * HBLANK_MIN - 2;
+
+    /**
+     * Sub-pixels of the line's own part of the horizontal comparator: from the end of the head
+     * to where the next line's head begins, 0x1C8 on a line whose counter was reset.
+     */
+    private static final int HDIW_MAIN_SUBPIXELS = 2 * (0x1C8 - 2 * HBLANK_MIN);
+
+    /** Inputs and outcome of the last main-part scan, to reuse bBuffer when nothing moved. */
+    private boolean mainStartFlop, mainEndFlop;
+    private int     mainStartHstrt = -1, mainStartHstop = -1, mainStartCounter = -1;
+
+    /**
+     * Border mask of the line: the horizontal display window is a flip-flop that the
+     * counter comparisons set (start) and clear (stop), and that carries its state from
+     * one line to the next.
+     *
+     * <p>The comparator runs on every value Denise's horizontal counter takes, not only on
+     * those of the rendered buffer, and the counter is Denise's own: it starts the line at
+     * {@link #hcounterRenderHead} and wraps at 512. After a reset that is 2, and the line sweeps
+     * 2 to 455; on a line whose strobe did not reset it (the equalization lines on OCS Denise, a
+     * strobe lost to a bitplane fetch) it sweeps other values, 456 to 511 included.
+     *
+     * <p>The head of the line - its first {@link #HDIW_HEAD_STEPS} counter steps - precedes
+     * HBLANK_MIN and produces no pixel, but it is compared with the DIW coordinates in force
+     * at that instant, writes made there included (they are recorded at their real, negative,
+     * position). A start coordinate in the head therefore opens the window for the rest of the
+     * line.
+     *
+     * <p>The main part starts from the state the head leaves, with the coordinates of that
+     * instant, and applies the later DIW writes at their positions. With equal coordinates
+     * the stop wins, the two comparisons being separate and in that order.
+     */
+    private void updateBorderBuffer() {
+        final int head = hcounterRenderHead;
+        int     hs = hstrtLineStart;
+        int     he = hstopLineStart;
+        boolean hf = hflop;
+        int     diwIdx = 0;
+
+        // Head: no pixel comes out of it, only the flip-flop state.
+        for (int s = 0; s < HDIW_HEAD_STEPS; s++) {
+            final int counter = (head + s) & 0x1FF;
+            final int i = 2 * (s - HDIW_HEAD_STEPS);
+            while (diwIdx < diwChanges.size() && i >= diwChanges.keys[diwIdx]) {
+                RegChange c = diwChanges.elements[diwIdx++];
+                if      (c.reg == 0x08E) hs = c.value;
+                else if (c.reg == 0x090) he = c.value;
+            }
+            if (counter == hs) hf = true;
+            if (counter == he) hf = false;
+        }
+
+        // Same inputs as the previous line and no DIW write in between: same mask.
+        final int mainCounter = (head + HDIW_HEAD_STEPS) & 0x1FF;
+        if (borderBufferIsDirty == 0 && hf == mainStartFlop && mainCounter == mainStartCounter
+                && hs == mainStartHstrt && he == mainStartHstop) {
+            hflop = mainEndFlop;
+            return;
+        }
+        if (borderBufferIsDirty > 0) borderBufferIsDirty--;
+        mainStartFlop    = hf;
+        mainStartHstrt   = hs;
+        mainStartHstop   = he;
+        mainStartCounter = mainCounter;
+
+        int counter = mainCounter;
+        int i = 0;
+        for (; i < HDIW_MAIN_SUBPIXELS; i++) {
+            while (diwIdx < diwChanges.size() && i >= diwChanges.keys[diwIdx]) {
+                RegChange c = diwChanges.elements[diwIdx++];
+                if      (c.reg == 0x08E) hs = c.value;
+                else if (c.reg == 0x090) he = c.value;
+            }
+            if (counter == hs) hf = true;
+            if (counter == he) hf = false;
+            if ((i & 1) == 1) counter = (counter + 1) & 0x1FF;
+            bBuffer[i] = hf ? (byte) 0xFF : (byte) borderColor;
+        }
+        // Past the wrap: the next line's head decides, this line keeps its final state.
+        Arrays.fill(bBuffer, i, HPIXELS, hf ? (byte) 0xFF : (byte) borderColor);
+
+        if (hflop != hf) borderBufferIsDirty = Math.max(borderBufferIsDirty, 1);
+        hflop       = hf;
+        mainEndFlop = hf;
+    }
+
+    // =========================================================================
+    // Phase 3: translate, resolves playfield priority -> mBuffer + zBuffer
+    // =========================================================================
+
+    private void translate() {
+        // BPL1DAT gates the playfield output, not just the sprites: before the first
+        // BPL1DAT of the line Denise emits no bitplane pixel at all, so the shift
+        // registers contribute nothing even when they still hold a word from an earlier
+        // line. Zeroing dBuffer here covers the three consumers that read it - the
+        // playfield index, the playfield collisions and the HAM decoder - with one rule.
+        playfieldGate.clearWhereClosed(dBuffer, BPL_ENABLE_OFFSET);
+
+        System.arraycopy(dBuffer, 0, mBuffer, 0, mBuffer.length);
+
+        int     pixel          = 0;
+        int     currentBplcon0 = initialBplcon0;
+        int     currentBplcon2 = initialBplcon2;
+        int     conIdx         = 0;
+        int     sprIdx         = 0;
+        int     armedCnt       = Integer.bitCount(armedLineStart);
+        int     armedsCnt      = Integer.bitCount(armedsLineStart);
+
+        // Start of the line, in this order: first the re-selection that fires when no
+        // sprite is in play any more, THEN the decay of the plane maximum. That is why the
+        // maximum can survive the line: the decay re-selects nothing in lores.
+        if (armedCnt == 0 && armedsCnt == 0 && spriteLtsSelected) {
+            selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
+        }
+        deniseMaxPlanes = deniseBpu(currentBplcon0);
+
+        while (pixel < HPIXELS) {
+            int nextCon = conIdx < conChanges.size()  ? conChanges.keys[conIdx]  : HPIXELS;
+            int nextSpr = sprIdx < sprStateEvtCount   ? sprStateEvtPos[sprIdx]   : HPIXELS;
+            int trigger = Math.min(nextCon, nextSpr);
+
+            if (trigger > pixel) {
+                if (isDualPlayfield(currentBplcon0)) {
+                    translateDPF(pixel, trigger, currentBplcon2);
+                } else {
+                    translateSPF(pixel, trigger, currentBplcon2, deniseBpu(currentBplcon0));
+                }
+                pixel = trigger;
+            }
+            if (trigger >= HPIXELS) break;
+
+            if (nextCon == trigger) {
+                RegChange c = conChanges.elements[conIdx++];
+                if (c.reg == 0x100) {
+                    int old = currentBplcon0;
+                    currentBplcon0 = c.value;
+                    // A re-selection is requested by a change of resolution, number of
+                    // planes or mode. BPLCON2 does not appear because on OCS its only effect
+                    // on the mode is KILLEHB, an ECS bit.
+                    if (deniseBpu(old) != deniseBpu(currentBplcon0)
+                            || ((old ^ currentBplcon0) & 0x8000) != 0
+                            || bplMode(old) != bplMode(currentBplcon0)) {
+                        selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
+                    }
+                } else if (c.reg == 0x104) {
+                    currentBplcon2 = c.value;
+                }
+            } else {
+                int key = sprStateEvtKey[sprIdx++];
+                boolean up = (key & SPR_EVT_UP) != 0;
+                if ((key & SPR_EVT_ARMEDS) != 0) {
+                    armedsCnt += up ? 1 : -1;
+                    // End of the display window of the last sprite that was drawing. What
+                    // counts here is NOT how many sprites are armed, only that none is
+                    // drawing any more. No need to check `spriteLtsSelected`: a sprite cannot
+                    // reach the drawing state without an earlier re-selection having seen it
+                    // armed.
+                    if (!up && armedsCnt == 0) {
+                        selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
+                    }
+                } else {
+                    armedCnt += up ? 1 : -1;
+                    if (up && armedCnt == 1 && !spriteLtsSelected) {
+                        selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
+                    } else if (!up && armedCnt == 0 && armedsCnt == 0 && spriteLtsSelected) {
+                        selectLts(deniseBpu(currentBplcon0), armedCnt, armedsCnt);
+                    }
+                }
+            }
+        }
+
+        conChanges.clear();
+    }
+
+    /**
+     * Denise's mode as a priority chain. Used only to know whether a BPLCON0 change
+     * re-selects the rendering configuration.
+     */
+    private static int bplMode(int bplcon0) {
+        if (isHAM(bplcon0))           return 3;
+        if (isDualPlayfield(bplcon0)) return 2;
+        if (isEHB(bplcon0))           return 1;
+        return 0;
+    }
+
+    /**
+     * Single playfield: the sprite/playfield priority uses the PF2P bits (bplcon2 bits 3-5),
+     * NOT PF1P. In single-playfield mode the playfield counts as "playfield 2" for its
+     * priority against the sprites. With BPLCON2 where PF1P != PF2P (e.g. the Ultima VI menu,
+     * BPLCON2=0x0008 -> PF1P=0, PF2P=1) the sprite cursor must stay IN FRONT of the
+     * playfield.
+     */
+    private void translateSPF(int from, int to, int bplcon2, int planesNow) {
+        int plf2pri = (bplcon2 >> 3) & 7;
+        int zpf2    = zPF(plf2pri);
+        // The "SWIV" rule lives here: single playfield, at least 5 planes and PF2P >= 5. The
+        // dual-playfield twin is in translateDPF. See deniseSpecials().
+        //
+        // The two conditions are of a different nature and must be kept apart: the LIVE
+        // plane count and PF2P decide whether the special applies, while the planes of the
+        // current rendering configuration (renderPlanes) gate the routine.
+        boolean specials = planesNow >= 5 && plf2pri >= 5 && renderPlanes >= 5;
+        for (int i = from; i < to && i < mBuffer.length; i++) {
+            int s = mBuffer[i] & 0x3F;
+            if (specials) {
+                s = deniseSpecials(s, renderPlanes, false, bplcon2 & 7, plf2pri);
+                mBuffer[i] = (byte) s;
+            }
+            zBuffer[i] = (s != 0) ? zpf2 : 0;
+        }
+    }
+
+    /**
+     * Dual playfield: separates the even (PF1) and odd (PF2) bits and resolves priority from
+     * bplcon2.
+     */
+    private void translateDPF(int from, int to, int bplcon2) {
+        boolean pf2pri  = (bplcon2 & 0x0040) != 0;
+        int     plf1pri = bplcon2 & 7;
+        int     plf2pri = (bplcon2 >> 3) & 7;
+        int     zpf1    = zPF(plf1pri);
+        int     zpf2    = zPF(plf2pri);
+
+        for (int i = from; i < to && i < mBuffer.length; i++) {
+            int s    = dBuffer[i] & 0x3F;
+            // Bits 0,2,4 -> PF1 (odd planes); bits 1,3,5 -> PF2 (even planes)
+            int idx1 = (s & 1) | ((s & 4) >> 1) | ((s & 16) >> 2);
+            int idx2 = ((s & 2) >> 1) | ((s & 8) >> 2) | ((s & 32) >> 3);
+
+            // The COLOUR comes from the table shared with HAM+DPF, which already reads bits
+            // 6/7 of the transparent playfield; the PRIORITY (and so the z for the sprites)
+            // is still decided by the real planes, because a transparent playfield still
+            // covers the one behind it.
+            int pv  = deniseSpecials(s, renderPlanes, true, plf1pri, plf2pri);
+            byte colour = (byte) dualPlayfieldIndex(pv, pf2pri);
+
+            if (idx1 != 0) {
+                if (idx2 != 0) {
+                    // Both playfields visible: the configured priority wins
+                    if (pf2pri) { mBuffer[i] = colour; zBuffer[i] = zpf2 | 0x05; }
+                    else        { mBuffer[i] = colour; zBuffer[i] = zpf1 | 0x04; }
+                } else {
+                    mBuffer[i] = colour;              zBuffer[i] = zpf1 | 0x02;
+                }
+            } else {
+                if (idx2 != 0) { mBuffer[i] = colour; zBuffer[i] = zpf2 | 0x03; }
+                else           { mBuffer[i] = 0;      zBuffer[i] = 0x01; }
+            }
+        }
+    }
+
+    /**
+     * Maps the value of the BPLCON2 PFxP priority bits to the corresponding Z level.
+     *
+     * The scale uses "0 = highest priority" (like the hardware interrupt levels):
+     *   PFP = 0 -> Z_0 (playfield in front of ALL the sprites)
+     *   PFP = 1 -> Z_1 (playfield in front of SP2..SP7, behind SP0/SP1)
+     *   PFP = 2 -> Z_2 (playfield in front of SP4..SP7, behind SP0..SP3)
+     *   PFP = 3 -> Z_3 (playfield in front of SP6/SP7, behind the others)
+     *   PFP = 4 -> Z_4 (playfield behind ALL the sprites)
+     *
+     * E.g. BPLCON2=0x0024 (PFP=4): sprite 0 (the cursor) in front of the text.
+     */
+    private static int zPF(int prio) {
+        switch (prio) {
+            case 0: return Z_0;
+            case 1: return Z_1;
+            case 2: return Z_2;
+            case 3: return Z_3;
+            case 4: return Z_4;
+            default: return 0;
+        }
+    }
+
+    // =========================================================================
+    // Phase 4: scanSprites, shifts the sprite shift registers and emits the pixels
+    // =========================================================================
+
+    private void scanSprites() {
+        // Start again from the state INHERITED from the previous line: this line's writes
+        // have already updated the live registers, but the replay of sprChanges must apply
+        // them at their triggers. Restoring the start-of-line snapshot, the segment before
+        // the first change uses the old (correct) values and the replay brings the registers
+        // back to the end-of-line state. Same as colorize()/palette.
+        armed = armedLineStart;
+        System.arraycopy(sprposLineStart,  0, sprpos,  0, 8);
+        System.arraycopy(sprctlLineStart,  0, sprctl,  0, 8);
+        System.arraycopy(sprdataLineStart, 0, sprdata, 0, 8);
+        System.arraycopy(sprdatbLineStart, 0, sprdatb, 0, 8);
+        for (int i = 0; i < 8; i++) updateSprHCoords(i);
+
+        sprStateEvtCount = 0;
+        armedsLineStart  = 0;
+        for (int i = 0; i < 8; i++) {
+            if ((ssra[i] | ssrb[i]) != 0) armedsLineStart |= (1 << i);
+        }
+
+        for (int pair = 0; pair < 4; pair++) drawSpritePair(pair);
+
+        sortSprStateEvents();
+    }
+
+    /**
+     * Sorts by pixel the transitions collected pair by pair. They are few (a handful per
+     * line at most) and almost always already sorted: a stable insertion sort is enough and
+     * allocates nothing.
+     */
+    private void sortSprStateEvents() {
+        for (int i = 1; i < sprStateEvtCount; i++) {
+            int pos = sprStateEvtPos[i], key = sprStateEvtKey[i];
+            int j = i - 1;
+            while (j >= 0 && sprStateEvtPos[j] > pos) {
+                sprStateEvtPos[j + 1] = sprStateEvtPos[j];
+                sprStateEvtKey[j + 1] = sprStateEvtKey[j];
+                j--;
+            }
+            sprStateEvtPos[j + 1] = pos;
+            sprStateEvtKey[j + 1] = key;
+        }
+    }
+
+    private void drawSpritePair(int pair) {
+        int                  s1       = pair * 2;
+        int                  s2       = pair * 2 + 1;
+        RegChangeRecorder    recorder = sprChanges[pair];
+
+        int     strt    = 0;
+        // The start follows the counter of this line, which the POS/CTL writes did not know.
+        updateSprHCoords(s1);
+        updateSprHCoords(s2);
+        int     strt1   = sprhppos[s1];
+        int     strt2   = sprhppos[s2];
+        // `armed` has already been brought back to the start-of-line state by
+        // scanSprites(); the replay below raises/lowers it at the triggers and leaves it, at
+        // the end of the loop, in the end-of-line state, which the snapshot will take for
+        // the next line.
+        boolean a1      = (armed & (1 << s1)) != 0;
+        boolean a2      = (armed & (1 << s2)) != 0;
+
+
+        for (int recIdx = 0; recIdx < recorder.size(); ) {
+            int trigger = recorder.keys[recIdx];
+            renderSpriteChunk(strt, trigger, pair, strt1, strt2, a1, a2);
+            strt = trigger;
+
+            RegChange c    = recorder.elements[recIdx++];
+            int       sIdx = (c.reg - 0x140) / 8;
+            /*
+             * Identifies the sub-register from the offset in the 8-byte block:
+             *   offset & 6 == 0 -> POS
+             *   offset & 6 == 2 -> CTL
+             *   offset & 6 == 4 -> DATA (A)
+             *   offset & 6 == 6 -> DATB (B)
+             */
+            int sub = c.reg & 6;
+            if (sub == 4) {                          // DATA
+                sprdata[sIdx] = c.value;
+                if ((armed & (1 << sIdx)) == 0) {
+                    recordSprStateEvt(trigger, sIdx | SPR_EVT_UP);
+                }
+                armed |= (1 << sIdx);
+            } else if (sub == 6) {                   // DATB
+                sprdatb[sIdx] = c.value;
+            } else if (sub == 0) {                   // POS
+                sprpos[sIdx] = c.value;
+                updateSprHCoords(sIdx);
+                if (sIdx == s1) strt1 = sprhppos[s1]; else strt2 = sprhppos[s2];
+            } else {                                 // CTL (sub == 2)
+                sprctl[sIdx] = c.value;
+                updateSprHCoords(sIdx);
+                if (sIdx == s1) strt1 = sprhppos[s1]; else strt2 = sprhppos[s2];
+                // A CTL write disarms the sprite for the remainder of this scanline.
+                if ((armed & (1 << sIdx)) != 0) {
+                    recordSprStateEvt(trigger, sIdx);
+                }
+                armed &= ~(1 << sIdx);
+            }
+            a1 = (armed & (1 << s1)) != 0;
+            a2 = (armed & (1 << s2)) != 0;
+        }
+        renderSpriteChunk(strt, HPIXELS, pair, strt1, strt2, a1, a2);
+        recorder.clear();
+    }
+
+    private void renderSpriteChunk(int from, int to, int pair,
+                                   int strt1, int strt2,
+                                   boolean armed1, boolean armed2) {
+        int     s1  = pair * 2;
+        int     s2  = pair * 2 + 1;
+
+        // PERF: when both shift registers of the pair are empty, the ONLY possible effect of
+        // the loop over [from,to) is the arming of a sprite (the register loading at its
+        // horizontal position strt). Jump straight to the first reachable arming; if there
+        // is none, the chunk produces nothing and returns. The reachability condition
+        // (parity of strt-from, given the +2 step) replicates the loop EXACTLY: no change in
+        // behaviour, only skipped iterations.
+        if ((ssra[s1] | ssrb[s1] | ssra[s2] | ssrb[s2]) == 0) {
+            int next = Integer.MAX_VALUE;
+            if (armed1 && strt1 >= from && strt1 < to && (((strt1 - from) & 1) == 0)) next = strt1;
+            if (armed2 && strt2 >= from && strt2 < to && (((strt2 - from) & 1) == 0) && strt2 < next) next = strt2;
+            if (next == Integer.MAX_VALUE) return;
+            from = next;
+        }
+
+        boolean att = (sprctl[s2] & 0x80) != 0;
+
+        for (int hpos = from; hpos < to; hpos += 2) {
+            if (hpos == strt1 && armed1) {
+                boolean was = (ssra[s1] | ssrb[s1]) != 0;
+                ssra[s1] = sprdata[s1]; ssrb[s1] = sprdatb[s1];
+                if (((ssra[s1] | ssrb[s1]) != 0) != was) {
+                    recordSprStateEvt(hpos, s1 | SPR_EVT_ARMEDS | (was ? 0 : SPR_EVT_UP));
+                }
+            }
+            if (hpos == strt2 && armed2) {
+                boolean was = (ssra[s2] | ssrb[s2]) != 0;
+                ssra[s2] = sprdata[s2]; ssrb[s2] = sprdatb[s2];
+                if (((ssra[s2] | ssrb[s2]) != 0) != was) {
+                    recordSprStateEvt(hpos, s2 | SPR_EVT_ARMEDS | (was ? 0 : SPR_EVT_UP));
+                }
+            }
+
+            int r1 = ssra[s1] | ssrb[s1];
+            int r2 = ssra[s2] | ssrb[s2];
+            if ((r1 | r2) != 0) {
+                // The sprite output exists under the border too; only its display is clipped.
+                if (diwOpenSamplePx >= hpos && diwOpenSamplePx <= hpos + 1) {
+                    if ((((ssra[s1] >> 15) & 1) | ((ssrb[s1] >> 14) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s1];
+                    if ((((ssra[s2] >> 15) & 1) | ((ssrb[s2] >> 14) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s2];
+                }
+                if (spriteGate.openAt(hpos, SPRITE_ENABLE_OFFSET) && hpos < spriteClipEnd) {
+                    if (att) drawAttachedSpritePixel(hpos, s2);
+                    else   { drawSpritePixel(hpos, s1); drawSpritePixel(hpos, s2); }
+                }
+                // Shift of the sprite registers (1 bit per CCK = 2 sub-pixels in HPIXELS)
+                ssra[s1] = (ssra[s1] << 1) & 0xFFFF; ssrb[s1] = (ssrb[s1] << 1) & 0xFFFF;
+                ssra[s2] = (ssra[s2] << 1) & 0xFFFF; ssrb[s2] = (ssrb[s2] << 1) & 0xFFFF;
+                // The sprite stops drawing at the pixel AFTER the one that emptied its shift
+                // register: the last pixel out is still the one just shifted. After the shift
+                // only what was below bit 15 stays on, so there is no need to re-read the
+                // registers.
+                if (r1 != 0 && (r1 & 0x7FFF) == 0) recordSprStateEvt(hpos + 2, s1 | SPR_EVT_ARMEDS);
+                if (r2 != 0 && (r2 & 0x7FFF) == 0) recordSprStateEvt(hpos + 2, s2 | SPR_EVT_ARMEDS);
+            }
+        }
+    }
+
+    /** Plain sprite: 2 colour bits (from the MSB of ssrA and of ssrB). */
+    private void drawSpritePixel(int hpos, int x) {
+        int col = ((ssra[x] >> 15) & 1) | ((ssrb[x] >> 14) & 2);
+        if (col != 0) {
+            int z    = Z_SP[x];
+            int base = 16 + (x & 6) * 2;  // palette[16..19/20..23/24..27/28..31]
+            emitSpritePixel(hpos, base | col, z);
+            spritePixelsThisFrame[x] += 2;
+            spritesOnLineMask |= (1 << x);
+        }
+    }
+
+    /** Queues a sprite emission; the depth comparison happens in the blit. */
+    private void emitSpritePixel(int hpos, int value, int z) {
+        if (sprEmitCount == sprEmitPos.length) {
+            sprEmitPos  = java.util.Arrays.copyOf(sprEmitPos,  sprEmitCount * 2);
+            sprEmitValZ = java.util.Arrays.copyOf(sprEmitValZ, sprEmitCount * 2);
+        }
+        sprEmitPos[sprEmitCount]  = hpos;
+        sprEmitValZ[sprEmitCount] = (value & 0xFF) | (z << 8);
+        sprEmitCount++;
+    }
+
+    /**
+     * Pours onto {@code mBuffer}/{@code zBuffer} the pixels {@link #scanSprites()} emitted,
+     * in the same order and with the same depth comparison: the z always accumulates, the
+     * colour wins only over what is further back.
+     */
+    private void blitSprites() {
+        for (int i = 0; i < sprEmitCount; i++) {
+            int hpos  = sprEmitPos[i];
+            int valz  = sprEmitValZ[i];
+            byte val  = (byte) (valz & 0xFF);
+            int  z    = valz >>> 8;
+            for (int p = hpos; p <= hpos + 1 && p < zBuffer.length; p++) {
+                if (z > zBuffer[p]) mBuffer[p] = val;
+                zBuffer[p] |= z;
+            }
+        }
+        sprEmitCount = 0;
+    }
+
+    /**
+     * Attached sprite: 4 colour bits (two paired sprites, 15 colours + transparent).
+     *
+     * The 4-bit code indexes colour registers 16-31 DIRECTLY (one palette shared by every
+     * pair), so the base is ALWAYS 16; the per-pair offset 16+(x&6)*2 applies only to plain
+     * 2-bit sprites (drawSpritePixel).
+     *
+     * The depth Z of an attached pair is that of the even sprite (the leader of the pair,
+     * the higher Z): Z_SP[x & ~1] gives Z_SP0, Z_SP2, Z_SP4, Z_SP6 for x = 1, 3, 5, 7.
+     *
+     * @param x  index of the ODD sprite of the pair (1, 3, 5, 7)
+     */
+    private void drawAttachedSpritePixel(int hpos, int x) {
+        // x is the odd sprite of the pair; x-1 the even one
+        int col = ((ssra[x-1] >> 15) & 1) | ((ssrb[x-1] >> 14) & 2)
+                | ((ssra[x]   >> 13) & 4) | ((ssrb[x]   >> 12) & 8);
+        if (col != 0) {
+            // Z of the even sprite (the higher priority in the pair)
+            int z    = Z_SP[x & ~1];
+            // With the per-pair offset, on pairs other than 0+1 the codes 8-11 would land on
+            // colours 28-31 instead of 24-27 (e.g. the flesh of Last Battle's hero, colour 27
+            // EC8, would become 31 842: an orange sprite instead of skin tone).
+            int base = 16;
+            emitSpritePixel(hpos, base | col, z);
+            spritePixelsThisFrame[x - 1] += 2;
+            spritePixelsThisFrame[x]     += 2;
+            spritesOnLineMask |= (1 << (x - 1)) | (1 << x);
+        }
+    }
+
+    // =========================================================================
+    // Phase 5: checkCollisions, updates CLXDAT from zBuffer/dBuffer
+    // =========================================================================
+
+    /**
+     * A pixel takes part in collisions only if Denise <b>renders</b> it: inside the
+     * horizontal window and after the first BPL1DAT of the line. They are the same two bits
+     * that hide the sprite (the BPL1DAT gate is the second), and they apply to the playfield
+     * too: outside them there is no bitplane pixel to compare, and taking one for a real
+     * value creates collisions the hardware does not report; with CLXCON expecting zero on a
+     * plane, the border (where {@code dBuffer} is 0) would trigger the comparison over the
+     * whole line.
+     */
+    private boolean collisionActiveAt(int pos) {
+        return spriteGate.openAt(pos, SPRITE_ENABLE_OFFSET) && pos < spriteClipEnd
+                && bBuffer[pos] == (byte) 0xFF;
+    }
+
+    private void checkCollisions() {
+        // PERF (bit-identical): skips the collision loops that cannot produce any bit in
+        // clxdat. checkS2PCollisions(x) would walk the whole line only to 'continue' if
+        // sprite x has no pixels; checkS2SCollisions cannot produce collisions if fewer than
+        // two sprite pairs are on the line. The skipped loops do not change clxdat.
+        int m = spritesOnLineMask;
+        if (m != 0) {
+            int pairMask = ((m & 0x03) != 0 ? 1 : 0) | ((m & 0x0C) != 0 ? 2 : 0)
+                         | ((m & 0x30) != 0 ? 4 : 0) | ((m & 0xC0) != 0 ? 8 : 0);
+            if (Integer.bitCount(pairMask) >= 2) checkS2SCollisions();
+            for (int i = 0; i < 8; i++) {
+                if ((m & (1 << i)) != 0) checkS2PCollisions(i);
+            }
+        }
+        checkP2PCollisions();
+        checkDiwOpeningCollisions();
+    }
+
+    /**
+     * Where the horizontal display window opens, the sprite output of the pixel before it
+     * collides once with a bitplane pixel of value 0, even though that pixel is border and
+     * no BPL1DAT has been written yet: sprite against sprite, and sprite against the playfield
+     * through CLXCON as for any other pixel. OCS/ECS behaviour, and the only collision that
+     * does not need a rendered pixel.
+     */
+    private void checkDiwOpeningCollisions() {
+        if (diwOpenSamplePx >= 0 && diwOpenSpriteZ != 0) {
+            collideSpritesWithZeroPixel(diwOpenSpriteZ, (initialBplcon0 & 0x0400) != 0);
+        }
+    }
+
+    /**
+     * Finds the pixel whose sprite output {@link #checkDiwOpeningCollisions()} uses: the one
+     * before the first opening of the horizontal display window on this line, or -1.
+     */
+    private void findDiwOpeningSample() {
+        diwOpenSamplePx = -1;
+        diwOpenSpriteZ = 0;
+        for (int pos = DIW_OPEN_SPRITE_SAMPLE_PX; pos < HPIXELS; pos++) {
+            if (bBuffer[pos] == (byte) 0xFF && bBuffer[pos - 1] != (byte) 0xFF) {
+                diwOpenSamplePx = pos - DIW_OPEN_SPRITE_SAMPLE_PX;
+                return;
+            }
+        }
+    }
+
+    /** Collisions of the sprites present in depth mask {@code z} with a playfield pixel of 0. */
+    private void collideSpritesWithZeroPixel(int z, boolean dpf) {
+        int z_s01 = Z_SP0 | ((clxcon & 0x1000) != 0 ? Z_SP1 : 0);
+        int z_s23 = Z_SP2 | ((clxcon & 0x2000) != 0 ? Z_SP3 : 0);
+        int z_s45 = Z_SP4 | ((clxcon & 0x4000) != 0 ? Z_SP5 : 0);
+        int z_s67 = Z_SP6 | ((clxcon & 0x8000) != 0 ? Z_SP7 : 0);
+        if ((z & z_s01) != 0 && (z & z_s23) != 0) clxdat |= 0x0200;
+        if ((z & z_s01) != 0 && (z & z_s45) != 0) clxdat |= 0x0400;
+        if ((z & z_s01) != 0 && (z & z_s67) != 0) clxdat |= 0x0800;
+        if ((z & z_s23) != 0 && (z & z_s45) != 0) clxdat |= 0x1000;
+        if ((z & z_s23) != 0 && (z & z_s67) != 0) clxdat |= 0x2000;
+        if ((z & z_s45) != 0 && (z & z_s67) != 0) clxdat |= 0x4000;
+
+        // A pixel value of 0 matches a playfield when the enabled match bits are all 0.
+        final boolean pf1 = (clxcon & 0x15 & ((clxcon >> 6) & 0x15)) == 0;
+        final boolean pf2 = (clxcon & 0x2A & ((clxcon >> 6) & 0x2A)) == 0;
+        for (int x = 0; x < 8; x++) {
+            if ((z & Z_SP[x]) == 0) continue;
+            if ((x & 1) != 0 && (clxcon & (1 << (12 + (x >> 1)))) == 0) continue;
+            if (pf2) clxdat |= 1 << (5 + (x >> 1));
+            // In single playfield the PF1 comparison is nested in the PF2 one.
+            if (pf1 && (dpf || pf2)) clxdat |= 1 << (1 + (x >> 1));
+        }
+    }
+
+    /**
+     * Sprite-sprite: checks collisions between the 4 sprite pairs.
+     *
+     *  - the sprite-sprite CLXDAT bits are 9..14 (HRM, CLXDAT);
+     *  - ODD sprites take part only if their ENSPx bit in CLXCON (bits 12..15) is set; even
+     *    sprites always take part.
+     */
+    private void checkS2SCollisions() {
+        int z_s01 = Z_SP0 | ((clxcon & 0x1000) != 0 ? Z_SP1 : 0);
+        int z_s23 = Z_SP2 | ((clxcon & 0x2000) != 0 ? Z_SP3 : 0);
+        int z_s45 = Z_SP4 | ((clxcon & 0x4000) != 0 ? Z_SP5 : 0);
+        int z_s67 = Z_SP6 | ((clxcon & 0x8000) != 0 ? Z_SP7 : 0);
+        for (int pos = 0; pos < HPIXELS; pos++) {
+            if (!collisionActiveAt(pos)) continue;
+            int z = zBuffer[pos];
+            if ((z & z_s01) != 0 && (z & z_s23) != 0) clxdat |= 0x0200;  // bit 9
+            if ((z & z_s01) != 0 && (z & z_s45) != 0) clxdat |= 0x0400;  // bit 10
+            if ((z & z_s01) != 0 && (z & z_s67) != 0) clxdat |= 0x0800;  // bit 11
+            if ((z & z_s23) != 0 && (z & z_s45) != 0) clxdat |= 0x1000;  // bit 12
+            if ((z & z_s23) != 0 && (z & z_s67) != 0) clxdat |= 0x2000;  // bit 13
+            if ((z & z_s45) != 0 && (z & z_s67) != 0) clxdat |= 0x4000;  // bit 14
+        }
+    }
+
+    /**
+     * Sprite-playfield for sprite x.
+     *
+     * CLXCON (HRM, CLXCON):
+     *   bits 11:6 = ENBP6..ENBP1, enable the comparison for each plane (1 = enabled)
+     *   bits  5:0 = MVBP6..MVBP1, value expected by the comparison
+     *
+     * PF1 uses the odd planes  (bits 0,2,4 of dBuffer = BPL1,3,5) -> mask 0x15
+     * PF2 uses the even planes (bits 1,3,5 of dBuffer = BPL2,4,6) -> mask 0x2A
+     *
+     * A PF1 pixel is "on" if:   (dBuffer & enabled1) == (match1 & enabled1)
+     * A PF2 pixel is "on" if:   (dBuffer & enabled2) == (match2 & enabled2)
+     */
+    private void checkS2PCollisions(int x) {
+        // Odd sprite: takes part only if its ENSPx bit in CLXCON is set.
+        if ((x & 1) != 0 && (clxcon & (1 << (12 + (x >> 1)))) == 0) return;
+
+        // Masks for PF1 (odd planes) and PF2 (even planes). The match value is masked with
+        // the enable: otherwise an MVBP bit set on a plane that is NOT enabled would make the
+        // comparison impossible.
+        int enabled1 = (clxcon >> 6) & 0x15;   // ENBP of bits 0,2,4
+        int enabled2 = (clxcon >> 6) & 0x2A;   // ENBP of bits 1,3,5
+        int match1   =  clxcon       & 0x15 & enabled1;   // MVBP of bits 0,2,4
+        int match2   =  clxcon       & 0x2A & enabled2;   // MVBP of bits 1,3,5
+
+        for (int pos = 0; pos < HPIXELS; pos++) {
+            if ((zBuffer[pos] & Z_SP[x]) == 0) continue;
+            if (!collisionActiveAt(pos)) continue;
+            int d = dBuffer[pos] & 0xFF;
+            // CLXDAT layout (HRM, CLXDAT):
+            //   bits 1-4 = sprite pair (x>>1) vs ODD planes  (PF1)
+            //   bits 5-8 = sprite pair (x>>1) vs EVEN planes (PF2)
+            if ((d & enabled2) == match2) {
+                clxdat |= (1 << (5 + (x >> 1)));
+            } else if ((zBuffer[pos] & 0x07) == 0) {
+                // Hardware quirk in single playfield: if PF2 does not match, PF1 does not
+                // match either. In DPF the two comparisons are PARALLEL, in SPF the PF1 one
+                // is NESTED inside the PF2 one; it is decided per pixel, because the Copper
+                // switches SPF/DPF WITHIN the line.
+                // The marker is not bit 0: translateDPF writes 0x01..0x05, and codes 0x02
+                // (only PF1 visible) and 0x04 (both, PF1 wins) have bit 0 CLEAR. Reading only
+                // `& 0x01` those pixels would pass for single playfield and get the nesting
+                // they must not have. translateSPF never writes the three low bits and the Z
+                // constants are all 0x0008 and up, so `& 0x07` is exactly "rendered in DPF".
+                continue;
+            }
+            if ((d & enabled1) == match1) clxdat |= (1 << (1 + (x >> 1)));
+        }
+    }
+
+    /**
+     * Playfield 1 vs playfield 2.
+     *
+     * A pixel belongs to PF1 if the enabled odd planes match the match value; likewise for
+     * PF2 with the even planes. A PF1-PF2 collision happens when the same pixel belongs to
+     * both playfields at once.
+     */
+    private void checkP2PCollisions() {
+        // The playfield-playfield collision is bit 0 of CLXDAT (HRM), not bit 14 (which is
+        // sprite 4/5 vs 6/7).
+        if ((clxdat & 0x0001) != 0) return;  // already detected
+
+        // Masks for PF1 and PF2; the match is masked with the enable
+        int enabled1 = (clxcon >> 6) & 0x15;
+        int enabled2 = (clxcon >> 6) & 0x2A;
+        int match1   =  clxcon       & 0x15 & enabled1;
+        int match2   =  clxcon       & 0x2A & enabled2;
+
+        for (int pos = 0; pos < HPIXELS; pos++) {
+            if (!collisionActiveAt(pos)) continue;
+            int d = dBuffer[pos] & 0xFF;
+            if ((d & enabled1) == match1 && (d & enabled2) == match2) {
+                clxdat |= 0x0001;
+                return;
+            }
+        }
+    }
+
+    // =========================================================================
+    // Phase 6: colorize, turns palette indices into RGB and writes to the display
+    // =========================================================================
+
+    private void colorize(int vpos) {
+        // Start again from the colour state INHERITED from the previous line: this line's
+        // writes have already updated the live palette[], but the replay of colChanges must
+        // apply them at their triggers. Restoring the start-of-line snapshot, the segment
+        // before the first change uses the old (correct) colour and the replay brings
+        // palette[] back to the end-of-line state.
+        System.arraycopy(paletteLineStart, 0, palette, 0, 32);
+        int     pixel   = 0;
+        int     hold    = palette[0];
+        boolean hamMode = isHamActive(initialBplcon0);
+        // EHB also follows BPLCON0 within the line, exactly like HAM. Decided once from
+        // initialBplcon0 (the start-of-line snapshot), a line on which the Copper raises BPU
+        // to 6 after the start would be coloured ENTIRELY at full brightness: one line per
+        // screen, the first of the six-plane block of `BPLPTR/drop6x` and `dropcpu6x`
+        // (line 22), $88F instead of $447.
+        int curBplcon0 = initialBplcon0;
+        boolean killEhb = ehbKilled(initialBplcon2);
+        boolean ehbMode = isEHB(curBplcon0) && !killEhb;
+        // The DPF bit the HAM decoder needs is the RAW one (bit 10 of BPLCON0), not the one
+        // of the priority chain: the decoder looks at it even when the mode is HAM. See
+        // dualPlayfieldIndex().
+        boolean hamDpf  = (initialBplcon0 & 0x0400) != 0;
+        // PF2PRI starts from the start-of-line snapshot and then follows the line's writes,
+        // carried by colChanges, where BPLCON2 enters when the bit changes. Required by
+        // `BPLCON2/dualpf3` and `dualpf7`, the two DPF+HAM tests in which the Copper lowers
+        // PF2PRI in the middle of the screen: without it the band with PF1 in front would
+        // start and end one line late.
+        boolean hamDpfPri = (initialBplcon2 & 0x0040) != 0;
+        int     colIdx  = 0;
+
+        while (colIdx < colChanges.size()) {
+            int trigger = colChanges.keys[colIdx];
+            if (hamMode) hold = colorizeHAM(vpos, pixel, trigger, hold, hamDpf, hamDpfPri);
+            else              colorizeNormal(vpos, pixel, trigger, ehbMode, killEhb);
+            pixel = trigger;
+            RegChange c = colChanges.elements[colIdx++];
+            if      (c.reg == 0x100) {
+                curBplcon0 = c.value;
+                hamMode = isHamActive(c.value);
+                ehbMode = isEHB(c.value) && !killEhb;
+                hamDpf  = (c.value & 0x0400) != 0;
+            }
+            else if (c.reg == 0x104)  hamDpfPri = (c.value & 0x0040) != 0;
+            else if (c.reg == COLCHANGE_KILLEHB) {
+                killEhb = ehbKilled(c.value);
+                ehbMode = isEHB(curBplcon0) && !killEhb;
+            }
+            else if (c.reg >= 0x180)  palette[(c.reg - 0x180) / 2] = c.value & 0xFFF;
+        }
+        if (hamMode) colorizeHAM(vpos, pixel, HPIXELS, hold, hamDpf, hamDpfPri);
+        else         colorizeNormal(vpos, pixel, HPIXELS, ehbMode, killEhb);
+
+        colChanges.clear();
+    }
+
+    private void colorizeNormal(int vpos, int from, int to, boolean ehb, boolean killEhb) {
+        for (int i = from; i < to && i < HPIXELS; i++) {
+            // lineIsVBorder -> line with no bitplane output: all border (no sprites)
+            // bBuffer[i] == 0xFF -> pixel inside the DIW -> uses mBuffer (final index)
+            // bBuffer[i] != 0xFF -> border pixel -> uses borderColor (index 0)
+            int cIdx  = lineIsVBorder ? (borderColor & 0x3F)
+                      : (bBuffer[i] == (byte) 0xFF) ? (mBuffer[i] & 0x3F) : (bBuffer[i] & 0x3F);
+            int color;
+            if ((cIdx & 0x20) == 0) {
+                color = palette[cIdx];
+            } else if (ehb) {
+                // Extra Half-Brite: brightness halved on all three channels
+                color = palette[cIdx & 0x1F];
+                int r = ((color >> 8) & 0xF) >> 1;
+                int g = ((color >> 4) & 0xF) >> 1;
+                int b =  (color       & 0xF) >> 1;
+                color = (r << 8) | (g << 4) | b;
+            } else if (killEhb) {
+                // KILLEHB: the sixth plane is ignored and the colour is the one of the
+                // five low bits.
+                color = palette[cIdx & 0x1F];
+            } else {
+                // The palette index does not wrap to five bits. The chip owns thirty-two
+                // colour registers, so a six-bit index outside EHB and HAM addresses a
+                // register that does not exist and the pixel is black. A sixth plane can
+                // reach here with a low BPU too: the render configuration stays at the
+                // last maximum (see renderPlanes) while the shift register finishes
+                // emptying, which is what a six-plane dual-playfield line does when it
+                // turns into single playfield in its last colour clock.
+                color = 0;
+            }
+            rgbLine[i] = amigaToRGB(color);
+        }
+    }
+
+    /**
+     * Colorize in HAM (Hold-And-Modify) mode.
+     *
+     * In HAM the 6 bits of dBuffer mean:
+     *   op  = dBuffer[5:4]  (00 = palette, 01 = modify B, 10 = modify R, 11 = modify G)
+     *   val = dBuffer[3:0]
+     *
+     * A sprite interrupts HAM only if its Z is above that of the current playfield
+     * (Z_ALL_SPRITES detects the sprite bits).
+     *
+     * In the border (bBuffer != 0xFF) the hold register is NOT updated: the bitplanes emit
+     * no data there, so no HAM operation happens and hold persists. (The colour shown is
+     * always palette[0], but hold is unchanged.)
+     *
+     * @param hold  last accumulated colour (12-bit 0x0RGB)
+     * @return      new value of hold at the end of the segment
+     */
+    private int colorizeHAM(int vpos, int from, int to, int hold, boolean hamDpf,
+                            boolean hamDpfPri) {
+        // Z of the current playfield. HAM is single playfield: the priority against the
+        // sprites uses PF2P (bits 3-5), as in translateSPF.
+        int zpf = zPF((initialBplcon2 >> 3) & 7);
+
+        for (int i = from; i < to && i < HPIXELS; i++) {
+            if (lineIsVBorder || bBuffer[i] != (byte) 0xFF) {
+                // Border area (horizontal or vertical): shows palette[0] but does NOT update
+                // hold. The bitplanes produce no output in the border, so the HAM operation
+                // does not run and hold persists.
+                rgbLine[i] = amigaToRGB(palette[0]);
+                continue;
+            }
+
+            // Is a sprite in front of the playfield? Detecting a sprite (Z_ALL_SPRITES) is
+            // not enough: the sprite's Z must be above the current playfield's Z.
+            // Integer.highestOneBit(sprBits) is the Z of the highest-priority sprite pixel.
+            int sprBits = zBuffer[i] & Z_ALL_SPRITES;
+            if (sprBits != 0 && Integer.highestOneBit(sprBits) > zpf) {
+                // The sprite is visible above the playfield: show the sprite colour but do
+                // NOT update hold (the HAM register is not touched).
+                rgbLine[i] = amigaToRGB(palette[mBuffer[i] & 0x1F]);
+                continue;
+            }
+
+            // HAM: decode op and val from the bitplane's 6 raw bits
+            int s   = dBuffer[i] & 0x3F;
+            int op  = (s >> 4) & 3;
+            // HAM + dual playfield: the operation is still HAM's (bits 5:4), but the VALUE is
+            // no longer `s & 0xF`: it is the index resolved by the PRIORITY of the two
+            // playfields. See dualPlayfieldIndex().
+            int val = hamDpf ? (dualPlayfieldIndex(s, hamDpfPri) & 0xF) : (s & 0xF);
+            int r   = (hold >> 8) & 0xF;
+            int g   = (hold >> 4) & 0xF;
+            int b   =  hold       & 0xF;
+            switch (op) {
+                // op 0 picks from the palette: in HAM+DPF the index is the resolved one, not `val`.
+                case 0: hold = palette[(hamDpf ? dualPlayfieldIndex(s, hamDpfPri) : val) & 0x1F];
+                        break;
+                case 1: b = val; hold = (r<<8)|(g<<4)|b;    break; // modify B
+                case 2: r = val; hold = (r<<8)|(g<<4)|b;    break; // modify R
+                case 3: g = val; hold = (r<<8)|(g<<4)|b;    break; // modify G
+            }
+            rgbLine[i] = amigaToRGB(hold);
+        }
+        return hold;
+    }
+
+    /**
+     * KILLEHB (BPLCON2 bit 9), an ECS Denise bit: it turns Extra-Half-Brite off and the sixth
+     * plane is then ignored (see colorizeNormal).
+     */
+    private boolean ehbKilled(int bplcon2) {
+        return isECS && (bplcon2 & 0x0200) != 0;
+    }
+
+    // =========================================================================
+    // Reset and outputs
+    // =========================================================================
+
+    /** Power-on state of the rendering side. {@code hardware}: see {@link AbstractDenise#reset(boolean)}. */
+    void reset(boolean hardware) {
+        initialBplcon0 = initialBplcon2 = 0;
+        hstrtLineStart = 0; hstopLineStart = 0;
+        mainStartHstrt = -1; mainStartHstop = -1; mainStartCounter = -1;
+        hflop = true;
+        borderBufferIsDirty = 0;
+        borderColor = 0;
+        clxdat = 0; clxcon = 0;
+        if (hardware) {
+            Arrays.fill(palette, 0);
+            Arrays.fill(paletteLineStart, 0);
+        }
+        Arrays.fill(sprdata,  0);
+        Arrays.fill(sprdatb,  0);
+        Arrays.fill(sprpos,   0);
+        Arrays.fill(sprctl,   0);
+        Arrays.fill(sprhppos, 0);
+        Arrays.fill(ssra, 0);
+        Arrays.fill(ssrb, 0);
+        armed = 0;
+        armedLineStart = 0;
+        armedsLineStart = 0;
+        sprEmitCount = 0;
+        sprStateEvtCount = 0;
+        deniseMaxPlanes = 0;
+        renderPlanes = 0;
+        spriteLtsSelected = false;
+        Arrays.fill(sprposLineStart,  0);
+        Arrays.fill(sprctlLineStart,  0);
+        Arrays.fill(sprdataLineStart, 0);
+        Arrays.fill(sprdatbLineStart, 0);
+        spriteClipEnd   = HPIXELS + 32;
+        Arrays.fill(bBuffer, (byte) 0xFF);
+        Arrays.fill(mBuffer, (byte) 0);
+        Arrays.fill(zBuffer, 0);
+        Arrays.fill(rgbLine, 0);
+    }
+
+    /** CLXDAT as a read returns it; the read clears the collision bits. */
+    int readClxdat() {
+        int v = (clxdat & 0x7FFF) | 0x8000;
+        clxdat = 0;
+        return v;
+    }
+
+    /** Clears the sprites' armed state at the start of the next line (debug/harness). */
+    void disarmSprites(int mask) {
+        armedLineStart &= ~mask;
+    }
+
+    int[] rgbLine()                 { return rgbLine; }
+    int lastRenderedBplcon0()       { return lastRenderedBplcon0; }
+    boolean isLastLineVBorder()     { return lineIsVBorder; }
+
+    /** See {@link AbstractDenise#isPlayfieldAt(int)}. */
+    boolean isPlayfieldAt(int rawX) {
+        return !lineIsVBorder && rawX >= 0 && rawX < bBuffer.length
+                && bBuffer[rawX] == (byte) 0xFF
+                && (mBuffer[rawX] & 0x3F) != 0;
+    }
+
+    long spritePixelCountLastFrame(int idx) {
+        return (idx >= 0 && idx < 8) ? spritePixelsLastFrame[idx] : 0;
+    }
+
+    long spritePixelCountThisFrame(int idx) {
+        return (idx >= 0 && idx < 8) ? spritePixelsThisFrame[idx] : 0;
+    }
+}

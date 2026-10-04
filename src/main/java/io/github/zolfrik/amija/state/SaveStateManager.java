@@ -349,7 +349,14 @@ public final class SaveStateManager {
         add(roots, field(agnus, "gary"));   // address decoder: OVL flip-flop, reset/halt...
         add(roots, field(agnus, "copper"));
         add(roots, field(agnus, "blitter"));
-        add(roots, field(agnus, "denise"));
+        Object denise = field(agnus, "denise");
+        // Lines may still be rendering behind the beam: the renderer's state is read or
+        // overwritten only once it has caught up.
+        if (denise instanceof io.github.zolfrik.amija.custom.AbstractDenise d) d.syncRendering();
+        add(roots, denise);
+        // Denise's end-of-line half: the state it carries from one line to the next
+        // (start-of-line snapshots, window flip-flop, plane maximum, collision bits).
+        add(roots, field(denise, "renderer"));
 
         Object paula = field(agnus, "paula");
         add(roots, paula);

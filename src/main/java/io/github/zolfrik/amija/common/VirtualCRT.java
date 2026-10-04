@@ -22,6 +22,7 @@ package io.github.zolfrik.amija.common;
 
 import io.github.zolfrik.amija.custom.AbstractAgnus;
 import io.github.zolfrik.amija.custom.AbstractDenise;
+import io.github.zolfrik.amija.custom.DeniseLineJob;
 import io.github.zolfrik.amija.display.AmigaDisplay;
 import io.github.zolfrik.amija.display.FrameInfo;
 import io.github.zolfrik.amija.net.RemotePlayHost;
@@ -33,11 +34,22 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * The whole PAL raster of the Amiga, overscan included. No crop and no processing: every
  * raw pixel Denise produces is written straight into the framebuffer. The viewport logic
  * belongs to AmigaDisplay.
+ *
+ * <p><b>The output stage runs behind the beam.</b> At the end of every line the emulation
+ * thread only captures it ({@link AbstractDenise#captureLine}) and hands it over; the
+ * rendering of the line, its copy into the framebuffer and, at the end of the frame, the
+ * presentation run on a second thread, in the order the lines were handed over. The rendering
+ * reads nothing but what was handed over, so the pixels are the same whatever the delay.
+ * Whatever the second thread owns is read from outside only after {@link #drain()}: the
+ * framebuffer getters here, and in Denise every value the renderer produces, CLXDAT first of
+ * all (see {@link AbstractDenise#setRenderSync}). {@code -Damiga.denisethread=false} renders
+ * every line on the emulation thread as soon as it is handed over.
  */
 public final class VirtualCRT {
 
@@ -141,28 +153,70 @@ public final class VirtualCRT {
     private int  renderFrames;
     private long renderLogStartNs = System.nanoTime();
 
+    // -- Output stage -----------------------------------------------------------------
+    // A ring of items handed over by the emulation thread (lines and frame ends) and consumed
+    // in order by the output thread. Every field above that the rendering writes belongs to
+    // the output thread; the emulation thread keeps the beam bookkeeping (lastHpos...,
+    // wrapPendingRow, borderCck0Rgb, producerMaxRow).
+
+    /** Lines are rendered on a second thread; false renders each as it is handed over. */
+    private static final boolean RENDER_THREAD =
+            !"false".equalsIgnoreCase(System.getProperty("amiga.denisethread"));
+    private static final int RING_SIZE = 64;                  // power of two
+    /** A parked output thread is woken once this many items are waiting, or at a frame end. */
+    private static final int WAKE_BATCH = 16;
+    /** An output thread with nothing to do for this long exits; the next item starts a new one. */
+    private static final long IDLE_EXIT_NS = 200_000_000L;
+
+    private static final int WORKER_NONE = 0, WORKER_RUNNING = 1, WORKER_PARKED = 2;
+
+    /** What the emulation thread hands over: a completed line, or the end of a frame. */
+    private static final class OutputItem {
+        final DeniseLineJob job;
+        boolean frameEnd;
+        /** Framebuffer row of the line, -1 if off the buffer. */
+        int row;
+        /** The line counts for the frame's display window statistics. */
+        boolean diwLine;
+        // Frame end: the live values the framing is built from, as they are at that instant.
+        int bplcon0, diwHStartPixel, diwHStopPixel, diwVStart, diwVStop, frameCount;
+        boolean evenField;
+
+        OutputItem(DeniseLineJob job) {
+            this.job = job;
+        }
+    }
+
+    private final OutputItem[] ring = new OutputItem[RING_SIZE];
+    private volatile long handedOver;    // items handed over so far
+    private volatile long processed;     // items the output stage has finished
+    private final Object workerLock = new Object();
+    private volatile int workerState = WORKER_NONE;
+    private Thread worker;
+    private volatile Throwable workerFailure;
+    /** The emulation thread's twin of {@link #frameMaxRow}, for its own per-row arrays. */
+    private int producerMaxRow = -1;
+
     public VirtualCRT(AbstractAgnus agnus, AbstractDenise denise, AmigaDisplay display) {
         this.agnus = Objects.requireNonNull(agnus, "agnus");
         this.denise = Objects.requireNonNull(denise, "denise");
         this.display = Objects.requireNonNull(display, "display");
         this.frameBuffer = new int[RAW_WIDTH * RAW_HEIGHT];
         this.renderBuffer = new int[RAW_WIDTH * RAW_HEIGHT];
+        for (int i = 0; i < RING_SIZE; i++) ring[i] = new OutputItem(denise.newLineJob());
         reset();
         startRenderThread();
+        if (RENDER_THREAD) denise.setRenderSync(this::drain);
     }
 
-    // SYNCHRONOUS rendering by default (composition on the emulation thread): it keeps the
-    // emulation bit-identically deterministic. The ASYNCHRONOUS variant (composition on a
-    // separate thread, a few % of CPU time recovered on the emulation thread) introduces an
-    // intermittent, timing-sensitive non-determinism: although it shares no logical state
-    // with the emulation, running concurrently perturbs the cycle-exact execution (a
-    // JVM/scheduling artefact). For a cycle-exact emulator determinism is worth more than
-    // the headroom (the emulation is capped at 50 fps anyway), so async is opt-in only,
-    // through -Damiga.asyncrender=true.
+    // Optional extra thread for the COMPOSITION of the frame (line doubling, scaling, paint),
+    // opt-in through -Damiga.asyncrender=true: the output stage hands each completed frame
+    // to it and goes on, and a frame that arrives while the previous one is still being
+    // composed is skipped. By default the output stage composes the frame itself.
     private static final boolean ASYNC_RENDER = Boolean.getBoolean("amiga.asyncrender");
 
     private void startRenderThread() {
-        if (!ASYNC_RENDER) return; // synchronous rendering by default
+        if (!ASYNC_RENDER) return; // the output stage composes the frame itself by default
         renderRunning = true;
         renderThread = new Thread(this::renderLoop, "amiga-frame-render");
         renderThread.setDaemon(true);
@@ -177,8 +231,9 @@ public final class VirtualCRT {
         this.remotePlayHost = host;
     }
 
-    /** Stops the rendering thread (optional; it is a daemon anyway). */
+    /** Stops the rendering threads (optional; they are daemons anyway). */
     public void stop() {
+        drain();
         synchronized (renderLock) {
             renderRunning = false;
             renderLock.notifyAll();
@@ -217,8 +272,10 @@ public final class VirtualCRT {
     }
 
     public void reset() {
+        drain();
         Arrays.fill(frameBuffer, 0);
         frameMaxRow = -1;
+        producerMaxRow = -1;
         lastHpos = agnus.getHpos();
         lastVpos = agnus.getVpos();
         lastFrameCount = agnus.getFrameCount();
@@ -257,12 +314,12 @@ public final class VirtualCRT {
             // skip a frame (frame skip) and the controls must not skip with it. It is the
             // fixed quantisation point of plan section 4.3: once per frame, on the emulation
             // thread, always in the same place.
-            blankRowsBelowFrame();
+            blankWrapRowsBelowFrame();
             RemotePlayHost inputHost = remotePlayHost;
             if (inputHost != null) {
                 inputHost.applyPendingInput();
             }
-            presentFrame();
+            handOverFrameEnd();
         } else if (wrapPendingRow >= 0 && hpos >= 2) {
             // CCK 0 of the current line completed: the live COLOR00 is the border at the start
             // of the line = colour of the last visible CCK (col 836) of the previous line.
@@ -273,13 +330,9 @@ public final class VirtualCRT {
                 // where the line produced content the right pixel is the rendered one.
                 // The four sub-pixels of the cell are not alike - a row can carry border
                 // on the first two and playfield on the last two - so a single flag for
-                // the whole cell would turn all four on or off together. See the comment
-                // in saveRegressionScreenshot.
-                int mask = 0;
-                for (int k = 0; k < 4; k++) {
-                    if (denise.isPlayfieldAt(RIGHT_HBLANK_WRAP_COL + k)) mask |= 1 << k;
-                }
-                wrapIsPlayfield[wrapPendingRow] = mask;
+                // the whole cell would turn all four on or off together. The per-sub-pixel
+                // mask comes with the rendered line (wrapIsPlayfield, see renderItem). See
+                // the comment in saveRegressionScreenshot.
             }
             wrapPendingRow = -1;
         }
@@ -314,7 +367,8 @@ public final class VirtualCRT {
      *
      * <p>In PAL it does <b>nothing</b>: {@code maxVpos} is 312 = {@link #RAW_HEIGHT} and the
      * last row written is always the buffer's last. It matters only after a switch to NTSC,
-     * where the frame has 262 lines. See {@link #frameMaxRow}.
+     * where the frame has 262 lines. See {@link #frameMaxRow}. Output side: the rows of the
+     * framebuffer and of the wrap mask.
      */
     private void blankRowsBelowFrame() {
         if (frameMaxRow >= 0 && frameMaxRow + 1 < RAW_HEIGHT) {
@@ -322,30 +376,71 @@ public final class VirtualCRT {
             Arrays.fill(frameBuffer, from * RAW_WIDTH, RAW_HEIGHT * RAW_WIDTH, 0);
             // The right-border wrap column is per line and carries the same residue: without
             // this, cleared rows would keep the 4 px of col 836 lit.
-            java.util.Arrays.fill(borderCck0Rgb, from, RAW_HEIGHT, 0);
             java.util.Arrays.fill(wrapIsPlayfield, from, RAW_HEIGHT, 0);
         }
         frameMaxRow = -1;
     }
 
-    private void completeScanline(int vpos) {
-        denise.hsyncHandler(vpos);
+    /** The emulation side of {@link #blankRowsBelowFrame()}: the wrap colour samples. */
+    private void blankWrapRowsBelowFrame() {
+        if (producerMaxRow >= 0 && producerMaxRow + 1 < RAW_HEIGHT) {
+            java.util.Arrays.fill(borderCck0Rgb, producerMaxRow + 1, RAW_HEIGHT, 0);
+        }
+        producerMaxRow = -1;
+    }
 
+    /** Hands the line just completed over to the output stage. Emulation side. */
+    private void completeScanline(int vpos) {
+        final OutputItem it = nextItem();
+        denise.captureLine(vpos, it.job);
+        it.frameEnd = false;
         final int row = displayRow(vpos);
-        if (row < 0 || row >= RAW_HEIGHT) {
+        it.row = (row < 0 || row >= RAW_HEIGHT) ? -1 : row;
+        if (it.row > producerMaxRow) producerMaxRow = it.row;
+        it.diwLine = !agnus.inVBlankArea(vpos)
+                && vpos >= agnus.getDiwVStart() && vpos < agnus.getDiwVStop();
+        handOver(it);
+    }
+
+    /** Hands the end of the frame over, with the live values its framing is built from. */
+    private void handOverFrameEnd() {
+        final OutputItem it = nextItem();
+        it.frameEnd = true;
+        it.bplcon0 = denise.getBplcon0();
+        it.diwHStartPixel = denise.getDiwHStartPixel();
+        it.diwHStopPixel = denise.getDiwHStopPixel();
+        it.diwVStart = agnus.getDiwVStart();
+        it.diwVStop = agnus.getDiwVStop();
+        it.evenField = agnus.getLastCompletedFrameField() == 0;
+        it.frameCount = agnus.getFrameCount();
+        handOver(it);
+    }
+
+    /** Renders one item. Output side. */
+    private void renderItem(OutputItem it) {
+        if (it.frameEnd) {
+            blankRowsBelowFrame();
+            presentFrame(it);
+            return;
+        }
+        final DeniseLineJob job = it.job;
+        denise.renderLine(job);
+
+        final int row = it.row;
+        if (row < 0) {
             return;
         }
 
-        // RAW_WIDTH == Denise.HPIXELS == rgbLine.length, so the block copy is exactly the
-        // per-pixel loop over getRawPixelColor(x), without ~912 getter calls (with bounds
-        // checks) per scanline.
-        System.arraycopy(denise.getRgbLine(), 0, frameBuffer, row * RAW_WIDTH, RAW_WIDTH);
+        // RAW_WIDTH == Denise.HPIXELS == the line's length, so the block copy is exactly the
+        // per-pixel loop over the line.
+        System.arraycopy(job.rgb(), 0, frameBuffer, row * RAW_WIDTH, RAW_WIDTH);
+        wrapIsPlayfield[row] = job.wrapPlayfieldMask();
         if (row > frameMaxRow) {
             frameMaxRow = row;
         }
 
-        if (!agnus.inVBlankArea(vpos) && vpos >= agnus.getDiwVStart() && vpos < agnus.getDiwVStop()) {
-            int lineBplcon0 = denise.getLastRenderedBplcon0();
+        if (it.diwLine) {
+            int lineBplcon0 = job.lastRenderedBplcon0();
             if ((lineBplcon0 & 0x8000) != 0) frameHiresLines++;
             else                             frameLoresLines++;
             if ((lineBplcon0 & 0x0004) != 0) frameInterlacedLines++;
@@ -363,12 +458,132 @@ public final class VirtualCRT {
             frameLastDiwLine = row;
 
             // Extent of the lines with bitplane output (not vertical border): the vertical
-            // framing is centred on this, not on the DIW. denise.hsyncHandler(vpos) has
-            // already been called above, so isLastLineVBorder() reflects the line vpos just
-            // rendered.
-            if (!denise.isLastLineVBorder()) {
+            // framing is centred on this, not on the DIW.
+            if (!job.isVBorder()) {
                 if (frameFirstDrawnLine < 0) frameFirstDrawnLine = row;
                 frameLastDrawnLine = row;
+            }
+        }
+    }
+
+    // -- Hand-over between the emulation thread and the output thread ------------------
+
+    /** The ring slot to fill next; waits while the ring is full. Emulation side. */
+    private OutputItem nextItem() {
+        checkWorkerFailure();
+        final long n = handedOver;
+        if (n - processed >= RING_SIZE) {
+            waitFor(n - RING_SIZE + 1);
+        }
+        return ring[(int) (n & (RING_SIZE - 1))];
+    }
+
+    /** Publishes the slot {@link #nextItem()} returned. Emulation side. */
+    private void handOver(OutputItem it) {
+        final long n = handedOver + 1;
+        handedOver = n;
+        if (!RENDER_THREAD) {
+            renderItem(it);
+            processed = n;
+            return;
+        }
+        if (it.frameEnd || n - processed >= WAKE_BATCH) {
+            wakeWorker();
+        }
+    }
+
+    /**
+     * Waits until every item handed over so far has been rendered. After it returns, whatever
+     * the output stage owns (the framebuffer, Denise's renderer) can be read and changed from
+     * the calling thread.
+     */
+    public void drain() {
+        final long n = handedOver;
+        if (processed < n) {
+            waitFor(n);
+        }
+        checkWorkerFailure();
+    }
+
+    private void waitFor(long target) {
+        wakeWorker();
+        int spins = 0;
+        while (processed < target) {
+            if (++spins < 2000) {
+                Thread.onSpinWait();
+            } else if (spins < 2100) {
+                Thread.yield();
+            } else {
+                LockSupport.parkNanos(20_000L);
+            }
+        }
+    }
+
+    private void checkWorkerFailure() {
+        final Throwable t = workerFailure;
+        if (t != null) {
+            workerFailure = null;
+            throw new IllegalStateException("Denise output stage failed", t);
+        }
+    }
+
+    private void wakeWorker() {
+        if (workerState == WORKER_RUNNING) {
+            return;
+        }
+        synchronized (workerLock) {
+            if (workerState == WORKER_NONE) {
+                workerState = WORKER_RUNNING;
+                worker = new Thread(this::workerLoop, "amiga-denise");
+                worker.setDaemon(true);
+                worker.start();
+            } else if (workerState == WORKER_PARKED) {
+                workerState = WORKER_RUNNING;
+                LockSupport.unpark(worker);
+            }
+        }
+    }
+
+    /**
+     * The output thread: renders the items in order, parks when there are none, and exits
+     * after {@link #IDLE_EXIT_NS} without work so that an idle machine holds no thread.
+     *
+     * <p>Parking is announced <b>before</b> the last look at the ring, and the emulation side
+     * publishes an item <b>before</b> it looks at the state: one of the two always sees the
+     * other, so no item can be left waiting for a thread that never wakes.
+     */
+    private void workerLoop() {
+        for (;;) {
+            long done = processed;
+            while (done < handedOver) {
+                final OutputItem it = ring[(int) (done & (RING_SIZE - 1))];
+                try {
+                    renderItem(it);
+                } catch (Throwable t) {
+                    workerFailure = t;
+                }
+                processed = ++done;
+            }
+            synchronized (workerLock) {
+                workerState = WORKER_PARKED;
+            }
+            if (processed < handedOver) {
+                synchronized (workerLock) {
+                    if (workerState == WORKER_PARKED) workerState = WORKER_RUNNING;
+                }
+                continue;
+            }
+            LockSupport.parkNanos(this, IDLE_EXIT_NS);
+            synchronized (workerLock) {
+                if (workerState == WORKER_PARKED) {
+                    // Nobody woke this thread: a timeout or a spurious return.
+                    if (processed >= handedOver) {
+                        workerState = WORKER_NONE;
+                        worker = null;
+                        return;
+                    }
+                    workerState = WORKER_RUNNING;
+                }
             }
         }
     }
@@ -403,8 +618,9 @@ public final class VirtualCRT {
         return vpos + agnus.getDisplayRowShift();
     }
 
-    private void presentFrame() {
-        buildFrameInfo(frameInfo);
+    /** Presents the frame just closed. Output side. */
+    private void presentFrame(OutputItem end) {
+        buildFrameInfo(frameInfo, end);
         // Before presenting: the asynchronous branch swaps frameBuffer with renderBuffer, and
         // after the swap the frame just completed is no longer in frameBuffer. The cost
         // allowed here is one copy (section 11.2); submitFrame neither encodes nor sends
@@ -415,7 +631,7 @@ public final class VirtualCRT {
             host.submitFrame(frameBuffer, frameInfo);
         }
         if (!ASYNC_RENDER) {
-            // Default: synchronous composition on the emulation thread (deterministic).
+            // Default: the output stage composes the frame itself.
             display.renderFrame(frameBuffer, RAW_WIDTH, RAW_HEIGHT, frameInfo);
             resetFrameModeCounters();
             return;
@@ -438,13 +654,13 @@ public final class VirtualCRT {
         resetFrameModeCounters();
     }
 
-    private void buildFrameInfo(FrameInfo out) {
-        int bplcon0 = denise.getBplcon0();
+    private void buildFrameInfo(FrameInfo out, OutputItem end) {
+        int bplcon0 = end.bplcon0;
         boolean hires      = chooseFrameHires(frameHiresLines, frameLoresLines, bplcon0);
         boolean interlaced = frameInterlacedLines > 0 ? frameInterlacedLines >= (frameHiresLines + frameLoresLines + 1) / 2
                                                       : (bplcon0 & 0x0004) != 0;
         // field 0 -> even rows (0,2,4,...), field 1 -> odd rows (1,3,5,...)
-        boolean evenField  = agnus.getLastCompletedFrameField() == 0;
+        boolean evenField  = end.evenField;
 
         // Horizontal window: from the DIW, but CLAMPED to the standard PAL video window. On
         // the hardware the monitor shows a FIXED raster region; the DIW only blanks the
@@ -457,8 +673,8 @@ public final class VirtualCRT {
         // STD_LEFT/RIGHT = rgbLine pixels of the canonical PAL DIW (DIWSTRT H=$81,
         // DIWSTOP H=$1C1): (H - 2*HBLANK_MIN)*2 with HBLANK_MIN=$12 -> 186 and 826.
         final int STD_LEFT = 186, STD_RIGHT = 826;
-        int visStart = Math.max(denise.getDiwHStartPixel(), STD_LEFT);
-        int visStop  = Math.min(denise.getDiwHStopPixel(),  STD_RIGHT);
+        int visStart = Math.max(end.diwHStartPixel, STD_LEFT);
+        int visStop  = Math.min(end.diwHStopPixel,  STD_RIGHT);
         int visibleX      = visStart;
         int visibleWidth  = Math.max(0, visStop - visStart);
 
@@ -477,12 +693,12 @@ public final class VirtualCRT {
             visibleY      = frameFirstDiwLine;
             visibleHeight = frameLastDiwLine - frameFirstDiwLine + 1;
         } else {
-            visibleY      = agnus.getDiwVStart();
-            visibleHeight = agnus.getDiwVStop() - visibleY;
+            visibleY      = end.diwVStart;
+            visibleHeight = end.diwVStop - visibleY;
         }
 
         out.set(hires, interlaced, evenField, visibleX, visibleY, visibleWidth, visibleHeight);
-        out.setFrameCount(agnus.getFrameCount());
+        out.setFrameCount(end.frameCount);
     }
 
     static boolean chooseFrameHires(int hiresLines, int loresLines, int currentBplcon0) {
@@ -506,6 +722,7 @@ public final class VirtualCRT {
     }
 
     public int[] getFrameBuffer() {
+        drain();
         return frameBuffer;
     }
 
@@ -514,6 +731,7 @@ public final class VirtualCRT {
      * doubling or overlays applied by AmigaDisplay.
      */
     public void saveRawScreenshot(File file) throws IOException {
+        drain();
         Objects.requireNonNull(file, "file");
         File dir = file.getParentFile();
         if (dir != null && !dir.exists()) {
@@ -575,6 +793,7 @@ public final class VirtualCRT {
      * the right: a reference dump taken with a horizontal display offset starts that much later.
      */
     public void saveRegressionScreenshot(File file, int xOffset) throws IOException {
+        drain();
         final int cropX = REGRESSION_CROP_X + xOffset;
         Objects.requireNonNull(file, "file");
         File dir = file.getParentFile();
@@ -646,6 +865,7 @@ public final class VirtualCRT {
     }
 
     public int getPixel(int x, int y) {
+        drain();
         if (x < 0 || x >= RAW_WIDTH || y < 0 || y >= RAW_HEIGHT) {
             return 0;
         }
