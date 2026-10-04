@@ -25,15 +25,21 @@ package io.github.zolfrik.amija.cpu;
  */
 public class ClrInstruction extends AbstractM68kInstruction {
 
-    public static final ClrInstruction INSTANCE = new ClrInstruction();
-    private ClrInstruction() {}
+    public static final ClrInstruction INSTANCE = new ClrInstruction(false);
+    /** The 68010 form: a memory destination is written without being read first. */
+    public static final ClrInstruction M68010 = new ClrInstruction(true);
+
+    private final boolean m68010;
+    private ClrInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int EXT1 = 0;
     private static final int EXT2 = 1;
     private static final int ADDR = 2;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 3;
         int size = (s == 0) ? 1 : (s == 1) ? 2 : 4;
@@ -44,7 +50,8 @@ public class ClrInstruction extends AbstractM68kInstruction {
 
             switch (getStep(cpu)) {
                 case 0 -> { // Step 0: Initial EA Gap (before extensions)
-                    if (eaMode == 4 || eaMode == 6) {
+                    // The 68010 takes the indexed gap after the extension word (step 4).
+                    if (eaMode == 4 || (eaMode == 6 && !m68010)) {
                         indexedGap2(cpu);
                         nextStep(cpu);
                         return false;
@@ -69,11 +76,21 @@ public class ClrInstruction extends AbstractM68kInstruction {
                         continue;
                     }
                     int addr = calculateEA(cpu, eaMode, eaReg, size, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), true, false);
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                     setTemp(cpu, ADDR, addr);
                     nextStep(cpu);
                 }
                 case 4 -> { // Step 4: Dummy Read
+                    if (m68010) {
+                        // 68010: no read. (d8,An,Xn) spends 4 clocks here, then the IPL is
+                        // sampled and the queue refilled before the write.
+                        setStep(cpu, 20);
+                        if (eaMode == 6) {
+                            cpu.idleCycles(4);
+                            return false;
+                        }
+                        continue;
+                    }
                     int addr = getTemp(cpu, ADDR);
                     cpu.scheduleRead(addr, size);
                     nextStep(cpu);
@@ -81,7 +98,7 @@ public class ClrInstruction extends AbstractM68kInstruction {
                 }
                 case 5 -> { // Step 5: Wait for Read and Refill Pipeline
                     if (!cpu.isBusCycleIdle()) return false;
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                     updateFlags(cpu);
                     refillPipeline(cpu);
                     nextStep(cpu);
@@ -114,8 +131,25 @@ public class ClrInstruction extends AbstractM68kInstruction {
                     return finalizeInstructionSafe(cpu);
                 }
 
+                case 20 -> {
+                    if (!cpu.isBusCycleIdle()) return false;
+                    updateFlags(cpu);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
+                    refillPipeline(cpu);
+                    setStep(cpu, 6);
+                    return false;
+                }
+
                 // --- Dn Case ---
                 case 10 -> { // Step 10: Clear register and Refill
+                    if (m68010 && size == 4) {
+                        // 68010 CLR.L Dn: n2, then the prefetch.
+                        cpu.setD(eaReg, 0, size);
+                        updateFlags(cpu);
+                        cpu.idleCycles(2);
+                        setStep(cpu, 13);
+                        return false;
+                    }
                     cpu.setD(eaReg, 0, size);
                     updateFlags(cpu);
                     refillPipeline(cpu);
@@ -134,12 +168,16 @@ public class ClrInstruction extends AbstractM68kInstruction {
                 case 12 -> { // Step 12: Finalize
                     return finalizeInstructionSafe(cpu);
                 }
+                case 13 -> {
+                    refillPipeline(cpu);
+                    return finalizeInstructionSafe(cpu);
+                }
                 default -> { return finalizeInstructionSafe(cpu); }
             }
         }
     }
 
-    private void updateFlags(Motorola68000 cpu) {
+    private void updateFlags(AbstractMotorola cpu) {
         int sr = cpu.getSR() & 0xFFF0; // Clear C, V, Z, N. Keep X.
         sr |= 0x04; // Set Z
         cpu.writeSR(sr, false);
@@ -151,7 +189,7 @@ public class ClrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 3;
         int size = (s == 0) ? 1 : (s == 1) ? 2 : 4;

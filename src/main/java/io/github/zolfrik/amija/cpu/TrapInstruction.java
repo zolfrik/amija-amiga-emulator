@@ -24,9 +24,9 @@ public class TrapInstruction extends AbstractM68kInstruction {
     public static final TrapInstruction INSTANCE = new TrapInstruction();
     private TrapInstruction() {}
     @Override public boolean shouldInhibitPrefetch() { return true; }
-    @Override public boolean executeStep(Motorola68000 cpu) {
+    @Override public boolean executeStep(AbstractMotorola cpu) {
         cpu.triggerException(32 + (cpu.getIr() & 0xF), cpu.getPC());
         return false;
     }
-    @Override public String getDisassembly(Motorola68000 cpu) { return "TRAP #$" + Disassembly.formatHex(cpu.getIr() & 0xF, 1); }
+    @Override public String getDisassembly(AbstractMotorola cpu) { return "TRAP #$" + Disassembly.formatHex(cpu.getIr() & 0xF, 1); }
 }

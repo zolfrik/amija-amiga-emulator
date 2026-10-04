@@ -35,7 +35,7 @@ public class BsrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int disp8 = (byte) (op & 0xFF);
 
@@ -99,7 +99,7 @@ public class BsrInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     // BSR ($6100): the `next` sample sits BETWEEN the two prefetches at the
                     // target; the two pushes of the return address are not an anchor.
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     cpu.startPrefetchCycle(); // Second 'np' at target+2
                     return finalizeInstructionSafe(cpu);
                 }
@@ -115,7 +115,7 @@ public class BsrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int disp8 = (byte) (op & 0xFF);
         int displacement = (disp8 == 0) ? (short) cpu.extensionWordAt(cpu.getOpcodeAddress() + 2) : disp8;

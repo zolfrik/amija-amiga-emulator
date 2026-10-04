@@ -1352,7 +1352,7 @@ public final class Paula {
      * <b>2 master cycles = 1 CCK</b> (the IPL line changes 0.5 CCK later, and the 68000
      * needs one more CPU clock, 0.5 CCK, to detect it).
      *
-     * <p>This value goes together with the pin stamp in {@code Motorola68000.fallingEdge()}
+     * <p>This value goes together with the pin stamp in {@code AbstractMotorola.fallingEdge()}
      * ({@code pinChangeAt}): changed apart, each moves interrupt recognition by one clock,
      * and the vAmigaTS bank {@code cpu/timing} sees it at once (245 reds out of 253 with
      * the first alone). See {@code docs/vamigats-paula-audio-plan.md} section 18.

@@ -25,7 +25,7 @@ public class NopInstruction extends AbstractM68kInstruction {
     private NopInstruction() {}
 
     @Override
-    public void prepareInstruction(Motorola68000 cpu) {
+    public void prepareInstruction(AbstractMotorola cpu) {
         cpu.consumeIRC();
         // Inhibit automatic prefetch to match Yacht np sequence exactly
     }
@@ -36,7 +36,7 @@ public class NopInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         // Overlapped prefetch (Phase 1): issue the terminal np and finalize in a SINGLE
         // executeStep invocation, exactly like MOVEQ. The np runs in the background while the
         // next instruction decodes the instant the bus drains: seam cost 0 (delta 4 mc),
@@ -45,6 +45,6 @@ public class NopInstruction extends AbstractM68kInstruction {
         refillPipeline(cpu); // np
         return finalizeInstructionSafe(cpu);
     }
-    @Override public String getDisassembly(Motorola68000 cpu) { return "NOP"; }
+    @Override public String getDisassembly(AbstractMotorola cpu) { return "NOP"; }
 }
 

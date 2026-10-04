@@ -30,7 +30,7 @@ public class ResetInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         if (getStep(cpu) == 0 && !cpu.isSupervisor()) {
             cpu.triggerPrivilegeViolation();
             return finalizeInstruction(cpu);
@@ -42,13 +42,13 @@ public class ResetInstruction extends AbstractM68kInstruction {
                 return false;
             }
             case 1 -> {
-                cpu.cpuState = Motorola68000.CpuState.RESET;
+                cpu.cpuState = AbstractMotorola.CpuState.RESET;
                 cpu.assertReset(123); // (??-)* -> 1 cycle (this one) + 123 skipped cycles = 124 total
                 nextStep(cpu);
                 return false;
             }
             case 2 -> {
-                cpu.cpuState = Motorola68000.CpuState.NORMAL;
+                cpu.cpuState = AbstractMotorola.CpuState.NORMAL;
                 refillPipeline(cpu); // np
                 return finalizeInstructionSafe(cpu);
             }
@@ -58,5 +58,5 @@ public class ResetInstruction extends AbstractM68kInstruction {
         }
     }
 
-    @Override public String getDisassembly(Motorola68000 cpu) { return "RESET"; }
+    @Override public String getDisassembly(AbstractMotorola cpu) { return "RESET"; }
 }

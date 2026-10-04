@@ -34,7 +34,7 @@ public class LeaInstruction extends AbstractM68kInstruction {
     private static final int EXT2 = 1;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7;
         int eaMode = (op >> 3) & 0x7;
@@ -95,7 +95,7 @@ public class LeaInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7;
         int eaMode = (op >> 3) & 0x7;

@@ -25,9 +25,15 @@ package io.github.zolfrik.amija.cpu;
  */
 public class EorInstruction extends AbstractM68kInstruction {
 
-    public static final EorInstruction INSTANCE = new EorInstruction();
+    public static final EorInstruction INSTANCE = new EorInstruction(false);
+    /** The 68010 form: 2 clocks less on a long data register destination. */
+    public static final EorInstruction M68010 = new EorInstruction(true);
 
-    private EorInstruction() {}
+    private final boolean m68010;
+
+    private EorInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int EXT1 = 0;
     private static final int EXT2 = 1;
@@ -36,7 +42,7 @@ public class EorInstruction extends AbstractM68kInstruction {
     private static final int ADDR = 4;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7;
         int opmode = (op >> 6) & 0x7;
@@ -136,9 +142,9 @@ public class EorInstruction extends AbstractM68kInstruction {
                     cpu.scheduleWriteWord(getTemp(cpu, ADDR), (getTemp(cpu, SRC_VAL) >>> 16) & 0xFFFF); // nW
                     return finalizeInstructionSafe(cpu);
                 }
-                case 10 -> { // .L register gap: nn
+                case 10 -> { // .L register gap: nn (n on the 68010)
                     if (!cpu.isBusCycleIdle()) return false;
-                    cpu.idleCycles(4);
+                    cpu.idleCycles(m68010 ? 2 : 4);
                     nextStep(cpu);
                     return false;
                 }
@@ -154,7 +160,7 @@ public class EorInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7;
         int opmode = (op >> 6) & 0x7;

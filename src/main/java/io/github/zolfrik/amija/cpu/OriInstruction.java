@@ -41,7 +41,7 @@ public class OriInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int sizeBit = (op >> 6) & 0x3;
         int size = (sizeBit == 0) ? 1 : (sizeBit == 1) ? 2 : 4;
@@ -112,7 +112,7 @@ public class OriInstruction extends AbstractM68kInstruction {
                         // Calculate EA and read
                         int basePC = cpu.getOpcodeAddress() + 2 + (size == 4 ? 4 : 2);
                         int addr = calculateEA(cpu, eaMode, eaReg, size, basePC, getTemp(cpu, EA_EXT1), getTemp(cpu, EA_EXT2), true, false);
-                        if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                        if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                         setTemp(cpu, ADDR, addr);
                         if (size == 4) cpu.scheduleRead(addr, 2);
                         else cpu.scheduleRead(addr, size);
@@ -122,7 +122,7 @@ public class OriInstruction extends AbstractM68kInstruction {
                 }
                 case 7 -> { // Latch data and refill pipeline
                     if (!cpu.isBusCycleIdle()) return false;
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
 
                     if (size == 4) {
                         setTemp(cpu, EA_EXT1, cpu.getLatchedBusData() << 16); // Reuse EA_EXT1 as temp for MSW
@@ -140,7 +140,7 @@ public class OriInstruction extends AbstractM68kInstruction {
                 }
                 case 8 -> { // Schedule write or finish .L read
                     if (!cpu.isBusCycleIdle()) return false;
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
 
                     if (size == 4) {
                         int lsw = cpu.getLatchedBusData() & 0xFFFF;
@@ -186,7 +186,7 @@ public class OriInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int sizeBit = (op >> 6) & 0x3;
         int size = (sizeBit == 0) ? 1 : (sizeBit == 1) ? 2 : 4;

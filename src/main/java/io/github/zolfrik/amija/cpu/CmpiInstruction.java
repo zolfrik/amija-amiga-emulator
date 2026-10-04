@@ -40,7 +40,7 @@ public class CmpiInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 0x3, size = (s == 0) ? 1 : (s == 1) ? 2 : 4;
         int eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;
@@ -150,7 +150,7 @@ public class CmpiInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 0x3, size = (s == 0) ? 1 : (s == 1) ? 2 : 4;
         int pc = cpu.getOpcodeAddress();

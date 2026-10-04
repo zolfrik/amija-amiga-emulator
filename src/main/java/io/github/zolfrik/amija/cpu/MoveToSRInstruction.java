@@ -39,7 +39,7 @@ public class MoveToSRInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         if (getStep(cpu) == 0 && !cpu.isSupervisor()) {
             cpu.triggerPrivilegeViolation();
             return false;
@@ -94,7 +94,7 @@ public class MoveToSRInstruction extends AbstractM68kInstruction {
                 case 4 -> { // Memory source - Read
                     if (!cpu.isBusCycleIdle()) return false;
                     int addr = calculateEA(cpu, mode, reg, 2, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), true, false);
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                     setTemp(cpu, ADDR, addr);
                     cpu.scheduleRead(addr, 2); // nr
                     nextStep(cpu);
@@ -111,7 +111,7 @@ public class MoveToSRInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     int newSrVal = getTemp(cpu, SRC_VAL);
                     cpu.writeSR(newSrVal, true);
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                     cpu.flushPrefetch();
                     cpu.setPC(cpu.getOpcodeAddress() + (cpu.extensionsConsumed * 2));
                     cpu.startPrefetchCycle(); // np 1
@@ -122,7 +122,7 @@ public class MoveToSRInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     // MOVE to SR ($46D0): the `next` sample sits BETWEEN the two refill
                     // prefetches, not on the operand read.
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     cpu.startPrefetchCycle(); // np 2 (last bus cycle, overlaps the next dispatch)
                     return finalizeInstructionSafe(cpu);
                 }
@@ -132,7 +132,7 @@ public class MoveToSRInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int sm = (op >> 3) & 7, sr = op & 7;
         return "MOVE " + Disassembly.formatEA(sm, sr, 2, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4)) + ", SR";

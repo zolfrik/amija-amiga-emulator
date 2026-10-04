@@ -25,7 +25,7 @@ public class PeaInstruction extends AbstractM68kInstruction {
     private PeaInstruction() {}
     private static final int EXT1 = 0, EXT2 = 1;
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int eaMode = (op >> 3) & 0x7;
         int eaReg = op & 0x7;
@@ -51,7 +51,7 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     // CURRENT cycle, and at step 0 the 2 internal cycles have not elapsed yet,
                     // so the anchor would be 2 clocks early, which shows (PEA3/PEA6).
                     if (eaMode == 6 || (eaMode == 7 && eaReg == 3)) {
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
                     }
                     if (hasExt1(eaMode, eaReg)) {
                         if (!fetchExtension(cpu, EXT1)) return false;
@@ -85,7 +85,7 @@ public class PeaInstruction extends AbstractM68kInstruction {
                         // declared it at step 0. Declaring again here would overwrite it
                         // (markIplAnchor resets).
                         if (eaMode != 6 && !(eaMode == 7 && eaReg == 3)) {
-                            cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                            cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                         }
                         refillPipeline(cpu);
                         nextStep(cpu);
@@ -102,7 +102,8 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     // against $4878/4879). For the same modes the final prefetch has already
                     // happened (case 4), so the frame gets the opcode of the NEXT instruction.
                     boolean eaIsAbsolute = eaMode == 7 && eaReg <= 1;
-                    cpu.markGroup0EaDelta(eaIsAbsolute ? 0 : 2);
+                    if (cpu.isM68010()) cpu.markGroup0PcOffset(2);
+                    else cpu.markGroup0EaDelta(eaIsAbsolute ? 0 : 2);
                     if (!eaIsAbsolute) cpu.markGroup0Ir(cpu.getIRD());
                     setTemp(cpu, 2, addr);
                     int ssp = cpu.getA7();
@@ -125,7 +126,7 @@ public class PeaInstruction extends AbstractM68kInstruction {
                     if (eaMode == 7 && (eaReg == 0 || eaReg == 1)) {
                         // $4878: here the pushes PRECEDE the final prefetch, and the `next`
                         // sample sits between the two: the anchor is the prefetch.
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                         refillPipeline(cpu);
                     }
                     return finalizeInstructionSafe(cpu);
@@ -140,7 +141,7 @@ public class PeaInstruction extends AbstractM68kInstruction {
         return true;
     }
 
-    @Override public String getDisassembly(Motorola68000 cpu) {
+    @Override public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr(); return "PEA " + Disassembly.formatEA((op >> 3) & 0x7, op & 0x7, 4, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4));
     }
 }

@@ -25,9 +25,9 @@ public abstract class SbcdInstruction extends AbstractM68kInstruction {
     public static final SbcdInstruction MEMORY_INSTANCE = new MemorySbcd();
 
     @Override
-    public abstract boolean executeStep(Motorola68000 cpu);
+    public abstract boolean executeStep(AbstractMotorola cpu);
 
-    protected void calculateSbcd(Motorola68000 cpu, int src, int dst) {
+    protected void calculateSbcd(AbstractMotorola cpu, int src, int dst) {
         int x = cpu.x ? 1 : 0;
         int binaryDiff = (dst - src - x) & 0xFF;
         int t = (dst & 0x0F) - (src & 0x0F) - x;
@@ -54,7 +54,7 @@ public abstract class SbcdInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         if ((cpu.getIr() & 0x8) == 0) {
             return String.format("SBCD D%d, D%d", cpu.getIr() & 0x7, (cpu.getIr() >> 9) & 0x7);
         } else {
@@ -64,7 +64,7 @@ public abstract class SbcdInstruction extends AbstractM68kInstruction {
 
     public static class RegisterSbcd extends SbcdInstruction {
         @Override
-        public boolean executeStep(Motorola68000 cpu) {
+        public boolean executeStep(AbstractMotorola cpu) {
             while (true) {
                 if (cpu.isRisingEdgeConsumed()) return false;
                 switch (getStep(cpu)) {
@@ -96,7 +96,7 @@ public abstract class SbcdInstruction extends AbstractM68kInstruction {
 
     public static class MemorySbcd extends SbcdInstruction {
         @Override
-        public boolean executeStep(Motorola68000 cpu) {
+        public boolean executeStep(AbstractMotorola cpu) {
             int regX = (cpu.getIr() >> 9) & 0x7;
             int regY = cpu.getIr() & 0x7;
 
@@ -124,7 +124,7 @@ public abstract class SbcdInstruction extends AbstractM68kInstruction {
                         // ($8108/$C108): the `next` sample sits here, before the destination
                         // read. The position is the default's, the branch is not: `next` instead
                         // of `now`.
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                         cpu.scheduleRead(cpu.getA(regX, 4), 1);
                         nextStep(cpu);
                         return false;

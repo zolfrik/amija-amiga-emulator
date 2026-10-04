@@ -38,7 +38,7 @@ public class MovepInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int dataReg = (op >> 9) & 0x7;
         boolean isLong = (op & 0x40) != 0;
@@ -69,7 +69,7 @@ public class MovepInstruction extends AbstractM68kInstruction {
                         // word: for .W it is this one ($0108, `now` 12 clocks from the end), for
                         // .L it is at step 3.
                         if (!isLong) {
-                            cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                            cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
                         }
                         cpu.scheduleRead(base, 1);
                     }
@@ -107,7 +107,7 @@ public class MovepInstruction extends AbstractM68kInstruction {
                         setTemp(cpu, DATA, getTemp(cpu, DATA) | (b << 16));
                         // .L toward the register: the pair of the last word starts here ($0148,
                         // again 12 clocks from the end).
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
                         cpu.scheduleRead(base + 4, 1);
                     }
                     nextStep(cpu);
@@ -139,7 +139,7 @@ public class MovepInstruction extends AbstractM68kInstruction {
                         // Toward memory the anchor is the final prefetch, `next` branch
                         // ($0188/$01C8: the sample comes AFTER all the writes), not the last
                         // write as the default would have it.
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     }
                     cpu.startPrefetchCycle(); // Final np: last bus cycle, finalize with it (seam 0)
                     return finalizeInstructionSafe(cpu);
@@ -152,7 +152,7 @@ public class MovepInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int dr = (op >> 9) & 0x7, il = (op & 0x40), rm = (op & 0x80), ar = op & 0x7;
         int disp = (short) cpu.extensionWordAt(cpu.getOpcodeAddress() + 2);

@@ -25,8 +25,14 @@ package io.github.zolfrik.amija.cpu;
  */
 public class OrInstruction extends AbstractM68kInstruction {
 
-    public static final OrInstruction INSTANCE = new OrInstruction();
-    private OrInstruction() {}
+    public static final OrInstruction INSTANCE = new OrInstruction(false);
+    /** The 68010 form: 2 clocks less after a long data register source. */
+    public static final OrInstruction M68010 = new OrInstruction(true);
+
+    private final boolean m68010;
+    private OrInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int EXT1 = 0;
     private static final int EXT2 = 1;
@@ -40,7 +46,7 @@ public class OrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7;
         int opmode = (op >> 6) & 0x7;
@@ -103,7 +109,7 @@ public class OrInstruction extends AbstractM68kInstruction {
                     }
                     // Memory or An
                     int addr = calculateEA(cpu, eaMode, eaReg, size, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), true, false);
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                     setTemp(cpu, ADDR, addr);
                     if (size == 4) cpu.scheduleRead(addr, 2);
                     else cpu.scheduleRead(addr, size);
@@ -112,7 +118,7 @@ public class OrInstruction extends AbstractM68kInstruction {
                 }
                 case 4 -> {
                     if (!cpu.isBusCycleIdle()) return false;
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
 
                     if (size == 4) {
                         setTemp(cpu, TMP_VAL, cpu.getLatchedBusData() << 16);
@@ -177,9 +183,9 @@ public class OrInstruction extends AbstractM68kInstruction {
                     cpu.scheduleWriteWord(getTemp(cpu, ADDR), (getTemp(cpu, RESULT) >>> 16) & 0xFFFF);
                     return finalizeInstructionSafe(cpu);
                 }
-                case 10 -> { // .L register or immediate gap: nn
+                case 10 -> { // .L register or immediate gap: nn (n on the 68010 from Dn)
                     if (!cpu.isBusCycleIdle()) return false;
-                    cpu.idleCycles(4);
+                    cpu.idleCycles(m68010 && eaMode == 0 ? 2 : 4);
                     setStep(cpu, 11);
                     return false;
                 }
@@ -193,7 +199,7 @@ public class OrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7;
         int opmode = (op >> 6) & 0x7;

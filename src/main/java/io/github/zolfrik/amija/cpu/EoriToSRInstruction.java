@@ -25,14 +25,20 @@ package io.github.zolfrik.amija.cpu;
  */
 public class EoriToSRInstruction extends AbstractM68kInstruction {
 
-    public static final EoriToSRInstruction INSTANCE = new EoriToSRInstruction();
+    public static final EoriToSRInstruction INSTANCE = new EoriToSRInstruction(false);
+    /** The 68010 form: the immediate is taken from the prefetch queue without a fetch of its own. */
+    public static final EoriToSRInstruction M68010 = new EoriToSRInstruction(true);
 
-    private EoriToSRInstruction() {}
+    private final boolean m68010;
+
+    private EoriToSRInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int IMM = 0;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
 
@@ -47,7 +53,9 @@ public class EoriToSRInstruction extends AbstractM68kInstruction {
                     continue;
                 }
                 case 1 -> {
-                    if (!fetchExtension(cpu, IMM)) return false;
+                    if (m68010) {
+                        setTemp(cpu, IMM, cpu.getIRD() & 0xFFFF);
+                    } else if (!fetchExtension(cpu, IMM)) return false;
                     nextStep(cpu);
                     continue;
                 }
@@ -87,7 +95,7 @@ public class EoriToSRInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int imm = cpu.extensionWordAt(cpu.getOpcodeAddress() + 2) & 0xFFFF;
         return "EORI #$" + Disassembly.formatHex(imm, 4) + ", SR";
     }

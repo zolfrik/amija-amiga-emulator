@@ -25,9 +25,15 @@ package io.github.zolfrik.amija.cpu;
  */
 public class AndInstruction extends AbstractM68kInstruction {
 
-    public static final AndInstruction INSTANCE = new AndInstruction();
+    public static final AndInstruction INSTANCE = new AndInstruction(false);
+    /** The 68010 form: 2 clocks less after a long data register source. */
+    public static final AndInstruction M68010 = new AndInstruction(true);
 
-    private AndInstruction() {}
+    private final boolean m68010;
+
+    private AndInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int EXT1 = 0;
     private static final int EXT2 = 1;
@@ -35,7 +41,7 @@ public class AndInstruction extends AbstractM68kInstruction {
     private static final int ADDR = 4;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7;
         int opmode = (op >> 6) & 0x7;
@@ -154,9 +160,9 @@ public class AndInstruction extends AbstractM68kInstruction {
                         return finalizeInstructionSafe(cpu);
                     }
                 }
-                case 10 -> { // .L register or immediate gap: nn
+                case 10 -> { // .L register or immediate gap: nn (n on the 68010 from Dn)
                     if (!cpu.isBusCycleIdle()) return false;
-                    cpu.idleCycles(4); // nn
+                    cpu.idleCycles(m68010 && eaMode == 0 ? 2 : 4);
                     nextStep(cpu);
                     return false;
                 }
@@ -174,7 +180,7 @@ public class AndInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7;
         int opmode = (op >> 6) & 0x7;

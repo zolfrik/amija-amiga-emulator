@@ -29,7 +29,7 @@ public class SwapInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         // SWAP Dn: 4(1/0) np
         int reg = cpu.getIr() & 0x7;
         int val = cpu.getD(reg, 4);
@@ -44,5 +44,5 @@ public class SwapInstruction extends AbstractM68kInstruction {
         refillPipeline(cpu); // np
         return finalizeInstructionSafe(cpu);
     }
-    @Override public String getDisassembly(Motorola68000 cpu) { return "SWAP D" + (cpu.getIr() & 0x7); }
+    @Override public String getDisassembly(AbstractMotorola cpu) { return "SWAP D" + (cpu.getIr() & 0x7); }
 }

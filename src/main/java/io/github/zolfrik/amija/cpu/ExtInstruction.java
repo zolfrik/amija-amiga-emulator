@@ -30,7 +30,7 @@ public class ExtInstruction extends AbstractM68kInstruction {
     private ExtInstruction() {}
 
     @Override
-    public void prepareInstruction(Motorola68000 cpu) {
+    public void prepareInstruction(AbstractMotorola cpu) {
         cpu.consumeIRC();
         // Inhibit automatic prefetch
     }
@@ -41,7 +41,7 @@ public class ExtInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         switch (getStep(cpu)) {
             case 0 -> {
                 int op = cpu.getIr(), reg = op & 0x7, opmode = (op >> 6) & 0x7;
@@ -61,7 +61,7 @@ public class ExtInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private void updateFlags(Motorola68000 cpu, int result, int size) {
+    private void updateFlags(AbstractMotorola cpu, int result, int size) {
         int sr = cpu.getSR() & 0xFFF0;
         if (size == 2) {
             if ((short) result < 0) sr |= 0x08; if ((short) result == 0) sr |= 0x04;
@@ -72,7 +72,7 @@ public class ExtInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         return "EXT" + (((op >> 6) & 0x7) == 2 ? ".w" : ".l") + " D" + (op & 0x7);
     }

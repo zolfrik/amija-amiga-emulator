@@ -38,7 +38,7 @@ public class RteInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         if (getStep(cpu) == 0 && !cpu.isSupervisor()) {
             cpu.triggerPrivilegeViolation();
             return finalizeInstruction(cpu);
@@ -48,21 +48,21 @@ public class RteInstruction extends AbstractM68kInstruction {
             switch (getStep(cpu)) {
                 case 0 -> {
                     // nU: Read PC High from SSP+2
-                    cpu.scheduleReadWord(cpu.getA7() + 2, Motorola68000.OpPurpose.DATA_READ);
+                    cpu.scheduleReadWord(cpu.getA7() + 2, AbstractMotorola.OpPurpose.DATA_READ);
                     nextStep(cpu);
                     return false;
                 }
                 case 1 -> {
                     // nu: Read SR from SSP
                     setTemp(cpu, TARGET_HIGH, cpu.getLatchedBusData() & 0xFFFF);
-                    cpu.scheduleReadWord(cpu.getA7(), Motorola68000.OpPurpose.DATA_READ);
+                    cpu.scheduleReadWord(cpu.getA7(), AbstractMotorola.OpPurpose.DATA_READ);
                     nextStep(cpu);
                     return false;
                 }
                 case 2 -> {
                     // nu: Read PC Low from SSP+4
                     setTemp(cpu, SAVED_SR, cpu.getLatchedBusData() & 0xFFFF);
-                    cpu.scheduleReadWord(cpu.getA7() + 4, Motorola68000.OpPurpose.DATA_READ);
+                    cpu.scheduleReadWord(cpu.getA7() + 4, AbstractMotorola.OpPurpose.DATA_READ);
                     nextStep(cpu);
                     return false;
                 }
@@ -100,7 +100,7 @@ public class RteInstruction extends AbstractM68kInstruction {
                     // RTE ($4E73): the `next` sample sits BETWEEN the two refill prefetches. The
                     // three frame reads do not go through the EA machine, so they are not an
                     // anchor: this prefetch is, 4 clocks from the end.
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     cpu.startPrefetchCycle();
                     return finalizeInstructionSafe(cpu);
                 }
@@ -110,5 +110,5 @@ public class RteInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) { return "RTE"; }
+    public String getDisassembly(AbstractMotorola cpu) { return "RTE"; }
 }

@@ -21,11 +21,20 @@
 package io.github.zolfrik.amija.cpu;
 
 public class TrapvInstruction extends AbstractM68kInstruction {
-    public static final TrapvInstruction INSTANCE = new TrapvInstruction();
-    private TrapvInstruction() {}
+    public static final TrapvInstruction INSTANCE = new TrapvInstruction(false);
+    /** The 68010 form: with V set, 2 idle clocks and the exception, without a prefetch. */
+    public static final TrapvInstruction M68010 = new TrapvInstruction(true);
+
+    private final boolean m68010;
+    private TrapvInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
     @Override public boolean shouldInhibitPrefetch() { return true; }
-    @Override public boolean executeStep(Motorola68000 cpu) {
-        if (cpu.v) {
+    @Override public boolean executeStep(AbstractMotorola cpu) {
+        if (cpu.v && m68010) {
+            cpu.exceptionLeadIn = 2;
+            cpu.triggerException(7, cpu.getPC());
+        } else if (cpu.v) {
             cpu.setExceptionStartsPrefetch(true);
             cpu.triggerException(7, cpu.getPC());
         } else {
@@ -34,5 +43,5 @@ public class TrapvInstruction extends AbstractM68kInstruction {
         }
         return false;
     }
-    @Override public String getDisassembly(Motorola68000 cpu) { return "TRAPV"; }
+    @Override public String getDisassembly(AbstractMotorola cpu) { return "TRAPV"; }
 }

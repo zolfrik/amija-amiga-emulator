@@ -25,8 +25,14 @@ package io.github.zolfrik.amija.cpu;
  */
 public class BclrInstruction extends AbstractM68kInstruction {
 
-    public static final BclrInstruction INSTANCE = new BclrInstruction();
-    private BclrInstruction() {}
+    public static final BclrInstruction INSTANCE = new BclrInstruction(false);
+    /** The 68010 form: 2 more clocks before the write to memory. */
+    public static final BclrInstruction M68010 = new BclrInstruction(true);
+
+    private final boolean m68010;
+    private BclrInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int EXT1 = 0;
     private static final int EXT2 = 1;
@@ -40,7 +46,7 @@ public class BclrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         boolean isStatic = (op & 0x0100) == 0;
         int eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;
@@ -119,6 +125,15 @@ public class BclrInstruction extends AbstractM68kInstruction {
                 }
                 case 6 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    if (m68010) {
+                        cpu.idleCycles(2);
+                        setStep(cpu, 7);
+                        return false;
+                    }
+                    cpu.scheduleWrite(getTemp(cpu, ADDR), getTemp(cpu, VAL), 1);
+                    return finalizeInstructionSafe(cpu);
+                }
+                case 7 -> {
                     cpu.scheduleWrite(getTemp(cpu, ADDR), getTemp(cpu, VAL), 1);
                     return finalizeInstructionSafe(cpu);
                 }
@@ -139,7 +154,7 @@ public class BclrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         boolean isStatic = (op & 0x0100) == 0;
         int eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;

@@ -40,7 +40,7 @@ public class JsrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr(), eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;
         while (true) {
             switch (getStep(cpu)) {
@@ -62,7 +62,7 @@ public class JsrInstruction extends AbstractM68kInstruction {
                     // computation, i.e. at cycle 0 for the modes that read the extension already
                     // in IRC, and after its prefetch for (xxx).L. The anchor is forced `now` and
                     // frozen: JSR's pushes and the two prefetches at the target do not move it.
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
                     int targetPC = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);
                     setTemp(cpu, TARGET_PC, targetPC);
                     setTemp(cpu, RETURN_ADDR, cpu.getOpcodeAddress() + (cpu.extensionsConsumed * 2));
@@ -138,7 +138,7 @@ public class JsrInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private boolean fetchJsrExtension(Motorola68000 cpu, int tempRegIndex, boolean lastExtension) {
+    private boolean fetchJsrExtension(AbstractMotorola cpu, int tempRegIndex, boolean lastExtension) {
         if (!cpu.isIRDValid()) {
             cpu.startPrefetchCycle();
             return false;
@@ -152,7 +152,7 @@ public class JsrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr(), eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;
         return "JSR " + Disassembly.formatEA(eaMode, eaReg, 4, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4));
     }

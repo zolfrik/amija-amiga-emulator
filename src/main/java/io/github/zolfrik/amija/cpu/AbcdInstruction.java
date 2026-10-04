@@ -26,9 +26,9 @@ public abstract class AbcdInstruction extends AbstractM68kInstruction {
     public static final AbcdInstruction MEMORY_INSTANCE = new MemoryAbcd();
 
     @Override
-    public abstract boolean executeStep(Motorola68000 cpu);
+    public abstract boolean executeStep(AbstractMotorola cpu);
 
-    protected void calculateAbcd(Motorola68000 cpu, int val1, int val2) {
+    protected void calculateAbcd(AbstractMotorola cpu, int val1, int val2) {
         int x = cpu.x ? 1 : 0;
         int binarySum = (val1 + val2 + x) & 0xFF;
         int t = (val1 & 0x0F) + (val2 & 0x0F) + x;
@@ -53,7 +53,7 @@ public abstract class AbcdInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         if ((cpu.getIr() & 0x8) == 0) {
             return String.format("ABCD D%d, D%d", cpu.getIr() & 0x7, (cpu.getIr() >> 9) & 0x7);
         } else {
@@ -63,7 +63,7 @@ public abstract class AbcdInstruction extends AbstractM68kInstruction {
 
     public static class RegisterAbcd extends AbcdInstruction {
         @Override
-        public boolean executeStep(Motorola68000 cpu) {
+        public boolean executeStep(AbstractMotorola cpu) {
             while (true) {
                 if (cpu.isRisingEdgeConsumed()) return false;
                 switch (getStep(cpu)) {
@@ -96,7 +96,7 @@ public abstract class AbcdInstruction extends AbstractM68kInstruction {
 
     public static class MemoryAbcd extends AbcdInstruction {
         @Override
-        public boolean executeStep(Motorola68000 cpu) {
+        public boolean executeStep(AbstractMotorola cpu) {
             int regX = (cpu.getIr() >> 9) & 0x7;
             int regY = cpu.getIr() & 0x7;
 
@@ -124,7 +124,7 @@ public abstract class AbcdInstruction extends AbstractM68kInstruction {
                         // ($8108/$C108): the `next` sample sits here, before the destination
                         // read. The position is the default's, the branch is not: `next` instead
                         // of `now`.
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                         cpu.scheduleRead(cpu.getA(regX, 4), 1);
                         nextStep(cpu);
                         return false;

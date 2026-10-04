@@ -38,7 +38,7 @@ public class ChkInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 7, eaMode = (op >> 3) & 7, eaReg = op & 7;
 
@@ -153,7 +153,7 @@ public class ChkInstruction extends AbstractM68kInstruction {
                         // prefetch, not the operand read. It must be declared here too, or the
                         // two orders of the same instruction would sample the pin at two
                         // different points.
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                         cpu.startPrefetchCycle(); // np
                         setStep(cpu, 9);
                         return false;
@@ -165,7 +165,7 @@ public class ChkInstruction extends AbstractM68kInstruction {
                     // Between the operand read and the final prefetch run the internal cycles,
                     // and the IPL sample (`ipl_fetch_next`) sits right before the prefetch: the
                     // anchor is the prefetch, not the read.
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     cpu.startPrefetchCycle(); // np
                     setStep(cpu, 7);
                     return false;
@@ -220,7 +220,7 @@ public class ChkInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         return "CHK " + Disassembly.formatEA((op >> 3) & 7, op & 7, 2, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4)) + ", D" + ((op >> 9) & 7);
     }

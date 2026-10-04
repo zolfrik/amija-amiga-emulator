@@ -57,6 +57,7 @@ CONTENTS
   What you get:
 
     *  OCS and ECS chipsets, PAL and NTSC video
+    *  68000 or 68010 processor
     *  Chip / Slow / Fast RAM configurations, up to four floppy drives
     *  ADF, IPF (copy-protected originals) and ZIP disk sets
     *  Hard disk images (.hdf) through a Zorro II AutoConfig controller
@@ -238,11 +239,12 @@ CONTENTS
      Left OFF - the default - you supply the games and AmiJa builds the machine
      around them. Load a floppy image and you get a stock A500 with Kickstart
      1.3; load a hard disk image or a WHDLoad archive and you get the expanded
-     machine those need, with Kickstart 3.1, 1 MB of Chip RAM, 8 MB of Fast RAM
-     and the ECS chipset. Even the video standard follows the file: a name
-     containing "NTSC" or "(USA)" - the convention TOSEC, No-Intro and WHDLoad
-     use - selects NTSC, everything else PAL. The memory, chipset and video
-     rows below then show what was deduced and cannot be edited.
+     machine those need, with Kickstart 3.1, 1 MB of Chip RAM, 8 MB of Fast RAM,
+     the ECS chipset and a 68010 processor. Even the video standard follows the
+     file: a name containing "NTSC" or "(USA)" - the convention TOSEC, No-Intro
+     and WHDLoad use - selects NTSC, everything else PAL. The memory, chipset,
+     processor and video rows below then show what was deduced and cannot be
+     edited.
 
      Ticked, nothing is deduced: every setting is yours, as on a real Amiga,
      and the drive list is replaced by the three per-kind sections (3.4 - 3.6).
@@ -363,6 +365,17 @@ CONTENTS
      Agnus/Denise and their extra registers (BEAMCON0, DIWHIGH, BPLCON3,
      productivity modes) and is what ECS-only titles expect.
      Values . . . . . OCS / ECS         Applies . . . RESTART (automatic on OK)
+
+  +-------------------------------------------------------------------------+
+  |  Processor:                                                   cpu.model  |
+  +-------------------------------------------------------------------------+
+     The A500's 68000, or its drop-in successor the 68010: a little faster on
+     some instructions, with a movable vector table, a loop mode that runs a
+     one-instruction DBcc loop without fetching it again, and MOVEC, MOVES and
+     RTD. MOVE from SR is privileged on the 68010, so a few old games written
+     for the 68000 stop there; WHDLoad and hard disk software are happy with
+     either.
+     Values . . . . . 68000 / 68010     Applies . . . RESTART (automatic on OK)
 
   ---------------------------------------------------------------------------
   3.3   DRIVES (AUTOMATIC MODE)
@@ -1017,11 +1030,13 @@ CONTENTS
      auto.floppy.slowram.kb      512       A500 with the trapdoor expansion,
      auto.floppy.fastram.kb      0         which is what floppy games expect
      auto.floppy.chipset         OCS
+     auto.floppy.cpu             68000
 
      auto.hd.chipram.kb          1024      a hard disk or WHDLoad archive:
      auto.hd.slowram.kb          512       the expanded machine those
      auto.hd.fastram.kb          8192      installs ask for
      auto.hd.chipset             ECS
+     auto.hd.cpu                 68010
 
      The values accepted are the same as the corresponding System settings
      (3.2). Applies . . . BOOT
@@ -1158,10 +1173,12 @@ CONTENTS
   auto.enabled                   System (3.2)                 BOOT
   auto.floppy.chipram.kb         file only (4.2)              BOOT
   auto.floppy.chipset            file only (4.2)              BOOT
+  auto.floppy.cpu                file only (4.2)              BOOT
   auto.floppy.fastram.kb         file only (4.2)              BOOT
   auto.floppy.slowram.kb         file only (4.2)              BOOT
   auto.hd.chipram.kb             file only (4.2)              BOOT
   auto.hd.chipset                file only (4.2)              BOOT
+  auto.hd.cpu                    file only (4.2)              BOOT
   auto.hd.fastram.kb             file only (4.2)              BOOT
   auto.hd.slowram.kb             file only (4.2)              BOOT
   auto.kickstart13.path          System (3.2)                 BOOT
@@ -1174,6 +1191,7 @@ CONTENTS
   chooser.media.lastDirectory    file only (4.1)              -
   chooser.rom.lastDirectory      file only (4.1)              -
   chooser.whdload.lastDirectory  file only (4.1)              -
+  cpu.model                      System (3.2)                 RESTART
   drive.df0..3.disk              Drives (3.3) / Floppy (3.4)  LIVE
   drive.df0..3.enabled           Floppy drives (3.4)          LIVE
   drive.df0..3.readonly          Floppy drives (3.4)          LIVE

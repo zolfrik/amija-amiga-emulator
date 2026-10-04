@@ -42,7 +42,7 @@ public class TstInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 3, size = (s == 0) ? 1 : (s == 1) ? 2 : 4;
         int eaMode = (op >> 3) & 7, eaReg = op & 7;
@@ -95,7 +95,7 @@ public class TstInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private void updateFlags(Motorola68000 cpu, int val, int size) {
+    private void updateFlags(AbstractMotorola cpu, int val, int size) {
         int msbMask = (size == 1) ? 0x80 : (size == 2) ? 0x8000 : 0x80000000;
         long sizeMask = (size == 1) ? 0xFFL : (size == 2) ? 0xFFFFL : 0xFFFFFFFFL;
         long maskedVal = val & sizeMask;
@@ -106,7 +106,7 @@ public class TstInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 3;
         int size = (s == 0) ? 1 : (s == 1) ? 2 : 4;

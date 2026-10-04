@@ -34,7 +34,7 @@ public class MoveqInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         // MOVEQ #<data>, Dn: 4(1/0) np
         int op = cpu.getIr();
         int dstReg = (op >> 9) & 0x7;
@@ -52,7 +52,7 @@ public class MoveqInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         return "MOVEQ #$" + Disassembly.formatHex(op & 0xFF, 2) + ", D" + ((op >> 9) & 7);
     }

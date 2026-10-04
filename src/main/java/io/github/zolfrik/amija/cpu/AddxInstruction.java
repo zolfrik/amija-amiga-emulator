@@ -26,9 +26,15 @@ package io.github.zolfrik.amija.cpu;
  */
 public class AddxInstruction extends AbstractM68kInstruction {
 
-    public static final AddxInstruction INSTANCE = new AddxInstruction();
+    public static final AddxInstruction INSTANCE = new AddxInstruction(false);
+    /** The 68010 form: 2 clocks less on long data registers. */
+    public static final AddxInstruction M68010 = new AddxInstruction(true);
 
-    private AddxInstruction() {}
+    private final boolean m68010;
+
+    private AddxInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int SRC_VAL = 0;
     private static final int DST_VAL = 1;
@@ -36,7 +42,7 @@ public class AddxInstruction extends AbstractM68kInstruction {
     private static final int ADDR_Y = 3;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int regX = (op >> 9) & 0x7;
         int sizeBit = (op >> 6) & 0x3;
@@ -52,7 +58,7 @@ public class AddxInstruction extends AbstractM68kInstruction {
                         // The memory-to-memory forms declare their own group 0 PC offset: the
                         // fault branch always carries two bytes more than the general rule, for
                         // both sizes ($9188/$D188).
-                        cpu.markGroup0EaDelta(2);
+                        if (!cpu.isM68010()) cpu.markGroup0EaDelta(2);
                         indexedGap2(cpu); // n
                         nextStep(cpu);
                         continue;
@@ -77,7 +83,7 @@ public class AddxInstruction extends AbstractM68kInstruction {
                     // read, not on the destination read. For .L it falls in the middle of the
                     // destination's long read instead (case 4).
                     if (size != 4) {
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
                     }
                     cpu.scheduleRead(addrY, size == 4 ? 2 : size);
                     nextStep(cpu);
@@ -122,7 +128,7 @@ public class AddxInstruction extends AbstractM68kInstruction {
                         // $9188/$D188: the `now` sample sits BETWEEN the two words of the
                         // destination read: the only anchor of the model that falls inside a
                         // long access.
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
                         cpu.scheduleRead(addrX, 2);
                         nextStep(cpu);
                         return false;
@@ -154,8 +160,8 @@ public class AddxInstruction extends AbstractM68kInstruction {
                     cpu.scheduleWriteWord(getTemp(cpu, ADDR_X), (result >> 16) & 0xFFFF); // nW
                     return finalizeInstructionSafe(cpu);
                 }
-                case 10 -> { // Register mode .L gap: nn
-                    cpu.idleCycles(4);
+                case 10 -> { // Register mode .L gap: nn (n on the 68010)
+                    cpu.idleCycles(m68010 ? 2 : 4);
                     nextStep(cpu);
                     return false;
                 }
@@ -168,7 +174,7 @@ public class AddxInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    protected int calculateAddx(Motorola68000 cpu, int src, int dst, int size) {
+    protected int calculateAddx(AbstractMotorola cpu, int src, int dst, int size) {
         int res = super.calculateAddx(cpu, src, dst, size);
         setTemp(cpu, 10, res); // Save result for memory .L mode
         return res;
@@ -180,7 +186,7 @@ public class AddxInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int regX = (op >> 9) & 0x7;
         int sizeBit = (op >> 6) & 0x3;

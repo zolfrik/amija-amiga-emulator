@@ -36,7 +36,7 @@ public class SubaInstruction extends AbstractM68kInstruction {
     private static final int ADDR = 3;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int dstReg = (op >> 9) & 0x7;
         int opmode = (op >> 6) & 0x7;
@@ -114,7 +114,7 @@ public class SubaInstruction extends AbstractM68kInstruction {
                     // SUBA/ADDA: the `next` sample sits RIGHT BEFORE the final prefetch, so the
                     // anchor is this prefetch and not the operand read ($90D0/$91D0/$D0D0/
                     // $D1D0: the sample sits between the read and the prefetch).
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     refillPipeline(cpu);
                     int srcVal = getTemp(cpu, SRC_VAL);
                     int dstVal = cpu.getA(dstReg, 4);
@@ -149,7 +149,7 @@ public class SubaInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int dstReg = (op >> 9) & 0x7;
         int opmode = (op >> 6) & 0x7;

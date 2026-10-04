@@ -39,7 +39,7 @@ public class JmpInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr(), eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;
 
         while (true) {
@@ -82,7 +82,7 @@ public class JmpInstruction extends AbstractM68kInstruction {
                     // regenerated is BYTE-IDENTICAL to the one shipped, and the poll at S0 is
                     // load-bearing (moving it turns 245 tests of 253 red, plan section 6.1.4).
                     if (eaMode == 6 || (eaMode == 7 && eaReg == 3)) {
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
                     }
                     int targetPC = calculateEA(cpu, eaMode, eaReg, 4, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), false, false);
                     setTemp(cpu, TEMP_TARGET_PC, targetPC);
@@ -139,7 +139,7 @@ public class JmpInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private boolean fetchJmpExtension(Motorola68000 cpu, int tempRegIndex, boolean lastExtension) {
+    private boolean fetchJmpExtension(AbstractMotorola cpu, int tempRegIndex, boolean lastExtension) {
         if (!cpu.isIRDValid()) {
             cpu.startPrefetchCycle();
             return false;
@@ -153,7 +153,7 @@ public class JmpInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr(), eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;
         return "JMP " + Disassembly.formatEA(eaMode, eaReg, 4, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4));
     }

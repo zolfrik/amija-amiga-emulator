@@ -32,7 +32,7 @@ public class UnlkInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         switch (getStep(cpu)) {
             case 0 -> {
                 int reg = cpu.getIr() & 0x7;
@@ -47,14 +47,14 @@ public class UnlkInstruction extends AbstractM68kInstruction {
 
                 // UNLK ($4E58): the `now` sample sits before the FIRST of the two words read, 12
                 // clocks from the end, not on the second at 8.
-                cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
-                cpu.scheduleReadWord(addr, Motorola68000.OpPurpose.DATA_READ); // nU
+                cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
+                cpu.scheduleReadWord(addr, AbstractMotorola.OpPurpose.DATA_READ); // nU
                 nextStep(cpu);
                 return false;
             }
             case 1 -> {
                 setTemp(cpu, TEMP_HIGH, cpu.getLatchedBusData() & 0xFFFF);
-                cpu.scheduleReadWord(cpu.getA(7, 4) + 2, Motorola68000.OpPurpose.DATA_READ); // nu
+                cpu.scheduleReadWord(cpu.getA(7, 4) + 2, AbstractMotorola.OpPurpose.DATA_READ); // nu
                 nextStep(cpu);
                 return false;
             }
@@ -75,5 +75,5 @@ public class UnlkInstruction extends AbstractM68kInstruction {
         }
     }
 
-    @Override public String getDisassembly(Motorola68000 cpu) { return "UNLK A" + (cpu.getIr() & 0x7); }
+    @Override public String getDisassembly(AbstractMotorola cpu) { return "UNLK A" + (cpu.getIr() & 0x7); }
 }

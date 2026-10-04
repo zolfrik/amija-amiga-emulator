@@ -39,7 +39,7 @@ public class NotInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 3, size = (s == 0) ? 1 : (s == 1) ? 2 : 4;
         int eaMode = (op >> 3) & 7, eaReg = op & 7;
@@ -82,7 +82,7 @@ public class NotInstruction extends AbstractM68kInstruction {
                         return finalizeInstructionSafe(cpu);
                     }
                     int addr = calculateEA(cpu, eaMode, eaReg, size, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), true, false);
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                     setTemp(cpu, ADDR, addr);
                     if (size == 4) cpu.scheduleRead(addr, 2);
                     else cpu.scheduleRead(addr, size);
@@ -91,7 +91,7 @@ public class NotInstruction extends AbstractM68kInstruction {
                 }
                 case 4 -> {
                     if (!cpu.isBusCycleIdle()) return false;
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
 
                     if (size == 4) {
                         setTemp(cpu, VAL, cpu.getLatchedBusData() << 16);
@@ -148,11 +148,11 @@ public class NotInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private void nextStep(Motorola68000 cpu, int step) {
+    private void nextStep(AbstractMotorola cpu, int step) {
         cpu.setInstructionStep(step);
     }
 
-    private int updateFlags(Motorola68000 cpu, int val, int size) {
+    private int updateFlags(AbstractMotorola cpu, int val, int size) {
         int sr = cpu.getSR() & 0xFFF0;
         int mask = (size == 1) ? 0xFF : (size == 2) ? 0xFFFF : 0xFFFFFFFF;
         int msb = (size == 1) ? 0x80 : (size == 2) ? 0x8000 : 0x80000000;
@@ -164,7 +164,7 @@ public class NotInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 3, size = (s == 0) ? 1 : (s == 1) ? 2 : 4;
         return "NOT" + Disassembly.getSizeSuffix(size) + " " + Disassembly.formatEA((op >> 3) & 7, op & 7, size, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4));

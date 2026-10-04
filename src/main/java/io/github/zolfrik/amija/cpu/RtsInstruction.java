@@ -37,13 +37,13 @@ public class RtsInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
             switch (getStep(cpu)) {
                 case 0 -> {
                     // nU: Read PC High from (A7)
-                    cpu.scheduleReadWord(cpu.getA7(), Motorola68000.OpPurpose.DATA_READ);
+                    cpu.scheduleReadWord(cpu.getA7(), AbstractMotorola.OpPurpose.DATA_READ);
                     nextStep(cpu);
                     return false;
                 }
@@ -51,7 +51,7 @@ public class RtsInstruction extends AbstractM68kInstruction {
                     // nu: Read PC Low from (A7+2)
                     setTemp(cpu, TARGET_HIGH, cpu.getLatchedBusData() & 0xFFFF);
                     cpu.setA7(cpu.getA7() + 2);
-                    cpu.scheduleReadWord(cpu.getA7(), Motorola68000.OpPurpose.DATA_READ);
+                    cpu.scheduleReadWord(cpu.getA7(), AbstractMotorola.OpPurpose.DATA_READ);
                     nextStep(cpu);
                     return false;
                 }
@@ -78,7 +78,7 @@ public class RtsInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     // RTS ($4E75): the `next` sample sits BETWEEN the two refill prefetches; the
                     // stack reads do not go through the EA machine.
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     refillPipeline(cpu); // np 2
                     return finalizeInstructionSafe(cpu);
                 }
@@ -88,5 +88,5 @@ public class RtsInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) { return "RTS"; }
+    public String getDisassembly(AbstractMotorola cpu) { return "RTS"; }
 }

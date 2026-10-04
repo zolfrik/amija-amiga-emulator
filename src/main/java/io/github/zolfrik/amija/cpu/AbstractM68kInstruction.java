@@ -29,25 +29,25 @@ public abstract class AbstractM68kInstruction {
 
     // --- Step Management ---
 
-    protected int getStep(Motorola68000 cpu) {
+    protected int getStep(AbstractMotorola cpu) {
         return cpu.getInstructionStep();
     }
 
-    protected void setStep(Motorola68000 cpu, int step) {
+    protected void setStep(AbstractMotorola cpu, int step) {
         cpu.setInstructionStep(step);
     }
 
-    protected void nextStep(Motorola68000 cpu) {
+    protected void nextStep(AbstractMotorola cpu) {
         cpu.incrementInstructionStep();
     }
 
     // --- TempReg Management ---
 
-    protected int getTemp(Motorola68000 cpu, int index) {
+    protected int getTemp(AbstractMotorola cpu, int index) {
         return cpu.getTempReg(index);
     }
 
-    protected void setTemp(Motorola68000 cpu, int index, int value) {
+    protected void setTemp(AbstractMotorola cpu, int index, int value) {
         cpu.setTempReg(index, value);
     }
 
@@ -56,14 +56,14 @@ public abstract class AbstractM68kInstruction {
     /**
      * Standard Yacht setup gap (4 clock cycles).
      */
-    protected void setupGap4(Motorola68000 cpu) {
+    protected void setupGap4(AbstractMotorola cpu) {
         cpu.idleCycles(4);
     }
 
     /**
      * Indexed addressing mode gap (2 clock cycles).
      */
-    protected void indexedGap2(Motorola68000 cpu) {
+    protected void indexedGap2(AbstractMotorola cpu) {
         cpu.idleCycles(2);
     }
 
@@ -75,9 +75,9 @@ public abstract class AbstractM68kInstruction {
 
     // WHERE THE IPL PIN IS SAMPLED: if this instruction has a point of its own, it declares
     // it by calling cpu.markIplAnchor(...) IN THE RIGHT STEP; otherwise the default applies.
-    // The model is written once, in Motorola68000.markIplAnchor/pollIpl.
+    // The model is written once, in AbstractMotorola.markIplAnchor/pollIpl.
 
-    public void prepareInstruction(Motorola68000 cpu) {
+    public void prepareInstruction(AbstractMotorola cpu) {
         cpu.consumeIRC();
         if (!shouldInhibitPrefetch()) {
             cpu.startPrefetchCycle();
@@ -89,7 +89,7 @@ public abstract class AbstractM68kInstruction {
      * Consumes IRC, moves it to IRD, and optionally starts a new prefetch.
      * @return true if successful, false if IRD is not valid (waiting for bus).
      */
-    protected boolean fetchExtension(Motorola68000 cpu, int tempRegIndex) {
+    protected boolean fetchExtension(AbstractMotorola cpu, int tempRegIndex) {
         if (!cpu.isIRDValid()) {
             if (shouldInhibitPrefetch()) {
                 cpu.startPrefetchCycle();
@@ -109,7 +109,7 @@ public abstract class AbstractM68kInstruction {
     /**
      * Helper for final pipeline refill (np np sequence in Yacht).
      */
-    protected void refillPipeline(Motorola68000 cpu) {
+    protected void refillPipeline(AbstractMotorola cpu) {
         cpu.startPrefetchCycle();
     }
 
@@ -129,14 +129,14 @@ public abstract class AbstractM68kInstruction {
      * @param updateAn Whether to update An for pre-decrement/post-increment modes.
      * @return The calculated Effective Address.
      */
-    protected int calculateEA(Motorola68000 cpu, int mode, int reg, int size, int basePC, int ext1, int ext2, boolean updateAn) {
+    protected int calculateEA(AbstractMotorola cpu, int mode, int reg, int size, int basePC, int ext1, int ext2, boolean updateAn) {
         return calculateEA(cpu, mode, reg, size, basePC, ext1, ext2, updateAn, true);
     }
 
-    protected int calculateEA(Motorola68000 cpu, int mode, int reg, int size, int basePC, int ext1, int ext2, boolean updateAn, boolean includeGap) {
+    protected int calculateEA(AbstractMotorola cpu, int mode, int reg, int size, int basePC, int ext1, int ext2, boolean updateAn, boolean includeGap) {
         // The EA just computed is the one on which a possible address error will fire, and its
         // mode decides the PC offset in the group 0 frame
-        // (Motorola68000.group0DataFaultPcOffset). The instructions that fail on the STACK
+        // (AbstractMotorola.group0DataFaultPcOffset). The instructions that fail on the STACK
         // instead of the EA (PEA, JSR, LINK, BSR) declare it themselves.
         cpu.noteGroup0Ea(mode, reg, size);
         int inc = (reg == 7 && size == 1) ? 2 : size;
@@ -166,11 +166,11 @@ public abstract class AbstractM68kInstruction {
         };
     }
 
-    protected int calculateIndexedAddress(Motorola68000 cpu, int ext) {
+    protected int calculateIndexedAddress(AbstractMotorola cpu, int ext) {
         return calculateIndexedAddress(cpu, ext, true);
     }
 
-    protected int calculateIndexedAddress(Motorola68000 cpu, int ext, boolean includeGap) {
+    protected int calculateIndexedAddress(AbstractMotorola cpu, int ext, boolean includeGap) {
         int isA = (ext >> 15) & 1, regIdx = (ext >> 12) & 7, isLong = (ext >> 11) & 1, disp8 = (byte) (ext & 0xFF);
         int index = (isA == 1) ? cpu.getA(regIdx, 4) : cpu.getD(regIdx, 4);
         if (isLong == 0) index = (short) (index & 0xFFFF);
@@ -180,7 +180,7 @@ public abstract class AbstractM68kInstruction {
 
     // --- Arithmetic Helpers ---
 
-    protected int calculateAdd(Motorola68000 cpu, int src, int dst, int size) {
+    protected int calculateAdd(AbstractMotorola cpu, int src, int dst, int size) {
         long s, d, r, msbMask, sizeMask;
         if (size == 1) {
             s = src & 0xFFL; d = dst & 0xFFL; msbMask = 0x80L; sizeMask = 0xFFL;
@@ -203,7 +203,7 @@ public abstract class AbstractM68kInstruction {
         return res;
     }
 
-    protected int calculateSub(Motorola68000 cpu, int src, int dst, int size) {
+    protected int calculateSub(AbstractMotorola cpu, int src, int dst, int size) {
         long s, d, r, msbMask, sizeMask;
         if (size == 1) {
             s = src & 0xFFL; d = dst & 0xFFL; msbMask = 0x80L; sizeMask = 0xFFL;
@@ -226,7 +226,7 @@ public abstract class AbstractM68kInstruction {
         return res;
     }
 
-    protected int calculateAddx(Motorola68000 cpu, int src, int dst, int size) {
+    protected int calculateAddx(AbstractMotorola cpu, int src, int dst, int size) {
         long s, d, r, msbMask, sizeMask;
         int x = cpu.x ? 1 : 0;
         if (size == 1) {
@@ -251,7 +251,7 @@ public abstract class AbstractM68kInstruction {
         return res;
     }
 
-    protected int calculateSubx(Motorola68000 cpu, int src, int dst, int size) {
+    protected int calculateSubx(AbstractMotorola cpu, int src, int dst, int size) {
         long s, d, r, msbMask, sizeMask;
         int x = cpu.x ? 1 : 0;
         if (size == 1) {
@@ -280,7 +280,7 @@ public abstract class AbstractM68kInstruction {
 
     // --- Logical Helpers ---
 
-    protected int calculateAnd(Motorola68000 cpu, int src, int dst, int size) {
+    protected int calculateAnd(AbstractMotorola cpu, int src, int dst, int size) {
         int res = src & dst;
         int msbMask = (size == 1) ? 0x80 : (size == 2) ? 0x8000 : 0x80000000;
         int sizeMask = (size == 1) ? 0xFF : (size == 2) ? 0xFFFF : 0xFFFFFFFF;
@@ -292,7 +292,7 @@ public abstract class AbstractM68kInstruction {
         return res;
     }
 
-    protected int calculateOr(Motorola68000 cpu, int src, int dst, int size) {
+    protected int calculateOr(AbstractMotorola cpu, int src, int dst, int size) {
         int res = src | dst;
         int msbMask = (size == 1) ? 0x80 : (size == 2) ? 0x8000 : 0x80000000;
         int sizeMask = (size == 1) ? 0xFF : (size == 2) ? 0xFFFF : 0xFFFFFFFF;
@@ -304,7 +304,7 @@ public abstract class AbstractM68kInstruction {
         return res;
     }
 
-    protected int calculateEor(Motorola68000 cpu, int src, int dst, int size) {
+    protected int calculateEor(AbstractMotorola cpu, int src, int dst, int size) {
         int res = src ^ dst;
         int msbMask = (size == 1) ? 0x80 : (size == 2) ? 0x8000 : 0x80000000;
         int sizeMask = (size == 1) ? 0xFF : (size == 2) ? 0xFFFF : 0xFFFFFFFF;
@@ -316,7 +316,7 @@ public abstract class AbstractM68kInstruction {
         return res;
     }
 
-    protected int calculateCmp(Motorola68000 cpu, int src, int dst, int size) {
+    protected int calculateCmp(AbstractMotorola cpu, int src, int dst, int size) {
         long s, d, r, msbMask, sizeMask;
         if (size == 1) {
             s = src & 0xFFL; d = dst & 0xFFL; msbMask = 0x80L; sizeMask = 0xFFL;
@@ -350,7 +350,7 @@ public abstract class AbstractM68kInstruction {
 
     // --- Condition Testing ---
 
-    protected boolean testCondition(Motorola68000 cpu, int cond) {
+    protected boolean testCondition(AbstractMotorola cpu, int cond) {
         return switch (cond) {
             case 0 -> true; // T / BRA
             case 1 -> false; // F / BSR uses condition 1 but handled specially
@@ -380,7 +380,7 @@ public abstract class AbstractM68kInstruction {
      * If there are pending internal cycles, the core will process them before starting the next instruction.
      * @return true.
      */
-    protected boolean finalizeInstruction(Motorola68000 cpu) {
+    protected boolean finalizeInstruction(AbstractMotorola cpu) {
         cpu.setInstructionFinished(true);
         return true;
     }
@@ -390,7 +390,7 @@ public abstract class AbstractM68kInstruction {
      * Use this for instructions that have issues with back-to-back execution in tests.
      * @return false.
      */
-    protected boolean finalizeInstructionSafe(Motorola68000 cpu) {
+    protected boolean finalizeInstructionSafe(AbstractMotorola cpu) {
         cpu.setInstructionFinished(true);
         cpu.setRisingEdgeConsumed(true);
         return false;
@@ -406,8 +406,8 @@ public abstract class AbstractM68kInstruction {
         return (mode == 7 && reg == 1) || (mode == 7 && (reg == 4 && size == 4));
     }
     
-    public abstract boolean executeStep(Motorola68000 cpu);
+    public abstract boolean executeStep(AbstractMotorola cpu);
     
-    public abstract String getDisassembly(Motorola68000 cpu);
+    public abstract String getDisassembly(AbstractMotorola cpu);
 }
 

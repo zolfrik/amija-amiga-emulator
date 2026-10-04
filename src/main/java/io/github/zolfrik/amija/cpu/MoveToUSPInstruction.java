@@ -25,8 +25,14 @@ package io.github.zolfrik.amija.cpu;
  */
 public class MoveToUSPInstruction extends AbstractM68kInstruction {
 
-    public static final MoveToUSPInstruction INSTANCE = new MoveToUSPInstruction();
-    private MoveToUSPInstruction() {}
+    public static final MoveToUSPInstruction INSTANCE = new MoveToUSPInstruction(false);
+    /** The 68010 form: 2 idle clocks before the prefetch. */
+    public static final MoveToUSPInstruction M68010 = new MoveToUSPInstruction(true);
+
+    private final boolean m68010;
+    private MoveToUSPInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     @Override
     public boolean shouldInhibitPrefetch() {
@@ -34,25 +40,35 @@ public class MoveToUSPInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         if (getStep(cpu) == 0 && !cpu.isSupervisor()) {
             cpu.triggerPrivilegeViolation();
             return finalizeInstructionSafe(cpu);
         }
         switch (getStep(cpu)) {
             case 0 -> {
+                if (m68010) {
+                    cpu.idleCycles(2);
+                    setStep(cpu, 2);
+                    return false;
+                }
                 cpu.usp = cpu.getA(cpu.getIr() & 7, 4);
                 refillPipeline(cpu); // np
                 nextStep(cpu);
                 return false;
             }
             case 1 -> { return finalizeInstructionSafe(cpu); }
+            case 2 -> {
+                cpu.usp = cpu.getA(cpu.getIr() & 7, 4);
+                refillPipeline(cpu);
+                return finalizeInstructionSafe(cpu);
+            }
             default -> { return finalizeInstruction(cpu); }
         }
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         return "MOVE A" + (cpu.getIr() & 7) + ", USP";
     }
 }

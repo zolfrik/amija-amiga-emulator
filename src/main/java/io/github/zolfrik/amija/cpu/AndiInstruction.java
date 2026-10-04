@@ -38,7 +38,7 @@ public class AndiInstruction extends AbstractM68kInstruction {
     private static final int ADDR = 6;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int sizeBit = (op >> 6) & 0x3;
         int size = (sizeBit == 0) ? 1 : (sizeBit == 1) ? 2 : 4;
@@ -152,7 +152,7 @@ public class AndiInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int sizeBit = (op >> 6) & 0x3;
         int size = (sizeBit == 0) ? 1 : (sizeBit == 1) ? 2 : 4;

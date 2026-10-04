@@ -38,27 +38,27 @@ public class RtrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
             switch (getStep(cpu)) {
                 case 0 -> {
                     // nU: Read PC High from (A7+2)
-                    cpu.scheduleReadWord(cpu.getA7() + 2, Motorola68000.OpPurpose.DATA_READ);
+                    cpu.scheduleReadWord(cpu.getA7() + 2, AbstractMotorola.OpPurpose.DATA_READ);
                     nextStep(cpu);
                     return false;
                 }
                 case 1 -> {
                     // nu: Read CCR from (A7)
                     setTemp(cpu, TARGET_HIGH, cpu.getLatchedBusData() & 0xFFFF);
-                    cpu.scheduleReadWord(cpu.getA7(), Motorola68000.OpPurpose.DATA_READ);
+                    cpu.scheduleReadWord(cpu.getA7(), AbstractMotorola.OpPurpose.DATA_READ);
                     nextStep(cpu);
                     return false;
                 }
                 case 2 -> {
                     // nu: Read PC Low from (A7+4)
                     setTemp(cpu, SAVED_CCR, cpu.getLatchedBusData() & 0xFFFF);
-                    cpu.scheduleReadWord(cpu.getA7() + 4, Motorola68000.OpPurpose.DATA_READ);
+                    cpu.scheduleReadWord(cpu.getA7() + 4, AbstractMotorola.OpPurpose.DATA_READ);
                     nextStep(cpu);
                     return false;
                 }
@@ -92,7 +92,7 @@ public class RtrInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     // RTR ($4E77): the `next` sample sits BETWEEN the two refill prefetches; the
                     // stack reads do not go through the EA machine.
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     refillPipeline(cpu); // np 2
                     return finalizeInstructionSafe(cpu);
                 }
@@ -102,5 +102,5 @@ public class RtrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) { return "RTR"; }
+    public String getDisassembly(AbstractMotorola cpu) { return "RTR"; }
 }

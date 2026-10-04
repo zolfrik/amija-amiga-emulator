@@ -20,7 +20,7 @@
 
 package io.github.zolfrik.amija.cpu;
 
-import io.github.zolfrik.amija.cpu.Motorola68000.OpPurpose;
+import io.github.zolfrik.amija.cpu.AbstractMotorola.OpPurpose;
 
 public class MovemInstruction extends AbstractM68kInstruction {
     public static final MovemInstruction INSTANCE = new MovemInstruction();
@@ -35,7 +35,7 @@ public class MovemInstruction extends AbstractM68kInstruction {
     private static final int EA_EXT2 = 6;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int dr = (op >> 10) & 1, sz = (op >> 6) & 1, mode = (op >> 3) & 7, reg = op & 7;
 
@@ -98,13 +98,14 @@ public class MovemInstruction extends AbstractM68kInstruction {
 
                 if ((firstAddr & 1) != 0) {
                     // MOVEM declares its own group 0 PC offset: the general rule
-                    // (Motorola68000.group0DataFaultPcOffset) does not apply here. The fault
+                    // (AbstractMotorola.group0DataFaultPcOffset) does not apply here. The fault
                     // branch always carries two bytes more than the mask word already counted,
                     // except MOVEM to registers with an INDEXED mode, where it is two less
                     // ($4CB0/$4CBB: +4, against +8 for $4CA8 (d16,An)).
                     boolean indexedLoad = dr == 1 && (mode == 6 || (mode == 7 && reg == 3));
                     cpu.noteGroup0Ea(mode, reg, sz == 1 ? 4 : 2);
-                    cpu.markGroup0EaDelta(indexedLoad ? -2 : 2);
+                    cpu.markGroup0EaDelta(indexedLoad && !cpu.isM68010() ? -2 : 2);
+                    if (dr == 0) noteAbortedStore(cpu, getTemp(cpu, MASK_VAL) & 0xFFFF, mode, sz == 1);
                     cpu.triggerAddressError(firstAddr, dr == 0, cpu.currentFCForData(), false);
                     return finalizeInstructionSafe(cpu);
                 }
@@ -199,7 +200,7 @@ public class MovemInstruction extends AbstractM68kInstruction {
                 // move it. Except memory -> register with (An)+, which declared it at the start
                 // of the instruction (prepareInstruction) and must not be overwritten here.
                 if (!(dr == 1 && mode == 3)) {
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                 }
                 cpu.startPrefetchCycle(); // Refill IRC
                 return finalizeInstructionSafe(cpu);
@@ -217,7 +218,7 @@ public class MovemInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private int calculateMovemEA(Motorola68000 cpu, int mode, int reg) {
+    private int calculateMovemEA(AbstractMotorola cpu, int mode, int reg) {
         int ext1 = getTemp(cpu, EA_EXT1), pc = cpu.getOpcodeAddress();
         return switch (mode) {
             case 2, 3, 4 -> cpu.getA(reg, 4);
@@ -234,7 +235,7 @@ public class MovemInstruction extends AbstractM68kInstruction {
         };
     }
 
-    private int calculateIndexedMovem(Motorola68000 cpu, int ext) {
+    private int calculateIndexedMovem(AbstractMotorola cpu, int ext) {
         int isA = (ext >> 15) & 1, rIdx = (ext >> 12) & 7, isL = (ext >> 11) & 1, d8 = (byte) (ext & 0xFF);
         int idx = (isA == 1) ? cpu.getA(rIdx, 4) : cpu.getD(rIdx, 4);
         if (isL == 0) idx = (short) (idx & 0xFFFF);
@@ -242,8 +243,8 @@ public class MovemInstruction extends AbstractM68kInstruction {
     }
 
     private int getRegisterIndex(int bit, int mode) { return (mode == 4) ? 15 - bit : bit; }
-    private int getReg(Motorola68000 cpu, int r) { return (r < 8) ? cpu.getD(r, 4) : cpu.getA(r - 8, 4); }
-    private void setReg(Motorola68000 cpu, int r, int v) { if (r < 8) cpu.setD(r, v, 4); else cpu.setA(r - 8, v); }
+    private int getReg(AbstractMotorola cpu, int r) { return (r < 8) ? cpu.getD(r, 4) : cpu.getA(r - 8, 4); }
+    private void setReg(AbstractMotorola cpu, int r, int v) { if (r < 8) cpu.setD(r, v, 4); else cpu.setA(r - 8, v); }
     private boolean hasEAExt1(int m, int r) { return m == 5 || m == 6 || (m == 7 && r <= 3); }
     private boolean hasEAExt2(int m, int r) { return m == 7 && r == 1; }
     @Override public boolean shouldInhibitPrefetch() { return true; }
@@ -256,16 +257,36 @@ public class MovemInstruction extends AbstractM68kInstruction {
      * not a generalisation: $4C90 ({@code (An)}) anchors at the final prefetch like the others.
      */
     @Override
-    public void prepareInstruction(Motorola68000 cpu) {
+    public void prepareInstruction(AbstractMotorola cpu) {
         int op = cpu.getIr();
         if (((op >> 10) & 1) == 1 && ((op >> 3) & 7) == 3) {
-            cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+            cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
         }
         super.prepareInstruction(cpu);
     }
 
+    /**
+     * A store aborted by an odd address leaves the first register of the transfer in the
+     * data output buffer (its high word for a long store, the low word in predecrement
+     * mode, which walks the registers backwards) and, for the register-indirect modes, the
+     * register mask in the data input buffer. Both are stacked by the 68010 fault frame.
+     */
+    private static void noteAbortedStore(AbstractMotorola cpu, int mask, int mode, boolean isLong) {
+        if (mask == 0) return;
+        int b = Integer.numberOfTrailingZeros(mask);
+        int value;
+        if (mode == 4) {
+            value = b < 8 ? cpu.getA(7 - b, 4) : cpu.getD(15 - b, 4);
+        } else {
+            value = b < 8 ? cpu.getD(b, 4) : cpu.getA(b - 8, 4);
+            if (isLong) value >>>= 16;
+        }
+        cpu.writeBuffer = value & 0xFFFF;
+        if (mode == 2 || mode == 3 || mode == 4) cpu.readBuffer = mask;
+    }
+
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int dr = (op >> 10) & 1, sz = (op >> 6) & 1, mode = (op >> 3) & 7, reg = op & 7;
         int pc = cpu.getOpcodeAddress();

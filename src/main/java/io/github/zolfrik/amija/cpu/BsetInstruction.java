@@ -40,7 +40,7 @@ public class BsetInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         boolean isStatic = (op & 0x0100) == 0;
         int eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;
@@ -139,7 +139,7 @@ public class BsetInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         boolean isStatic = (op & 0x0100) == 0;
         int eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;

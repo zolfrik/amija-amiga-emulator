@@ -25,14 +25,20 @@ package io.github.zolfrik.amija.cpu;
  */
 public class EoriToCCRInstruction extends AbstractM68kInstruction {
 
-    public static final EoriToCCRInstruction INSTANCE = new EoriToCCRInstruction();
+    public static final EoriToCCRInstruction INSTANCE = new EoriToCCRInstruction(false);
+    /** The 68010 form: the immediate is taken from the prefetch queue without a fetch of its own. */
+    public static final EoriToCCRInstruction M68010 = new EoriToCCRInstruction(true);
 
-    private EoriToCCRInstruction() {}
+    private final boolean m68010;
+
+    private EoriToCCRInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int IMM = 0;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
             switch (getStep(cpu)) {
@@ -41,7 +47,9 @@ public class EoriToCCRInstruction extends AbstractM68kInstruction {
                     continue;
                 }
                 case 1 -> {
-                    if (!fetchExtension(cpu, IMM)) return false;
+                    if (m68010) {
+                        setTemp(cpu, IMM, cpu.getIRD() & 0xFFFF);
+                    } else if (!fetchExtension(cpu, IMM)) return false;
                     nextStep(cpu);
                     continue;
                 }
@@ -81,7 +89,7 @@ public class EoriToCCRInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int imm = cpu.extensionWordAt(cpu.getOpcodeAddress() + 2) & 0xFF;
         return "EORI #$" + Disassembly.formatHex(imm, 2) + ", CCR";
     }

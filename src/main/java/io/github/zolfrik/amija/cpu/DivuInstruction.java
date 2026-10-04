@@ -22,8 +22,14 @@ package io.github.zolfrik.amija.cpu;
 
 public class DivuInstruction extends AbstractM68kInstruction {
 
-    public static final DivuInstruction INSTANCE = new DivuInstruction();
-    private DivuInstruction() {}
+    public static final DivuInstruction INSTANCE = new DivuInstruction(false);
+    /** The 68010 form. */
+    public static final DivuInstruction M68010 = new DivuInstruction(true);
+
+    private final boolean m68010;
+    private DivuInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int EXT1 = 0;
     private static final int EXT2 = 1;
@@ -41,7 +47,7 @@ public class DivuInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         if (cpu.isInstructionFinished()) return true;
 
         int op = cpu.getIr();
@@ -114,6 +120,9 @@ public class DivuInstruction extends AbstractM68kInstruction {
                         return false;
                     }
                     int msw = (int)(regVal >>> 16) & 0xFFFF;
+                    if (m68010) {
+                        return divide68010(cpu, reg, regVal, divisor);
+                    }
                     if (msw >= divisor) {
                         cpu.v = true; cpu.c = false;
                         // np-LAST order (the hardware's, confirmed by the Tom Harte vectors):
@@ -193,7 +202,7 @@ public class DivuInstruction extends AbstractM68kInstruction {
                         // Between the operand read and the final prefetch run the division's
                         // cycles, and the `next` sample sits right before the prefetch: the
                         // anchor is the prefetch, not the read.
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                         refillPipeline(cpu);
                         // Overlapped prefetch (Phase 4): the terminal np is the last bus cycle;
                         // finalize in this same step (seam 0). See
@@ -211,8 +220,45 @@ public class DivuInstruction extends AbstractM68kInstruction {
         }
     }
 
+    /**
+     * 68010: 4 clocks on overflow, otherwise 74 plus 2 for every one of the 15 steps of the
+     * restoring division whose partial remainder did not carry out; then the prefetch.
+     */
+    private boolean divide68010(AbstractMotorola cpu, int reg, int dividend, int divisor) {
+        long quotient = (dividend & 0xFFFFFFFFL) / divisor;
+        int cycles;
+        if (quotient > 0xFFFF) {
+            cpu.v = true; cpu.c = false; cpu.z = false;
+            cpu.n = !(dividend < 0 && (short) divisor < 0);
+            cycles = 4;
+        } else {
+            long remainder = (dividend & 0xFFFFFFFFL) % divisor;
+            cpu.setD(reg, (int) ((remainder << 16) | quotient), 4);
+            int ccr = cpu.getSR() & 0x10;
+            if ((quotient & 0x8000) != 0) ccr |= 0x08;
+            if (quotient == 0) ccr |= 0x04;
+            cpu.writeCCR(ccr);
+            cycles = 74;
+            long d = dividend & 0xFFFFFFFFL;
+            long h = ((long) divisor) << 16;
+            for (int i = 0; i < 15; i++) {
+                boolean carry = (d & 0x80000000L) != 0;
+                d = (d << 1) & 0xFFFFFFFFL;
+                if (carry) {
+                    d = (d - h) & 0xFFFFFFFFL;
+                } else {
+                    cycles += 2;
+                    if (d >= h) d = (d - h) & 0xFFFFFFFFL;
+                }
+            }
+        }
+        cpu.idleCycles(cycles);
+        setStep(cpu, 8);
+        return false;
+    }
+
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         return "DIVU " + Disassembly.formatEA((op >> 3) & 7, op & 7, 2, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4)) + ", D" + ((op >> 9) & 7);
     }

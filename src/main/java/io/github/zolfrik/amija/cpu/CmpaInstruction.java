@@ -39,7 +39,7 @@ public class CmpaInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int dstReg = (op >> 9) & 0x7, opmode = (op >> 6) & 0x7, srcMode = (op >> 3) & 0x7, srcReg = op & 0x7;
         int size = (opmode == 7) ? 4 : 2;
@@ -123,7 +123,7 @@ public class CmpaInstruction extends AbstractM68kInstruction {
                     if (!cpu.isBusCycleIdle()) return false;
                     // CMPA: the `next` sample sits RIGHT BEFORE the final prefetch, so the anchor
                     // is this prefetch and not the operand read ($B0D0/$B1D0).
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     refillPipeline(cpu); // np
                     nextStep(cpu);
                     return false;
@@ -142,7 +142,7 @@ public class CmpaInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int dstReg = (op >> 9) & 0x7, opmode = (op >> 6) & 0x7, srcMode = (op >> 3) & 0x7, srcReg = op & 0x7;
         int size = (opmode == 7) ? 4 : 2;

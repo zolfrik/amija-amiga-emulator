@@ -27,7 +27,7 @@ import io.github.zolfrik.amija.common.MOS8520;
 import io.github.zolfrik.amija.common.VideoMode;
 import io.github.zolfrik.amija.memory.ROM;
 import io.github.zolfrik.amija.memory.RAM;
-import io.github.zolfrik.amija.cpu.Motorola68000;
+import io.github.zolfrik.amija.cpu.AbstractMotorola;
 
 import java.util.Arrays;
 import java.util.function.IntConsumer;
@@ -81,7 +81,7 @@ public abstract class AbstractAgnus {
     // Dependencies
     // =========================================================================
 
-    private final Motorola68000  cpu;
+    private final AbstractMotorola  cpu;
     private final BusRequest     cpuBusReq;
     private final BusResponse    cpuBusResp;
 
@@ -1020,7 +1020,7 @@ public abstract class AbstractAgnus {
     /**
      * Route of the current CPU access. Computed while the CPU presents the cycle (states
      * S2-S4 of its FSM) and reused at the data transfer (S5/S6). The CPU splits long words
-     * into two words beforehand (see Motorola68000.scheduleRead/scheduleWriteLong), so
+     * into two words beforehand (see AbstractMotorola.scheduleRead/scheduleWriteLong), so
      * Agnus always sees 8/16-bit accesses.
      */
     private Gary.Route cpuCurrentRoute = null;
@@ -1689,7 +1689,7 @@ public abstract class AbstractAgnus {
     // Constructor
     // =========================================================================
 
-    protected AbstractAgnus(Motorola68000 cpu,
+    protected AbstractAgnus(AbstractMotorola cpu,
                  Gary gary,
                  RAM chipRAM,
                  RAM slowRAM,
@@ -1808,7 +1808,7 @@ public abstract class AbstractAgnus {
         // The anchor's master cycles are a PHASE, not a delay, and the phase is decided by
         // WHERE a write to a CIA register lands. The CIA clock and the E phase a CPU access
         // synchronises to are the same signal (phi2/10), but the model keeps two separate
-        // mod-10 counters: this event and Motorola68000.eClockCounter.
+        // mod-10 counters: this event and AbstractMotorola.eClockCounter.
         //
         // With the CIA write delivered at the end of the synchronous cycle (see
         // maybeTransferFastBankWrite), the 25 class-1 tests of vAmigaTS CIA/CIA have a clear
@@ -1821,7 +1821,7 @@ public abstract class AbstractAgnus {
         //
         // The initial value of eClockCounter (9) makes the synchronous cycle last 16 master
         // cycles and has nothing to do with this phase (see the javadoc of
-        // Motorola68000.eClockCounter and docs/vamigats-import-order.md, memtim1 outcomes).
+        // AbstractMotorola.eClockCounter and docs/vamigats-import-order.md, memtim1 outcomes).
         //
         // CiaEClockPhaseTest freezes the invariant.
         scheduleAbs(EventSlot.SLOT_CIAA, masterClock + CIA_ANCHOR, EventID.CIA_EXECUTE);
@@ -3812,7 +3812,7 @@ public abstract class AbstractAgnus {
             cpuBusResp.ack = !blocked;
 
             if (diagBlockTally
-                    && cpu.getBusCycleState() == Motorola68000.BusCycleState.S4) {
+                    && cpu.getBusCycleState() == AbstractMotorola.BusCycleState.S4) {
                 int oa = cpu.getOpcodeAddress() & 0xFFFFFF;
                 if (oa >= diagBlkPcLo && oa < diagBlkPcHi) {
                     diagBlkTot++;
@@ -3867,7 +3867,7 @@ public abstract class AbstractAgnus {
         // at the next fall of E: a register that changes in between, such as a TOD
         // increment, is not seen by this access.
         if (cpuBusReq.read && cpuBusReq.vma && !ciaReadSampled
-                && cpu.getBusCycleState() == Motorola68000.BusCycleState.S_VMA
+                && cpu.getBusCycleState() == AbstractMotorola.BusCycleState.S_VMA
                 && cpu.getEClockCounter() == 6
                 && cpuCurrentRoute != null
                 && (cpuCurrentRoute.target == Gary.Target.CIA_A
@@ -3879,7 +3879,7 @@ public abstract class AbstractAgnus {
         // A CIA write reaches the chip at the same instant: a TOD increment that follows it in
         // the same cycle already counts from the written value.
         if (!cpuBusReq.read && cpuBusReq.vma && !ciaWriteDone
-                && cpu.getBusCycleState() == Motorola68000.BusCycleState.S_VMA
+                && cpu.getBusCycleState() == AbstractMotorola.BusCycleState.S_VMA
                 && cpu.getEClockCounter() == 6
                 && cpuCurrentRoute != null
                 && (cpuCurrentRoute.target == Gary.Target.CIA_A
@@ -3891,7 +3891,7 @@ public abstract class AbstractAgnus {
         // Fast bank: the write lands at the start of the bus cycle, one CCK before the chip
         // bus slot. It comes BEFORE the route check because at S2 there is no route yet:
         // maybeTransferFastBankWrite() computes it. See its javadoc.
-        if (cpu.getBusCycleState() == Motorola68000.BusCycleState.S2) {
+        if (cpu.getBusCycleState() == AbstractMotorola.BusCycleState.S2) {
             maybeTransferFastBankWrite();
             return;
         }
@@ -3918,7 +3918,7 @@ public abstract class AbstractAgnus {
 
     private void handleCpuDataTransfer() {
         // The CPU splits long words into two words beforehand
-        // (Motorola68000.scheduleRead/scheduleWriteLong): Agnus always sees byte/word
+        // (AbstractMotorola.scheduleRead/scheduleWriteLong): Agnus always sees byte/word
         // accesses, so the address is the one requested and UDS/LDS are the real lines.
         int addr = cpuBusReq.address;
         boolean busUds = cpuBusReq.uds;
@@ -5701,7 +5701,7 @@ public abstract class AbstractAgnus {
     public FloppyDrive getDf3()      { return df3; }
     public Copper  getCopper()       { return copper; }
     public Blitter getBlitter()      { return blitter; }
-    public Motorola68000 getCpu()    { return cpu; }
+    public AbstractMotorola getCpu()    { return cpu; }
     public Paula   getPaula()        { return paula; }
     public int     getDMACON()       { return dmacon; }
 

@@ -22,7 +22,7 @@ package io.github.zolfrik.amija.custom;
 
 import io.github.zolfrik.amija.common.MOS8520;
 import io.github.zolfrik.amija.common.VideoMode;
-import io.github.zolfrik.amija.cpu.Motorola68000;
+import io.github.zolfrik.amija.cpu.AbstractMotorola;
 import io.github.zolfrik.amija.memory.RAM;
 import io.github.zolfrik.amija.memory.ROM;
 
@@ -36,7 +36,7 @@ import io.github.zolfrik.amija.memory.ROM;
  */
 public final class OcsAgnus extends AbstractAgnus {
 
-    public OcsAgnus(Motorola68000 cpu,
+    public OcsAgnus(AbstractMotorola cpu,
                     Gary gary,
                     RAM chipRAM,
                     RAM slowRAM,

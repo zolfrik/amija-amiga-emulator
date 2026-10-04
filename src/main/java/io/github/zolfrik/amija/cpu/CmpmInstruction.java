@@ -40,7 +40,7 @@ public class CmpmInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int regX = (op >> 9) & 0x7, regY = op & 0x7, sizeBit = (op >> 6) & 0x3;
         int size = (sizeBit == 0) ? 1 : (sizeBit == 1) ? 2 : 4;
@@ -51,13 +51,13 @@ public class CmpmInstruction extends AbstractM68kInstruction {
                 case 0 -> {
                     // CMPM declares its own group 0 PC offset: the fault branch carries two bytes
                     // more than the general rule, for both sizes ($B148/$B188).
-                    cpu.markGroup0EaDelta(2);
+                    if (!cpu.isM68010()) cpu.markGroup0EaDelta(2);
                     int addrSrc = cpu.getA(regY, 4);
                     if (size != 4) {
                         // $B108/$B148: the `now` sample sits before the SOURCE read, not on the
                         // last access. .L has the anchor between the two words of the source
                         // (case 1), like ADDX/SUBX .L (section 6.1.3).
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
                     }
                     cpu.scheduleRead(addrSrc, (size == 4) ? 2 : size);
                     cpu.setA(regY, addrSrc + (regY == 7 && size == 1 ? 2 : size));
@@ -70,7 +70,7 @@ public class CmpmInstruction extends AbstractM68kInstruction {
                         setTemp(cpu, SRC_VAL, (cpu.getLatchedBusData() & 0xFFFF) << 16);
                         // $B188: the `now` sample sits BETWEEN the two words of the source
                         // read, 16 clocks from the end.
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
                         cpu.scheduleRead(cpu.getA(regY, 4) - 2, 2);
                         nextStep(cpu);
                         return false;
@@ -124,7 +124,7 @@ public class CmpmInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int regX = (op >> 9) & 0x7, regY = op & 0x7, sizeBit = (op >> 6) & 0x3;
         int size = (sizeBit == 0) ? 1 : (sizeBit == 1) ? 2 : 4;

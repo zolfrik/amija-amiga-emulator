@@ -26,9 +26,15 @@ package io.github.zolfrik.amija.cpu;
  */
 public class SubiInstruction extends AbstractM68kInstruction {
 
-    public static final SubiInstruction INSTANCE = new SubiInstruction();
+    public static final SubiInstruction INSTANCE = new SubiInstruction(false);
+    /** The 68010 form: 2 clocks less on a long data register destination. */
+    public static final SubiInstruction M68010 = new SubiInstruction(true);
 
-    private SubiInstruction() {}
+    private final boolean m68010;
+
+    private SubiInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int IMM_EXT1 = 0;
     private static final int IMM_EXT2 = 1;
@@ -39,7 +45,7 @@ public class SubiInstruction extends AbstractM68kInstruction {
     private static final int ADDR = 6;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int sizeBit = (op >> 6) & 0x3;
         int size = (sizeBit == 0) ? 1 : (sizeBit == 1) ? 2 : 4;
@@ -139,9 +145,9 @@ public class SubiInstruction extends AbstractM68kInstruction {
                     }
                     return finalizeInstructionSafe(cpu);
                 }
-                case 10 -> { // .L Dn gap: nn
+                case 10 -> { // .L Dn gap: nn (n on the 68010)
                     if (!cpu.isBusCycleIdle()) return false;
-                    cpu.idleCycles(4);
+                    cpu.idleCycles(m68010 ? 2 : 4);
                     nextStep(cpu);
                     return false;
                 }
@@ -159,7 +165,7 @@ public class SubiInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int sizeBit = (op >> 6) & 0x3;
         int size = (sizeBit == 0) ? 1 : (sizeBit == 1) ? 2 : 4;

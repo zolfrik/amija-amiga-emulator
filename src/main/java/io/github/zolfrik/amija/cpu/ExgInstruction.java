@@ -30,7 +30,7 @@ public class ExgInstruction extends AbstractM68kInstruction {
     private ExgInstruction() {}
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
             switch (getStep(cpu)) {
@@ -87,7 +87,7 @@ public class ExgInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr(), rx = (op >> 9) & 0x7, ry = op & 0x7, opmode = (op >> 3) & 0x1F;
         String rxStr = (opmode == 0x09) ? "A" + rx : "D" + rx;
         String ryStr = (opmode == 0x08) ? "D" + ry : "A" + ry;

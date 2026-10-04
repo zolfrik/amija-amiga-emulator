@@ -31,11 +31,11 @@ public class StopInstruction extends AbstractM68kInstruction {
     @Override public boolean shouldInhibitPrefetch() { return true; }
     // The STOP round grid opens at the start of the instruction, with its first IPL fetch,
     // not once the immediate is in: rounds of 4 clocks run from this instant.
-    @Override public void prepareInstruction(Motorola68000 cpu) {
+    @Override public void prepareInstruction(AbstractMotorola cpu) {
         super.prepareInstruction(cpu);
         cpu.beginStopRounds();
     }
-    @Override public boolean executeStep(Motorola68000 cpu) {
+    @Override public boolean executeStep(AbstractMotorola cpu) {
         // Supervisor mode only: STOP in user mode -> immediate privilege violation (checked
         // BEFORE the extension read). It covers re-executing `stop` in USER mode in the
         // stop3/stop4 privilege loop (rte to user -> direct violation, without entering STOPPED).
@@ -73,11 +73,11 @@ public class StopInstruction extends AbstractM68kInstruction {
                 // STOP with no pending trace (T=0, or a STOP that LOADS T=1 like `stop #$A000`):
                 // enters STOPPED and waits for an interrupt / privilege. The 4 internal cycles
                 // are spent by the step machine (extension read + this step + finalize).
-                cpu.cpuState = Motorola68000.CpuState.STOPPED;
+                cpu.cpuState = AbstractMotorola.CpuState.STOPPED;
                 return finalizeInstruction(cpu);
             }
             default -> { return finalizeInstruction(cpu); }
         }
     }
-    @Override public String getDisassembly(Motorola68000 cpu) { return "STOP #$" + Disassembly.formatHex(cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), 4); }
+    @Override public String getDisassembly(AbstractMotorola cpu) { return "STOP #$" + Disassembly.formatHex(cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), 4); }
 }

@@ -29,7 +29,7 @@ public class IllegalInstruction extends AbstractM68kInstruction {
     private IllegalInstruction() {}
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         switch (getStep(cpu)) {
             case 0 -> {
                 // NO idle here. Group 1 exception entry already pays its 4 clocks in
@@ -50,7 +50,7 @@ public class IllegalInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         return "ILLEGAL";
     }
 }

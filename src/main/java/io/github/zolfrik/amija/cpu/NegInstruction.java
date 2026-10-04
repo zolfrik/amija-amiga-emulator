@@ -39,7 +39,7 @@ public class NegInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 3, size = (s == 0) ? 1 : (s == 1) ? 2 : 4;
         int eaMode = (op >> 3) & 7, eaReg = op & 7;
@@ -82,7 +82,7 @@ public class NegInstruction extends AbstractM68kInstruction {
                         }
                     }
                     int addr = calculateEA(cpu, eaMode, eaReg, size, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), true, false);
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                     setTemp(cpu, ADDR, addr);
 
                     if (size == 4) {
@@ -95,7 +95,7 @@ public class NegInstruction extends AbstractM68kInstruction {
                 }
                 case 4 -> {
                     if (!cpu.isBusCycleIdle()) return false;
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                     if (size == 4) {
                         setTemp(cpu, VAL, cpu.getLatchedBusData() << 16);
                         cpu.scheduleRead(getTemp(cpu, ADDR) + 2, 2);
@@ -109,7 +109,7 @@ public class NegInstruction extends AbstractM68kInstruction {
                 }
                 case 5 -> { // Only for .L
                     if (!cpu.isBusCycleIdle()) return false;
-                    if (cpu.getCpuState() == Motorola68000.CpuState.EXCEPTION) return false;
+                    if (cpu.getCpuState() == AbstractMotorola.CpuState.EXCEPTION) return false;
                     int lsw = cpu.getLatchedBusData() & 0xFFFF;
                     int val = getTemp(cpu, VAL) | lsw;
                     setTemp(cpu, VAL, calculateSub(cpu, val, 0, 4));
@@ -156,7 +156,7 @@ public class NegInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int s = (op >> 6) & 3, size = (s == 0) ? 1 : (s == 1) ? 2 : 4;
         return "NEG" + Disassembly.getSizeSuffix(size) + " " + Disassembly.formatEA((op >> 3) & 7, op & 7, size, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4));

@@ -22,6 +22,7 @@ package io.github.zolfrik.amija.config;
 
 import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.common.Chipset;
+import io.github.zolfrik.amija.cpu.CpuModel;
 import io.github.zolfrik.amija.common.VideoMode;
 import io.github.zolfrik.amija.display.AmigaWindowMode;
 import io.github.zolfrik.amija.display.render.RendererType;
@@ -109,6 +110,7 @@ public final class AmigaConfig {
     private static final String K_UI_SCALE    = "ui.scale";
     private static final String K_VIDEO_MODE  = "video.mode";
     private static final String K_CHIPSET     = "chipset";
+    private static final String K_CPU_MODEL   = "cpu.model";
     private static final String K_INTEGER_SCALING = "video.integerScaling";
     private static final String K_OVERSCAN = "video.overscan.enabled";
     private static final String K_WINDOW_MODE = "video.windowMode";
@@ -197,7 +199,7 @@ public final class AmigaConfig {
      * active media (see {@link #autoProfile}).
      */
     private record AutoDefaults(String prefix, int chipRamKb, int slowRamKb, int fastRamKb,
-            Chipset chipset) {
+            Chipset chipset, CpuModel cpuModel) {
 
         int chipRamKb(AmigaConfig c) { return c.getInt(prefix + "chipram.kb", chipRamKb); }
 
@@ -208,11 +210,15 @@ public final class AmigaConfig {
         Chipset chipset(AmigaConfig c) {
             return parseChipset(c.props.getProperty(prefix + "chipset"), chipset);
         }
+
+        CpuModel cpuModel(AmigaConfig c) {
+            return CpuModel.parse(c.props.getProperty(prefix + "cpu"), cpuModel);
+        }
     }
 
     /** Floppy only: the stock A500 configuration almost every game expects. */
     private static final AutoDefaults AUTO_FLOPPY =
-            new AutoDefaults("auto.floppy.", 512, 512, 0, Chipset.OCS);
+            new AutoDefaults("auto.floppy.", 512, 512, 0, Chipset.OCS, CpuModel.M68000);
 
     /**
      * Hard disk or WHDLoad active: the expanded machine that software requires.
@@ -225,7 +231,7 @@ public final class AmigaConfig {
      * machine: the maximum is the only choice that never fails.
      */
     private static final AutoDefaults AUTO_EXPANDED =
-            new AutoDefaults("auto.hd.", 2048, 512, 8192, Chipset.ECS);
+            new AutoDefaults("auto.hd.", 2048, 512, 8192, Chipset.ECS, CpuModel.M68010);
 
     private static final AutoDefaults[] AUTO_PROFILES = { AUTO_FLOPPY, AUTO_EXPANDED };
 
@@ -236,7 +242,7 @@ public final class AmigaConfig {
      * @param expanded {@code true} if a hard disk or WHDLoad is active (expanded profile)
      */
     public record AutoProfile(String kickstartPath, boolean expanded, int chipRamKb,
-            int slowRamKb, int fastRamKb, Chipset chipset, VideoMode videoMode) { }
+            int slowRamKb, int fastRamKb, Chipset chipset, CpuModel cpuModel, VideoMode videoMode) { }
 
     private final Properties props;
 
@@ -323,6 +329,7 @@ public final class AmigaConfig {
             p.setProperty(d.prefix() + "slowram.kb", Integer.toString(d.slowRamKb()));
             p.setProperty(d.prefix() + "fastram.kb", Integer.toString(d.fastRamKb()));
             p.setProperty(d.prefix() + "chipset", d.chipset().name());
+            p.setProperty(d.prefix() + "cpu", d.cpuModel().label());
         }
         p.setProperty(K_KICKSTART, "");                 // to be set by the user
         p.setProperty(K_CHIPRAM_KB, "512");
@@ -369,6 +376,7 @@ public final class AmigaConfig {
         p.setProperty(K_LANGUAGE, "en");                 // default language: English
         p.setProperty(K_VIDEO_MODE, VideoMode.PAL.name()); // default video mode: PAL
         p.setProperty(K_CHIPSET, Chipset.OCS.name());      // default chipset: OCS
+        p.setProperty(K_CPU_MODEL, CpuModel.M68000.label()); // default processor: 68000
         // The TWO scales, separate and independent. Both must be kept here: this is the file
         // the user finds at the first run, and a missing key is a feature the user does not
         // know exists.
@@ -494,6 +502,7 @@ public final class AmigaConfig {
         AutoDefaults d = expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
         return new AutoProfile(autoKickstartPath(expanded), expanded,
                 d.chipRamKb(this), d.slowRamKb(this), d.fastRamKb(this), d.chipset(this),
+                d.cpuModel(this),
                 autoVideoMode(activeFiles));
     }
 
@@ -823,6 +832,24 @@ public final class AmigaConfig {
      */
     public Chipset chipset() {
         return autoEnabled() ? autoProfile().chipset() : storedChipset();
+    }
+
+    /**
+     * Processor of the emulated machine: {@link CpuModel#M68000} (default) or
+     * {@link CpuModel#M68010}. In Auto mode the floppy profile uses the 68000 and the hard
+     * disk/WHDLoad profile the 68010. A change takes effect only after a cold restart.
+     */
+    public CpuModel cpuModel() {
+        return autoEnabled() ? autoProfile().cpuModel() : storedCpuModel();
+    }
+
+    /** Processor chosen by hand (key {@code cpu.model}), ignored by Auto. */
+    public CpuModel storedCpuModel() {
+        return CpuModel.parse(props.getProperty(K_CPU_MODEL), CpuModel.M68000);
+    }
+
+    public void setCpuModel(CpuModel model) {
+        props.setProperty(K_CPU_MODEL, (model == null ? CpuModel.M68000 : model).label());
     }
 
     /** Chipset chosen by hand (key {@code chipset}), ignored by Auto. */
@@ -1278,8 +1305,9 @@ public final class AmigaConfig {
         sb.append("# System section disappears from the popup:\n");
         sb.append("#  - Kickstart: the 1.3 below for plain floppy games, the 3.1 as soon as a\n");
         sb.append("#    hard disk or WHDLoad is in use;\n");
-        sb.append("#  - memory and chipset: the auto.floppy.* profile, or auto.hd.* when a hard\n");
-        sb.append("#    disk or WHDLoad is in use. Both are editable right below;\n");
+        sb.append("#  - memory, chipset and processor: the auto.floppy.* profile (68000), or\n");
+        sb.append("#    auto.hd.* (68010) when a hard disk or WHDLoad is in use. Both are\n");
+        sb.append("#    editable right below;\n");
         sb.append("#  - video mode: PAL, unless the name of an active file (floppy, hard disk or\n");
         sb.append("#    WHDLoad archive) contains \"NTSC\" or \"(USA)\", in any case.\n");
         sb.append("# The hand-picked settings further down are left untouched and come back into\n");
@@ -1298,6 +1326,7 @@ public final class AmigaConfig {
             line(sb, d.prefix() + "slowram.kb", Integer.toString(d.slowRamKb(this)));
             line(sb, d.prefix() + "fastram.kb", Integer.toString(d.fastRamKb(this)));
             line(sb, d.prefix() + "chipset", d.chipset(this).name());
+            line(sb, d.prefix() + "cpu", d.cpuModel(this).label());
         }
 
         sb.append("\n# ABSOLUTE path of the Kickstart ROM file (automatic configuration off).\n");
@@ -1413,6 +1442,10 @@ public final class AmigaConfig {
         sb.append("# Automatic configuration off. The change takes effect only after restarting\n");
         sb.append("# the emulator (cold restart).\n");
         line(sb, K_CHIPSET, storedChipset().name());
+
+        sb.append("\n# Processor: 68000 (default) or 68010. Automatic configuration off. The\n");
+        sb.append("# change takes effect only after restarting the emulator (cold restart).\n");
+        line(sb, K_CPU_MODEL, storedCpuModel().label());
 
         sb.append("\n# Integer scaling of the emulated window: 1 = native size, 2 = double,\n");
         sb.append("# 3 = triple, ... Whole numbers only, so the Amiga pixels stay sharp.\n");
@@ -1538,12 +1571,14 @@ public final class AmigaConfig {
             keys.add(d.prefix() + "slowram.kb");
             keys.add(d.prefix() + "fastram.kb");
             keys.add(d.prefix() + "chipset");
+            keys.add(d.prefix() + "cpu");
         }
         keys.add(K_KICKSTART);
         keys.add(K_CHIPRAM_KB);
         keys.add(K_SLOWRAM_KB);
         keys.add(K_FASTRAM_KB);
         keys.add(K_CHIPSET);
+        keys.add(K_CPU_MODEL);
         keys.add(K_VIDEO_MODE);
         for (int i = 0; i < 4; i++) {
             keys.add(String.format(K_DRIVE_EN, i));

@@ -25,15 +25,21 @@ package io.github.zolfrik.amija.cpu;
  */
 public class MulsInstruction extends AbstractM68kInstruction {
 
-    public static final MulsInstruction INSTANCE = new MulsInstruction();
-    private MulsInstruction() {}
+    public static final MulsInstruction INSTANCE = new MulsInstruction(false);
+    /** The 68010 form. */
+    public static final MulsInstruction M68010 = new MulsInstruction(true);
+
+    private final boolean m68010;
+    private MulsInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int EXT1 = 0;
     private static final int EXT2 = 1;
     private static final int SRC_VAL = 2;
 
     @Override
-    public void prepareInstruction(Motorola68000 cpu) {
+    public void prepareInstruction(AbstractMotorola cpu) {
         cpu.consumeIRC();
         // Inhibit automatic prefetch
     }
@@ -44,7 +50,7 @@ public class MulsInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 7, eaMode = (op >> 3) & 7, eaReg = op & 7;
 
@@ -124,8 +130,9 @@ public class MulsInstruction extends AbstractM68kInstruction {
                         }
                     }
 
-                    // Yacht: n* is 17 + m microcycles = 34 + 2m clocks
-                    cpu.idleCycles(34 + (2 * m));
+                    // 68000: n* is 17 + m microcycles = 34 + 2m clocks; the 68010 takes 36,
+                    // 38 with a negative source.
+                    cpu.idleCycles(m68010 ? (src < 0 ? 38 : 36) : 34 + (2 * m));
 
                     // Update flags: N, Z on 32-bit result, V=0, C=0. X unaffected.
                     int sr = cpu.getSR() & 0xFFF0;
@@ -148,7 +155,7 @@ public class MulsInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         return "MULS " + Disassembly.formatEA((op >> 3) & 7, op & 7, 2, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4)) + ", D" + ((op >> 9) & 7);
     }

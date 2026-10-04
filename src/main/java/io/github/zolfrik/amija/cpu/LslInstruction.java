@@ -36,7 +36,7 @@ public class LslInstruction extends AbstractM68kInstruction {
     private static final int COUNT = 4;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         boolean isMemory = ((op >> 6) & 0x3) == 0x3;
 
@@ -140,7 +140,7 @@ public class LslInstruction extends AbstractM68kInstruction {
         return true;
     }
 
-    private int calculateLsl(Motorola68000 cpu, int val, int count, int size) {
+    private int calculateLsl(AbstractMotorola cpu, int val, int count, int size) {
         long sizeMask = (size == 1) ? 0xFFL : (size == 2) ? 0xFFFFL : 0xFFFFFFFFL;
         long msbMask = (size == 1) ? 0x80L : (size == 2) ? 0x8000L : 0x80000000L;
         long currentVal = val & sizeMask;
@@ -166,7 +166,7 @@ public class LslInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         boolean isMemory = ((op >> 6) & 0x3) == 0x3;
         if (isMemory) return "LSL.w " + Disassembly.formatEA((op >> 3) & 0x7, op & 0x7, 2, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), 0);

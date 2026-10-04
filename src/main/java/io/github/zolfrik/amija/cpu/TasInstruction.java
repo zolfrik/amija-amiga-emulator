@@ -28,8 +28,14 @@ package io.github.zolfrik.amija.cpu;
  */
 public class TasInstruction extends AbstractM68kInstruction {
 
-    public static final TasInstruction INSTANCE = new TasInstruction();
-    private TasInstruction() {}
+    public static final TasInstruction INSTANCE = new TasInstruction(false);
+    /** The 68010 form: (An) takes 2 clocks before the read, (An)+ and -(An) 4, (d8,An,Xn) 4 after its extension word. */
+    public static final TasInstruction M68010 = new TasInstruction(true);
+
+    private final boolean m68010;
+    private TasInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int EXT1 = 0;
     private static final int EXT2 = 1;
@@ -42,12 +48,12 @@ public class TasInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public void prepareInstruction(Motorola68000 cpu) {
+    public void prepareInstruction(AbstractMotorola cpu) {
         super.prepareInstruction(cpu);
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int eaMode = (op >> 3) & 7, eaReg = op & 7;
 
@@ -55,6 +61,12 @@ public class TasInstruction extends AbstractM68kInstruction {
             if (cpu.isRisingEdgeConsumed()) return false;
             switch (getStep(cpu)) {
                 case 0 -> {
+                    if (m68010) {
+                        nextStep(cpu);
+                        if (eaMode == 2) { cpu.idleCycles(2); return false; }
+                        if (eaMode == 3 || eaMode == 4) { cpu.idleCycles(4); return false; }
+                        continue;
+                    }
                     if (eaMode == 4 || eaMode == 6 || (eaMode == 7 && eaReg == 3)) {
                         indexedGap2(cpu);
                     }
@@ -83,6 +95,12 @@ public class TasInstruction extends AbstractM68kInstruction {
                         cpu.startPrefetchCycle(); // np
                         return finalizeInstructionSafe(cpu);
                     } else {
+                        if (m68010 && eaMode == 6 && getTemp(cpu, VAL) == 0) {
+                            if (!cpu.isBusCycleIdle()) return false;
+                            setTemp(cpu, VAL, 1);
+                            cpu.idleCycles(4);
+                            return false;
+                        }
                         int addr = calculateEA(cpu, eaMode, eaReg, 1, cpu.getOpcodeAddress() + 2, getTemp(cpu, EXT1), getTemp(cpu, EXT2), true, false);
                         setTemp(cpu, ADDR, addr);
                         cpu.scheduleRmwReadByte(addr); // nr
@@ -125,7 +143,7 @@ public class TasInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private void updateFlags(Motorola68000 cpu, int val) {
+    private void updateFlags(AbstractMotorola cpu, int val) {
         int sr = cpu.getSR() & 0xFFF0;
         if ((val & 0xFF) == 0) sr |= 0x04;
         if ((val & 0x80) != 0) sr |= 0x08;
@@ -133,7 +151,7 @@ public class TasInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         return "TAS " + Disassembly.formatEA((op >> 3) & 7, op & 7, 1, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4));
     }

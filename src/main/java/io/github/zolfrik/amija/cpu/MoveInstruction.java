@@ -27,9 +27,15 @@ package io.github.zolfrik.amija.cpu;
  * to prevent regression issues when adjusting specific sizes.
  */
 public class MoveInstruction extends AbstractM68kInstruction {
-    public static final MoveInstruction INSTANCE = new MoveInstruction();
+    public static final MoveInstruction INSTANCE = new MoveInstruction(false);
+    /** The 68010 form: MOVE.L from a register to -(An) takes 2 more clocks between the prefetch and the writes. */
+    public static final MoveInstruction M68010 = new MoveInstruction(true);
 
-    private MoveInstruction() {}
+    private final boolean m68010;
+
+    private MoveInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     private static final int SRC_EXT1 = 0;
     private static final int SRC_EXT2 = 1;
@@ -38,6 +44,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
     private static final int SRC_EA = 4;
     private static final int DST_EA = 5;
     private static final int OPERAND = 6;
+    private static final int PREDEC_GAP = 7;
 
     @Override
     public boolean shouldInhibitPrefetch() {
@@ -73,7 +80,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
      * {@code .L} it falls in the middle of the long read, which is not modelled; see
      * {@code docs/vamigats-paula-audio-plan.md} section 6.1.3.
      */
-    private static void declareIplAnchorAtStart(Motorola68000 cpu) {
+    private static void declareIplAnchorAtStart(AbstractMotorola cpu) {
         int opcode = cpu.getIr();
         int size = (opcode >> 12) & 3;
         int destMode = (opcode >> 6) & 7;
@@ -84,9 +91,9 @@ public class MoveInstruction extends AbstractM68kInstruction {
         boolean isLong = size == 2;
         boolean srcIsImm = srcMode == 7 && srcReg == 4;
         if (!isLong && srcIsImm) {
-            cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);          // set_ipl()
+            cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);          // set_ipl()
         } else if (destMode == 4 && srcMode <= 1) {
-            cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);         // set_ipl_pre()
+            cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);         // set_ipl_pre()
         }
     }
 
@@ -121,7 +128,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
      * belong to the dual-prefetch case, also taken literally:
      * {@code dmode == (xxx).L && smode != Dn && smode != An && smode != imm}.
      */
-    private static void declareIplAnchorAfterWrite(Motorola68000 cpu,
+    private static void declareIplAnchorAfterWrite(AbstractMotorola cpu,
                                                    int destMode, int destReg,
                                                    int srcMode, int srcReg) {
         boolean isLong = ((cpu.getIr() >> 12) & 3) == 2;
@@ -136,8 +143,8 @@ public class MoveInstruction extends AbstractM68kInstruction {
         }
         boolean srcIsRegOrImm = srcMode == 0 || srcMode == 1 || (srcMode == 7 && srcReg == 4);
         boolean dualPrefetch = destIsAbsL && !srcIsRegOrImm;
-        cpu.markIplAnchor(dualPrefetch ? Motorola68000.IplAnchor.NOW
-                                       : Motorola68000.IplAnchor.NEXT);
+        cpu.markIplAnchor(dualPrefetch ? AbstractMotorola.IplAnchor.NOW
+                                       : AbstractMotorola.IplAnchor.NEXT);
     }
 
     /**
@@ -152,7 +159,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
      * falls <b>in the middle</b> of the long read, which is not modelled here; see
      * {@code docs/vamigats-paula-audio-plan.md} section 6.1.3.
      */
-    private static void declareIplAnchorBeforeSourceRead(Motorola68000 cpu,
+    private static void declareIplAnchorBeforeSourceRead(AbstractMotorola cpu,
                                                          int destMode, int srcMode) {
         if (((cpu.getIr() >> 12) & 3) == 2) {
             return;                                  // .L: different table, not modelled
@@ -160,7 +167,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
         if ((destMode != 3 && destMode != 4) || srcMode <= 1) {
             return;
         }
-        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
     }
 
     /**
@@ -196,7 +203,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
      *
      * <p>Must be called after the destination EA is computed and before the write.
      */
-    private static void declareGroup0WritePc(Motorola68000 cpu, int srcMode, int srcReg,
+    private static void declareGroup0WritePc(AbstractMotorola cpu, int srcMode, int srcReg,
                                              int destMode, int destReg) {
         boolean srcGeAind = srcMode >= 2;                 // from (An) on, immediate included
         boolean srcImm = srcMode == 7 && srcReg == 4;
@@ -222,7 +229,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
      * ({@code move.w #$68,-(a2)}) expects IR {@code $337C}, the opcode of the
      * {@code move.w #$7FFF,DMACON(a1)} that follows.
      */
-    private static void declareGroup0IrAfterPrefetch(Motorola68000 cpu, int srcMode, int srcReg,
+    private static void declareGroup0IrAfterPrefetch(AbstractMotorola cpu, int srcMode, int srcReg,
                                                      int destMode) {
         if (destMode != 4) {
             return;
@@ -237,12 +244,12 @@ public class MoveInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private static void declareIplAnchorBeforeWrite(Motorola68000 cpu,
+    private static void declareIplAnchorBeforeWrite(AbstractMotorola cpu,
                                                     int destMode, int srcMode, int srcReg) {
         boolean isLong = ((cpu.getIr() >> 12) & 3) == 2;
         if (!isLong) {
             if (destMode == 3 && srcMode <= 1) {
-                cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
             }
             return;
         }
@@ -250,7 +257,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
         boolean declare = destMode == 3
                 || ((destMode == 2 || destMode == 5 || destMode == 6) && srcIsRegOrImm);
         if (declare) {
-            cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+            cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
         }
     }
 
@@ -265,7 +272,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public void prepareInstruction(Motorola68000 cpu) {
+    public void prepareInstruction(AbstractMotorola cpu) {
         // MOVE consumes opcode word from pipeline.
         cpu.consumeIRC();
         // Before any access: the position of the start-of-instruction anchor rules, and this
@@ -274,7 +281,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int opcode = cpu.getIr();
         int size = decodeSize(opcode);
         int srcMode = (opcode >> 3) & 7;
@@ -304,7 +311,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
     // =========================================================================
     // ISOLATED FLOW: MOVEA.W (size = 2, isMovea = true)
     // =========================================================================
-    private boolean executeMoveaW(Motorola68000 cpu, int srcMode, int srcReg, int destMode, int destReg) {
+    private boolean executeMoveaW(AbstractMotorola cpu, int srcMode, int srcReg, int destMode, int destReg) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
             int step = getStep(cpu);
@@ -453,7 +460,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
     // =========================================================================
     // ISOLATED FLOW: MOVEA.L (size = 4, isMovea = true)
     // =========================================================================
-    private boolean executeMoveaL(Motorola68000 cpu, int srcMode, int srcReg, int destMode, int destReg) {
+    private boolean executeMoveaL(AbstractMotorola cpu, int srcMode, int srcReg, int destMode, int destReg) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
             int step = getStep(cpu);
@@ -629,7 +636,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
     // =========================================================================
     // ISOLATED FLOW: MOVE.B (size = 1, isMovea = false)
     // =========================================================================
-    private boolean executeMoveB(Motorola68000 cpu, int srcMode, int srcReg, int destMode, int destReg) {
+    private boolean executeMoveB(AbstractMotorola cpu, int srcMode, int srcReg, int destMode, int destReg) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
             int step = getStep(cpu);
@@ -780,7 +787,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
     // =========================================================================
     // ISOLATED FLOW: MOVE.W (size = 2, isMovea = false)
     // =========================================================================
-    private boolean executeMoveW(Motorola68000 cpu, int srcMode, int srcReg, int destMode, int destReg) {
+    private boolean executeMoveW(AbstractMotorola cpu, int srcMode, int srcReg, int destMode, int destReg) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
             int step = getStep(cpu);
@@ -958,7 +965,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
     //   17: write MSW at EA
     //   18: finalize
     // =========================================================================
-    private boolean executeMoveL(Motorola68000 cpu, int srcMode, int srcReg, int destMode, int destReg) {
+    private boolean executeMoveL(AbstractMotorola cpu, int srcMode, int srcReg, int destMode, int destReg) {
         while (true) {
             if (cpu.isRisingEdgeConsumed()) return false;
             int step = getStep(cpu);
@@ -1099,6 +1106,11 @@ public class MoveInstruction extends AbstractM68kInstruction {
                 //   predecrement     -> LSW at (original_An - 2)
                 case 16 -> {
                     if (!cpu.isBusCycleIdle()) return false;
+                    if (m68010 && destMode == 4 && srcMode <= 1 && getTemp(cpu, PREDEC_GAP) == 0) {
+                        setTemp(cpu, PREDEC_GAP, 1);
+                        cpu.idleCycles(2);
+                        return false;
+                    }
                     declareIplAnchorBeforeWrite(cpu, destMode, srcMode, srcReg);
                     declareGroup0IrAfterPrefetch(cpu, srcMode, srcReg, destMode);
                     int val = getTemp(cpu, OPERAND);
@@ -1179,7 +1191,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private void calculateAndSetFlags(Motorola68000 cpu, int res, int size) {
+    private void calculateAndSetFlags(AbstractMotorola cpu, int res, int size) {
         int newSR = cpu.getSR() & 0xFFF0;
         int msbMask = (size == 1) ? 0x80 : (size == 2) ? 0x8000 : 0x80000000;
         long sizeMask = (size == 1) ? 0xFFL : (size == 2) ? 0xFFFFL : 0xFFFFFFFFL;
@@ -1190,7 +1202,7 @@ public class MoveInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int opcode = cpu.getIr();
         int size = decodeSize(opcode);
         String s = (size == 1) ? "b" : (size == 2) ? "w" : "l";

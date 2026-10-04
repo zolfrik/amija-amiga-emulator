@@ -22,7 +22,7 @@ package io.github.zolfrik.amija.state;
 
 import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.config.AmigaConfig;
-import io.github.zolfrik.amija.cpu.Motorola68000;
+import io.github.zolfrik.amija.cpu.AbstractMotorola;
 import io.github.zolfrik.amija.custom.AbstractAgnus;
 import io.github.zolfrik.amija.custom.FastRam;
 import io.github.zolfrik.amija.i18n.Messages;
@@ -192,7 +192,7 @@ public final class SaveStateManager {
     // Salvataggio
     // =========================================================================
 
-    public static void save(File file, Motorola68000 cpu, AbstractAgnus agnus,
+    public static void save(File file, AbstractMotorola cpu, AbstractAgnus agnus,
             GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
         advanceToBoundary(agnus, cpu);
         List<Object> roots = buildRoots(cpu, agnus, port1, port2);
@@ -240,7 +240,7 @@ public final class SaveStateManager {
     // Loading
     // =========================================================================
 
-    public static void load(File file, Motorola68000 cpu, AbstractAgnus agnus,
+    public static void load(File file, AbstractMotorola cpu, AbstractAgnus agnus,
             GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
         // Bring the CURRENT machine to a clean boundary: so the 68000's bus queue (a
         // transient object not in the slot) is empty before the registers are overwritten,
@@ -341,7 +341,7 @@ public final class SaveStateManager {
     // Building the list of roots (identical in save and load)
     // =========================================================================
 
-    private static List<Object> buildRoots(Motorola68000 cpu, AbstractAgnus agnus,
+    private static List<Object> buildRoots(AbstractMotorola cpu, AbstractAgnus agnus,
             GamePort port1, GamePort port2) {
         List<Object> roots = new ArrayList<>();
         add(roots, cpu);
@@ -421,7 +421,7 @@ public final class SaveStateManager {
      * at an instruction boundary. Less than a frame of emulated time. Must be called with the
      * machine paused (no other thread touches Agnus).
      */
-    private static void advanceToBoundary(AbstractAgnus agnus, Motorola68000 cpu) {
+    private static void advanceToBoundary(AbstractAgnus agnus, AbstractMotorola cpu) {
         final int GUARD = 8_000_000; // wide margin: a whole frame is ~70k colour clocks
         for (int i = 0; i < GUARD; i++) {
             if (agnus.getVpos() == 0 && cpu.isAtInstructionBoundary()) return;
@@ -438,6 +438,7 @@ public final class SaveStateManager {
         StringBuilder b = new StringBuilder(128);
         b.append("v").append(VERSION).append(';');
         b.append("chipset=").append(c.chipset()).append(';');
+        b.append("cpu=").append(c.cpuModel()).append(';');
         b.append("chip=").append(c.chipRamKb()).append(';');
         b.append("slow=").append(c.slowRamKb()).append(';');
         b.append("fast=").append(c.fastRamKb()).append(';');

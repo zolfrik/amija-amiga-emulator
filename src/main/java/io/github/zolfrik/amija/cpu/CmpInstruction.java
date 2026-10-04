@@ -39,7 +39,7 @@ public class CmpInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7, opmode = (op >> 6) & 0x7, eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;
         int size = (opmode == 0) ? 1 : (opmode == 1) ? 2 : 4;
@@ -124,7 +124,7 @@ public class CmpInstruction extends AbstractM68kInstruction {
                     // .b/.w the default path applies: the anchor stays on the read, which is
                     // what already happens.
                     if (size == 4) {
-                        cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT);
+                        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
                     }
                     refillPipeline(cpu); // np (the last bus cycle for .b/.w)
                     // Overlapped prefetch (Phase 2): finalize in the SAME step that issues the
@@ -151,7 +151,7 @@ public class CmpInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = (op >> 9) & 0x7, opmode = (op >> 6) & 0x7, eaMode = (op >> 3) & 0x7, eaReg = op & 0x7;
         int size = (opmode == 0) ? 1 : (opmode == 1) ? 2 : 4;

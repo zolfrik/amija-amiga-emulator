@@ -41,13 +41,13 @@ public class LinkInstruction extends AbstractM68kInstruction {
      * access: the pin counts as it is now and no later access moves the anchor.
      */
     @Override
-    public void prepareInstruction(Motorola68000 cpu) {
-        cpu.markIplAnchor(Motorola68000.IplAnchor.NOW);
+    public void prepareInstruction(AbstractMotorola cpu) {
+        cpu.markIplAnchor(AbstractMotorola.IplAnchor.NOW);
         super.prepareInstruction(cpu);
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int reg = op & 0x7;
 
@@ -92,7 +92,7 @@ public class LinkInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int disp = (short) cpu.extensionWordAt(cpu.getOpcodeAddress() + 2);
         return "LINK A" + (op & 7) + ", #$" + Disassembly.formatHex(disp, 4);

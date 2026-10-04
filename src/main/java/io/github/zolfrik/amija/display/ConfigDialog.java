@@ -29,6 +29,7 @@ import io.github.zolfrik.amija.assets.AssetCatalog;
 import io.github.zolfrik.amija.assets.AssetPackage;
 import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.common.Chipset;
+import io.github.zolfrik.amija.cpu.CpuModel;
 import io.github.zolfrik.amija.common.VideoMode;
 import io.github.zolfrik.amija.config.AmigaConfig;
 import io.github.zolfrik.amija.display.render.RendererType;
@@ -308,6 +309,12 @@ public final class ConfigDialog {
         chipsetCombo.setSelectedItem(config.chipset());
         chipsetCombo.setMaximumSize(dim(160, 26));
         JLabel chipsetLabel = addRow(system, 8, "label.chipset", chipsetCombo, null);
+
+        // Processor (68000/68010): like the chipset, a change requires a cold restart.
+        JComboBox<CpuModel> cpuCombo = new JComboBox<>(CpuModel.values());
+        cpuCombo.setSelectedItem(config.cpuModel());
+        cpuCombo.setMaximumSize(dim(160, 26));
+        JLabel cpuLabel = addRow(system, 9, "label.cpu", cpuCombo, null);
 
         // -------------------------------------------------------------------
         // Section: Game ports
@@ -598,6 +605,7 @@ public final class ConfigDialog {
             setRowVisible(!simple, fastLabel, fastCombo);
             setRowVisible(!simple, videoLabel, videoModeCombo);
             setRowVisible(!simple, chipsetLabel, chipsetCombo);
+            setRowVisible(!simple, cpuLabel, cpuCombo);
             // A single list instead of the three sections per media type.
             media.setVisible(simple);
             drives.setVisible(!simple);
@@ -623,6 +631,7 @@ public final class ConfigDialog {
                 selectKb(fastCombo, config.storedFastRamKb());
                 videoModeCombo.setSelectedItem(config.storedVideoMode());
                 chipsetCombo.setSelectedItem(config.storedChipset());
+                cpuCombo.setSelectedItem(config.storedCpuModel());
             }
             syncAuto.run();
         });
@@ -963,6 +972,7 @@ public final class ConfigDialog {
                 config.setFastRamKb((Integer) fastCombo.getSelectedItem());
                 config.setVideoMode((VideoMode) videoModeCombo.getSelectedItem());
                 config.setChipset((Chipset) chipsetCombo.getSelectedItem());
+                config.setCpuModel((CpuModel) cpuCombo.getSelectedItem());
             }
             // The media come from the view the user has in front of them: the single list
             // with Expert off, the three per-type sections with Expert on.

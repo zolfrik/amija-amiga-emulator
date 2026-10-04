@@ -33,7 +33,7 @@ public class NbcdInstruction extends AbstractM68kInstruction {
     private static final int RESULT = 4;
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int eaMode = (op >> 3) & 0x7;
         int eaReg = op & 0x7;
@@ -118,7 +118,7 @@ public class NbcdInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private void calculateNbcd(Motorola68000 cpu, int val) {
+    private void calculateNbcd(AbstractMotorola cpu, int val) {
         int x = cpu.x ? 1 : 0;
         int binaryDiff = (0 - val - x) & 0xFF;
         int t = 0 - (val & 0x0F) - x;
@@ -150,7 +150,7 @@ public class NbcdInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         return "NBCD " + Disassembly.formatEA((op >> 3) & 0x7, op & 0x7, 1, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4));
     }

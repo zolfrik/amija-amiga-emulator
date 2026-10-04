@@ -25,9 +25,15 @@ package io.github.zolfrik.amija.cpu;
  */
 public class BccInstruction extends AbstractM68kInstruction {
 
-    public static final BccInstruction INSTANCE = new BccInstruction();
+    public static final BccInstruction INSTANCE = new BccInstruction(false);
+    /** The 68010 form: a short branch not taken takes 6 clocks, and an odd target is fetched before the address error. */
+    public static final BccInstruction M68010 = new BccInstruction(true);
 
-    private BccInstruction() {}
+    private final boolean m68010;
+
+    private BccInstruction(boolean m68010) {
+        this.m68010 = m68010;
+    }
 
     @Override
     public boolean shouldInhibitPrefetch() {
@@ -35,7 +41,7 @@ public class BccInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int condition = (op >> 8) & 0xF;
         int disp8 = (byte) (op & 0xFF);
@@ -79,8 +85,8 @@ public class BccInstruction extends AbstractM68kInstruction {
                             setStep(cpu, 10);
                             return false;
                         } else {
-                            // Short branch not taken (8 cycles: nn np)
-                            cpu.idleCycles(4); // 'nn'
+                            // Short branch not taken (8 cycles: nn np; 6 on the 68010: n np)
+                            cpu.idleCycles(m68010 ? 2 : 4);
                             setStep(cpu, 20);
                             return false;
                         }
@@ -107,6 +113,19 @@ public class BccInstruction extends AbstractM68kInstruction {
                 case 30 -> { // Address Error handler
                     if (cpu.internalCyclesRemaining > 0) return false;
                     int targetPC = getTemp(cpu, 15);
+                    if (m68010 && getTemp(cpu, 13) == 0) {
+                        // The 68010 fetches the word at the even-aligned target before the
+                        // address error; the fetched word becomes the instruction buffer.
+                        setTemp(cpu, 13, 1);
+                        setTemp(cpu, 12, cpu.readBuffer);
+                        cpu.scheduleRead(targetPC & ~1, 2, cpu.currentFCForInstruction());
+                        return false;
+                    }
+                    if (m68010) {
+                        if (!cpu.isBusCycleIdle()) return false;
+                        cpu.fetchBuffer = cpu.readBuffer;
+                        cpu.readBuffer = getTemp(cpu, 12);
+                    }
                     // Frame PC = opcode address + 2 (the internal PC at the moment the branch
                     // computes the destination), NOT target-4: the 68000 restores the old PC,
                     // adds 2 and raises the read address error from there.
@@ -125,7 +144,7 @@ public class BccInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         int condition = (op >> 8) & 0xF;
         String mnem = switch (condition) {

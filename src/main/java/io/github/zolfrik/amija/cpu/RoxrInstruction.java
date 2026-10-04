@@ -31,7 +31,7 @@ public class RoxrInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         int op = cpu.getIr();
         boolean isMemory = ((op >> 6) & 0x3) == 0x3;
 
@@ -137,7 +137,7 @@ public class RoxrInstruction extends AbstractM68kInstruction {
         }
     }
 
-    private int calculateRoxr(Motorola68000 cpu, int val, int count, int size) {
+    private int calculateRoxr(AbstractMotorola cpu, int val, int count, int size) {
         long sizeMask = (size == 1) ? 0xFFL : (size == 2) ? 0xFFFFL : 0xFFFFFFFFL;
         long msbMask = (size == 1) ? 0x80L : (size == 2) ? 0x8000L : 0x80000000L;
         long currentVal = val & sizeMask;
@@ -165,7 +165,7 @@ public class RoxrInstruction extends AbstractM68kInstruction {
         cpu.writeSR(newSR, false);
         return (int) currentVal;
     }
-    @Override public String getDisassembly(Motorola68000 cpu) {
+    @Override public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr(); if (((op >> 6) & 0x3) == 0x3) return "ROXR.w " + Disassembly.formatEA((op >> 3) & 0x7, op & 0x7, 2, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), 0);
         int sizeBits = (op >> 6) & 0x3, size = (sizeBits == 0) ? 1 : (sizeBits == 1) ? 2 : 4, reg = op & 0x7, countOrReg = (op >> 9) & 0x7;
         String sizeSuffix = Disassembly.getSizeSuffix(size), countStr = ((op >> 5) & 0x1) != 0 ? "D" + countOrReg : "#" + (countOrReg == 0 ? 8 : countOrReg);

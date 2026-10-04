@@ -34,7 +34,7 @@ import io.github.zolfrik.amija.common.MasterClock;
 import io.github.zolfrik.amija.common.VirtualCRT;
 import io.github.zolfrik.amija.common.VideoMode;
 import io.github.zolfrik.amija.common.WindowsDpiAwareness;
-import io.github.zolfrik.amija.cpu.Motorola68000;
+import io.github.zolfrik.amija.cpu.AbstractMotorola;
 import io.github.zolfrik.amija.custom.AbstractAgnus;
 import io.github.zolfrik.amija.custom.OcsAgnus;
 import io.github.zolfrik.amija.custom.EcsAgnus;
@@ -166,7 +166,7 @@ public class Amija implements RemotePlayControl {
     private MasterClock clock;
     private Paula paula;
     private VirtualCRT virtualCRT;
-    private Motorola68000 cpu;
+    private AbstractMotorola cpu;
     private AbstractAgnus agnus;
     private Keyboard keyboard;
     private AmigaMouseAdapter mouseAdapter;
@@ -1212,6 +1212,7 @@ public class Amija implements RemotePlayControl {
         int oldMonitorIndex = config.monitorIndex();
         VideoMode oldVideoMode = config.videoMode();
         Chipset oldChipset = config.chipset();
+        io.github.zolfrik.amija.cpu.CpuModel oldCpuModel = config.cpuModel();
         RendererType oldRenderer = config.renderer();
         String oldShader = config.shader();
         // Machine parameters that take effect only at construction: if they change, the
@@ -1266,6 +1267,7 @@ public class Amija implements RemotePlayControl {
                 boolean needsColdRestart = windowChanged
                         || (!deferHardware
                             && (oldChipset != config.chipset()
+                                || oldCpuModel != config.cpuModel()
                                 || !oldKickstart.equals(config.kickstartPath())
                                 || oldChipRam != config.chipRamKb()
                                 || oldSlowRam != config.slowRamKb()
@@ -2065,7 +2067,9 @@ public class Amija implements RemotePlayControl {
             }
 
             // 2. CPU and bus.
-            cpu = new Motorola68000(new BusRequest(), new BusResponse());
+            io.github.zolfrik.amija.cpu.CpuModel cpuModel = config.cpuModel();
+            System.out.println("[CONFIG] CPU: " + cpuModel);
+            cpu = cpuModel.create(new BusRequest(), new BusResponse());
 
             // 3. Custom chips. The chipset (OCS/ECS) selects the Agnus/Denise variant. The
             // user's choice is ALWAYS respected: AbstractAgnus's DMA address counter derives
@@ -2205,7 +2209,7 @@ public class Amija implements RemotePlayControl {
             clock.setFailureHandler(t -> SwingUtilities.invokeLater(
                     () -> error(Messages.t("error.boot", describeFailure(t)))));
             // Power-on: RESET cascades to CIAs and floppies; the CPU starts after a random delay.
-            cpu.powerOnReset(Motorola68000.powerOnStartDelay());
+            cpu.powerOnReset(AbstractMotorola.powerOnStartDelay());
             clock.start();
 
             if (VERBOSE) {

@@ -27,9 +27,14 @@ package io.github.zolfrik.amija.cpu;
  */
 public class DivsInstruction extends AbstractM68kInstruction {
 
-    public static final DivsInstruction INSTANCE = new DivsInstruction();
+    public static final DivsInstruction INSTANCE = new DivsInstruction(false);
+    /** The 68010 form. */
+    public static final DivsInstruction M68010 = new DivsInstruction(true);
 
-    private DivsInstruction() {
+    private final boolean m68010;
+
+    private DivsInstruction(boolean m68010) {
+        this.m68010 = m68010;
     }
 
     private static final int EXT1 = 0;
@@ -44,12 +49,12 @@ public class DivsInstruction extends AbstractM68kInstruction {
     }
 
     @Override
-    public void prepareInstruction(Motorola68000 cpu) {
+    public void prepareInstruction(AbstractMotorola cpu) {
         cpu.consumeIRC();
     }
 
     @Override
-    public boolean executeStep(Motorola68000 cpu) {
+    public boolean executeStep(AbstractMotorola cpu) {
         if (cpu.isInstructionFinished()) {
             return true;
         }
@@ -143,6 +148,9 @@ public class DivsInstruction extends AbstractM68kInstruction {
                     int divisorWord = getTemp(cpu, SRC_VAL) & 0xFFFF;
                     short sDivisor = (short) divisorWord;
                     int dividend = cpu.getD(reg, 4);
+                    if (m68010) {
+                        return divide68010(cpu, reg, dividend, sDivisor);
+                    }
 
                     long absDividend = Math.abs((long) dividend);
                     long absDivisor = Math.abs((long) sDivisor);
@@ -243,12 +251,22 @@ public class DivsInstruction extends AbstractM68kInstruction {
                     // Overlapped prefetch (Phase 4): the terminal np is the last bus cycle;
                     // finalize in this same step (seam 0) instead of a separate step 8. See
                     // docs/cpu-overlapped-prefetch-rework-plan.md, Phase 4.
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT); // IPL anchor before the terminating prefetch
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT); // IPL anchor before the terminating prefetch
+                    cpu.startPrefetchCycle();
+                    return finalizeInstructionSafe(cpu);
+                }
+                case 12 -> { // 68010, negative dividend: IPL sampled 2 clocks before the end
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT);
+                    cpu.idleCycles(2);
+                    setStep(cpu, 13);
+                    return false;
+                }
+                case 13 -> {
                     cpu.startPrefetchCycle();
                     return finalizeInstructionSafe(cpu);
                 }
                 case 11 -> { // Overflow Path Finish (overlapped: finalize with the np)
-                    cpu.markIplAnchor(Motorola68000.IplAnchor.NEXT); // IPL anchor before the terminating prefetch
+                    cpu.markIplAnchor(AbstractMotorola.IplAnchor.NEXT); // IPL anchor before the terminating prefetch
                     cpu.startPrefetchCycle();
                     return finalizeInstructionSafe(cpu);
                 }
@@ -260,8 +278,33 @@ public class DivsInstruction extends AbstractM68kInstruction {
         }
     }
 
+    /**
+     * 68010: 12 clocks on overflow (V and N set, Z and C cleared); otherwise 116, 118 with a
+     * negative dividend. With a negative dividend the IPL is sampled 2 clocks before the end
+     * of the internal cycles instead of right before the prefetch.
+     */
+    private boolean divide68010(AbstractMotorola cpu, int reg, int dividend, short divisor) {
+        long q = (long) dividend / divisor;
+        long r = (long) dividend % divisor;
+        boolean absoluteOverflow = (Math.abs((long) dividend) >>> 16) >= Math.abs((long) divisor);
+        if (absoluteOverflow || q > 32767 || q < -32768) {
+            cpu.c = false; cpu.z = false; cpu.v = true; cpu.n = true;
+            cpu.idleCycles(absoluteOverflow ? 12 : 116);
+            setStep(cpu, !absoluteOverflow && dividend < 0 ? 12 : 11);
+            return false;
+        }
+        cpu.setD(reg, (int) (((r & 0xFFFF) << 16) | (q & 0xFFFF)), 4);
+        int sr = cpu.getSR() & 0xFFF0;
+        if ((q & 0x8000) != 0) sr |= 0x08;
+        if ((short) q == 0) sr |= 0x04;
+        cpu.writeSR(sr, false);
+        cpu.idleCycles(116);
+        setStep(cpu, dividend < 0 ? 12 : 11);
+        return false;
+    }
+
     @Override
-    public String getDisassembly(Motorola68000 cpu) {
+    public String getDisassembly(AbstractMotorola cpu) {
         int op = cpu.getIr();
         return "DIVS " + Disassembly.formatEA((op >> 3) & 7, op & 7, 2, cpu.extensionWordAt(cpu.getOpcodeAddress() + 2), cpu.extensionWordAt(cpu.getOpcodeAddress() + 4)) + ", D" + ((op >> 9) & 7);
     }
