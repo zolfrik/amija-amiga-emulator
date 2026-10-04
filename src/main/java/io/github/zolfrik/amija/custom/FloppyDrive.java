@@ -132,6 +132,10 @@ public final class FloppyDrive {
     private int     readyUpLines = 0;
     private long    switchCycle  = 0L;
     private long    totalCycles  = 0L;
+    /** Cycles banked by tick() and not applied yet: they hold no event (see cyclesToNextEvent). */
+    private int     pendingCycles = 0;
+    /** Cycles that can be banked before tick() must run in full; 0 = at the next call. */
+    private int     eventCycles   = 0;
     /** Instant of the last ACCEPTED STEP pulse. */
     private long    lastAcceptedStepCycle = Long.MIN_VALUE / 4;
 
@@ -288,7 +292,13 @@ public final class FloppyDrive {
         this(id, "DF0".equals(id) ? DriveType.DD_INT : DriveType.DD_EXT);
     }
 
-    public void setConnected(boolean connected) { this.connected = connected; statusDirty = true; }
+    public void setConnected(boolean connected) {
+        flushPending();
+        this.connected = connected;
+        statusDirty = true;
+        final Runnable l = changeListener;   // again after the change: it may come from another thread
+        if (l != null) l.run();
+    }
 
     /** true if the drive is physically connected to the bus (DF0 always; DF1-DF3 optional). */
     public boolean isConnected() { return connected; }
@@ -319,10 +329,90 @@ public final class FloppyDrive {
      *                 the head moves on by two or three (see {@link #readSlowBit}).
      */
     public void tick(int cycles, IntConsumer bitConsumer, boolean slowBits) {
-        this.slowBits = slowBits;
-        totalCycles += cycles;
         machineRunning = true;   // see insertDisk: tells cold from hot
 
+        // Deferred work: until the next event (see cyclesToNextEvent) a call only adds up
+        // counters, so the cycles are banked and applied when an event is due. totalCycles
+        // stays exact at every call: isBusy() and the STEP guard read it.
+        final int banked = pendingCycles;
+        if (banked + cycles < eventCycles) {
+            pendingCycles = banked + cycles;
+            totalCycles += cycles;
+            return;
+        }
+        // The banked cycles hold no event, so they are applied as one quiet step, at the
+        // time base of the call they ended in; then this call's cycles on their own,
+        // exactly as a call per colour clock would see them (the INDEX pulse, for one,
+        // counts the whole of the call it starts in).
+        pendingCycles = 0;
+        if (banked > 0) advance(banked, null);
+        this.slowBits = slowBits;
+        totalCycles += cycles;
+        advance(cycles, bitConsumer);
+        eventCycles = cyclesToNextEvent();
+    }
+
+    /**
+     * Applies the banked cycles at once, before anything else reads or changes the drive.
+     * By construction they hold no event, so no cell reaches the bit consumer.
+     */
+    private void flushPending() {
+        final int banked = pendingCycles;
+        if (banked > 0) {
+            pendingCycles = 0;
+            totalCycles -= banked;      // advance() runs at the time base of the banked span
+            advance(banked, null);
+            totalCycles += banked;
+        }
+        eventCycles = 0;                // the next call runs in full and looks again
+        final Runnable l = changeListener;
+        if (l != null) l.run();
+    }
+
+    /** Cycles that can still be banked before the next event (see {@link #tick}). */
+    public int cyclesUntilEvent() {
+        return eventCycles - pendingCycles;
+    }
+
+    /**
+     * Told whenever the drive changes from outside its own clock (a control line, a disk, a
+     * reset): whoever banks colour clocks of drive work must look at the drive again.
+     */
+    public void setChangeListener(Runnable listener) { this.changeListener = listener; }
+
+    private Runnable changeListener;
+
+    /** Cycles that can be banked before the next event: a sentinel when nothing is due. */
+    private static final int NO_EVENT_CYCLES = 1 << 20;
+
+    /**
+     * Cycles from now to the first call that can change something the machine sees: the
+     * next MFM cell under the head, the end of the INDEX pulse, the end of a settle, the
+     * motor's spin-down ending. Until then a call only adds up counters.
+     */
+    private int cyclesToNextEvent() {
+        final boolean dormant = !motorTarget && !motorAtSpeed && settleCounter <= 0
+                && (totalCycles - switchCycle) >= CYCLES_MOTOR_STOP;
+        if (dormant) return NO_EVENT_CYCLES;   // only the disk image's own flush timer runs
+        if (!motorTarget && (motorAtSpeed || indexPulse)) return 0;
+        long next = NO_EVENT_CYCLES;
+        if (motorTarget) {
+            if (densityModel) {
+                next = (trackSpeed - cellClock + UNITS_PER_MASTER_CYCLE - 1) / UNITS_PER_MASTER_CYCLE;
+            } else {
+                next = (ADF_CYCLES_PER_BIT_FIXED - bitCyclesAccumulatorFixed + BIT_CLOCK_SCALE - 1)
+                        / BIT_CLOCK_SCALE;
+            }
+            if (indexPulse) next = Math.min(next, CYCLES_INDEX_PULSE - indexPulseCounter);
+        } else {
+            next = Math.min(next, CYCLES_MOTOR_STOP - (totalCycles - switchCycle));
+        }
+        if (settleCounter > 0) next = Math.min(next, settleCounter);
+        return (int) Math.max(0, Math.min(next, NO_EVENT_CYCLES));
+    }
+
+    /** One step of the drive: what a call of {@link #tick} does once its cycles are due. */
+    private void advance(int cycles, IntConsumer bitConsumer) {
         // Periodic flush of the disk image (cheap: returns at once when no track is
         // dirty, the normal case for a read-only game disk).
         if (diskImage != null) diskImage.tickCycles(cycles);
@@ -394,6 +484,7 @@ public final class FloppyDrive {
      * the next {@link #update} compares against this state.
      */
     public void selectSet(boolean selected, boolean step) {
+        flushPending();
         statusDirty  = true;
         this.selected = connected && selected;
         prevSelected = this.selected;
@@ -402,6 +493,7 @@ public final class FloppyDrive {
 
     public void update(boolean selected, boolean motorOn, boolean step,
                        boolean direction, boolean side) {
+        flushPending();
         statusDirty = true;   // called only when CIA-B PRB has changed
 
         // /STEP is active LOW and the head moves on its trailing edge (asserted -> released),
@@ -515,6 +607,8 @@ public final class FloppyDrive {
         if (readyUpLines > 0 && diskInserted && --readyUpLines == 0 && motorTarget) {
             motorAtSpeed = true;
             statusDirty = true;
+            final Runnable l = changeListener;
+            if (l != null) l.run();
         }
     }
 
@@ -733,6 +827,7 @@ public final class FloppyDrive {
      * shutdown hook).
      */
     public void setWriting(boolean value) {
+        flushPending();
         if (writing == value) return;
         writing = value;
         if (!value) flushWrittenTrack();
@@ -779,6 +874,7 @@ public final class FloppyDrive {
      * dropped, so the next cell is counted from this instant.
      */
     public void restartBitCell() {
+        flushPending();
         resetBitClock();
     }
 
@@ -923,6 +1019,7 @@ public final class FloppyDrive {
      * {@code null} = uniform density).
      */
     public void loadTrackData(byte[] data, int trackBits, int[] density) {
+        flushPending();
         jitterSkipCell = -1;
         unformattedTrack = false;
         // Length of the current track: standard for ADF and normal IPF tracks, longer for
@@ -1011,6 +1108,7 @@ public final class FloppyDrive {
      * with its 3 ms settles (docs/vamigats-paula-audio-plan.md section 7.1.5).
      */
     public void insertDisk(DiskImage image) {
+        flushPending();
         statusDirty = true;
         writing = false;
         flushWrittenTrack();   // save what was written on the outgoing disk
@@ -1106,6 +1204,7 @@ public final class FloppyDrive {
 
     /** Physical eject: data flush, image closed, /CHNG latched. */
     public void ejectDisk() {
+        flushPending();
         statusDirty = true;
         writing = false;
         flushWrittenTrack();
@@ -1126,6 +1225,7 @@ public final class FloppyDrive {
      * tests.
      */
     public void insertDisk(boolean inserted, boolean writeProtected) {
+        flushPending();
         statusDirty = true;
         if (!inserted) {
             writing = false;
@@ -1158,6 +1258,7 @@ public final class FloppyDrive {
     // =========================================================================
 
     public void reset() {
+        flushPending();
         statusDirty = true;
         // A reset in the middle of a write (e.g. Ctrl-Amiga-Amiga) must not lose the
         // track written so far: it is flushed to the image before clearing everything.

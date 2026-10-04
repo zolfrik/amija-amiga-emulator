@@ -1767,6 +1767,12 @@ public abstract class AbstractAgnus {
         this.df1 = new FloppyDrive("DF1", FloppyDrive.DriveType.DD_EXT);
         this.df2 = new FloppyDrive("DF2", FloppyDrive.DriveType.DD_EXT);
         this.df3 = new FloppyDrive("DF3", FloppyDrive.DriveType.DD_EXT);
+        // A drive changed from outside the floppy block must be looked at again at once.
+        final Runnable floppyChanged = () -> { floppyForce = true; idleCachePrb = -1; };
+        df0.setChangeListener(floppyChanged);
+        df1.setChangeListener(floppyChanged);
+        df2.setChangeListener(floppyChanged);
+        df3.setChangeListener(floppyChanged);
         // DF1-DF3 are not physically connected; they answer on the bus as "not present"
         df1.setConnected(false);
         df2.setConnected(false);
@@ -2063,13 +2069,22 @@ public abstract class AbstractAgnus {
         floppyAccumCycles++;
         if ((hpos & 1) != 0) {
             if (floppyRun) {
-                processFloppy = true;
-                floppyN = floppyAccumCycles;
-                if (prbChanged && (ciab_prb & 0xFF) != appliedCiabPrb) applyFloppyLines(ciab_prb);
-                tickFloppyDrive(df0, floppyN);
-                tickFloppyDrive(df1, floppyN);
-                tickFloppyDrive(df2, floppyN);
-                tickFloppyDrive(df3, floppyN);
+                // Between two drive events, with the control lines unchanged, a colour clock
+                // of drive work changes nothing: its cycles are banked and handed over when
+                // the next event is due (see FloppyDrive.cyclesUntilEvent).
+                final int due = floppyBanked + floppyAccumCycles;
+                if (!prbChanged && !floppyForce && due < floppyQuietCycles) {
+                    floppyBanked = due;
+                } else {
+                    processFloppy = true;
+                    floppyN = floppyAccumCycles;
+                    floppyCatchUp();
+                    if (prbChanged && (ciab_prb & 0xFF) != appliedCiabPrb) applyFloppyLines(ciab_prb);
+                    tickFloppyDrive(df0, floppyN);
+                    tickFloppyDrive(df1, floppyN);
+                    tickFloppyDrive(df2, floppyN);
+                    tickFloppyDrive(df3, floppyN);
+                }
             }
             floppyAccumCycles = 0;
         }
@@ -2085,9 +2100,16 @@ public abstract class AbstractAgnus {
         // shifter stands: it is this source's own cell fraction, not an absolute grid, and
         // it resumes from the same value when the source runs again.
         if (paula != null) {
-            boolean anySelected = isAnyDriveSelected(ciab_prb);
+            // Selection and motors change only with PRB or through a drive's own update
+            // (which drops the cache, see the drives' change listener).
+            if ((ciab_prb & 0xFF) != idleCachePrb) {
+                idleCachePrb = ciab_prb & 0xFF;
+                idleAnySelected = isAnyDriveSelected(ciab_prb);
+                idleAnyTurning = isAnySelectedDriveTurning(ciab_prb);
+            }
+            final boolean anySelected = idleAnySelected;
             boolean idleRuns = anySelected
-                    ? !isAnySelectedDriveTurning(ciab_prb) && paula.isDiskReadArmed()
+                    ? !idleAnyTurning && paula.isDiskReadArmed()
                     : !paula.isDiskWriting();
             if (idleRuns && ++idleDiskBitAccum >= IDLE_DISK_CYCLES_PER_BIT) {
                 idleDiskBitAccum = 0;
@@ -2111,6 +2133,9 @@ public abstract class AbstractAgnus {
             // work is needed in the next cycles.
             floppyBusy = isFloppyDriveBusy(df0) || isFloppyDriveBusy(df1)
                     || isFloppyDriveBusy(df2) || isFloppyDriveBusy(df3);
+            floppyForce = false;
+            floppyQuietCycles = Math.min(Math.min(quietCycles(df0), quietCycles(df1)),
+                                         Math.min(quietCycles(df2), quietCycles(df3)));
         }
         // (The falling edge of CIA-A's TOD is in updateBeam(), next to the rising one:
         // both live on line CIAA_TOD_VPOS.)
@@ -3105,6 +3130,7 @@ public abstract class AbstractAgnus {
      * starts no motor; the first PRB write is compared against this state.
      */
     private void floppySelectSet() {
+        floppyCatchUp();
         int prb = ciaB != null ? ciaB.peekPortB() & 0xFF : 0xFF;
         boolean step = (prb & 0x01) == 0;
         if (df0 != null) df0.selectSet((prb & 0x08) == 0, step);
@@ -3127,6 +3153,37 @@ public abstract class AbstractAgnus {
     // The PRB value whose control lines the drives last received.
     private int appliedCiabPrb = -1;
     private boolean floppyBusy = true;
+    // Colour clocks of drive work banked while no drive event was due (see risingEdge), how
+    // many can be banked before the next one, and a flag that forces the work at the next
+    // colour clock: raised by a drive whose state changed from outside the floppy block.
+    private int floppyBanked = 0;
+    private int floppyQuietCycles = 0;
+    private boolean floppyForce = true;
+
+    /**
+     * Hands the banked cycles to the drives, as the colour clocks that went by would have:
+     * they hold no event. Called before anything changes a drive from outside the floppy
+     * block, and at the start of the block itself.
+     */
+    private void floppyCatchUp() {
+        final int banked = floppyBanked;
+        if (banked > 0) {
+            floppyBanked = 0;
+            tickFloppyDrive(df0, banked);
+            tickFloppyDrive(df1, banked);
+            tickFloppyDrive(df2, banked);
+            tickFloppyDrive(df3, banked);
+        }
+        floppyForce = true;
+    }
+
+    /** Cycles a drive can be left alone before its next event; unbounded if it is not ticked. */
+    private static int quietCycles(FloppyDrive drive) {
+        if (drive == null || !drive.isConnected() || (!drive.isSelected() && !drive.isBusy())) {
+            return Integer.MAX_VALUE;
+        }
+        return drive.cyclesUntilEvent();
+    }
     // PERF: accumulator to process the floppy at CCK granularity (2 master cycles). See
     // the floppy block in risingEdge().
     private int floppyAccumCycles = 0;
@@ -3135,6 +3192,9 @@ public abstract class AbstractAgnus {
     private static final int IDLE_DISK_CYCLES_PER_BIT = 14;
     /** Cadence of the idle shifter (see the block of the same name in risingEdge). */
     private int idleDiskBitAccum = 0;
+    /** PRB the idle shifter's view of the drives was taken at; -1 = to be taken again. */
+    private int idleCachePrb = -1;
+    private boolean idleAnySelected, idleAnyTurning;
 
     private static class FloppyStatus {
         boolean rdy = false, tk0 = false, wpro = false, chng = false, index = false;
@@ -4823,6 +4883,7 @@ public abstract class AbstractAgnus {
             // driven by CIA-A PA0.
             if (gary != null) gary.reset();
         }
+        floppyCatchUp();
         if (df0  != null) df0.reset();
         if (df1  != null) df1.reset();
         if (df2  != null) df2.reset();
@@ -5618,12 +5679,14 @@ public abstract class AbstractAgnus {
      * of the bits: the drive queries it once per MFM cell.
      */
     public void startFloppyWriting() {
+        floppyCatchUp();
         FloppyDrive drive = getSelectedDrive();
         if (drive != null) drive.setWriting(true);
     }
 
     /** Ends writing on every drive (DSKLEN cleared): the track is flushed. */
     public void stopFloppyWriting() {
+        floppyCatchUp();
         df0.setWriting(false);
         df1.setWriting(false);
         df2.setWriting(false);
@@ -5709,6 +5772,7 @@ public abstract class AbstractAgnus {
      * cell it had accumulated, like the one being read.
      */
     public void restartDrivesBitCell() {
+        floppyCatchUp();
         if (df0 != null) df0.restartBitCell();
         if (df1 != null) df1.restartBitCell();
         if (df2 != null) df2.restartBitCell();
