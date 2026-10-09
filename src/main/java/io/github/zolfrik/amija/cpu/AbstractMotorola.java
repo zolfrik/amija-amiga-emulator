@@ -30,7 +30,7 @@ import java.util.Objects;
  * prefetch queue, bus cycles, IPL sampling, exception sequences and the decode table. A model
  * changes only what differs on it, through the hooks this class leaves package-private.
  */
-public abstract class AbstractMotorola {
+public abstract class AbstractMotorola implements Processor {
 
     public boolean quirksMode = false;
 
@@ -489,6 +489,7 @@ public abstract class AbstractMotorola {
 
     /** The processor model this instance emulates. */
     public final CpuModel cpuModel() { return cpuModel; }
+    @Override public final CpuModel model() { return cpuModel; }
 
     /** {@code true} on a 68010: where an instruction behaves differently, it asks here. */
     final boolean isM68010() { return cpuModel == CpuModel.M68010; }
@@ -1914,6 +1915,13 @@ public abstract class AbstractMotorola {
     public void releaseRmwLock() { busLocked = false; busReq.clear(); }
     public boolean isIRDValid() { return irdValid; }
     public boolean isIRCValid() { return ircValid; }
+
+    /**
+     * The last word really fetched: {@code irc}, or {@code ird} while the prefetch refilling
+     * {@code irc} is still in flight (then {@code irc} holds a leftover from several words back).
+     */
+    @Override
+    public int prefetchWord() { return (ircValid ? irc : ird) & 0xFFFF; }
     public void consumeIRC() {
         if (loopBody) return;
         ird = irc; irdAddr = ircAddr; irdValid = ircValid; ircValid = false;

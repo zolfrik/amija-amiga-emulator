@@ -289,10 +289,20 @@ public final class ConfigDialog {
         // the Amiga has no way to choose between OCS and ECS, and seeing them read-only does
         // not help. They reappear, editable, as soon as Expert is switched on.
 
-        // Processor (68000/68010): a change requires a cold restart.
-        JComboBox<CpuModel> cpuCombo = new JComboBox<>(CpuModel.values());
-        cpuCombo.setSelectedItem(config.cpuModel());
+        // Processor (event-driven 68000/68010/68020): a change requires a cold restart. A
+        // clocked model written by hand in the file shows as its event-driven twin.
+        JComboBox<CpuModel> cpuCombo = new JComboBox<>(CpuModel.selectable());
+        cpuCombo.setSelectedItem(config.cpuModel().toEventDriven());
         cpuCombo.setMaximumSize(dim(160, 26));
+        cpuCombo.setRenderer(new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value,
+                    int index, boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value instanceof CpuModel model) setText(model.partNumber());
+                return this;
+            }
+        });
         JLabel cpuLabel = addRow(system, 4, "label.cpu", cpuCombo, null);
 
         // OCS/ECS chipset: like the processor, a change requires a cold restart.
@@ -632,7 +642,7 @@ public final class ConfigDialog {
                 selectKb(fastCombo, config.storedFastRamKb());
                 videoModeCombo.setSelectedItem(config.storedVideoMode());
                 chipsetCombo.setSelectedItem(config.storedChipset());
-                cpuCombo.setSelectedItem(config.storedCpuModel());
+                cpuCombo.setSelectedItem(config.storedCpuModel().toEventDriven());
             }
             syncAuto.run();
         });

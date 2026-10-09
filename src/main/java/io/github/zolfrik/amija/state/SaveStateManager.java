@@ -22,7 +22,9 @@ package io.github.zolfrik.amija.state;
 
 import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.config.AmigaConfig;
-import io.github.zolfrik.amija.cpu.AbstractMotorola;
+import io.github.zolfrik.amija.cpu.Processor;
+import io.github.zolfrik.amija.cpu.event.EventCpu;
+import io.github.zolfrik.amija.custom.EventCpuBus;
 import io.github.zolfrik.amija.custom.AbstractAgnus;
 import io.github.zolfrik.amija.custom.FastRam;
 import io.github.zolfrik.amija.i18n.Messages;
@@ -71,6 +73,10 @@ import java.util.zip.GZIPOutputStream;
  * (start of frame + CPU instruction boundary), so the 68000's bus queue and Denise's
  * per-scanline recorders (transient graphs that are not serialised) are empty and nothing is
  * lost.
+ *
+ * <p>An event-driven processor comes with its bus ({@link EventCpuBus}): the bus holds the
+ * elapsed time and the processor time not yet handed to the chipset, so it is a root too.
+ * Between two batches such a processor is always at an instruction boundary.
  */
 public final class SaveStateManager {
 
@@ -192,10 +198,19 @@ public final class SaveStateManager {
     // Salvataggio
     // =========================================================================
 
-    public static void save(File file, AbstractMotorola cpu, AbstractAgnus agnus,
+    public static void save(File file, Processor cpu, AbstractAgnus agnus,
             GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
-        advanceToBoundary(agnus, cpu);
-        List<Object> roots = buildRoots(cpu, agnus, port1, port2);
+        save(file, cpu, null, agnus, port1, port2, cfg);
+    }
+
+    /**
+     * Saves the machine; {@code eventBus} is the bus of an event-driven processor, null for
+     * a clocked one.
+     */
+    public static void save(File file, Processor cpu, EventCpuBus eventBus, AbstractAgnus agnus,
+            GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
+        advanceToBoundary(agnus, cpu, eventBus);
+        List<Object> roots = buildRoots(cpu, eventBus, agnus, port1, port2);
         byte[] configBlob = encodeConfig(cfg.snapshot());
 
         // The temporary file MUST be next to the destination: elsewhere it would land on
@@ -240,19 +255,28 @@ public final class SaveStateManager {
     // Loading
     // =========================================================================
 
-    public static void load(File file, AbstractMotorola cpu, AbstractAgnus agnus,
+    public static void load(File file, Processor cpu, AbstractAgnus agnus,
+            GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
+        load(file, cpu, null, agnus, port1, port2, cfg);
+    }
+
+    /**
+     * Restores the machine; {@code eventBus} is the bus of an event-driven processor, null
+     * for a clocked one.
+     */
+    public static void load(File file, Processor cpu, EventCpuBus eventBus, AbstractAgnus agnus,
             GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
         // Bring the CURRENT machine to a clean boundary: so the 68000's bus queue (a
         // transient object not in the slot) is empty before the registers are overwritten,
         // and no pending bus operation corrupts the resume.
-        advanceToBoundary(agnus, cpu);
+        advanceToBoundary(agnus, cpu, eventBus);
 
         try (DataInputStream in = openSlot(file)) {
             SlotInfo info = readHeader(in);
             if (!info.fingerprint().equals(fingerprint(cfg))) {
                 throw new IncompatibleStateException(Messages.t("savestate.err.machine"));
             }
-            List<Object> roots = buildRoots(cpu, agnus, port1, port2);
+            List<Object> roots = buildRoots(cpu, eventBus, agnus, port1, port2);
             int n = in.readInt();
             if (n != roots.size()) {
                 throw new IncompatibleStateException(Messages.t("savestate.err.structure"));
@@ -341,10 +365,21 @@ public final class SaveStateManager {
     // Building the list of roots (identical in save and load)
     // =========================================================================
 
-    private static List<Object> buildRoots(AbstractMotorola cpu, AbstractAgnus agnus,
-            GamePort port1, GamePort port2) {
+    private static List<Object> buildRoots(Processor cpu, EventCpuBus eventBus,
+            AbstractAgnus agnus, GamePort port1, GamePort port2) {
         List<Object> roots = new ArrayList<>();
         add(roots, cpu);
+        add(roots, eventBus);
+        if (eventBus != null) {
+            // The event bus keeps Agnus one rising edge ahead (EventCpuBus): at the boundary
+            // the slot of the coming colour clock is already arbitrated, and the requests and
+            // responses of that arbitration are live state, in objects the walker does not
+            // follow by itself. On the clocked machine they are empty at the boundary.
+            add(roots, field(agnus, "cpuBusReq"));
+            add(roots, field(agnus, "cpuBusResp"));
+            add(roots, field(agnus, "copperBusReq"));
+            add(roots, field(agnus, "copperBusResp"));
+        }
         add(roots, agnus);
         add(roots, field(agnus, "gary"));   // address decoder: OVL flip-flop, reset/halt...
         add(roots, field(agnus, "copper"));
@@ -426,10 +461,16 @@ public final class SaveStateManager {
     /**
      * Advances the machine (in colour-clock steps) to the start of the frame with the CPU
      * at an instruction boundary. Less than a frame of emulated time. Must be called with the
-     * machine paused (no other thread touches Agnus).
+     * machine paused (no other thread touches Agnus). An event-driven processor is stepped
+     * through its bus, an instruction at a time.
      */
-    private static void advanceToBoundary(AbstractAgnus agnus, AbstractMotorola cpu) {
+    private static void advanceToBoundary(AbstractAgnus agnus, Processor cpu, EventCpuBus eventBus) {
         final int GUARD = 8_000_000; // wide margin: a whole frame is ~70k colour clocks
+        if (eventBus != null) {
+            final io.github.zolfrik.amija.common.ClockDriver driver = eventBus.driver((EventCpu) cpu);
+            for (int i = 0; i < GUARD && agnus.getVpos() != 0; i++) driver.run(1);
+            return;
+        }
         for (int i = 0; i < GUARD; i++) {
             if (agnus.getVpos() == 0 && cpu.isAtInstructionBoundary()) return;
             agnus.risingEdge();

@@ -22,7 +22,7 @@ package io.github.zolfrik.amija.custom;
 
 import io.github.zolfrik.amija.common.MOS8520;
 import io.github.zolfrik.amija.common.VideoMode;
-import io.github.zolfrik.amija.cpu.AbstractMotorola;
+import io.github.zolfrik.amija.cpu.Processor;
 import io.github.zolfrik.amija.memory.RAM;
 import io.github.zolfrik.amija.memory.ROM;
 
@@ -53,7 +53,7 @@ public final class EcsAgnus extends AbstractAgnus {
     private static final int ID_ECS_PAL  = 0x20;
     private static final int ID_ECS_NTSC = 0x30;
 
-    public EcsAgnus(AbstractMotorola cpu,
+    public EcsAgnus(Processor cpu,
                     Gary gary,
                     RAM chipRAM,
                     RAM slowRAM,

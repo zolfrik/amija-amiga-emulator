@@ -218,7 +218,7 @@ public final class AmigaConfig {
 
     /** Floppy only: the stock A500 configuration almost every game expects. */
     private static final AutoDefaults AUTO_FLOPPY =
-            new AutoDefaults("auto.floppy.", 512, 512, 0, Chipset.OCS, CpuModel.M68000);
+            new AutoDefaults("auto.floppy.", 512, 512, 0, Chipset.OCS, CpuModel.M68000E);
 
     /**
      * Hard disk or WHDLoad active: the expanded machine that software requires.
@@ -231,7 +231,7 @@ public final class AmigaConfig {
      * machine: the maximum is the only choice that never fails.
      */
     private static final AutoDefaults AUTO_EXPANDED =
-            new AutoDefaults("auto.hd.", 2048, 512, 8192, Chipset.ECS, CpuModel.M68010);
+            new AutoDefaults("auto.hd.", 2048, 512, 8192, Chipset.ECS, CpuModel.M68020);
 
     private static final AutoDefaults[] AUTO_PROFILES = { AUTO_FLOPPY, AUTO_EXPANDED };
 
@@ -376,7 +376,7 @@ public final class AmigaConfig {
         p.setProperty(K_LANGUAGE, "en");                 // default language: English
         p.setProperty(K_VIDEO_MODE, VideoMode.PAL.name()); // default video mode: PAL
         p.setProperty(K_CHIPSET, Chipset.OCS.name());      // default chipset: OCS
-        p.setProperty(K_CPU_MODEL, CpuModel.M68000.label()); // default processor: 68000
+        p.setProperty(K_CPU_MODEL, CpuModel.M68000E.label()); // default processor: event-driven 68000
         // The TWO scales, separate and independent. Both must be kept here: this is the file
         // the user finds at the first run, and a missing key is a feature the user does not
         // know exists.
@@ -835,9 +835,9 @@ public final class AmigaConfig {
     }
 
     /**
-     * Processor of the emulated machine: {@link CpuModel#M68000} (default) or
-     * {@link CpuModel#M68010}. In Auto mode the floppy profile uses the 68000 and the hard
-     * disk/WHDLoad profile the 68010. A change takes effect only after a cold restart.
+     * Processor of the emulated machine: {@link CpuModel#M68000E} by default. In Auto mode
+     * the floppy profile uses the event-driven 68000 and the hard disk/WHDLoad profile the
+     * 68020. A change takes effect only after a cold restart.
      */
     public CpuModel cpuModel() {
         return autoEnabled() ? autoProfile().cpuModel() : storedCpuModel();
@@ -845,11 +845,11 @@ public final class AmigaConfig {
 
     /** Processor chosen by hand (key {@code cpu.model}), ignored by Auto. */
     public CpuModel storedCpuModel() {
-        return CpuModel.parse(props.getProperty(K_CPU_MODEL), CpuModel.M68000);
+        return CpuModel.parse(props.getProperty(K_CPU_MODEL), CpuModel.M68000E);
     }
 
     public void setCpuModel(CpuModel model) {
-        props.setProperty(K_CPU_MODEL, (model == null ? CpuModel.M68000 : model).label());
+        props.setProperty(K_CPU_MODEL, (model == null ? CpuModel.M68000E : model).label());
     }
 
     /** Chipset chosen by hand (key {@code chipset}), ignored by Auto. */
@@ -1306,7 +1306,7 @@ public final class AmigaConfig {
         sb.append("#  - Kickstart: the 1.3 below for plain floppy games, the 3.1 as soon as a\n");
         sb.append("#    hard disk or WHDLoad is in use;\n");
         sb.append("#  - memory, chipset and processor: the auto.floppy.* profile (68000), or\n");
-        sb.append("#    auto.hd.* (68010) when a hard disk or WHDLoad is in use. Both are\n");
+        sb.append("#    auto.hd.* (68020) when a hard disk or WHDLoad is in use. Both are\n");
         sb.append("#    editable right below;\n");
         sb.append("#  - video mode: PAL, unless the name of an active file (floppy, hard disk or\n");
         sb.append("#    WHDLoad archive) contains \"NTSC\" or \"(USA)\", in any case.\n");
@@ -1443,8 +1443,9 @@ public final class AmigaConfig {
         sb.append("# the emulator (cold restart).\n");
         line(sb, K_CHIPSET, storedChipset().name());
 
-        sb.append("\n# Processor: 68000 (default) or 68010. Automatic configuration off. The\n");
-        sb.append("# change takes effect only after restarting the emulator (cold restart).\n");
+        sb.append("\n# Processor: 68000E (default), 68010E or 68020, all event-driven; the\n");
+        sb.append("# clocked 68000 and 68010 are still accepted. Automatic configuration off.\n");
+        sb.append("# The change takes effect only after restarting the emulator (cold restart).\n");
         line(sb, K_CPU_MODEL, storedCpuModel().label());
 
         sb.append("\n# Integer scaling of the emulated window: 1 = native size, 2 = double,\n");

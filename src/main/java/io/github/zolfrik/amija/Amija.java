@@ -166,7 +166,12 @@ public class Amija implements RemotePlayControl {
     private MasterClock clock;
     private Paula paula;
     private VirtualCRT virtualCRT;
+    /** The clocked processor; null when the processor is event-driven. */
     private AbstractMotorola cpu;
+    /** The processor, whatever drives it. */
+    private io.github.zolfrik.amija.cpu.Processor processor;
+    /** The bus of an event-driven processor; null when the processor is clocked. */
+    private io.github.zolfrik.amija.custom.EventCpuBus eventBus;
     private AbstractAgnus agnus;
     private Keyboard keyboard;
     private AmigaMouseAdapter mouseAdapter;
@@ -1328,7 +1333,7 @@ public class Amija implements RemotePlayControl {
             case SOFT_RESET -> {
                 saveConfig();
                 applyRuntimeInputConfig();
-                if (cpu != null) cpu.reset();
+                if (processor != null) processor.reset();
                 resumeOrStart();
             }
             case STATE_RESTORE -> {
@@ -1859,12 +1864,12 @@ public class Amija implements RemotePlayControl {
      */
     private String saveState() {
         int slot = config.saveStateSlot();
-        if (cpu == null || agnus == null) {
+        if (processor == null || agnus == null) {
             return Messages.t("savestate.save.fail", Messages.t("savestate.nomachine"));
         }
         try {
             File file = SaveStateManager.slotFile(slot);
-            SaveStateManager.save(file, cpu, agnus, gamePort1, gamePort2, config);
+            SaveStateManager.save(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] salvato " + file.getAbsolutePath());
             saveStateScreenshot(slot);
             return Messages.t("savestate.save.ok", slot, file.getAbsolutePath());
@@ -1904,7 +1909,7 @@ public class Amija implements RemotePlayControl {
      */
     private ConfigDialog.LoadStateOutcome loadState() {
         int slot = config.saveStateSlot();
-        if (cpu == null || agnus == null) {
+        if (processor == null || agnus == null) {
             return ConfigDialog.LoadStateOutcome.done(
                     Messages.t("savestate.load.fail", Messages.t("savestate.nomachine")));
         }
@@ -1913,7 +1918,7 @@ public class Amija implements RemotePlayControl {
             return ConfigDialog.LoadStateOutcome.done(Messages.t("savestate.load.none"));
         }
         try {
-            SaveStateManager.load(file, cpu, agnus, gamePort1, gamePort2, config);
+            SaveStateManager.load(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] caricato " + file.getAbsolutePath());
             return ConfigDialog.LoadStateOutcome.done(
                     Messages.t("savestate.load.ok", slot));
@@ -1968,13 +1973,13 @@ public class Amija implements RemotePlayControl {
             saveConfig();
             System.out.println("[STATE] configurazione dello slot ripristinata, riavvio la macchina");
             coldRestart();
-            if (cpu == null || agnus == null) {
+            if (processor == null || agnus == null) {
                 return Messages.t("savestate.load.fail", Messages.t("savestate.nomachine"));
             }
             // The machine has just started and is emulating: it must really be stopped (not
             // just marked as paused) before the components are overwritten under it.
             if (clock != null) clock.pauseAndWait(500);
-            SaveStateManager.load(file, cpu, agnus, gamePort1, gamePort2, config);
+            SaveStateManager.load(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] caricato " + file.getAbsolutePath());
             return Messages.t("savestate.load.reconfigured");
         } catch (SaveStateManager.IncompatibleStateException e) {
@@ -2069,7 +2074,15 @@ public class Amija implements RemotePlayControl {
             // 2. CPU and bus.
             io.github.zolfrik.amija.cpu.CpuModel cpuModel = config.cpuModel();
             System.out.println("[CONFIG] CPU: " + cpuModel);
-            cpu = cpuModel.create(new BusRequest(), new BusResponse());
+            io.github.zolfrik.amija.cpu.event.EventCpu eventCpu = null;
+            if (cpuModel.isEventDriven()) {
+                eventCpu = cpuModel.createEventCpu();
+                cpu = null;
+                processor = eventCpu;
+            } else {
+                cpu = cpuModel.create(new BusRequest(), new BusResponse());
+                processor = cpu;
+            }
 
             // 3. Custom chips. The chipset (OCS/ECS) selects the Agnus/Denise variant. The
             // user's choice is ALWAYS respected: AbstractAgnus's DMA address counter derives
@@ -2105,8 +2118,8 @@ public class Amija implements RemotePlayControl {
             paula.setGamePort2(port2);
 
             agnus = ecs
-                    ? new EcsAgnus(cpu, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode)
-                    : new OcsAgnus(cpu, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode);
+                    ? new EcsAgnus(processor, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode)
+                    : new OcsAgnus(processor, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode);
 
             // Fast RAM (Zorro II expansion with AutoConfig). Absent by default (0): the first
             // Zorro II RAM board is usually mapped by the Kickstart at $200000 and added to the
@@ -2202,14 +2215,23 @@ public class Amija implements RemotePlayControl {
             applyFloppySounds(dfs);
 
             // 4. Master clock + reset + avvio.
-            clock = new MasterClock(agnus, videoMode, virtualCRT);
+            // An event-driven processor runs on its own bus, which advances the chipset.
+            io.github.zolfrik.amija.common.ClockDriver driver = null;
+            if (eventCpu != null) {
+                eventBus = new io.github.zolfrik.amija.custom.EventCpuBus(agnus, cpuModel);
+                eventBus.setVirtualCRT(virtualCRT);
+                eventCpu.attach(eventBus);
+                driver = eventBus.driver(eventCpu);
+            }
+            clock = new MasterClock(agnus, videoMode, virtualCRT, driver);
             // If the emulation thread dies of an exception, without this hook the display
             // would just freeze (or stay black, if the failure comes before the first frame)
             // without a word.
             clock.setFailureHandler(t -> SwingUtilities.invokeLater(
                     () -> error(Messages.t("error.boot", describeFailure(t)))));
             // Power-on: RESET cascades to CIAs and floppies; the CPU starts after a random delay.
-            cpu.powerOnReset(AbstractMotorola.powerOnStartDelay());
+            if (eventCpu != null) eventCpu.powerOnReset(AbstractMotorola.powerOnStartDelay());
+            else cpu.powerOnReset(AbstractMotorola.powerOnStartDelay());
             clock.start();
 
             if (VERBOSE) {
@@ -2362,6 +2384,8 @@ public class Amija implements RemotePlayControl {
         gamePort1 = null;
         gamePort2 = null;
         cpu = null;
+        processor = null;
+        eventBus = null;
         agnus = null;
         activeHardware = null;
     }

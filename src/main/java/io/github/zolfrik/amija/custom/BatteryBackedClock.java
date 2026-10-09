@@ -33,8 +33,21 @@ public final class BatteryBackedClock {
     private final int[] control = { 0x1, 0, 0x4 };
     private final Supplier<LocalDateTime> clock;
 
+    /**
+     * Fixes the time the clock reports ({@code -Damiga.rtctime=2000-01-01T00:00:00}), so that a
+     * run reads the same registers every time; the host time otherwise.
+     */
+    public static final String FIXED_TIME_PROPERTY = "amiga.rtctime";
+
     public BatteryBackedClock() {
-        this(LocalDateTime::now);
+        this(clockSource());
+    }
+
+    private static Supplier<LocalDateTime> clockSource() {
+        final String fixed = System.getProperty(FIXED_TIME_PROPERTY);
+        if (fixed == null || fixed.isBlank()) return LocalDateTime::now;
+        final LocalDateTime t = LocalDateTime.parse(fixed.trim());
+        return () -> t;
     }
 
     BatteryBackedClock(Supplier<LocalDateTime> clock) {

@@ -370,7 +370,9 @@ public final class Paula {
         while (mask != 0) {
             int chan = Integer.numberOfTrailingZeros(mask);
             AudioChannel ch = audioChannels[chan];
-            int counter = ch.periodCounter;
+            // A channel repeating its last word has no observable period boundary: it is
+            // advanced in closed form at the next sync (see AudioChannel.repeatsLastWord).
+            int counter = ch.repeatsLastWord() ? Integer.MAX_VALUE : ch.periodCounter;
             if (counter < min) min = counter;
             // The deferred processing of the DMA word is a deadline too: a jump past it
             // would run the handler late (see AudioChannel.tick).
@@ -1620,6 +1622,8 @@ public final class Paula {
     }
 
     public int getAudioCurrentSample(int chan) {
+        // The period boundaries of a channel repeating its last word are applied lazily.
+        syncAudioChannels();
         return chan >= 0 && chan < 4 ? audioChannels[chan].currentSample : 0;
     }
 
@@ -1638,6 +1642,7 @@ public final class Paula {
      */
     public int getAudioMixerOutput(int chan) {
         if (chan < 0 || chan > 3) return 0;
+        syncAudioChannels();
         int t = adkcon | (adkcon >> 4);
         if ((t & (1 << chan)) != 0) return 0;    // modulator: masked
         return audioChannels[chan].currentSample * audioChannels[chan].mixVolume();
@@ -1981,9 +1986,73 @@ public final class Paula {
                 periodCounter = periodClocks;   // periodClocks >= 2: the loop always ends
                 advanceSampleByte();
                 if (latch && isPlaying()) latchMixVolume();
+                if (bytePhase == 0 && !currentWordValid && remaining >= 2 * periodClocks
+                        && repeatsLastWord()) {
+                    remaining = skipRepeatedWords(remaining);
+                }
             }
             sampleAccum += currentSample * (double) mixVolumeScale * remaining;
             periodCounter -= remaining;
+        }
+
+        /**
+         * The channel plays AUDxDAT over and over and its period boundaries change nothing
+         * outside it: DMA on and playing, no word queued and no end-of-block pending, the
+         * word request already raised (raising it again is idempotent), at least two words
+         * left in the block (so no reload of the length and no delayed reload request), and
+         * no modulation in either direction (ADKCON writes are synced). Every boundary then
+         * reloads AUDxDAT as the current word, raises the same request again and latches the
+         * same volume; the state repeats every two boundaries. Every mutation that can break
+         * one of these conditions syncs the channels first, so the property holds for the
+         * whole interval between two syncs.
+         */
+        private boolean repeatsLastWord() {
+            return dmaEnabled && !dmaPriming && !dmaFirstWord
+                    && !nextWordValid && !nextWordEndsBlock && dmaRequest
+                    && remainingWords >= 2
+                    && !isModulator()
+                    && (index == 0 || (adkcon & (0x11 << (index - 1))) == 0);
+        }
+
+        /**
+         * Plays in one step the whole words of {@code remaining} cycles, from a word
+         * boundary (low byte just out, counter rearmed) of a channel that
+         * {@link #repeatsLastWord() repeats its last word}: every word outputs the high byte
+         * of AUDxDAT for one period and the low byte for the next, and leaves the channel in
+         * the state it found it in. The integral is exact: every term of the accumulator is
+         * an integer multiple of 2^-13 (sample x volume x cycles / 8192), so the sum does not
+         * depend on how it is split. Returns the cycles left, fewer than two periods.
+         */
+        private int skipRepeatedWords(int remaining) {
+            final int wordCycles = 2 * periodClocks;
+            final int words = remaining / wordCycles;
+            final int word = audDAT[index] & 0xFFFF;
+            final int hi = (byte) (word >>> 8);
+            final int lo = (byte) word;
+            if (AUDIO_VERIFY) {
+                double expected = sampleAccum + (hi + lo) * (double) mixVolumeScale
+                        * ((long) periodClocks * words);
+                int left = remaining;
+                while (left >= wordCycles) {
+                    for (int b = 0; b < 2; b++) {
+                        sampleAccum += currentSample * (double) mixVolumeScale * periodClocks;
+                        left -= periodClocks;
+                        advanceSampleByte();
+                        latchMixVolume();
+                    }
+                }
+                if (sampleAccum != expected || currentSample != lo || currentWord != word
+                        || bytePhase != 0 || currentWordValid || !repeatsLastWord()) {
+                    System.out.printf("[PAULA] audioverify: closed form of channel %d differs"
+                            + " (accum %s/%s sample %d/%d)%n",
+                            index, sampleAccum, expected, currentSample, lo);
+                }
+                return left;
+            }
+            sampleAccum += (hi + lo) * (double) mixVolumeScale * ((long) periodClocks * words);
+            currentWord = word;
+            currentSample = lo;
+            return remaining - words * wordCycles;
         }
 
         /**

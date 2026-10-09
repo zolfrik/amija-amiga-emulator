@@ -485,6 +485,145 @@ final class DeniseLineRenderer {
         return 2 * d + 2;
     }
     // =========================================================================
+    // Shift-register output (replayed from the front end's log)
+    // =========================================================================
+
+    /**
+     * State of the <b>incremental emission</b> of the shift registers, one group per
+     * playfield (index 0 = odd planes, 1 = even planes). See {@code AbstractDenise.bplEvents}
+     * for the model: a word shifts out one pixel at a time at the step of the live
+     * resolution, and only {@code hires} is live; the planes and the fine scroll are latched
+     * at load. Every line starts with both groups empty: the previous line drained them.
+     */
+    private final int[]  srCount  = new int[2];   // bits still to shift out (0..16)
+    private final int[]  srCursor = new int[2];   // next dBuffer index to write
+    private final int[]  srPhase  = new int[2];   // sub-pixels of the current bit already emitted
+    private final byte[][] srSlice = new byte[2][16]; // precomputed slices, one per bit
+    private boolean srHires;                      // the live resolution during the replay
+
+    /**
+     * Writes the line's bitplane indices into {@link #dBuffer} by replaying the front end's
+     * log: before each event, the half-CCK steps taken until then; then the event (a word
+     * load or a change of resolution). The order is the one the front end saw, so a load and
+     * a BPLCON0 write within the same half CCK keep their relative order.
+     */
+    private void emitBitplanes(DeniseLineJob job) {
+        final int[] e = job.bplEvents;
+        final int n = job.bplEventCount;
+        srHires = job.bplStartHires;
+        srCount[0] = srCount[1] = 0;
+        int done = 0;
+        int i = 0;
+        while (i < n) {
+            final int header = e[i];
+            final int step = header >>> DeniseLineJob.BPL_EV_STEP_SHIFT;
+            // With both groups empty a step writes nothing.
+            if (srCount[0] == 0 && srCount[1] == 0) done = step;
+            while (done < step) {
+                emitBitplaneHalfCck();
+                done++;
+                if (srCount[0] == 0 && srCount[1] == 0) done = step;
+            }
+            final boolean arg = (header & DeniseLineJob.BPL_EV_ARG) != 0;
+            if ((header & DeniseLineJob.BPL_EV_TYPE) == DeniseLineJob.BPL_EV_HIRES) {
+                srHires = arg;
+                i++;
+            } else {
+                armShiftOut(arg ? 1 : 0, e[i + 1], e[i + 2], e[i + 3], e[i + 4]);
+                i += DeniseLineJob.BPL_LOAD_SIZE;
+            }
+        }
+        // A word armed at the end of the line cannot shift out completely: the CCKs to do so
+        // are gone. Its remaining pixels are written here: it is the tail of the line, past
+        // the fetch window. The steps between the last event and the end of the line are
+        // part of the same drain, since nothing changes in between.
+        flushShiftOut();
+    }
+
+    private void armShiftOut(int grp, int cursor, int w0, int w1, int w2) {
+        // THE SHIFTER DOES NOT STOP BETWEEN ONE WORD AND THE NEXT. The shift register
+        // advances at EVERY pixel of the line and the scroll only selects the PHASE at
+        // which the new word is loaded: there is no cursor, so there is never a hole. Here
+        // each word is painted in an absolute window, and when the scroll DROPS mid-line the
+        // new word starts PAST the point the old one reached; those sub-pixels would be
+        // written by no one and come out as colour 0.
+        //
+        // Holding the last value is not enough either: measured, the held bit would be 0
+        // where the playfield is drawn. What comes out are the NEXT BITS of the old word,
+        // which keeps shifting until the new one replaces it. That is what is done here, and
+        // the window is bounded by construction: at most the difference between the two
+        // scrolls.
+        if (srCount[grp] > 0 && cursor > srCursor[grp]) {
+            emitGroup(grp, cursor - srCursor[grp]);
+        }
+        srCount[grp]  = 16;
+        srCursor[grp] = cursor;
+        srPhase[grp]  = 0;
+        precomputeSlices(grp, w0, w1, w2);
+    }
+
+    /** Shifts out the two sub-pixels of one half CCK from both groups. */
+    private void emitBitplaneHalfCck() {
+        if (srCount[0] != 0) emitGroup(0, 2);
+        if (srCount[1] != 0) emitGroup(1, 2);
+    }
+
+    /** Shifts out what is left of the two words, at the end of the line. See the caller. */
+    private void flushShiftOut() {
+        while (srCount[0] > 0 || srCount[1] > 0) {
+            if (srCount[0] > 0) emitGroup(0, 2);
+            if (srCount[1] > 0) emitGroup(1, 2);
+        }
+    }
+
+    /**
+     * Precomputes the <b>sixteen slices</b> of the word: the contribution of each bit to
+     * {@code dBuffer}, already combined over the group's three planes.
+     *
+     * <p><b>An optimisation, not a model</b>, possible only because nothing touches the
+     * shift register between one load and the next. Without it the emission costs three
+     * tests and three shifts <b>per sub-pixel</b> instead of per word: +12.45% on the A/B
+     * bench (`tools/ab-bench`, 5/5 in agreement).
+     */
+    private void precomputeSlices(int grp, int r0, int r1, int r2) {
+        final byte[] dst = srSlice[grp];
+        final int m0, m1, m2;
+        if (grp == 0) { m0 = 1; m1 = 4; m2 = 16; }
+        else          { m0 = 2; m1 = 8; m2 = 32; }
+        for (int i = 0; i < 16; i++) {
+            final int bit = 0x8000 >> i;
+            int slice = 0;
+            if ((r0 & bit) != 0) slice |= m0;
+            if ((r1 & bit) != 0) slice |= m1;
+            if ((r2 & bit) != 0) slice |= m2;
+            dst[i] = (byte) slice;
+        }
+    }
+
+    private void emitGroup(int grp, int subPixels) {
+        final byte[] slices = srSlice[grp];
+        final int keepMask = (grp == 0) ? 0x2A : 0x15;
+        final int bitStep  = srHires ? 1 : 2;   // sub-pixels per bit, at the live resolution
+        int count  = srCount[grp];
+        int cursor = srCursor[grp];
+        int phase  = srPhase[grp];
+        // The cursor stays in phase with the CCK: two sub-pixels per half CCK, always.
+        for (int i = 0; i < subPixels && count > 0; i++) {
+            if (cursor >= 0 && cursor < dBuffer.length) {
+                dBuffer[cursor] = (byte) ((dBuffer[cursor] & keepMask) | slices[16 - count]);
+            }
+            cursor++;
+            if (++phase >= bitStep) {
+                phase = 0;
+                count--;
+            }
+        }
+        srCount[grp]  = count;
+        srCursor[grp] = cursor;
+        srPhase[grp]  = phase;
+    }
+
+    // =========================================================================
     // Main rendering pipeline (one job per completed line)
     // =========================================================================
 
@@ -505,6 +644,7 @@ final class DeniseLineRenderer {
         maxHpos            = job.maxHpos;
         System.arraycopy(job.bpl1datPixels, 0, bpl1datPixels, 0, job.bpl1datCount);
         bpl1datCount       = job.bpl1datCount;
+        emitBitplanes(job);
         // The registers the replays start from are the line's live end state, as Denise holds
         // them when the line closes; the replays bring them back to that state.
         System.arraycopy(job.palette, 0, palette, 0, 32);
@@ -569,7 +709,7 @@ final class DeniseLineRenderer {
 
         // Buffer cleanup for the next scanline.
         //
-        //  - dBuffer: written with |= by the front end's shift-register emission and read
+        //  - dBuffer: written with |= by the shift-register emission (emitBitplanes) and read
         //    ENTIRELY by translate (arraycopy dBuffer -> mBuffer). Needs a full clear before
         //    it goes back to the front end.
         //  - zBuffer: translate() ASSIGNS (not OR) zBuffer[0..HPIXELS) on every visible line

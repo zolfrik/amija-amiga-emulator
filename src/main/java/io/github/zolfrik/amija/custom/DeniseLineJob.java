@@ -26,8 +26,8 @@ import io.github.zolfrik.amija.custom.AbstractDenise.RegChangeRecorder;
  * One completed scanline on its way from Denise's front end to its renderer.
  *
  * <p>{@link AbstractDenise#captureLine} fills it at the end of the line with everything the
- * renderer reads: the bitplane index buffer, the register writes with the pixel at which they
- * act, and the live register values at the end of the line. The buffers and recorders are
+ * renderer reads: the log of the shift-register loads, the register writes with the pixel at
+ * which they act, and the live register values at the end of the line. The buffers and recorders are
  * swapped with the front end's, not copied. {@link AbstractDenise#renderLine} renders it and
  * leaves the results here, and the buffers come back empty.
  *
@@ -40,6 +40,25 @@ public final class DeniseLineJob {
 
     // -- Inputs, written by the front end ------------------------------------------------
 
+    // The shift-register log of the line (see AbstractDenise.bplEvents). Every event opens
+    // with a header: the half-CCK step it happened at, its type and one argument bit. A load
+    // is followed by the cursor and the three plane words of its group, already masked by
+    // the BPU latched at load.
+    static final int BPL_EV_LOAD = 0;
+    static final int BPL_EV_HIRES = 1;
+    static final int BPL_EV_TYPE = 1;
+    /** Load: the even group. Resolution change: the new resolution is hires. */
+    static final int BPL_EV_ARG = 2;
+    static final int BPL_EV_STEP_SHIFT = 2;
+    static final int BPL_LOAD_SIZE = 5;
+    static final int BPL_EVENTS_INITIAL = 1024;
+
+    int[] bplEvents = new int[BPL_EVENTS_INITIAL];
+    int bplEventCount;
+    /** The live resolution when the line's log started. */
+    boolean bplStartHires;
+
+    /** Raw bitplane colour index of the line: written and consumed by the renderer. */
     byte[] dBuffer = new byte[HPIXELS + 64 + 8];
     RegChangeRecorder conChanges = new RegChangeRecorder(128);
     RegChangeRecorder diwChanges = new RegChangeRecorder(128);

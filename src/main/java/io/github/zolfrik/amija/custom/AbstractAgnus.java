@@ -28,6 +28,7 @@ import io.github.zolfrik.amija.common.VideoMode;
 import io.github.zolfrik.amija.memory.ROM;
 import io.github.zolfrik.amija.memory.RAM;
 import io.github.zolfrik.amija.cpu.AbstractMotorola;
+import io.github.zolfrik.amija.cpu.Processor;
 
 import java.util.Arrays;
 import java.util.function.IntConsumer;
@@ -81,7 +82,12 @@ public abstract class AbstractAgnus {
     // Dependencies
     // =========================================================================
 
+    /** The clocked CPU this Agnus drives edge by edge; null when the processor is event-driven. */
     private final AbstractMotorola  cpu;
+    /** The processor, whatever drives it. */
+    private final Processor processor;
+    /** True when the processor has a 32-bit bus (the 68020): see DENISEID and COPEN. */
+    private final boolean wideBusCpu;
     private final BusRequest     cpuBusReq;
     private final BusResponse    cpuBusResp;
 
@@ -684,13 +690,17 @@ public abstract class AbstractAgnus {
 
         // A COPEN change is NOT visible to the arbitration in the same CCK: until the
         // current cycle has passed the threshold, the Copper sees the OLD value. The
-        // threshold is inclusive, so a COPPER write costs 1 CCK and a CPU write 2.
+        // threshold is inclusive, so a COPPER write costs 1 CCK and a 68000 write 2.
         // It has the same shape as class B of section 14 (DDFSTRT/DDFSTOP: the match uses
         // the old value) and as `spriteDmaOnDecisionCck`. Measured on the four `lc` tests of
         // the Agnus/Copper bank, which switch Copper DMA on halfway through a line: they
         // were 8 px each, i.e. 2 CCK early, always on a single line.
+        // A 68020's write costs 1, like the Copper's: written in CCK W at an even position,
+        // COPEN gives the Copper's first cycle at W+2, against W+4 for the 68000 (measured on
+        // the KS 1.3 boot of `Timing/Bcc/BRA1` and on `lc1`).
         if (copWas != copperDmaEnabled) {
-            copperDmaChangeCck = (masterClock >> 1) + (__inCopperWrite ? 0 : 1);
+            copperDmaChangeCck = (masterClock >> 1)
+                    + (__inCopperWrite || (eventCpuWrite && wideBusCpu) ? 0 : 1);
         }
 
         // Notify other components if needed
@@ -941,12 +951,12 @@ public abstract class AbstractAgnus {
             if (gary.isResetAsserted()) {
                 if (!systemResetActive) {
                     systemResetActive = true;
-                    if (cpu != null) cpu.reset();
+                    if (processor != null) processor.reset();
                 }
                 // While /RESET is low the machine stays halted: the CPU's reset window is
                 // renewed at every E-clock (10 cycles), so it expires only when the
                 // keyboard releases the line and the CPU restarts from the reset vector.
-                if (cpu != null) cpu.assertReset(64);
+                if (processor != null) processor.assertReset(64);
             } else {
                 systemResetActive = false;
             }
@@ -1673,7 +1683,7 @@ public abstract class AbstractAgnus {
     // Constructor
     // =========================================================================
 
-    protected AbstractAgnus(AbstractMotorola cpu,
+    protected AbstractAgnus(Processor processor,
                  Gary gary,
                  RAM chipRAM,
                  RAM slowRAM,
@@ -1684,17 +1694,25 @@ public abstract class AbstractAgnus {
                  MOS8520 ciaB,
                  VideoMode mode) {
         Arrays.fill(busOwners, BusOwner.NONE.ordinal());
-        this.cpu       = cpu;
-        // Chip-bus timed banks (A500): chip RAM + mirror $000000-$1FFFFF, slow RAM
-        // $C00000-$C7FFFF (if present), $D00000-$DFFFFF (custom + mirror + dummy). Used by
-        // TAS for the write drop of the RMW cycle.
-        cpu.setChipBusTargetClassifier(a ->
-                a < 0x200000
-                || (slowRAM != null && a >= 0xC00000 && a < 0xC80000)
-                || (a >= 0xD00000 && a < 0xE00000));
-        cpu.setChipBusBusyProbe(this::isChipBusTakenThisCck);
-        this.cpuBusReq  = cpu.getBusReq();
-        this.cpuBusResp = cpu.getBusResp();
+        this.processor = processor;
+        this.cpu       = processor instanceof AbstractMotorola m ? m : null;
+        this.wideBusCpu = processor != null && processor.model() == io.github.zolfrik.amija.cpu.CpuModel.M68020;
+        if (cpu != null) {
+            // Chip-bus timed banks (A500): chip RAM + mirror $000000-$1FFFFF, slow RAM
+            // $C00000-$C7FFFF (if present), $D00000-$DFFFFF (custom + mirror + dummy). Used by
+            // TAS for the write drop of the RMW cycle.
+            cpu.setChipBusTargetClassifier(a ->
+                    a < 0x200000
+                    || (slowRAM != null && a >= 0xC00000 && a < 0xC80000)
+                    || (a >= 0xD00000 && a < 0xE00000));
+            cpu.setChipBusBusyProbe(this::isChipBusTakenThisCck);
+            this.cpuBusReq  = cpu.getBusReq();
+            this.cpuBusResp = cpu.getBusResp();
+        } else {
+            // Event-driven processor: the pins are Agnus' own, driven by its event bus.
+            this.cpuBusReq  = new BusRequest();
+            this.cpuBusResp = new BusResponse();
+        }
         this.gary      = gary;
         this.chipRAM   = chipRAM;
         // size() is always a power of 2 (256/512/1024/2048 KB), so size-1 is a valid wrap
@@ -1871,8 +1889,22 @@ public abstract class AbstractAgnus {
     /** Enables the AutoConfig space if at least one board (Fast RAM or HD) is present. */
     private void updateAutoconfigPresence() {
         if (gary != null) {
-            gary.setAutoconfigSpacePresent(fastRam != null || !hdControllers.isEmpty());
+            gary.setAutoconfigSpacePresent(autoconfigSpaceAlwaysMapped
+                    || fastRam != null || !hdControllers.isEmpty());
         }
+    }
+
+    /** True when the AutoConfig space is decoded even with no board waiting in it. */
+    private boolean autoconfigSpaceAlwaysMapped;
+
+    /**
+     * Machine configuration: decodes the AutoConfig space even when no board waits there, as
+     * on a machine whose expansion bus answers the scan with an empty slot. It is a property
+     * of the machine, so it survives resets.
+     */
+    public void setAutoconfigSpaceAlwaysMapped(boolean mapped) {
+        autoconfigSpaceAlwaysMapped = mapped;
+        updateAutoconfigPresence();
     }
 
     /**
@@ -2024,9 +2056,33 @@ public abstract class AbstractAgnus {
     // =========================================================================
 
     /**
-     * Rising edge of the system clock, once per system clock (7.09 MHz PAL).
+     * Rising edge of the system clock, once per system clock (7.09 MHz PAL), with the clocked
+     * CPU: the chipset's half, then the CPU's.
      */
-    public void risingEdge() {
+    public final void risingEdge() {
+        chipRisingEdge();
+        cpuRisingEdge();
+    }
+
+    /**
+     * Falling edge of the system clock with the clocked CPU.
+     *
+     * updateInterrupts() and updateCpuIpl() run BEFORE cpu.fallingEdge(), because the CPU
+     * samples its IPL in fallingEdge(): a CIA IRQ raised in this cycle's risingEdge (e.g. a
+     * timer A underflow) reaches Paula and the CPU before that sample.
+     */
+    public final void fallingEdge() {
+        chipFallingEdge();
+        cpuFallingEdge();
+        chipFallingEdgeEnd();
+    }
+
+    /**
+     * The chipset's part of the rising edge: events, reset line, floppy, Paula and the DMA
+     * arbitration of the colour clock (at even {@code hpos}). With an event-driven processor
+     * this is the whole rising edge.
+     */
+    final void chipRisingEdge() {
         masterClock++;
 
         if (nextTrigger <= masterClock) {
@@ -2184,7 +2240,7 @@ public abstract class AbstractAgnus {
 
             // Pixel output is INCREMENTAL and not gated by DMA: Denise's shift registers keep
             // shifting even if BPLEN goes off in the middle of a word. See
-            // AbstractDenise.srCount.
+            // AbstractDenise.bplEvents.
             //
             // This is the FIRST half CCK; the second is in the falling edge, right after the
             // Copper, because the resolution reaches Denise half a colour clock before the
@@ -2455,6 +2511,15 @@ public abstract class AbstractAgnus {
             spriteDmaPipe = spriteDmaEnabled;
         }
 
+    }
+
+    /**
+     * The clocked CPU's part of the rising edge: the CPU's own edge, then DTACK and the bus
+     * bookkeeping that depends on it. Runs after the arbitration of {@link #chipRisingEdge()}.
+     */
+    private void cpuRisingEdge() {
+        final boolean cckEdge = (hpos & 1) == 0;
+        final int cck = hpos >> 1;
         // 5. CPU: the 68000's clock never stops.
         //
         // Agnus does not gate the CPU's clock: the CPU advances its internal state at every
@@ -2490,13 +2555,10 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * Falling edge of the system clock.
-     *
-     * updateInterrupts() and updateCpuIpl() run BEFORE cpu.fallingEdge(), because the CPU
-     * samples its IPL in fallingEdge(): a CIA IRQ raised in this cycle's risingEdge (e.g. a
-     * timer A underflow) reaches Paula and the CPU before that sample.
+     * The chipset's part of the falling edge up to the interrupt lines: Copper, Denise's
+     * second half colour clock, interrupts and the processor's IPL.
      */
-    public void fallingEdge() {
+    final void chipFallingEdge() {
         // Coupled with risingEdge, which ticks the Copper at EVERY CCK: `hpos & 1 == 0`
         // selects every CCK boundary. Odd CCKs matter: the Copper can get the bus there after
         // a denial (e.g. the fetch at 225 after the blocked $E0 = 224). The +2 cadence
@@ -2517,7 +2579,10 @@ public abstract class AbstractAgnus {
         // the CPU before the CPU samples its IPL in fallingEdge().
         updateInterrupts();
         updateCpuIpl();
+    }
 
+    /** The clocked CPU's part of the falling edge: its edge (IPL sample) and the transfer. */
+    private void cpuFallingEdge() {
         // No second handleCpuBusCycle() here: the 68000's bus FSM advances one state per
         // edge, cpu.fallingEdge() has not run yet, and all the inputs of decideCpuDtack are
         // unchanged since this cycle's risingEdge (busTakenByCustom is written only in
@@ -2537,7 +2602,147 @@ public abstract class AbstractAgnus {
         // arbitration and contention do not move: only the instant the transfer's effect
         // becomes visible changes.
         handleCpuDataTransferPhase();
+    }
 
+    // =========================================================================
+    // Event-driven processor: the chipset half of the bus (see EventCpuBus)
+    // =========================================================================
+
+    /** True at the start of a colour clock, where the arbitration of the slot happens. */
+    final boolean atCckStart() { return (hpos & 1) == 0; }
+
+    /** True if the slot of the colour clock just arbitrated was taken by a DMA channel. */
+    final boolean eventSlotTaken() { return busTakenByCustom; }
+
+    /**
+     * The processor waits for the bus in this colour clock: the slot is taken. Feeds the
+     * Blitter's count of denied colour clocks.
+     */
+    final void eventDenied() {
+        cpuBusWaitCck++;
+        cpuBusReq.as = true;
+    }
+
+    /** The processor takes the slot of this colour clock. */
+    final void eventGranted() {
+        cpuBusWaitCck = 0;
+        cpuBlockedByBlitterCount = 0;
+        busOwners[hpos >> 1] = BusOwner.CPU.ordinal();
+        cpuBusReq.as = false;
+    }
+
+    /** The colour clock passes without a processor access. */
+    final void eventNoRequest() {
+        cpuBusWaitCck = 0;
+    }
+
+    /**
+     * Performs a processor access on the bus now: routes it and transfers the data with the
+     * same paths the clocked processor uses. {@code size} is 1 (byte) or 2 (word); a word
+     * at an odd address reads the two bytes at {@code address} and {@code address + 1}.
+     * Returns the data read (byte or word), or -1 for a bus error.
+     */
+    final int eventTransfer(int address, boolean read, int size, int data) {
+        if (size == 2 && (address & 1) != 0) {
+            if (read) {
+                final int hi = eventTransfer(address, true, 1, 0);
+                if (hi < 0) return -1;
+                final int lo = eventTransfer(address + 1, true, 1, 0);
+                if (lo < 0) return -1;
+                return (hi << 8) | lo;
+            }
+            if (eventTransfer(address, false, 1, (data >> 8) & 0xFF) < 0) return -1;
+            return eventTransfer(address + 1, false, 1, data & 0xFF);
+        }
+        final boolean odd = (address & 1) != 0;
+        final boolean uds = size == 2 || !odd;
+        final boolean lds = size == 2 || odd;
+        cpuBusReq.address = address & ~1;
+        cpuBusReq.read = read;
+        cpuBusReq.uds = uds;
+        cpuBusReq.lds = lds;
+        cpuBusReq.iack = false;
+        cpuBusReq.vma = false;
+        // A byte is driven on both lanes of the data bus.
+        cpuBusReq.dataOut = size == 2 ? data & 0xFFFF : ((data & 0xFF) << 8) | (data & 0xFF);
+        routeCpuCurrentBusRequest();
+        final Gary.Route route = cpuCurrentRoute;
+        int word;
+        if (!route.ok) {
+            if (route.busError) return -1;
+            // Open bus: the data bus keeps its last value.
+            word = read ? lastBusData : 0;
+        } else if (route.target == Gary.Target.CIA_A
+                || route.target == Gary.Target.CIA_B
+                || route.target == Gary.Target.CIA_BOTH) {
+            if (read) {
+                word = readCiaData(route.target, cpuBusReq.address) & 0xFFFF;
+                lastBusData = word;
+            } else {
+                word = cpuBusReq.dataOut;
+                writeCiaData(route.target, cpuBusReq.address, word);
+                lastBusData = word;
+            }
+        } else {
+            ciaReadSampled = false;
+            ciaWriteDone = false;
+            eventCpuWrite = !read;
+            try {
+                handleCpuDataTransfer();
+            } finally {
+                eventCpuWrite = false;
+            }
+            word = read ? cpuBusResp.dataIn & 0xFFFF : 0;
+        }
+        if (!read) return 0;
+        return size == 2 ? word : (odd ? word & 0xFF : (word >>> 8) & 0xFF);
+    }
+
+    /** A write of the event-driven processor is being transferred (see setDMACON). */
+    private boolean eventCpuWrite;
+
+    /** True if the address is a CIA (the synchronous E-clock bus). */
+    final boolean isCiaAddress(int address) {
+        return (address & 0xE00000) == 0xA00000;
+    }
+
+    /**
+     * Phase of the E clock at the event-driven processor's current master cycle, 0..9, on the
+     * same scale as the clocked processor's counter: the CIAs tick at 0, a synchronous access
+     * samples at 6. The event bus keeps Agnus one rising edge ahead (EventCpuBus), so the
+     * processor's master cycle is the one before {@code masterClock}.
+     */
+    final int eClockPhase() {
+        return (int) ((masterClock - 1) % 10);
+    }
+
+    /**
+     * Current interrupt priority level on the processor's pins, as an event-driven processor
+     * sees it when it looks: Paula's level now. The clocked processor's copy
+     * ({@code cpuBusResp.ipl}) is latched at its own sampling edge, one master cycle on, and
+     * would show a change made at the end of a colour clock only one colour clock later.
+     */
+    final int eventIpl() { return paula != null ? paula.getCpuIplFromPipe() : cpuBusResp.ipl; }
+
+    /**
+     * RESET instruction of an event-driven processor: the rest of the machine is reset at
+     * once, with the ROM overlay back on.
+     */
+    /** The event-driven processor's /RESET output, seen at the next rising edge. */
+    final void eventResetLine(boolean asserted) {
+        cpuBusReq.resetLine = asserted;
+    }
+
+    final void eventResetInstruction() {
+        softReset();
+        updateCiaOvlLed();
+    }
+
+    /** Installed Slow RAM in bytes. */
+    final int slowRamBytes() { return slowRAM != null ? slowRAM.size() : 0; }
+
+    /** The end of the falling edge: Copper bus bookkeeping and the beam counters. */
+    final void chipFallingEdgeEnd() {
         if (!copperBusReq.as)  copperBusProcessed  = false;
 
         updateBeam();
@@ -4094,7 +4299,7 @@ public abstract class AbstractAgnus {
         // unmapped address read its OWN immediate operand instead of the next word: Pinball
         // Dreams' protection (original IPF), `CMPI.W #$1111,$00F00000` at $7ABC8, then
         // matched and ran its self-destruct routine (CLR.B (A0)+ in a loop).
-        int v = (cpu.isIRCValid() ? cpu.getIRC() : cpu.getIRD()) & 0xFFFF;
+        int v = processor.prefetchWord();
         return ((addr & 1) != 0) ? (((v << 8) | (v >>> 8)) & 0xFFFF) : v;
     }
 
@@ -4104,7 +4309,7 @@ public abstract class AbstractAgnus {
      * clears OVL).
      */
     private boolean isExecutingFromRom() {
-        int pc = cpu.getOpcodeAddress() & 0xFFFFFF;
+        int pc = processor.getOpcodeAddress() & 0xFFFFFF;
         if (pc >= 0xF80000) return true;
         if (pc >= 0xE00000 && pc < 0xE80000) return true;
         return pc < 0x080000 && gary.isRomOverlayEnabled();
@@ -4423,7 +4628,8 @@ public abstract class AbstractAgnus {
     }
 
     /**
-     * If true, "faulty" reads return (and rewrite) 0 instead of the floating data bus value.
+     * If true, "faulty" reads return (and rewrite) 0 instead of the floating data bus value,
+     * and so does BLTDDAT, which returns what was left on the bus.
      * For the vAmigaTS regression tests ONLY: their references are generated with the same
      * neutralisation, so the comparison isolates TIMING and not the floating bus values,
      * which are undefined analog behaviour.
@@ -4451,7 +4657,8 @@ public abstract class AbstractAgnus {
         // all 16 bars of vAmigaTS Denise/Misc/Id/deniseid. The vAmigaTS README warns that on
         // a real A500 the value is NOT deterministic ("in most cases 0xFFFF, but not
         // always"): the signature of a floating bus.
-        if (regAddr == 0x07C && denise != null && !denise.isECS()) {
+        // On the 32-bit bus of a 68020 the missing register reads all ones.
+        if (regAddr == 0x07C && denise != null && !denise.isECS() && !wideBusCpu) {
             return faultyCustomRead(regAddr);
         }
 
@@ -4488,8 +4695,8 @@ public abstract class AbstractAgnus {
         }
 
         switch (regAddr) {
-            case 0x000: // BLTDDAT
-                return lastBusData;
+            case 0x000: // BLTDDAT: what was left on the bus (0 under neutralFloatingBus)
+                return neutralFloatingBus ? 0 : lastBusData;
             case 0x002: // DMACONR
             case 0x096: {
                 int res = dmacon & 0x07FF; // bits 10-0 readable
@@ -5662,7 +5869,7 @@ public abstract class AbstractAgnus {
     }
 
     public int getCpuPc() {
-        return cpu != null ? cpu.getOpcodeAddress() : 0;
+        return processor != null ? processor.getOpcodeAddress() : 0;
     }
 
     public int  getVpos()            { return vpos; }
@@ -5715,7 +5922,9 @@ public abstract class AbstractAgnus {
     public FloppyDrive getDf3()      { return df3; }
     public Copper  getCopper()       { return copper; }
     public Blitter getBlitter()      { return blitter; }
+    /** The clocked CPU, or null when the processor is event-driven (see {@link #getProcessor()}). */
     public AbstractMotorola getCpu()    { return cpu; }
+    public Processor getProcessor()     { return processor; }
     public Paula   getPaula()        { return paula; }
     public int     getDMACON()       { return dmacon; }
 

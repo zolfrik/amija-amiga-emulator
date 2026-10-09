@@ -34,6 +34,7 @@ public final class MasterClock {
     private final AbstractAgnus agnus;
     private final VideoMode mode;
     private final VirtualCRT virtualCRT;
+    private final ClockDriver driver;
 
     private volatile boolean running = false;
     private volatile boolean paused = false;
@@ -73,9 +74,18 @@ public final class MasterClock {
      * @param mode  the video mode (PAL or NTSC) that sets the frequency.
      */
     public MasterClock(AbstractAgnus agnus, VideoMode mode, VirtualCRT virtualCRT) {
+        this(agnus, mode, virtualCRT, null);
+    }
+
+    /**
+     * Creates a new MasterClock that advances the machine with {@code driver}; with
+     * {@code null} the clocked processor is ticked edge by edge ({@link #singleTick()}).
+     */
+    public MasterClock(AbstractAgnus agnus, VideoMode mode, VirtualCRT virtualCRT, ClockDriver driver) {
         this.agnus = Objects.requireNonNull(agnus, "agnus");
         this.mode = Objects.requireNonNull(mode, "mode");
         this.virtualCRT = Objects.requireNonNull(virtualCRT, "virtualCRT");
+        this.driver = driver;
     }
 
     /**
@@ -240,11 +250,17 @@ public final class MasterClock {
             idle = false;
 
             // Run a batch of cycles to reduce the overhead of the time check
-            for (int i = 0; i < batchSize; i++) {
-                singleTick();
+            final long ran;
+            if (driver == null) {
+                for (int i = 0; i < batchSize; i++) {
+                    singleTick();
+                }
+                ran = batchSize;
+            } else {
+                ran = driver.run(batchSize);
             }
-            totalCycles += batchSize;
-            logCycles += batchSize;
+            totalCycles += ran;
+            logCycles += ran;
 
             // Throttling
             long expectedElapsed = (long) (totalCycles * periodNs);
