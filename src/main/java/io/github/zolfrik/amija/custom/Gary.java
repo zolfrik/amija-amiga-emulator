@@ -432,6 +432,14 @@ public final class Gary {
      */
     private boolean slowRamPresent = true;
 
+    /**
+     * A1200 decoding (Gayle in place of Gary): the CIAs answer only in {@code $BF0000-$BFFFFF},
+     * and the custom chips only in their own pages {@code $DE0000-$DFFFFF}. The rest of
+     * {@code $A00000-$BEFFFF}, and the Slow RAM window above the installed RAM, decode to
+     * nothing. See {@link #setGayleDecode}.
+     */
+    private boolean gayleDecode = false;
+
     // -------------------------------------------------------------------------
     // Keyboard reset (/KBRST)
     // -------------------------------------------------------------------------
@@ -650,6 +658,30 @@ public final class Gary {
     }
 
     /**
+     * Switches between the A500 decoding and the A1200 one (an AGA machine).
+     *
+     * <p>On the A500 the CIA chip selects are decoded over the whole of {@code $A00000-$BFFFFF}
+     * and the custom chip select over {@code $C00000-$DFFFFF}, with the trapdoor RAM covering
+     * its low part. On the A1200 the CIAs sit in {@code $BF0000-$BFFFFF} only, and nothing
+     * answers in {@code $A00000-$BEFFFF} or in {@code $C00000-$DBFFFF} past the installed Slow
+     * RAM: an access there is an open bus access that never reaches the E clock or the chip
+     * bus. The Kickstart 3.1 probe of the PCMCIA attribute space at {@code $A00000} is such an
+     * access.
+     */
+    public void setGayleDecode(boolean on) {
+        this.gayleDecode = on;
+    }
+
+    public boolean isGayleDecode() {
+        return gayleDecode;
+    }
+
+    /** Lowest address of the CIA decoding window. */
+    private int ciaWindowStart() {
+        return gayleDecode ? 0xBF0000 : 0xA00000;
+    }
+
+    /**
      * Bytes of Slow RAM installed on the trapdoor. Past this threshold the window
      * {@code $C00000-$D7FFFF} exposes the custom registers, which is how the Kickstart
      * measures its size.
@@ -840,7 +872,7 @@ public final class Gary {
     /** Backward compatibility for tests or other callers still using sizeBytes */
     public Route route(int rawAddress, AccessType type, int sizeBytes) {
         final int addr = rawAddress & 0x00FFFFFF;
-        if (sizeBytes == 4 && addr >= 0xA00000 && addr <= 0xBFFFFF) {
+        if (sizeBytes == 4 && addr >= ciaWindowStart() && addr <= 0xBFFFFF) {
             // The CIAs do not accept 32-bit accesses
             return Route.busErr(findFirstRegionByTarget(Target.CIA_A));
         }
@@ -880,8 +912,10 @@ public final class Gary {
         }
 
         // -- 2. CIA ($A00000-$BFFFFF), absolute priority ----------------------------
-        // Gary decodes the whole range for the CIAs.
+        // Gary decodes the whole range for the CIAs; the A1200 only its last 64 KB, and
+        // nothing answers below.
         if (addr >= 0xA00000 && addr <= 0xBFFFFF) {
+            if (addr < ciaWindowStart()) return out.fillOpenBus(addr);
             return routeCia(addr, type, uds, lds, out);
         }
 
@@ -924,6 +958,8 @@ public final class Gary {
             if (slowRamPresent && slowOffset < hit.physicalSize) {
                 return applyRules(hit, addr, type, uds, lds, slowOffset, out);
             }
+            // The A1200 has no custom chip select here: past the RAM nothing answers.
+            if (gayleDecode) return out.fillOpenBus(addr);
             Region custom = findFirstRegionByTarget(Target.CUSTOM_REGS);
             if (custom == null) return out.fillOpenBus(addr);
             return applyRules(custom, addr, type, uds, lds, addr & 0xFFFF, out);

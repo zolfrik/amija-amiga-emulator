@@ -47,7 +47,7 @@ import io.github.zolfrik.amija.memory.ROM;
  * high-risk for the core loop, with no ECS content to validate it. {@code maxVpos} therefore
  * stays fixed (262 NTSC / 312 PAL) as on OCS.
  */
-public final class EcsAgnus extends AbstractAgnus {
+public class EcsAgnus extends AbstractAgnus {
 
     /** ID Agnus ECS in VPOSR bit 14-8: bit 13 (0x20) = ECS; bit 4 (0x10) = NTSC. */
     private static final int ID_ECS_PAL  = 0x20;

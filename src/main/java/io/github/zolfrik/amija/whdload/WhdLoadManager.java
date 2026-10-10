@@ -222,6 +222,54 @@ public final class WhdLoadManager {
         return found;
     }
 
+    /** Memory of the answers of {@link #requiresAga}, per archive + modification date. */
+    private static final Map<String, Boolean> requiresAgaCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** WHDLF_ReqAGA: bit 5 of the slave's {@code ws_Flags}, the AGA chipset is required. */
+    private static final int WHDLF_REQAGA = 0x0020;
+
+    /**
+     * {@code true} if a slave of the WHDLoad archive {@code lhaPath} declares in its header
+     * that it needs the AGA chipset ({@code WHDLF_ReqAGA} in {@code ws_Flags}, the word that
+     * follows {@code ws_Version} after the {@code WHDLOADS} identifier). Without AGA WHDLoad
+     * refuses such a slave, so Auto mode builds an A1200 for it.
+     *
+     * <p>Reads only the {@code .slave} files of the archive. {@code false} when the archive
+     * cannot be read: not knowing is a normal outcome.
+     */
+    public static boolean requiresAga(String lhaPath) {
+        if (lhaPath == null || lhaPath.isEmpty()) return false;
+        String key = lhaPath + '\0' + new java.io.File(lhaPath).lastModified();
+        Boolean cached = requiresAgaCache.get(key);
+        if (cached != null) return cached;
+
+        boolean found = false;
+        try {
+            for (byte[] slave : LhaExtractor.extractBySuffix(lhaPath, ".slave").values()) {
+                int id = indexOf(slave, "WHDLOADS".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                if (id < 0 || id + 12 > slave.length) continue;
+                int flags = ((slave[id + 10] & 0xFF) << 8) | (slave[id + 11] & 0xFF);
+                if ((flags & WHDLF_REQAGA) != 0) { found = true; break; }
+            }
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+        requiresAgaCache.put(key, found);
+        return found;
+    }
+
+    private static int indexOf(byte[] data, byte[] pattern) {
+        outer:
+        for (int i = 0; i + pattern.length <= data.length; i++) {
+            for (int j = 0; j < pattern.length; j++) {
+                if (data[i + j] != pattern[j]) continue outer;
+            }
+            return i;
+        }
+        return -1;
+    }
+
     /** {@code true} if the WHDLoad system resources are present. */
     public boolean isAvailable() {
         return Files.isDirectory(resourceDir.resolve("WHDLoad_files"));

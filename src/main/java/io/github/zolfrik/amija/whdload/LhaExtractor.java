@@ -98,9 +98,19 @@ public final class LhaExtractor {
      * @return Amiga path of the icon -> content
      */
     static Map<String, byte[]> extractIcons(String lhaPath) throws IOException {
+        return extractBySuffix(lhaPath, ".info");
+    }
+
+    /**
+     * Decodes only the archive's files whose name ends with {@code suffix} (case-insensitive),
+     * without writing anything to disk and without decompressing the rest.
+     *
+     * @return Amiga path of the file -> content
+     */
+    static Map<String, byte[]> extractBySuffix(String lhaPath, String suffix) throws IOException {
         byte[] data = Files.readAllBytes(Paths.get(lhaPath));
         LhaExtractor ex = new LhaExtractor(data);
-        Map<String, byte[]> icons = new LinkedHashMap<>();
+        Map<String, byte[]> found = new LinkedHashMap<>();
         int off = 0;
         while (off + 1 < ex.archive.length) {
             int headerSize = ex.archive[off] & 0xFF;
@@ -109,12 +119,12 @@ public final class LhaExtractor {
             if (h == null) break;
             String relPath = sanitize(h.name);
             boolean dir = h.isDirectory || h.method.equals("-lhd-");
-            if (!dir && relPath.toLowerCase(Locale.ROOT).endsWith(".info")) {
-                icons.put(relPath, ex.decode(h));
+            if (!dir && relPath.toLowerCase(Locale.ROOT).endsWith(suffix)) {
+                found.put(relPath, ex.decode(h));
             }
             off = h.nextOffset;
         }
-        return icons;
+        return found;
     }
 
     private void run(Path destDir) throws IOException {

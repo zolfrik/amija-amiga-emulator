@@ -249,6 +249,27 @@ public final class RAM {
     }
 
     /**
+     * Fills the RAM with what the dynamic RAM chips of an A1200 hold after power-on, before
+     * anything has been written: blocks of 2048 bytes, each starting with the complement of
+     * the previous one, inside which the value flips every two longwords. The layout follows
+     * how Alice multiplexes the address onto the rows and columns of the chips.
+     *
+     * <p>Software that reads memory before writing it takes different paths on a zeroed RAM:
+     * Kickstart 3.1 reads the ExecBase pointer at {@code $4} and treats an odd value as a cold
+     * start.
+     */
+    public void fillPowerOnPatternAga() {
+        int fill = 0;
+        for (int bank = 0; bank < size / 2048; bank++) {
+            fill = ~fill;
+            for (int row = bank * 2048; row < (bank + 1) * 2048; row += 4) {
+                writeLong(row, fill);
+                if ((row & 7) == 4) fill = ~fill;
+            }
+        }
+    }
+
+    /**
      * Fills the RAM with what dynamic RAM chips hold after power-on, before anything has
      * been written: stripes of all-zero and all-one cells whose layout follows how Agnus
      * multiplexes the address onto the rows and columns of the chips.

@@ -90,6 +90,8 @@ public abstract class AbstractDenise {
     static final class RegChange {
         int reg;
         int value;
+        /** Lisa's sprite data: the register left-aligned in a long, bit 63 the first pixel. */
+        long wide;
     }
 
     /**
@@ -118,6 +120,13 @@ public abstract class AbstractDenise {
             // Silent drop on overflow: raise the capacity if needed.
         }
 
+        void insertWide(int key, int reg, int value, long wide) {
+            if (size < keys.length) {
+                elements[size].wide = wide;
+            }
+            insert(key, reg, value);
+        }
+
         void    clear()   { size = 0; }
         boolean isEmpty() { return size == 0; }
         int     size()    { return size; }
@@ -134,20 +143,26 @@ public abstract class AbstractDenise {
     // Chip ID / ECS
     // =========================================================================
 
-    /** 0xFFFF = OCS (default), 0xFFFC = ECS */
-    //private int     deniseId = 0xFFFF;
+    /** DENISEID: 0xFFFF = OCS (no register), 0xFFFC = ECS, 0x00F8 = AGA (Lisa). */
+    private int     deniseId = 0xFFFF;
     // isECS is effectively final: set only by setDeniseId() during setup, before the
     // emulation starts. It cannot be declared final (setDeniseId is a public setter), so
     // the JIT cannot constant-fold it.
     private boolean isECS    = false;
+    /** Lisa: every ECS feature plus the AGA ones. Effectively final, like {@link #isECS}. */
+    private boolean isAGA    = false;
 
     public void setDeniseId(int id) {
-        //this.deniseId = id;
+        this.deniseId = id;
         this.isECS    = (id != 0xFFFF);
+        this.isAGA    = (id & 0xFF) == 0xF8;
         renderer.setEcs(isECS);
+        renderer.setAga(isAGA);
     }
 
     public boolean isECS() { return isECS; }
+
+    public boolean isAGA() { return isAGA; }
 
     // =========================================================================
     // Control registers
@@ -160,10 +175,17 @@ public abstract class AbstractDenise {
     // the bitplane decoding hot path. They depend ONLY on bplcon0.
     private int     bpu   = 0;            // planes DRAWN by Denise: see deniseBpu()
     private boolean hires = false;        // (bplcon0 & 0x8000) != 0
+    private boolean shres = false;        // Lisa: (bplcon0 & 0x0040) != 0
 
     private int     hstrt,   hstop;
 
     private int clxcon;
+
+    /** CLXCON2 (Lisa): planes 7 and 8 in the collisions. A CLXCON write clears it. */
+    private int clxcon2;
+
+    /** FMODE as Lisa holds it: the bitplane and sprite data width. */
+    private int fmode;
 
     // Game port 1 (mouse) and port 2 (joystick), optional
     private GamePort gamePort1 = null;
@@ -176,13 +198,33 @@ public abstract class AbstractDenise {
     private final int[] palette = new int[32];
     public int dbgPalette(int i) { return palette[i & 31]; }
 
+    /**
+     * Lisa's 256 colour registers, 24-bit {@code 0xRRGGBB}. A COLORxx write lands in the bank
+     * BPLCON3 selects; with LOCT it replaces the low nibble of each component, otherwise it
+     * sets both nibbles to the written one. Used only on AGA, where {@link #palette} keeps the
+     * high nibbles of the first 32 registers.
+     */
+    private final int[] paletteAga = new int[256];
+
+    /** Key of an AGA colour change in {@code colChanges}: register n is COLCHANGE_AGA + n. */
+    static final int COLCHANGE_AGA = 0x200;
+
+    /** Delay of a colour change on Lisa, in sub-pixels: one hires pixel. */
+    private static final int LISA_COLOR_DELAY_PX = 1;
+
     // =========================================================================
     // Shift register bitplane
     // =========================================================================
 
-    private final int[] bpldat     = new int[6];
-    private final int[] bpldatPipe = new int[6];  // pipeline stage
-    private final int[] shiftReg   = new int[6];
+    private final int[] bpldat     = new int[8];
+    private final int[] bpldatPipe = new int[8];  // pipeline stage
+    private final int[] shiftReg   = new int[8];
+    // Lisa: the same three stages up to 64 bits wide, and the width the pipe stage holds.
+    private final long[] bpldatWide     = new long[8];
+    private final long[] bpldatPipeWide = new long[8];
+    private final long[] shiftRegWide   = new long[8];
+    private int pipeWidth = 16;
+    private int shiftWidth = 16;
     private boolean     armedOdd, armedEven;
 
     /**
@@ -223,6 +265,7 @@ public abstract class AbstractDenise {
     private int     bplHalfCcks;
     /** The live resolution when the current line's log started. */
     private boolean bplStartHires;
+    private boolean bplStartShres;
 
     // =========================================================================
     // Sprite state
@@ -257,6 +300,20 @@ public abstract class AbstractDenise {
 
     /** Column of the right-border wrap cell: the last visible CCK, 4*(227 - HBLANK_MIN). */
     public static final int RIGHT_HBLANK_WRAP_COL = 4 * (227 - 0x12);
+
+    /**
+     * Sub-pixels past the end of the line that show the colour of the next line's first colour
+     * clocks: two colour clocks, CCK 0 and CCK 1 of the next line.
+     */
+    public static final int WRAP_CELL_SUBPIXELS = 8;
+
+    /**
+     * Hires pixels by which a COLOR00 change reaches the output after the colour stage: one on
+     * Lisa, none on Denise. The right-border wrap cells follow it too.
+     */
+    public int colourDelayPx() {
+        return isAGA ? LISA_COLOR_DELAY_PX : 0;
+    }
 
 
     // =========================================================================
@@ -307,11 +364,17 @@ public abstract class AbstractDenise {
     public void setField(int field)               { this.field   = field;   }
 
     private void updateBplcon0Derived() {
-        bpu   = deniseBpu(bplcon0);
+        bpu   = isAGA ? lisaPlanes(bplcon0) : deniseBpu(bplcon0);
         final boolean h = (bplcon0 & 0x8000) != 0;
         if (h != hires) {
             hires = h;
             recordBplEvent(DeniseLineJob.BPL_EV_HIRES | (h ? DeniseLineJob.BPL_EV_ARG : 0));
+        }
+        // Lisa: super-hires (bit 6) shifts out two bits per sub-pixel, whatever bit 15 says.
+        final boolean sh = isAGA && (bplcon0 & 0x0040) != 0;
+        if (sh != shres) {
+            shres = sh;
+            recordBplEvent(DeniseLineJob.BPL_EV_SHRES | (sh ? DeniseLineJob.BPL_EV_ARG : 0));
         }
     }
 
@@ -322,7 +385,7 @@ public abstract class AbstractDenise {
      * <p><b>More than four planes in HIRES is not a legal configuration on OCS/ECS: Denise
      * draws NONE of them.</b> It is not a clamp to four: the image disappears entirely and
      * the background remains. (SuperHires with more than two planes behaves the same, but is
-     * not modelled.) The Agnus counterpart is {@code AbstractAgnus.bitplaneDmaPlaneLimit}:
+     * not modelled.) The Agnus counterpart is {@code AbstractAgnus.updateFetchGeometry}:
      * the two chips apply the same threshold, each on its own.
      *
      * <p>The clamp to 6 concerns only BPU=7 in lores: the shift register has six planes, and
@@ -332,6 +395,23 @@ public abstract class AbstractDenise {
         int planes = (bplcon0 >> 12) & 7;
         if ((bplcon0 & 0x8000) != 0 && planes > 4) return 0;
         return Math.min(planes, 6);
+    }
+
+    /**
+     * Planes Lisa composes, from BPLCON0 and its FMODE: BPU3 (bit 4) alone is eight, with any
+     * BPU bit none. As on OCS, more planes than the data width allows in the resolution is not
+     * a clamp but no planes at all: in hires more than four with 16-bit data, in super-hires
+     * more than two with 16-bit data and more than four with 32-bit data.
+     */
+    private int lisaPlanes(int bplcon0) {
+        final int planes = DeniseLineRenderer.agaPlanes(bplcon0);
+        final int f = fmode & 3;
+        final int width = f == 0 ? 0 : f == 3 ? 2 : 1;
+        final int res = (bplcon0 & 0x0040) != 0 ? 2 : (bplcon0 & 0x8000) != 0 ? 1 : 0;
+        if (width == 0 && res > 0 && planes > 4) return 0;
+        if (width == 0 && res > 1 && planes > 2) return 0;
+        if (width == 1 && res > 1 && planes > 4) return 0;
+        return planes;
     }
 
     public void reset() { reset(true); }
@@ -346,6 +426,8 @@ public abstract class AbstractDenise {
      */
     public void reset(boolean hardware) {
         bplcon0 = bplcon1 = bplcon2 = 0;
+        fmode = 0;
+        clxcon2 = 0;
         updateBplcon0Derived();
         bplcon3 = 0x0C00;
         bplcon4 = 0x0011;
@@ -353,13 +435,21 @@ public abstract class AbstractDenise {
         clxcon = 0;
         if (hardware) {
             Arrays.fill(palette,  0);
+            Arrays.fill(paletteAga, 0);
         }
         Arrays.fill(bpldat,   0);
         Arrays.fill(bpldatPipe, 0);
         Arrays.fill(shiftReg, 0);
+        Arrays.fill(bpldatWide, 0);
+        Arrays.fill(bpldatPipeWide, 0);
+        Arrays.fill(shiftRegWide, 0);
+        pipeWidth = 16;
+        shiftWidth = 16;
         armedOdd = armedEven = false;
         Arrays.fill(sprdata,  0);
         Arrays.fill(sprdatb,  0);
+        Arrays.fill(sprdataWide, 0);
+        Arrays.fill(sprdatbWide, 0);
         Arrays.fill(sprpos,   0);
         Arrays.fill(sprctl,   0);
         armed = 0;
@@ -367,6 +457,7 @@ public abstract class AbstractDenise {
         bplEventCount = 0;
         bplHalfCcks = 0;
         bplStartHires = hires;
+        bplStartShres = shres;
         conChanges.clear();
         diwChanges.clear();
         colChanges.clear();
@@ -466,13 +557,21 @@ public abstract class AbstractDenise {
                 // limits; the V part is handled by Agnus. No-op on OCS. The value arrives
                 // already masked (0x2727) by AbstractAgnus.writeDIWHIGH.
                 if (isECS) {
-                    setHSTRT((hstrt & 0xFF) | ((value & 0x0020) != 0 ? 0x100 : 0), pixel);
-                    setHSTOP((hstop & 0xFF) | ((value & 0x2000) != 0 ? 0x100 : 0), pixel);
+                    // Lisa: the hires fine bit of each coordinate (bit 4 for the start, 12 for
+                    // the stop), kept as bit 9; the super-hires one (3 and 11) is below a
+                    // sub-pixel.
+                    final int fineStart = isAGA && (value & 0x0010) != 0 ? 0x200 : 0;
+                    final int fineStop = isAGA && (value & 0x1000) != 0 ? 0x200 : 0;
+                    setHSTRT((hstrt & 0xFF) | ((value & 0x0020) != 0 ? 0x100 : 0) | fineStart, pixel);
+                    setHSTOP((hstop & 0xFF) | ((value & 0x2000) != 0 ? 0x100 : 0) | fineStop, pixel);
                 }
                 break;
 
             // --- Collision ---
-            case 0x098: clxcon = value; break;
+            case 0x098:
+                clxcon = value;
+                clxcon2 = 0;
+                break;
 
             // --- JOYTEST ($DFF036) ---
             // Presets the quadrature counters of both ports. The 6 high bits of each byte
@@ -490,7 +589,10 @@ public abstract class AbstractDenise {
                 // going to 6, or leaving an illegal hires configuration), and without this
                 // insert the line on which the Copper raises BPU to 6 would be coloured at
                 // full brightness throughout (line 22 of `BPLPTR/drop6x` and `dropcpu6x`).
-                if (isHamActive(bplcon0) != isHamActive(value) || isEHB(bplcon0) != isEHB(value)) {
+                // On Lisa the mode also follows BPU3 and dual playfield: every change of the
+                // plane count or of the HAM and DPF bits is replayed.
+                if (isAGA ? ((bplcon0 ^ value) & 0x7C10) != 0
+                          : isHamActive(bplcon0) != isHamActive(value) || isEHB(bplcon0) != isEHB(value)) {
                     // Same stage as the conChanges above: HAM and EHB come from Denise's
                     // copy of BPLCON0, not from the early (colour) stage.
                     colChanges.insert(pixel + CON_DELAY_PX, address, value);
@@ -499,7 +601,8 @@ public abstract class AbstractDenise {
                 updateBplcon0Derived();
                 break;
             case 0x102: // BPLCON1 (scroll, effective at once)
-                bplcon1 = value & 0xFF;
+                // Lisa keeps all sixteen bits: two more coarse and two fine bits per field.
+                bplcon1 = isAGA ? value & 0xFFFF : value & 0xFF;
                 break;
             case 0x104: // BPLCON2 (priority)
                 conChanges.insert(pixel, address, value);
@@ -518,13 +621,33 @@ public abstract class AbstractDenise {
                 }
                 bplcon2 = value;
                 break;
-            case 0x106: bplcon3 = value; break;  // ECS
-            case 0x10C: bplcon4 = value; break;  // ECS
+            case 0x106: // BPLCON3 (ECS)
+                // On Lisa it also moves the second playfield in the palette (PF2OF).
+                if (isAGA) conChanges.insert(pixel + CON_DELAY_PX, address, value);
+                bplcon3 = value;
+                break;
+            case 0x10C: // BPLCON4 (ECS)
+                // On Lisa it xors the bitplane colour index and selects the sprite banks.
+                if (isAGA) colChanges.insert(pixel + CON_DELAY_PX, address, value);
+                bplcon4 = value;
+                break;
 
             // --- BPLxDAT ---
             case 0x110: case 0x112: case 0x114:
             case 0x116: case 0x118: case 0x11A:
                 setBPLxDAT((address - 0x110) / 2, value, pixel);
+                break;
+            case 0x11C: case 0x11E:   // BPL7DAT, BPL8DAT (Lisa)
+                if (isAGA) setBPLxDAT((address - 0x110) / 2, value, pixel);
+                break;
+            case 0x10E:   // CLXCON2 (Lisa)
+                if (isAGA) clxcon2 = value;
+                break;
+            case 0x1FC:   // FMODE (Lisa)
+                if (isAGA) {
+                    fmode = value;
+                    updateBplcon0Derived();
+                }
                 break;
 
             // --- SPRxPOS ---
@@ -559,8 +682,12 @@ public abstract class AbstractDenise {
                 // COLOR00..COLOR31
                 if (address >= 0x180 && address <= 0x1BE) {
                     int ci = (address - 0x180) / 2;
-                    palette[ci] = value & 0xFFF;
-                    colChanges.insert(pixel, address, value);
+                    if (isAGA) {
+                        writeColorAga(ci, value, pixel);
+                    } else {
+                        palette[ci] = value & 0xFFF;
+                        colChanges.insert(pixel, address, value);
+                    }
                 }
                 break;
         }
@@ -579,11 +706,11 @@ public abstract class AbstractDenise {
             case 0x00E: sync(); return renderer.readClxdat();
 
             // DENISEID ($DFF07C):
-            //   ECS Denise 8373: returns $FFFC (ECS chip identifier).
+            //   ECS Denise 8373: returns $FFFC (ECS chip identifier); AGA Lisa $00F8.
             //   OCS Denise 8362: register not implemented. getLastBusData() is NOT used: the
             //   last data written on the bus (e.g. BPLCON0=$0102) would spoil the Kickstart's
             //   OCS/ECS detection.
-            case 0x07C: return isECS ? 0xFFFC : 0xFFFF;
+            case 0x07C: return deniseId;
 
             // BPLCON0 ($DFF100): write-only on OCS.
             //
@@ -617,6 +744,7 @@ public abstract class AbstractDenise {
                 // Colour registers ($DFF180-$DFF1BE): readable on ECS Denise; write-only
                 // on OCS (the bus returns 0 for registers not implemented for reading).
                 if (address >= 0x180 && address <= 0x1BE) {
+                    if (isAGA) return readColorAga((address - 0x180) / 2);
                     return isECS ? palette[(address - 0x180) / 2] : 0;
                 }
                 return 0xFFFF;
@@ -659,13 +787,116 @@ public abstract class AbstractDenise {
         diwChanges.insert(pixel + DIW_AXIS_SHIFT, 0x090, val);
     }
 
+    /**
+     * A COLORxx write on Lisa. With RDRAM (BPLCON2 bit 8) the colour registers are read, not
+     * written, and the write is lost. The register is {@code bank * 32 + idx}, the bank from
+     * BPLCON3 bits 13-15; LOCT (BPLCON3 bit 9) writes the low nibble of each component and
+     * keeps the high one, otherwise the nibble goes to both halves.
+     */
+    private void writeColorAga(int idx, int value, int pixel) {
+        if ((bplcon2 & 0x0100) != 0) return;
+        final int reg = ((bplcon3 >> 13) & 7) * 32 + idx;
+        final int r = (value >> 8) & 0xF;
+        final int g = (value >> 4) & 0xF;
+        final int b =  value       & 0xF;
+        final int old = paletteAga[reg];
+        final int rgb;
+        if ((bplcon3 & 0x0200) != 0) {
+            rgb = (old & 0xF0F0F0) | (r << 16) | (g << 8) | b;
+        } else {
+            rgb = (r * 0x11 << 16) | (g * 0x11 << 8) | (b * 0x11);
+        }
+        paletteAga[reg] = rgb;
+        if (reg < 32) {
+            palette[reg] = ((rgb >> 12) & 0xF00) | ((rgb >> 8) & 0x0F0) | ((rgb >> 4) & 0x00F);
+        }
+        // Lisa shows a colour change one hires pixel later than the colour stage it enters.
+        colChanges.insert(pixel + LISA_COLOR_DELAY_PX, COLCHANGE_AGA + reg, rgb);
+    }
+
+    /**
+     * A COLORxx read on Lisa: with RDRAM the register of the selected bank, its high nibbles
+     * or with LOCT its low ones; without RDRAM the colour registers do not drive the bus.
+     */
+    private int readColorAga(int idx) {
+        if ((bplcon2 & 0x0100) == 0) return 0xFFFF;
+        final int rgb = paletteAga[((bplcon3 >> 13) & 7) * 32 + idx];
+        final int shift = (bplcon3 & 0x0200) != 0 ? 0 : 4;
+        return (((rgb >> (16 + shift)) & 0xF) << 8) | (((rgb >> (8 + shift)) & 0xF) << 4)
+                | ((rgb >> shift) & 0xF);
+    }
+
+    /**
+     * A bitplane data transfer wider than a word, from a fetch with FMODE 1-3 ({@code bits}
+     * 32 or 64, the first pixel in the top bit). Lisa only.
+     */
+    void writeBitplaneWide(int x, long data, int bits, int pixel) {
+        if (rgaSlotTaken) return;
+        bpldat[x] = (int) data & 0xFFFF;
+        bpldatWide[x] = data;
+        if (x == 0) {
+            copyWideToPipe();
+            System.arraycopy(bpldat, 0, bpldatPipe, 0, 8);
+            armedOdd  = true;
+            armedEven = true;
+            if (bpl1datCount < bpl1datPixels.length) bpl1datPixels[bpl1datCount++] = pixel;
+        }
+    }
+
+    /**
+     * BPL1DAT moves the words into the stage the shift registers load from, and fixes the
+     * width they are shifted out at: Lisa's FMODE at that instant.
+     */
+    private void copyWideToPipe() {
+        System.arraycopy(bpldatWide, 0, bpldatPipeWide, 0, 8);
+        pipeWidth = 16 << fetchWidth();
+    }
+
+    /** Lisa's data width from FMODE: 0 = 16 bits, 1 = 32, 2 = 64. */
+    private int fetchWidth() {
+        final int f = fmode & 3;
+        return f == 0 ? 0 : f == 3 ? 2 : 1;
+    }
+
+    /** Denise's resolution: 0 lores, 1 hires, 2 super-hires (ECS and Lisa). */
+    private int resolution() {
+        return (bplcon0 & 0x0040) != 0 && isECS ? 2 : (bplcon0 & 0x8000) != 0 ? 1 : 0;
+    }
+
+    /**
+     * Lisa: how many CCKs a word of the shift registers lasts, the period at which a new one
+     * loads: its width in pixels at the current resolution, two lores pixels per CCK.
+     */
+    int lisaWordCcks() {
+        return Math.max(1, pipeWidth >> (resolution() + 1));
+    }
+
+    /**
+     * Lisa: the scroll of the odd or even planes in sub-pixels (hires pixels). Each field of
+     * BPLCON1 is a delay in lores pixels of six bits (bits 0-3 and 10-11 for the odd planes,
+     * 4-7 and 14-15 for the even ones), masked to the length of a word at the current
+     * resolution, plus two bits in super-hires pixels (8-9 and 12-13), of which a hires pixel
+     * keeps the upper one.
+     */
+    int lisaScrollSub(boolean even) {
+        final int v = even ? bplcon1 >> 4 : bplcon1;
+        final int delay = (v & 0x0F) | ((v & 0x0C00) >> 6);
+        final int hr = even ? (bplcon1 >> 12) & 3 : (bplcon1 >> 8) & 3;
+        final int mask = (pipeWidth - 1) >> resolution();
+        return ((delay & mask) << 1) | (hr >> 1);
+    }
+
     private void setBPLxDAT(int x, int value, int pixel) {
         bpldat[x] = value & 0xFFFF;
+        if (isAGA) {
+            bpldatWide[x] = value & 0xFFFF;
+            if (x == 0) copyWideToPipe();
+        }
         if (x == 0) {
             // BPL1DAT written by the DMA: loads the pipeline and arms the shift registers.
             // BPL1DAT is the trigger because in the DMA cycle it is the last odd plane
             // fetched (Agnus has already written BPL3/5 in the previous cycles).
-            System.arraycopy(bpldat, 0, bpldatPipe, 0, 6);
+            System.arraycopy(bpldat, 0, bpldatPipe, 0, 8);
             armedOdd  = true;
             armedEven = true;
             if (bpl1datCount < bpl1datPixels.length) bpl1datPixels[bpl1datCount++] = pixel;
@@ -734,14 +965,63 @@ public abstract class AbstractDenise {
     }
 
     private void pokeSPRxDATA(int x, int value, int pixel) {
+        if (isAGA) {
+            writeSpriteDataLisa(x, false, cpuSpriteWord(sprdataWide[x], value), pixel);
+            return;
+        }
         armed    |= (1 << x);
         sprdata[x] = value & 0xFFFF;
         sprChanges[x / 2].insert(pixel + SPR_DAT_PX, 0x144 + x * 8, value);
     }
 
     private void pokeSPRxDATB(int x, int value, int pixel) {
+        if (isAGA) {
+            writeSpriteDataLisa(x, true, cpuSpriteWord(sprdatbWide[x], value), pixel);
+            return;
+        }
         sprdatb[x] = value & 0xFFFF;
         sprChanges[x / 2].insert(pixel + SPR_DAT_PX, 0x146 + x * 8, value);
+    }
+
+    // Lisa's sprite data registers, left-aligned: bit 63 is the first pixel.
+    private final long[] sprdataWide = new long[8];
+    private final long[] sprdatbWide = new long[8];
+
+    /**
+     * A word written to SPRxDATA/SPRxDATB by the processor or the Copper on Lisa. The data
+     * register is 32 bits wide and the word lands in its low half, behind 16 empty pixels;
+     * with 64-bit sprites (FMODE bits 2-3 both set) the register in use is the 64-bit one,
+     * which such a write leaves alone.
+     */
+    private long cpuSpriteWord(long current, int value) {
+        if (((fmode >> 2) & 3) == 3) return current;
+        return (value & 0xFFFFL) << 32;
+    }
+
+    /**
+     * Sprite data from the DMA on Lisa: {@code bits} 16 (a 16-bit fetch, which fills the high
+     * half of the 32-bit register), 32 or 64.
+     */
+    void writeSpriteWide(int x, boolean datb, long data, int bits) {
+        if (rgaSlotTaken) return;
+        final int cck = (agnus != null) ? agnus.getHpos() >> 1 : 0;
+        final int pixel = Math.max(0, cck * 4 - 4 * HBLANK_MIN);
+        final long aligned = bits == 64 ? data : (data & ((1L << bits) - 1)) << (64 - bits);
+        writeSpriteDataLisa(x, datb, aligned, pixel);
+    }
+
+    private void writeSpriteDataLisa(int x, boolean datb, long aligned, int pixel) {
+        final int top = (int) (aligned >>> 48);
+        if (datb) {
+            sprdatbWide[x] = aligned;
+            sprdatb[x] = top;
+            sprChanges[x / 2].insertWide(pixel + SPR_DAT_PX, 0x146 + x * 8, top, aligned);
+        } else {
+            armed |= (1 << x);
+            sprdataWide[x] = aligned;
+            sprdata[x] = top;
+            sprChanges[x / 2].insertWide(pixel + SPR_DAT_PX, 0x144 + x * 8, top, aligned);
+        }
     }
 
 
@@ -806,9 +1086,11 @@ public abstract class AbstractDenise {
         job.bplEvents = ev;
         job.bplEventCount = bplEventCount;
         job.bplStartHires = bplStartHires;
+        job.bplStartShres = bplStartShres;
         bplEventCount = 0;
         bplHalfCcks = 0;
         bplStartHires = hires;
+        bplStartShres = shres;
         RegChangeRecorder r = conChanges; conChanges = job.conChanges; job.conChanges = r;
         r = diwChanges; diwChanges = job.diwChanges; job.diwChanges = r;
         r = colChanges; colChanges = job.colChanges; job.colChanges = r;
@@ -824,16 +1106,25 @@ public abstract class AbstractDenise {
         job.maxHpos = agnus != null ? agnus.getMaxHpos() : 454;
         job.hcounterRenderHead = hcounterRenderHead;
         job.clxcon = clxcon;
+        job.clxcon2 = clxcon2;
+        job.bplcon3 = bplcon3;
+        job.bplcon4 = bplcon4;
+        job.fmode = fmode;
         job.bplcon0 = bplcon0;
         job.bplcon2 = bplcon2;
         job.hstrt = hstrt;
         job.hstop = hstop;
         job.armed = armed;
         System.arraycopy(palette, 0, job.palette, 0, 32);
+        if (isAGA) System.arraycopy(paletteAga, 0, job.paletteAga, 0, 256);
         System.arraycopy(sprpos,  0, job.sprpos,  0, 8);
         System.arraycopy(sprctl,  0, job.sprctl,  0, 8);
         System.arraycopy(sprdata, 0, job.sprdata, 0, 8);
         System.arraycopy(sprdatb, 0, job.sprdatb, 0, 8);
+        if (isAGA) {
+            System.arraycopy(sprdataWide, 0, job.sprdataWide, 0, 8);
+            System.arraycopy(sprdatbWide, 0, job.sprdatbWide, 0, 8);
+        }
     }
 
     // =========================================================================
@@ -881,6 +1172,10 @@ public abstract class AbstractDenise {
      */
     private void armShiftOut(int grp, int pixel, int fineScroll) {
         final int cursor = pixel + fineScroll;   // fineScroll is already in sub-pixels
+        if (isAGA) {
+            armShiftOutLisa(grp, cursor);
+            return;
+        }
         final int w0, w1, w2;
         if (grp == 0) {
             w0 = bpu >= 1 ? shiftReg[0] : 0;
@@ -902,6 +1197,28 @@ public abstract class AbstractDenise {
         e[n++] = w0;
         e[n++] = w1;
         e[n++] = w2;
+        bplEventCount = n;
+    }
+
+    /**
+     * The load of a word on Lisa: four planes per group, and words as wide as the fetch. The
+     * event carries the word length in bits and each plane as two ints, high half first.
+     */
+    private void armShiftOutLisa(int grp, int cursor) {
+        if (bplEventCount + DeniseLineJob.BPL_LOAD_WIDE_SIZE > bplEvents.length) {
+            bplEvents = Arrays.copyOf(bplEvents, 2 * bplEvents.length);
+        }
+        final int[] e = bplEvents;
+        int n = bplEventCount;
+        e[n++] = (bplHalfCcks << DeniseLineJob.BPL_EV_STEP_SHIFT) | DeniseLineJob.BPL_EV_LOAD_WIDE
+                | (grp != 0 ? DeniseLineJob.BPL_EV_ARG : 0);
+        e[n++] = cursor;
+        e[n++] = shiftWidth;
+        for (int p = grp; p < 8; p += 2) {
+            final long w = bpu > p ? shiftRegWide[p] : 0;
+            e[n++] = (int) (w >>> 32);
+            e[n++] = (int) w;
+        }
         bplEventCount = n;
     }
 
@@ -935,16 +1252,34 @@ public abstract class AbstractDenise {
         bplHalfCcks++;
     }
 
+    /** Lisa: loads the planes of one group (0 odd, 1 even) and the width they shift out at. */
+    private void loadWideShiftRegisters(int grp) {
+        for (int p = grp; p < 8; p += 2) {
+            if (bpu > p) shiftRegWide[p] = bpldatPipeWide[p];
+        }
+        shiftWidth = pipeWidth;
+    }
+
     private void loadOddShiftRegisters() {
+        if (isAGA) {
+            loadWideShiftRegisters(0);
+            return;
+        }
         if (bpu >= 1) shiftReg[0] = bpldatPipe[0];
         if (bpu >= 3) shiftReg[2] = bpldatPipe[2];
         if (bpu >= 5) shiftReg[4] = bpldatPipe[4];
+        if (bpu >= 7) shiftReg[6] = bpldatPipe[6];
     }
 
     private void loadEvenShiftRegisters() {
+        if (isAGA) {
+            loadWideShiftRegisters(1);
+            return;
+        }
         if (bpu >= 2) shiftReg[1] = bpldatPipe[1];
         if (bpu >= 4) shiftReg[3] = bpldatPipe[3];
         if (bpu >= 6) shiftReg[5] = bpldatPipe[5];
+        if (bpu >= 8) shiftReg[7] = bpldatPipe[7];
     }
 
 
@@ -1201,7 +1536,7 @@ public abstract class AbstractDenise {
      * COLOR00 at beam CCK 0 of the NEXT line (the wrap cell belongs to the previous line).
      * Sampled at the start of the next line (after any write at CCK 0).
      */
-    public int  getLiveColor0Rgb()          { return amigaToRGB(palette[0]); }
+    public int  getLiveColor0Rgb()          { return isAGA ? paletteAga[0] : amigaToRGB(palette[0]); }
 
     /**
      * True when raw column {@code rawX} of the line just rendered carries actual content:
@@ -1240,10 +1575,10 @@ public abstract class AbstractDenise {
     public boolean isLastLineVBorder()      { sync(); return renderer.isLastLineVBorder(); }
 
     /** Returns the x coordinate (in raw pixels) of the left edge of the display window. */
-    public int getDiwHStartPixel()  { return (hstrt - HBLANK_MIN * 2) * 2; }
+    public int getDiwHStartPixel()  { return ((hstrt & 0x1FF) - HBLANK_MIN * 2) * 2; }
 
     /** Returns the x coordinate (in raw pixels) of the right edge of the display window. */
-    public int getDiwHStopPixel()   { return (hstop - HBLANK_MIN * 2) * 2; }
+    public int getDiwHStopPixel()   { return ((hstop & 0x1FF) - HBLANK_MIN * 2) * 2; }
 
     /**
      * Returns the number of pixels rendered by sprite {@code idx} in the last completed

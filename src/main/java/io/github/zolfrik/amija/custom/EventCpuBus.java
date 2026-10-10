@@ -39,7 +39,8 @@ import io.github.zolfrik.amija.cpu.event.TimeBase;
  *   <li><b>Chip bus</b> (Chip RAM, the custom chip page, installed Slow RAM): one colour
  *       clock, then the processor waits for a slot no DMA channel takes, transfers in it and
  *       the slot's colour clock completes. A long word is two word slots on the 16-bit bus;
- *       a word that straddles a long word boundary is two byte slots.</li>
+ *       a word that straddles a long word boundary is two byte slots. A 68020 on Alice reaches
+ *       Chip RAM through a 32-bit path: a long word aligned to four bytes is one slot.</li>
  *   <li><b>CIA</b>: synchronised to the E clock: the wait to its sync phase and the four
  *       half colour clocks of the cycle start, the transfer, six more to its end.</li>
  *   <li><b>Fast</b> (ROM, Fast RAM, expansion space): no chipset involvement. A 68020
@@ -58,7 +59,7 @@ import io.github.zolfrik.amija.cpu.event.TimeBase;
  */
 public final class EventCpuBus implements CpuBus {
 
-    private static final byte FAST32 = 0, CHIP16 = 1, CIA = 2;
+    private static final byte FAST32 = 0, CHIP16 = 1, CIA = 2, CHIP32 = 3;
     private static final int CCK = TimeBase.CCK;
     private static final int HALF_CCK = CCK / 2;
 
@@ -81,11 +82,15 @@ public final class EventCpuBus implements CpuBus {
         this.agnus = agnus;
         this.bus16 = model != CpuModel.M68020;
         this.memCycle = bus16 ? 4 * TimeBase.CLOCK_7MHZ : 3 * TimeBase.CLOCK_14MHZ;
+        final boolean chip32 = !bus16 && agnus.isAGA();
         final int slowPages = agnus.slowRamBytes() >>> 16;
+        // The A1200 decoding leaves $A00000-$BEFFFF to nobody: an access there ends without
+        // the E clock.
+        final boolean gayle = agnus.isAGA();
         for (int p = 0; p < 256; p++) {
             final byte t;
-            if (p < 0x20) t = CHIP16;
-            else if (p >= 0xA0 && p < 0xC0) t = CIA;
+            if (p < 0x20) t = chip32 ? CHIP32 : CHIP16;
+            else if (p >= (gayle ? 0xBF : 0xA0) && p < 0xC0) t = CIA;
             else if (p >= 0xC0 && p < 0xC0 + slowPages && p < 0xD8) t = CHIP16;
             else if (p >= 0xD0 && p < 0xE0) t = CHIP16;
             else t = FAST32;
@@ -207,6 +212,35 @@ public final class EventCpuBus implements CpuBus {
         }
     }
 
+    /**
+     * A long word over the 32-bit Chip RAM path: one slot, as {@link #chipAccess}, carrying both
+     * words.
+     */
+    private int chipAccessLong(int address, boolean read, int data) {
+        iplLate = -1;
+        cck();
+        for (;;) {
+            if (agnus.eventSlotTaken()) {
+                agnus.eventDenied();
+                iplLate = iplLevel[iplHead];
+                finishCck();
+                continue;
+            }
+            agnus.eventGranted();
+            agnus.chipFallingEdge();
+            final int hi = agnus.eventTransfer(address, read, 2, data >>> 16);
+            final int lo = agnus.eventTransfer(address + 2, read, 2, data & 0xFFFF);
+            agnus.chipFallingEdgeEnd();
+            if (crt != null) crt.tick();
+            master();
+            rising();
+            cycles += CCK;
+            trackIpl();
+            if (hi < 0 || lo < 0) throw BusFault.INSTANCE;
+            return (hi << 16) | (lo & 0xFFFF);
+        }
+    }
+
     /** A CIA access, synchronised to the E clock. */
     private int ciaAccess(int address, boolean read, int size, int data) {
         final int phase = bus16 ? (agnus.eClockPhase() + extra / HALF_CCK) % 10 : agnus.eClockPhase();
@@ -300,7 +334,8 @@ public final class EventCpuBus implements CpuBus {
 
     @Override
     public boolean chipSlotTaken(int address) {
-        return bank[(address >>> 16) & 0xFF] == CHIP16 && agnus.eventSlotTaken();
+        final byte t = bank[(address >>> 16) & 0xFF];
+        return (t == CHIP16 || t == CHIP32) && agnus.eventSlotTaken();
     }
 
     @Override
@@ -317,6 +352,9 @@ public final class EventCpuBus implements CpuBus {
     public int fetchLong(int address) {
         address &= 0xFFFFFF;
         switch (bank[address >>> 16]) {
+            case CHIP32:
+                if ((address & 3) == 0) return chipAccessLong(address, true, 0);
+                // fall through: a misaligned long is two word slots
             case CHIP16: {
                 final int hi = chipAccess(address, true, 2, 0);
                 final int lo = chipAccess(address + 2, true, 2, 0);
@@ -342,7 +380,7 @@ public final class EventCpuBus implements CpuBus {
     public int readByte(int address) {
         address &= 0xFFFFFF;
         switch (bank[address >>> 16]) {
-            case CHIP16: return chipAccess(address, true, 1, 0);
+            case CHIP16: case CHIP32: return chipAccess(address, true, 1, 0);
             case CIA: return ciaAccess(address, true, 1, 0);
             default: return fastAccess(address, true, 1, 0, memCycle);
         }
@@ -352,7 +390,7 @@ public final class EventCpuBus implements CpuBus {
     public int readWord(int address) {
         address &= 0xFFFFFF;
         switch (bank[address >>> 16]) {
-            case CHIP16:
+            case CHIP16: case CHIP32:
                 if ((address & 3) == 3) {
                     final int hi = chipAccess(address, true, 1, 0);
                     final int lo = chipAccess(address + 1, true, 1, 0);
@@ -368,6 +406,9 @@ public final class EventCpuBus implements CpuBus {
     public int readLong(int address) {
         address &= 0xFFFFFF;
         switch (bank[address >>> 16]) {
+            case CHIP32:
+                if ((address & 3) == 0) return chipAccessLong(address, true, 0);
+                // fall through: a misaligned long is two word slots
             case CHIP16: {
                 final int hi = chipAccess(address, true, 2, 0);
                 final int lo = chipAccess(address + 2, true, 2, 0);
@@ -392,7 +433,7 @@ public final class EventCpuBus implements CpuBus {
     public void writeByte(int address, int value) {
         address &= 0xFFFFFF;
         switch (bank[address >>> 16]) {
-            case CHIP16: chipAccess(address, false, 1, value); break;
+            case CHIP16: case CHIP32: chipAccess(address, false, 1, value); break;
             case CIA: ciaAccess(address, false, 1, value); break;
             default: fastAccess(address, false, 1, value, memCycle); break;
         }
@@ -402,7 +443,7 @@ public final class EventCpuBus implements CpuBus {
     public void writeWord(int address, int value) {
         address &= 0xFFFFFF;
         switch (bank[address >>> 16]) {
-            case CHIP16:
+            case CHIP16: case CHIP32:
                 if ((address & 3) == 3) {
                     chipAccess(address, false, 1, value >> 8);
                     chipAccess(address + 1, false, 1, value);
@@ -419,6 +460,12 @@ public final class EventCpuBus implements CpuBus {
     public void writeLong(int address, int value) {
         address &= 0xFFFFFF;
         switch (bank[address >>> 16]) {
+            case CHIP32:
+                if ((address & 3) == 0) {
+                    chipAccessLong(address, false, value);
+                    break;
+                }
+                // fall through: a misaligned long is two word slots
             case CHIP16:
                 chipAccess(address, false, 2, value >>> 16);
                 chipAccess(address + 2, false, 2, value);

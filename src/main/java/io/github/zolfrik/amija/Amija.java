@@ -45,6 +45,8 @@ import io.github.zolfrik.amija.custom.Keyboard;
 import io.github.zolfrik.amija.custom.AbstractDenise;
 import io.github.zolfrik.amija.custom.OcsDenise;
 import io.github.zolfrik.amija.custom.EcsDenise;
+import io.github.zolfrik.amija.custom.AgaAgnus;
+import io.github.zolfrik.amija.custom.AgaDenise;
 import io.github.zolfrik.amija.custom.DiskImage;
 import io.github.zolfrik.amija.custom.FastRam;
 import io.github.zolfrik.amija.custom.FloppyDrive;
@@ -2084,7 +2086,7 @@ public class Amija implements RemotePlayControl {
                 processor = cpu;
             }
 
-            // 3. Custom chips. The chipset (OCS/ECS) selects the Agnus/Denise variant. The
+            // 3. Custom chips. The chipset (OCS/ECS/AGA) selects the Agnus/Denise variant. The
             // user's choice is ALWAYS respected: AbstractAgnus's DMA address counter derives
             // the pointer mask from the Chip RAM size (on OCS the DMA space follows a Chip RAM
             // beyond 512 KB), so OcsAgnus addresses Chip RAM up to 2 MB. ECS is NOT forced
@@ -2094,7 +2096,8 @@ public class Amija implements RemotePlayControl {
             Chipset chipset = config.chipset();
             final boolean ecs = chipset.isEcs();
             System.out.println("[CONFIG] Chipset: " + chipset);
-            AbstractDenise denise = ecs ? new EcsDenise() : new OcsDenise();
+            final boolean aga = chipset.isAga();
+            AbstractDenise denise = aga ? new AgaDenise() : ecs ? new EcsDenise() : new OcsDenise();
             paula = new Paula();
             paula.startAudioOutput();
 
@@ -2117,7 +2120,9 @@ public class Amija implements RemotePlayControl {
             paula.setGamePort1(port1);
             paula.setGamePort2(port2);
 
-            agnus = ecs
+            agnus = aga
+                    ? new AgaAgnus(processor, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode)
+                    : ecs
                     ? new EcsAgnus(processor, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode)
                     : new OcsAgnus(processor, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode);
 
@@ -2486,7 +2491,7 @@ public class Amija implements RemotePlayControl {
                 // In Auto mode the path does not come from 'kickstart.path' but from one of
                 // the two boxes of the popup: saying which one is missing is the useful part.
                 error(Messages.t("error.rom.missing.auto",
-                        Messages.t(cfg.autoProfile().expanded()
+                        Messages.t(cfg.autoProfile().usesKickstart31()
                                 ? "label.kickstart31" : "label.kickstart13").replace(":", "")));
             } else {
                 error(Messages.t("error.rom.missing", AmigaConfig.FILE_NAME));

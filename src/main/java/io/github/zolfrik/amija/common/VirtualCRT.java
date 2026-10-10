@@ -102,6 +102,7 @@ public final class VirtualCRT {
     // 4*(227 - HBLANK_MIN) = 4*(227-18) = 836.
     private static final int RIGHT_HBLANK_WRAP_COL = 4 * (227 - 0x12); // 836
     private int wrapPendingRow = -1;                          // line V, sampled at cck 0 of V+1
+    private int wrapPendingRow1 = -1;                         // line V, sampled at cck 1 of V+1
     /**
      * Sentinel of {@link #borderCck0Rgb}: <b>no sample</b> for this line, so the wrap column
      * keeps the pixel we rendered. It is not a valid colour (RGB fits in 24 bits), so it
@@ -109,7 +110,8 @@ public final class VirtualCRT {
      */
     private static final int NO_WRAP_SAMPLE = -1;
     private final int[] borderCck0Rgb = new int[RAW_HEIGHT];  // COLOR00 at beam cck 0 of each line
-    // 4-bit mask, one bit per sub-pixel of the wrap cell: where the bit is set the
+    private final int[] borderCck1Rgb = new int[RAW_HEIGHT];  // COLOR00 at beam cck 1 of each line
+    // 8-bit mask, one bit per sub-pixel of the two wrap cells: where the bit is set the
     // line produced content and the wrap does not apply. See saveRegressionScreenshot.
     private final int[] wrapIsPlayfield = new int[RAW_HEIGHT];
     private int frameHiresLines;
@@ -308,6 +310,7 @@ public final class VirtualCRT {
             // line 235: four pixels lit where the reference is black (`Agnus/Misc/ntsc5`).
             if (wrapPendingRow >= 0 && wrapPendingRow < RAW_HEIGHT) {
                 borderCck0Rgb[wrapPendingRow] = NO_WRAP_SAMPLE;
+                borderCck1Rgb[wrapPendingRow] = NO_WRAP_SAMPLE;
             }
             wrapPendingRow = -1;
             // The guest's input is applied HERE and not inside presentFrame(): that one can
@@ -333,8 +336,15 @@ public final class VirtualCRT {
                 // the whole cell would turn all four on or off together. The per-sub-pixel
                 // mask comes with the rendered line (wrapIsPlayfield, see renderItem). See
                 // the comment in saveRegressionScreenshot.
+                borderCck1Rgb[wrapPendingRow] = NO_WRAP_SAMPLE;
+                wrapPendingRow1 = wrapPendingRow;
             }
             wrapPendingRow = -1;
+        } else if (wrapPendingRow1 >= 0 && hpos >= 4) {
+            // CCK 1 of the current line completed: the colour of the second cell past the
+            // end of the previous line.
+            borderCck1Rgb[wrapPendingRow1] = denise.getLiveColor0Rgb();
+            wrapPendingRow1 = -1;
         }
 
         lastHpos = hpos;
@@ -385,6 +395,7 @@ public final class VirtualCRT {
     private void blankWrapRowsBelowFrame() {
         if (producerMaxRow >= 0 && producerMaxRow + 1 < RAW_HEIGHT) {
             java.util.Arrays.fill(borderCck0Rgb, producerMaxRow + 1, RAW_HEIGHT, 0);
+            java.util.Arrays.fill(borderCck1Rgb, producerMaxRow + 1, RAW_HEIGHT, 0);
         }
         producerMaxRow = -1;
     }
@@ -838,15 +849,22 @@ public final class VirtualCRT {
             //  5. one flag for the whole cell is not enough. The four sub-pixels are not
             //     alike: a row can carry border on 712-713 and playfield on 714-715, so
             //     `wrapIsPlayfield` is a 4-bit mask applied per sub-pixel.
-            if (wrapCropCol >= 0 && wrapCropCol + 4 <= REGRESSION_CROP_W
-                    && srcY >= 0 && srcY < RAW_HEIGHT
+            //  6. the wrap is two cells, not one: a crop moved right also shows the second
+            //     colour clock of the next line (cols 840-843), with the COLOR00 live at its
+            //     end. A COLOR00 change reaches the output with the delay of the colour stage
+            //     (one pixel on Lisa), so the first `delay` sub-pixels keep the rendered colour
+            //     and the samples move right by as much.
+            if (wrapCropCol >= 0 && srcY >= 0 && srcY < RAW_HEIGHT
                     && borderCck0Rgb[srcY] != NO_WRAP_SAMPLE) {
-                int rgb  = borderCck0Rgb[srcY];
+                final int rgb0 = borderCck0Rgb[srcY];
+                final int rgb1 = borderCck1Rgb[srcY] != NO_WRAP_SAMPLE ? borderCck1Rgb[srcY] : rgb0;
+                final int delay = denise.colourDelayPx();
                 int mask = wrapIsPlayfield[srcY];
                 int di   = row * REGRESSION_CROP_W + wrapCropCol;
                 // Sub-pixel by sub-pixel: the cell is not homogeneous. See tick().
-                for (int k = 0; k < 4; k++) {
-                    if ((mask & (1 << k)) == 0) dst[di + k] = rgb;
+                for (int k = delay; k < AbstractDenise.WRAP_CELL_SUBPIXELS; k++) {
+                    if (wrapCropCol + k >= REGRESSION_CROP_W) break;
+                    if ((mask & (1 << k)) == 0) dst[di + k] = k - delay < 4 ? rgb0 : rgb1;
                 }
             }
         }

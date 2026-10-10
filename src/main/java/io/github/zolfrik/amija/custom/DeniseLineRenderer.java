@@ -59,6 +59,12 @@ final class DeniseLineRenderer {
         this.isECS = ecs;
     }
 
+    private boolean isAGA;
+
+    void setAga(boolean aga) {
+        this.isAGA = aga;
+    }
+
     // Inputs of the line being rendered, taken from its job.
     private byte[] dBuffer;
     private RegChangeRecorder conChanges, diwChanges, colChanges;
@@ -73,6 +79,11 @@ final class DeniseLineRenderer {
     // There is no initialBplcon1: the fine scroll is read live, see drawBitplanesAtPixel.
     // BPLCON0 and BPLCON2 are start-of-line snapshots.
     private int initialBplcon0, initialBplcon2;
+    // Lisa: BPLCON3 (PF2OF, sprite resolution, border) and BPLCON4 (colour xor, sprite
+    // banks) at the start of the line, and CLXCON2.
+    private int initialBplcon3 = 0x0C00, initialBplcon4 = 0x0011;
+    private int initialFmode;
+    private int clxcon2;
     private int lastRenderedBplcon0;
 
     /**
@@ -165,6 +176,10 @@ final class DeniseLineRenderer {
     // middle of a visible line (e.g. vAmigaTS synccpu) would colour the whole left part
     // with the new colour. The colour counterpart of initialBplcon0.
     private final int[] paletteLineStart = new int[32];
+
+    /** Lisa's colour registers as colorize() replays them, and their start-of-line state. */
+    private final int[] paletteAga = new int[256];
+    private final int[] paletteAgaLineStart = new int[256];
 
     /**
      * Start-of-line snapshot of the sprite registers: the exact twin of
@@ -360,6 +375,8 @@ final class DeniseLineRenderer {
     private final byte[] bBuffer = new byte[HPIXELS + 64 + 8];
     private final byte[] mBuffer = new byte[HPIXELS + 64 + 8];
     private final int[]  zBuffer = new int [HPIXELS + 64 + 8];
+    /** Lisa: 1 where a sprite pixel won the position, so the playfield colour xor skips it. */
+    private final byte[] sBuffer = new byte[HPIXELS + 64 + 8];
     private int[]        rgbLine = new int[HPIXELS];   // the job's, once a line has been rendered
 
     // =========================================================================
@@ -470,6 +487,21 @@ final class DeniseLineRenderer {
     }
     private void updateSprHCoords(int x) {
         sprhppos[x] = spriteStart(((sprpos[x] & 0xFF) << 1) | (sprctl[x] & 0x01));
+        if (isAGA) {
+            // Lisa: with SSCAN2 bit 7 of SPRxPOS is the doubling flag, not a position bit;
+            // SH1 (SPRxCTL bit 4) moves the sprite one hires pixel to the right.
+            sprhppos2[x] = Integer.MIN_VALUE;
+            if ((initialFmode & 0x8000) != 0) {
+                // The comparison then looks at eight bits of the counter: the sprite also
+                // loads 256 lores pixels further on.
+                sprhppos[x] = spriteStart(((sprpos[x] & 0x7F) << 1) | (sprctl[x] & 0x01));
+                sprhppos2[x] = sprhppos[x] + 512;
+            }
+            if ((sprctl[x] & 0x10) != 0) {
+                sprhppos[x]++;
+                if (sprhppos2[x] != Integer.MIN_VALUE) sprhppos2[x]++;
+            }
+        }
     }
 
     /**
@@ -498,8 +530,10 @@ final class DeniseLineRenderer {
     private final int[]  srCount  = new int[2];   // bits still to shift out (0..16)
     private final int[]  srCursor = new int[2];   // next dBuffer index to write
     private final int[]  srPhase  = new int[2];   // sub-pixels of the current bit already emitted
-    private final byte[][] srSlice = new byte[2][16]; // precomputed slices, one per bit
+    private final byte[][] srSlice = new byte[2][64]; // precomputed slices, one per bit
+    private final int[]  srLen    = { 16, 16 };   // bits of the word being shifted out
     private boolean srHires;                      // the live resolution during the replay
+    private boolean srShres;                      // Lisa: super-hires, two bits per sub-pixel
 
     /**
      * Writes the line's bitplane indices into {@link #dBuffer} by replaying the front end's
@@ -511,6 +545,7 @@ final class DeniseLineRenderer {
         final int[] e = job.bplEvents;
         final int n = job.bplEventCount;
         srHires = job.bplStartHires;
+        srShres = job.bplStartShres;
         srCount[0] = srCount[1] = 0;
         int done = 0;
         int i = 0;
@@ -525,9 +560,16 @@ final class DeniseLineRenderer {
                 if (srCount[0] == 0 && srCount[1] == 0) done = step;
             }
             final boolean arg = (header & DeniseLineJob.BPL_EV_ARG) != 0;
-            if ((header & DeniseLineJob.BPL_EV_TYPE) == DeniseLineJob.BPL_EV_HIRES) {
+            final int type = header & DeniseLineJob.BPL_EV_TYPE;
+            if (type == DeniseLineJob.BPL_EV_HIRES) {
                 srHires = arg;
                 i++;
+            } else if (type == DeniseLineJob.BPL_EV_SHRES) {
+                srShres = arg;
+                i++;
+            } else if (type == DeniseLineJob.BPL_EV_LOAD_WIDE) {
+                armShiftOutWide(arg ? 1 : 0, e, i + 1);
+                i += DeniseLineJob.BPL_LOAD_WIDE_SIZE;
             } else {
                 armShiftOut(arg ? 1 : 0, e[i + 1], e[i + 2], e[i + 3], e[i + 4]);
                 i += DeniseLineJob.BPL_LOAD_SIZE;
@@ -557,9 +599,46 @@ final class DeniseLineRenderer {
             emitGroup(grp, cursor - srCursor[grp]);
         }
         srCount[grp]  = 16;
+        srLen[grp]    = 16;
         srCursor[grp] = cursor;
         srPhase[grp]  = 0;
         precomputeSlices(grp, w0, w1, w2);
+    }
+
+    /**
+     * The load of a word on Lisa ({@code BPL_EV_LOAD_WIDE}): {@code e[at]} is the cursor,
+     * {@code e[at + 1]} the word length in bits, then the four planes of the group as
+     * (high, low) int pairs, the plane bits left-aligned in the {@code long} they make.
+     */
+    private void armShiftOutWide(int grp, int[] e, int at) {
+        final int cursor = e[at];
+        final int bits = e[at + 1];
+        if (srCount[grp] > 0 && cursor > srCursor[grp]) {
+            emitGroup(grp, cursor - srCursor[grp]);
+        }
+        srCount[grp]  = bits;
+        srLen[grp]    = bits;
+        srCursor[grp] = cursor;
+        srPhase[grp]  = 0;
+        final byte[] dst = srSlice[grp];
+        final int m = grp == 0 ? 1 : 2;
+        long w0 = word(e, at + 2, bits), w1 = word(e, at + 4, bits);
+        long w2 = word(e, at + 6, bits), w3 = word(e, at + 8, bits);
+        for (int i = 0; i < bits; i++) {
+            final long bit = 1L << 63 >>> i;
+            int slice = 0;
+            if ((w0 & bit) != 0) slice |= m;
+            if ((w1 & bit) != 0) slice |= m << 2;
+            if ((w2 & bit) != 0) slice |= m << 4;
+            if ((w3 & bit) != 0) slice |= m << 6;
+            dst[i] = (byte) slice;
+        }
+    }
+
+    /** A plane word of a wide load, its {@code bits} bits left-aligned in a long. */
+    private static long word(int[] e, int at, int bits) {
+        final long v = ((long) e[at] << 32) | (e[at + 1] & 0xFFFFFFFFL);
+        return v << (64 - bits);
     }
 
     /** Shifts out the two sub-pixels of one half CCK from both groups. */
@@ -600,9 +679,36 @@ final class DeniseLineRenderer {
         }
     }
 
-    private void emitGroup(int grp, int subPixels) {
+    /**
+     * Super-hires on Lisa: a pixel is half a sub-pixel, so each sub-pixel takes two bits and
+     * shows the first of them.
+     */
+    private void emitGroupShres(int grp, int subPixels) {
         final byte[] slices = srSlice[grp];
-        final int keepMask = (grp == 0) ? 0x2A : 0x15;
+        final int keepMask = (grp == 0) ? 0xAA : 0x55;
+        final int len      = srLen[grp];
+        int count  = srCount[grp];
+        int cursor = srCursor[grp];
+        for (int i = 0; i < subPixels && count > 0; i++) {
+            if (cursor >= 0 && cursor < dBuffer.length) {
+                dBuffer[cursor] = (byte) ((dBuffer[cursor] & keepMask) | slices[len - count]);
+            }
+            cursor++;
+            count = Math.max(0, count - 2);
+        }
+        srCount[grp]  = count;
+        srCursor[grp] = cursor;
+        srPhase[grp]  = 0;
+    }
+
+    private void emitGroup(int grp, int subPixels) {
+        if (srShres) {
+            emitGroupShres(grp, subPixels);
+            return;
+        }
+        final byte[] slices = srSlice[grp];
+        final int keepMask = (grp == 0) ? 0xAA : 0x55;
+        final int len      = srLen[grp];
         final int bitStep  = srHires ? 1 : 2;   // sub-pixels per bit, at the live resolution
         int count  = srCount[grp];
         int cursor = srCursor[grp];
@@ -610,7 +716,7 @@ final class DeniseLineRenderer {
         // The cursor stays in phase with the CCK: two sub-pixels per half CCK, always.
         for (int i = 0; i < subPixels && count > 0; i++) {
             if (cursor >= 0 && cursor < dBuffer.length) {
-                dBuffer[cursor] = (byte) ((dBuffer[cursor] & keepMask) | slices[16 - count]);
+                dBuffer[cursor] = (byte) ((dBuffer[cursor] & keepMask) | slices[len - count]);
             }
             cursor++;
             if (++phase >= bitStep) {
@@ -640,6 +746,7 @@ final class DeniseLineRenderer {
         colChanges         = job.colChanges;
         sprChanges         = job.sprChanges;
         clxcon             = job.clxcon;
+        clxcon2            = job.clxcon2;
         hcounterRenderHead = job.hcounterRenderHead;
         maxHpos            = job.maxHpos;
         System.arraycopy(job.bpl1datPixels, 0, bpl1datPixels, 0, job.bpl1datCount);
@@ -648,10 +755,15 @@ final class DeniseLineRenderer {
         // The registers the replays start from are the line's live end state, as Denise holds
         // them when the line closes; the replays bring them back to that state.
         System.arraycopy(job.palette, 0, palette, 0, 32);
+        if (isAGA) System.arraycopy(job.paletteAga, 0, paletteAga, 0, 256);
         System.arraycopy(job.sprpos,  0, sprpos,  0, 8);
         System.arraycopy(job.sprctl,  0, sprctl,  0, 8);
         System.arraycopy(job.sprdata, 0, sprdata, 0, 8);
         System.arraycopy(job.sprdatb, 0, sprdatb, 0, 8);
+        if (isAGA) {
+            System.arraycopy(job.sprdataWide, 0, sprdataW, 0, 8);
+            System.arraycopy(job.sprdatbWide, 0, sprdatbW, 0, 8);
+        }
         armed = job.armed;
         // A DIW write in the line invalidates the cached border mask for this line and the next.
         if (!diwChanges.isEmpty()) borderBufferIsDirty = Math.max(borderBufferIsDirty, 2);
@@ -723,7 +835,12 @@ final class DeniseLineRenderer {
         // transition too (translate reassigns before reading).
         Arrays.fill(dBuffer, (byte) 0);
         Arrays.fill(zBuffer, HPIXELS, zBuffer.length, 0);
+        if (isAGA) Arrays.fill(sBuffer, (byte) 0);
         for (int i = 0; i < 8; i++) { ssra[i] = 0; ssrb[i] = 0; }
+        if (isAGA) {
+            Arrays.fill(ssraW, 0);
+            Arrays.fill(ssrbW, 0);
+        }
         spritesOnLineMask = 0;
 
         // Sprites can be visible anywhere on the active line; the horizontal position is
@@ -734,6 +851,9 @@ final class DeniseLineRenderer {
         // before any update.
         initialBplcon0 = job.bplcon0;
         initialBplcon2 = job.bplcon2;
+        initialBplcon3 = job.bplcon3;
+        initialBplcon4 = job.bplcon4;
+        initialFmode = job.fmode;
         // Same reasoning as the palette, for the horizontal window: updateBorderBuffer() has
         // just consumed the line, so the live values are those the NEXT line inherits. See
         // hstrtLineStart.
@@ -744,6 +864,7 @@ final class DeniseLineRenderer {
         // state; in the VBlank branch palette[] already holds the live values. Either way it
         // is the state the next scanline inherits.
         System.arraycopy(palette, 0, paletteLineStart, 0, 32);
+        if (isAGA) System.arraycopy(paletteAga, 0, paletteAgaLineStart, 0, 256);
         // Same reasoning for the sprite registers: in the visible branch scanSprites() has
         // just brought the registers back to the end-of-line state by replaying the changes,
         // in the VBlank branch they are already live. Either way it is the state the next
@@ -753,6 +874,10 @@ final class DeniseLineRenderer {
         System.arraycopy(sprctl,  0, sprctlLineStart,  0, 8);
         System.arraycopy(sprdata, 0, sprdataLineStart, 0, 8);
         System.arraycopy(sprdatb, 0, sprdatbLineStart, 0, 8);
+        if (isAGA) {
+            System.arraycopy(sprdataW, 0, sprdataWLineStart, 0, 8);
+            System.arraycopy(sprdatbW, 0, sprdatbWLineStart, 0, 8);
+        }
 
         diwChanges.clear();
         conChanges.clear();
@@ -762,7 +887,7 @@ final class DeniseLineRenderer {
         job.lastRenderedBplcon0 = lastRenderedBplcon0;
         job.vBorder = lineIsVBorder;
         int mask = 0;
-        for (int k = 0; k < 4; k++) {
+        for (int k = 0; k < AbstractDenise.WRAP_CELL_SUBPIXELS; k++) {
             if (isPlayfieldAt(AbstractDenise.RIGHT_HBLANK_WRAP_COL + k)) mask |= 1 << k;
         }
         job.wrapPlayfieldMask = mask;
@@ -777,7 +902,7 @@ final class DeniseLineRenderer {
      * the pixels left uninitialised would show black.
      */
     private void fillVBlankLine(int vpos) {
-        int bgRGB    = amigaToRGB(palette[0]);
+        int bgRGB    = isAGA ? paletteAga[0] : amigaToRGB(palette[0]);
         Arrays.fill(rgbLine, bgRGB);
     }
     // =========================================================================
@@ -837,8 +962,8 @@ final class DeniseLineRenderer {
                 if      (c.reg == 0x08E) hs = c.value;
                 else if (c.reg == 0x090) he = c.value;
             }
-            if (counter == hs) hf = true;
-            if (counter == he) hf = false;
+            if (counter == (hs & 0x1FF)) hf = true;
+            if (counter == (he & 0x1FF)) hf = false;
         }
 
         // Same inputs as the previous line and no DIW write in between: same mask.
@@ -862,8 +987,10 @@ final class DeniseLineRenderer {
                 if      (c.reg == 0x08E) hs = c.value;
                 else if (c.reg == 0x090) he = c.value;
             }
-            if (counter == hs) hf = true;
-            if (counter == he) hf = false;
+            // Bit 9 of a coordinate is Lisa's hires fine bit: the match falls on the second
+            // sub-pixel of the lores pixel.
+            if (counter == (hs & 0x1FF) && (i & 1) >= (hs >> 9)) hf = true;
+            if (counter == (he & 0x1FF) && (i & 1) >= (he >> 9)) hf = false;
             if ((i & 1) == 1) counter = (counter + 1) & 0x1FF;
             bBuffer[i] = hf ? (byte) 0xFF : (byte) borderColor;
         }
@@ -892,6 +1019,7 @@ final class DeniseLineRenderer {
         int     pixel          = 0;
         int     currentBplcon0 = initialBplcon0;
         int     currentBplcon2 = initialBplcon2;
+        int     currentBplcon3 = initialBplcon3;
         int     conIdx         = 0;
         int     sprIdx         = 0;
         int     armedCnt       = Integer.bitCount(armedLineStart);
@@ -911,7 +1039,10 @@ final class DeniseLineRenderer {
             int trigger = Math.min(nextCon, nextSpr);
 
             if (trigger > pixel) {
-                if (isDualPlayfield(currentBplcon0)) {
+                if (isAGA) {
+                    if (isDualPlayfield(currentBplcon0)) translateDPFAga(pixel, trigger, currentBplcon2, currentBplcon3);
+                    else                                 translateSPFAga(pixel, trigger, currentBplcon2);
+                } else if (isDualPlayfield(currentBplcon0)) {
                     translateDPF(pixel, trigger, currentBplcon2);
                 } else {
                     translateSPF(pixel, trigger, currentBplcon2, deniseBpu(currentBplcon0));
@@ -935,6 +1066,8 @@ final class DeniseLineRenderer {
                     }
                 } else if (c.reg == 0x104) {
                     currentBplcon2 = c.value;
+                } else if (c.reg == 0x106) {
+                    currentBplcon3 = c.value;
                 }
             } else {
                 int key = sprStateEvtKey[sprIdx++];
@@ -1041,6 +1174,49 @@ final class DeniseLineRenderer {
     }
 
     /**
+     * Single playfield on Lisa: eight planes and no undocumented specials. The index stays
+     * raw here; the colour xor of BPLCON4 is applied when it is coloured.
+     */
+    private void translateSPFAga(int from, int to, int bplcon2) {
+        final int zpf2 = zPF((bplcon2 >> 3) & 7);
+        for (int i = from; i < to && i < mBuffer.length; i++) {
+            zBuffer[i] = mBuffer[i] != 0 ? zpf2 : 0;
+        }
+    }
+
+    /** Offsets of the second playfield in the palette, by PF2OF (BPLCON3 bits 10-12). */
+    private static final int[] PF2_OFFSETS = { 0, 2, 4, 8, 16, 32, 64, 128 };
+
+    /**
+     * Dual playfield on Lisa: four planes per playfield (the odd ones are playfield 1), and the
+     * colour of playfield 2 is its index plus the offset PF2OF selects, 8 by default. Priority
+     * against the sprites as in {@link #translateDPF}.
+     */
+    private void translateDPFAga(int from, int to, int bplcon2, int bplcon3) {
+        final boolean pf2pri = (bplcon2 & 0x0040) != 0;
+        final int zpf1 = zPF(bplcon2 & 7);
+        final int zpf2 = zPF((bplcon2 >> 3) & 7);
+        final int ofs = PF2_OFFSETS[(bplcon3 >> 10) & 7];
+        for (int i = from; i < to && i < mBuffer.length; i++) {
+            final int s = dBuffer[i] & 0xFF;
+            final int idx1 = (s & 1) | ((s >> 1) & 2) | ((s >> 2) & 4) | ((s >> 3) & 8);
+            final int idx2 = ((s >> 1) & 1) | ((s >> 2) & 2) | ((s >> 3) & 4) | ((s >> 4) & 8);
+            if (idx1 != 0) {
+                if (idx2 != 0 && pf2pri) {
+                    mBuffer[i] = (byte) (idx2 + ofs); zBuffer[i] = zpf2 | 0x05;
+                } else {
+                    mBuffer[i] = (byte) idx1;
+                    zBuffer[i] = idx2 != 0 ? zpf1 | 0x04 : zpf1 | 0x02;
+                }
+            } else if (idx2 != 0) {
+                mBuffer[i] = (byte) (idx2 + ofs); zBuffer[i] = zpf2 | 0x03;
+            } else {
+                mBuffer[i] = 0; zBuffer[i] = 0x01;
+            }
+        }
+    }
+
+    /**
      * Maps the value of the BPLCON2 PFxP priority bits to the corresponding Z level.
      *
      * The scale uses "0 = highest priority" (like the hardware interrupt levels):
@@ -1078,6 +1254,10 @@ final class DeniseLineRenderer {
         System.arraycopy(sprctlLineStart,  0, sprctl,  0, 8);
         System.arraycopy(sprdataLineStart, 0, sprdata, 0, 8);
         System.arraycopy(sprdatbLineStart, 0, sprdatb, 0, 8);
+        if (isAGA) {
+            System.arraycopy(sprdataWLineStart, 0, sprdataW, 0, 8);
+            System.arraycopy(sprdatbWLineStart, 0, sprdatbW, 0, 8);
+        }
         for (int i = 0; i < 8; i++) updateSprHCoords(i);
 
         sprStateEvtCount = 0;
@@ -1086,7 +1266,16 @@ final class DeniseLineRenderer {
             if ((ssra[i] | ssrb[i]) != 0) armedsLineStart |= (1 << i);
         }
 
-        for (int pair = 0; pair < 4; pair++) drawSpritePair(pair);
+        updateSpriteBases();
+        if (isAGA) {
+            updateSpriteResolutionAga();
+            // BRDSPRT (BPLCON3 bit 1) with ECSENA: the sprites also show in the border and
+            // before the line's first BPL1DAT.
+            borderSprite = (initialBplcon3 & 0x0002) != 0 && (initialBplcon0 & 0x0001) != 0;
+            for (int pair = 0; pair < 4; pair++) drawSpritePairAga(pair);
+        } else {
+            for (int pair = 0; pair < 4; pair++) drawSpritePair(pair);
+        }
 
         sortSprStateEvents();
     }
@@ -1236,12 +1425,197 @@ final class DeniseLineRenderer {
         }
     }
 
+    /**
+     * First colour register of each sprite's four, and of an attached pair's sixteen. On
+     * OCS/ECS 16 + 4 per pair, and 16 for an attached pair. On Lisa the even sprites start at
+     * the bank ESPRM selects and the odd ones and the attached pairs at the OSPRM one (BPLCON4
+     * bits 4-7 and 0-3, 16 colours each), plus 4 per pair for a plain sprite.
+     */
+    private final int[] spriteBase = { 16, 16, 20, 20, 24, 24, 28, 28 };
+    private int attachedSpriteBase = 16;
+
+    private void updateSpriteBases() {
+        if (!isAGA) return;
+        final int even = ((initialBplcon4 >> 4) & 15) << 4;
+        final int odd = (initialBplcon4 & 15) << 4;
+        for (int x = 0; x < 8; x++) spriteBase[x] = ((x & 1) == 0 ? even : odd) + (x & 6) * 2;
+        attachedSpriteBase = odd;
+    }
+
+    // =========================================================================
+    // Sprites on Lisa: data registers up to 64 bits, resolution of their own
+    // =========================================================================
+
+    // The data registers left-aligned (bit 63 the first pixel), as the replay holds them and
+    // at the start of the line, and the shift registers.
+    private final long[] sprdataW = new long[8], sprdatbW = new long[8];
+    private final long[] sprdataWLineStart = new long[8], sprdatbWLineStart = new long[8];
+    private final long[] ssraW = new long[8], ssrbW = new long[8];
+    /** Sub-pixels of the current sprite pixel already shown, per sprite. */
+    private final int[] sprPhaseAga = new int[8];
+    /** Per sprite: the next shift is the first since its data loaded. */
+    private final boolean[] sprFirstStep = new boolean[8];
+    /** Lisa with SSCAN2: each sprite's second load position on the line, MIN_VALUE if none. */
+    private final int[] sprhppos2 = new int[8];
+    /** Sub-pixels per sprite pixel (2 lores, 1 hires and super-hires) and bits per step. */
+    private int sprStepSub = 2, sprShiftBits = 1;
+    /** Lisa: BRDSPRT is on for the line being rendered. */
+    private boolean borderSprite;
+
+    /**
+     * The sprite resolution of the line, from SPRES (BPLCON3 bits 6-7): lores, hires or
+     * super-hires, and with 0 lores unless the display is super-hires, then hires. A
+     * super-hires sprite pixel is half a sub-pixel: every other one is shown.
+     */
+    private void updateSpriteResolutionAga() {
+        int sr = (initialBplcon3 >> 6) & 3;
+        if (sr == 0) sr = (initialBplcon0 & 0x0040) != 0 ? 2 : 1;
+        sprStepSub = sr == 1 ? 2 : 1;
+        sprShiftBits = sr == 3 ? 2 : 1;
+    }
+
+    private void drawSpritePairAga(int pair) {
+        final int s1 = pair * 2;
+        final int s2 = pair * 2 + 1;
+        final RegChangeRecorder recorder = sprChanges[pair];
+        int strt = 0;
+        updateSprHCoords(s1);
+        updateSprHCoords(s2);
+        int strt1 = sprhppos[s1];
+        int strt2 = sprhppos[s2];
+        boolean a1 = (armed & (1 << s1)) != 0;
+        boolean a2 = (armed & (1 << s2)) != 0;
+        for (int recIdx = 0; recIdx < recorder.size(); ) {
+            final int trigger = recorder.keys[recIdx];
+            renderSpriteChunkAga(strt, trigger, pair, strt1, strt2, a1, a2);
+            strt = trigger;
+            final RegChange c = recorder.elements[recIdx++];
+            final int sIdx = (c.reg - 0x140) / 8;
+            final int sub = c.reg & 6;
+            if (sub == 4) {
+                sprdata[sIdx] = c.value;
+                sprdataW[sIdx] = c.wide;
+                if ((armed & (1 << sIdx)) == 0) recordSprStateEvt(trigger, sIdx | SPR_EVT_UP);
+                armed |= (1 << sIdx);
+            } else if (sub == 6) {
+                sprdatb[sIdx] = c.value;
+                sprdatbW[sIdx] = c.wide;
+            } else if (sub == 0) {
+                sprpos[sIdx] = c.value;
+                updateSprHCoords(sIdx);
+                if (sIdx == s1) strt1 = sprhppos[s1]; else strt2 = sprhppos[s2];
+            } else {
+                sprctl[sIdx] = c.value;
+                updateSprHCoords(sIdx);
+                if (sIdx == s1) strt1 = sprhppos[s1]; else strt2 = sprhppos[s2];
+                if ((armed & (1 << sIdx)) != 0) recordSprStateEvt(trigger, sIdx);
+                armed &= ~(1 << sIdx);
+            }
+            a1 = (armed & (1 << s1)) != 0;
+            a2 = (armed & (1 << s2)) != 0;
+        }
+        renderSpriteChunkAga(strt, HPIXELS, pair, strt1, strt2, a1, a2);
+        recorder.clear();
+    }
+
+    /** The first sprite load of the pair at or after {@code from} and before {@code to}, or -1. */
+    private static int nextSpriteLoad(int from, int to, int strt1, boolean armed1,
+                                      int strt2, boolean armed2) {
+        int next = Integer.MAX_VALUE;
+        if (armed1 && strt1 >= from && strt1 < to) next = strt1;
+        if (armed2 && strt2 >= from && strt2 < to && strt2 < next) next = strt2;
+        return next == Integer.MAX_VALUE ? -1 : next;
+    }
+
+    private void renderSpriteChunkAga(int from, int to, int pair, int strt1, int strt2,
+                                      boolean armed1, boolean armed2) {
+        final int s1 = pair * 2;
+        final int s2 = pair * 2 + 1;
+        final boolean att = (sprctl[s2] & 0x80) != 0;
+        for (int hpos = from; hpos < to; hpos++) {
+            if ((ssraW[s1] | ssrbW[s1] | ssraW[s2] | ssrbW[s2]) == 0) {
+                int next = nextSpriteLoad(hpos, to, strt1, armed1, strt2, armed2);
+                final int next2 = nextSpriteLoad(hpos, to, sprhppos2[s1], armed1, sprhppos2[s2], armed2);
+                if (next < 0 || (next2 >= 0 && next2 < next)) next = next2;
+                if (next < 0) return;
+                hpos = next;
+            }
+            if ((hpos == strt1 || hpos == sprhppos2[s1]) && armed1) loadSpriteAga(s1, hpos);
+            if ((hpos == strt2 || hpos == sprhppos2[s2]) && armed2) loadSpriteAga(s2, hpos);
+            final long r1 = ssraW[s1] | ssrbW[s1];
+            final long r2 = ssraW[s2] | ssrbW[s2];
+            if ((r1 | r2) == 0) continue;
+            if (diwOpenSamplePx == hpos) {
+                if ((((ssraW[s1] >>> 63) & 1) | ((ssrbW[s1] >>> 62) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s1];
+                if ((((ssraW[s2] >>> 63) & 1) | ((ssrbW[s2] >>> 62) & 2)) != 0) diwOpenSpriteZ |= Z_SP[s2];
+            }
+            if ((borderSprite || spriteGate.openAt(hpos, SPRITE_ENABLE_OFFSET)) && hpos < spriteClipEnd) {
+                if (att) {
+                    drawAttachedSpritePixelAga(hpos, s2);
+                } else {
+                    drawSpritePixelAga(hpos, s1);
+                    drawSpritePixelAga(hpos, s2);
+                }
+            }
+            advanceSpriteAga(s1, r1, hpos);
+            advanceSpriteAga(s2, r2, hpos);
+        }
+    }
+
+    private void loadSpriteAga(int x, int hpos) {
+        final boolean was = (ssraW[x] | ssrbW[x]) != 0;
+        ssraW[x] = sprdataW[x];
+        ssrbW[x] = sprdatbW[x];
+        sprPhaseAga[x] = 0;
+        sprFirstStep[x] = true;
+        if (((ssraW[x] | ssrbW[x]) != 0) != was) {
+            recordSprStateEvt(hpos, x | SPR_EVT_ARMEDS | (was ? 0 : SPR_EVT_UP));
+        }
+    }
+
+    private void advanceSpriteAga(int x, long r, int hpos) {
+        if (r == 0 || ++sprPhaseAga[x] < sprStepSub) return;
+        sprPhaseAga[x] = 0;
+        // A super-hires sprite steps one bit after its first pixel, two after the others.
+        final int bits = sprFirstStep[x] ? 1 : sprShiftBits;
+        sprFirstStep[x] = false;
+        ssraW[x] <<= bits;
+        ssrbW[x] <<= bits;
+        if ((ssraW[x] | ssrbW[x]) == 0) recordSprStateEvt(hpos + 1, x | SPR_EVT_ARMEDS);
+    }
+
+    private void drawSpritePixelAga(int hpos, int x) {
+        final int col = (int) ((ssraW[x] >>> 63) & 1) | (int) ((ssrbW[x] >>> 62) & 2);
+        if (col != 0) {
+            emitSpritePixel(hpos, spriteBase[x] | col, Z_SP[x] | SPRITE_EMIT_SINGLE);
+            spritePixelsThisFrame[x]++;
+            spritesOnLineMask |= (1 << x);
+        }
+    }
+
+    private void drawAttachedSpritePixelAga(int hpos, int x) {
+        final int col = (int) ((ssraW[x - 1] >>> 63) & 1) | (int) ((ssrbW[x - 1] >>> 62) & 2)
+                      | (int) ((ssraW[x] >>> 61) & 4) | (int) ((ssrbW[x] >>> 60) & 8);
+        if (col != 0) {
+            emitSpritePixel(hpos, attachedSpriteBase | col, Z_SP[x & ~1] | SPRITE_EMIT_SINGLE);
+            spritePixelsThisFrame[x - 1]++;
+            spritePixelsThisFrame[x]++;
+            spritesOnLineMask |= (1 << (x - 1)) | (1 << x);
+        }
+    }
+
+    /**
+     * Marks an emission that covers one sub-pixel instead of two; it sits above every depth
+     * bit, and {@link #blitSprites()} strips it.
+     */
+    private static final int SPRITE_EMIT_SINGLE = 1 << 20;
+
     /** Plain sprite: 2 colour bits (from the MSB of ssrA and of ssrB). */
     private void drawSpritePixel(int hpos, int x) {
         int col = ((ssra[x] >> 15) & 1) | ((ssrb[x] >> 14) & 2);
         if (col != 0) {
             int z    = Z_SP[x];
-            int base = 16 + (x & 6) * 2;  // palette[16..19/20..23/24..27/28..31]
+            int base = spriteBase[x];  // OCS: palette[16..19/20..23/24..27/28..31]
             emitSpritePixel(hpos, base | col, z);
             spritePixelsThisFrame[x] += 2;
             spritesOnLineMask |= (1 << x);
@@ -1269,9 +1643,13 @@ final class DeniseLineRenderer {
             int hpos  = sprEmitPos[i];
             int valz  = sprEmitValZ[i];
             byte val  = (byte) (valz & 0xFF);
-            int  z    = valz >>> 8;
-            for (int p = hpos; p <= hpos + 1 && p < zBuffer.length; p++) {
-                if (z > zBuffer[p]) mBuffer[p] = val;
+            int  z    = (valz >>> 8) & ~SPRITE_EMIT_SINGLE;
+            final int last = ((valz >>> 8) & SPRITE_EMIT_SINGLE) != 0 ? hpos : hpos + 1;
+            for (int p = hpos; p <= last && p < zBuffer.length; p++) {
+                if (z > zBuffer[p]) {
+                    mBuffer[p] = val;
+                    if (isAGA) sBuffer[p] = 1;
+                }
                 zBuffer[p] |= z;
             }
         }
@@ -1300,7 +1678,7 @@ final class DeniseLineRenderer {
             // With the per-pair offset, on pairs other than 0+1 the codes 8-11 would land on
             // colours 28-31 instead of 24-27 (e.g. the flesh of Last Battle's hero, colour 27
             // EC8, would become 31 842: an orange sprite instead of skin tone).
-            int base = 16;
+            int base = attachedSpriteBase;
             emitSpritePixel(hpos, base | col, z);
             spritePixelsThisFrame[x - 1] += 2;
             spritePixelsThisFrame[x]     += 2;
@@ -1324,6 +1702,22 @@ final class DeniseLineRenderer {
     private boolean collisionActiveAt(int pos) {
         return spriteGate.openAt(pos, SPRITE_ENABLE_OFFSET) && pos < spriteClipEnd
                 && bBuffer[pos] == (byte) 0xFF;
+    }
+
+    /**
+     * The planes the collisions compare (ENBPx) and the values they expect (MVBPx), masked by
+     * the enables: six planes from CLXCON, and on Lisa planes 7 and 8 from CLXCON2 (ENBP7-8
+     * in bits 6-7, MVBP7-8 in bits 0-1).
+     */
+    private int collisionEnable() {
+        final int e = (clxcon >> 6) & 0x3F;
+        return isAGA ? e | (clxcon2 & 0xC0) : e;
+    }
+
+    private int collisionMatch() {
+        int m = clxcon & 0x3F;
+        if (isAGA) m |= (clxcon2 & 0x03) << 6;
+        return m & collisionEnable();
     }
 
     private void checkCollisions() {
@@ -1386,8 +1780,9 @@ final class DeniseLineRenderer {
         if ((z & z_s45) != 0 && (z & z_s67) != 0) clxdat |= 0x4000;
 
         // A pixel value of 0 matches a playfield when the enabled match bits are all 0.
-        final boolean pf1 = (clxcon & 0x15 & ((clxcon >> 6) & 0x15)) == 0;
-        final boolean pf2 = (clxcon & 0x2A & ((clxcon >> 6) & 0x2A)) == 0;
+        final int match = collisionMatch();
+        final boolean pf1 = (match & 0x55) == 0;
+        final boolean pf2 = (match & 0xAA) == 0;
         for (int x = 0; x < 8; x++) {
             if ((z & Z_SP[x]) == 0) continue;
             if ((x & 1) != 0 && (clxcon & (1 << (12 + (x >> 1)))) == 0) continue;
@@ -1441,10 +1836,12 @@ final class DeniseLineRenderer {
         // Masks for PF1 (odd planes) and PF2 (even planes). The match value is masked with
         // the enable: otherwise an MVBP bit set on a plane that is NOT enabled would make the
         // comparison impossible.
-        int enabled1 = (clxcon >> 6) & 0x15;   // ENBP of bits 0,2,4
-        int enabled2 = (clxcon >> 6) & 0x2A;   // ENBP of bits 1,3,5
-        int match1   =  clxcon       & 0x15 & enabled1;   // MVBP of bits 0,2,4
-        int match2   =  clxcon       & 0x2A & enabled2;   // MVBP of bits 1,3,5
+        int enable   = collisionEnable();
+        int match    = collisionMatch();
+        int enabled1 = enable & 0x55;   // ENBP of the odd planes (bits 0,2,4,6)
+        int enabled2 = enable & 0xAA;   // ENBP of the even planes (bits 1,3,5,7)
+        int match1   = match  & 0x55;   // MVBP of the odd planes
+        int match2   = match  & 0xAA;   // MVBP of the even planes
 
         for (int pos = 0; pos < HPIXELS; pos++) {
             if ((zBuffer[pos] & Z_SP[x]) == 0) continue;
@@ -1484,10 +1881,12 @@ final class DeniseLineRenderer {
         if ((clxdat & 0x0001) != 0) return;  // already detected
 
         // Masks for PF1 and PF2; the match is masked with the enable
-        int enabled1 = (clxcon >> 6) & 0x15;
-        int enabled2 = (clxcon >> 6) & 0x2A;
-        int match1   =  clxcon       & 0x15 & enabled1;
-        int match2   =  clxcon       & 0x2A & enabled2;
+        int enable   = collisionEnable();
+        int match    = collisionMatch();
+        int enabled1 = enable & 0x55;
+        int enabled2 = enable & 0xAA;
+        int match1   = match  & 0x55;
+        int match2   = match  & 0xAA;
 
         for (int pos = 0; pos < HPIXELS; pos++) {
             if (!collisionActiveAt(pos)) continue;
@@ -1504,6 +1903,10 @@ final class DeniseLineRenderer {
     // =========================================================================
 
     private void colorize(int vpos) {
+        if (isAGA) {
+            colorizeAga();
+            return;
+        }
         // Start again from the colour state INHERITED from the previous line: this line's
         // writes have already updated the live palette[], but the replay of colChanges must
         // apply them at their triggers. Restoring the start-of-line snapshot, the segment
@@ -1659,6 +2062,135 @@ final class DeniseLineRenderer {
         return hold;
     }
 
+    // =========================================================================
+    // Phase 6 on Lisa: 24-bit colour registers
+    // =========================================================================
+
+    /**
+     * Planes Lisa composes, from BPLCON0: BPU3 (bit 4) alone selects eight, BPU3 with any of
+     * the three BPU bits selects none.
+     */
+    static int agaPlanes(int bplcon0) {
+        if ((bplcon0 & 0x0010) != 0) return (bplcon0 & 0x7000) != 0 ? 0 : 8;
+        return (bplcon0 >> 12) & 7;
+    }
+
+    /**
+     * Lisa's colour mode, a priority chain: HAM, dual playfield, Extra Half-Brite (exactly six
+     * planes, neither HAM nor dual playfield, KILLEHB clear), normal.
+     */
+    private static final int AGA_NORMAL = 0, AGA_EHB = 1, AGA_HAM = 2;
+
+    private static int agaMode(int bplcon0, int bplcon2) {
+        if ((bplcon0 & 0x0800) != 0) return AGA_HAM;
+        if ((bplcon0 & 0x0400) != 0) return AGA_NORMAL;
+        if (agaPlanes(bplcon0) == 6 && (bplcon2 & 0x0200) == 0) return AGA_EHB;
+        return AGA_NORMAL;
+    }
+
+    /**
+     * Colorize on Lisa: the same replay of the line's colour and mode changes as
+     * {@link #colorize}, over the 256 registers of 24 bits.
+     */
+    private void colorizeAga() {
+        System.arraycopy(paletteAgaLineStart, 0, paletteAga, 0, 256);
+        int pixel = 0;
+        int hold = paletteAga[0];
+        int curBplcon0 = initialBplcon0;
+        int curBplcon2 = initialBplcon2;
+        int mode = agaMode(curBplcon0, curBplcon2);
+        int xor = initialBplcon4 >>> 8;
+        int colIdx = 0;
+        while (colIdx < colChanges.size()) {
+            int trigger = colChanges.keys[colIdx];
+            if (mode == AGA_HAM) hold = colorizeHamAga(pixel, trigger, hold, agaPlanes(curBplcon0), xor);
+            else                 colorizeNormalAga(pixel, trigger, mode == AGA_EHB, xor);
+            pixel = trigger;
+            RegChange c = colChanges.elements[colIdx++];
+            if (c.reg >= AbstractDenise.COLCHANGE_AGA) {
+                paletteAga[c.reg - AbstractDenise.COLCHANGE_AGA] = c.value;
+            } else if (c.reg == 0x100) {
+                curBplcon0 = c.value;
+                mode = agaMode(curBplcon0, curBplcon2);
+            } else if (c.reg == COLCHANGE_KILLEHB) {
+                curBplcon2 = c.value;
+                mode = agaMode(curBplcon0, curBplcon2);
+            } else if (c.reg == 0x10C) {
+                xor = (c.value >>> 8) & 0xFF;
+            }
+        }
+        if (mode == AGA_HAM) colorizeHamAga(pixel, HPIXELS, hold, agaPlanes(curBplcon0), xor);
+        else                 colorizeNormalAga(pixel, HPIXELS, mode == AGA_EHB, xor);
+        colChanges.clear();
+    }
+
+    private void colorizeNormalAga(int from, int to, boolean ehb, int xor) {
+        final int[] pal = paletteAga;
+        for (int i = from; i < to && i < HPIXELS; i++) {
+            int cIdx;
+            if (sBuffer[i] != 0 && (borderSprite || (!lineIsVBorder && bBuffer[i] == (byte) 0xFF))) {
+                rgbLine[i] = pal[mBuffer[i] & 0xFF];
+                continue;
+            } else if (lineIsVBorder || bBuffer[i] != (byte) 0xFF) {
+                cIdx = borderColor & 0xFF;
+            } else if (sBuffer[i] != 0) {
+                rgbLine[i] = pal[mBuffer[i] & 0xFF];
+                continue;
+            } else {
+                cIdx = (mBuffer[i] & 0xFF) ^ xor;
+            }
+            if (ehb && (cIdx & 0x20) != 0) {
+                rgbLine[i] = (pal[cIdx & 0x1F] >> 1) & 0x7F7F7F;
+            } else {
+                rgbLine[i] = pal[cIdx];
+            }
+        }
+    }
+
+    /**
+     * HAM on Lisa. With six planes bits 5:4 select the operation and the four low bits, doubled
+     * into a byte, are the new component; with eight planes bits 1:0 select it and the six high
+     * bits replace the top of the component, the two low bits of the held colour staying. A
+     * sprite in front of the playfield and the border show their colour and leave the held
+     * one alone.
+     */
+    private int colorizeHamAga(int from, int to, int hold, int planes, int xor) {
+        final int[] pal = paletteAga;
+        final int zpf = zPF((initialBplcon2 >> 3) & 7);
+        final boolean ham8 = planes >= 7;
+        for (int i = from; i < to && i < HPIXELS; i++) {
+            if (lineIsVBorder || bBuffer[i] != (byte) 0xFF) {
+                rgbLine[i] = borderSprite && sBuffer[i] != 0 ? pal[mBuffer[i] & 0xFF] : pal[0];
+                continue;
+            }
+            int sprBits = zBuffer[i] & Z_ALL_SPRITES;
+            if (sprBits != 0 && Integer.highestOneBit(sprBits) > zpf) {
+                rgbLine[i] = pal[mBuffer[i] & 0xFF];
+                continue;
+            }
+            int s = dBuffer[i] & 0xFF;
+            int x = s ^ xor;
+            if (ham8) {
+                switch (x & 3) {
+                    case 0: hold = pal[x >> 2]; break;
+                    case 1: hold = (hold & 0xFFFF03) | (s & 0xFC); break;
+                    case 2: hold = (hold & 0x03FFFF) | ((s & 0xFC) << 16); break;
+                    default: hold = (hold & 0xFF03FF) | ((s & 0xFC) << 8); break;
+                }
+            } else {
+                int v = (s & 0xF) * 0x11;
+                switch (x & 0x30) {
+                    case 0x00: hold = pal[x & 0x0F]; break;
+                    case 0x10: hold = (hold & 0xFFFF00) | v; break;
+                    case 0x20: hold = (hold & 0x00FFFF) | (v << 16); break;
+                    default:   hold = (hold & 0xFF00FF) | (v << 8); break;
+                }
+            }
+            rgbLine[i] = hold;
+        }
+        return hold;
+    }
+
     /**
      * KILLEHB (BPLCON2 bit 9), an ECS Denise bit: it turns Extra-Half-Brite off and the sixth
      * plane is then ignored (see colorizeNormal).
@@ -1674,6 +2206,9 @@ final class DeniseLineRenderer {
     /** Power-on state of the rendering side. {@code hardware}: see {@link AbstractDenise#reset(boolean)}. */
     void reset(boolean hardware) {
         initialBplcon0 = initialBplcon2 = 0;
+        initialBplcon3 = 0x0C00;
+        initialBplcon4 = 0x0011;
+        clxcon2 = 0;
         hstrtLineStart = 0; hstopLineStart = 0;
         mainStartHstrt = -1; mainStartHstop = -1; mainStartCounter = -1;
         hflop = true;
@@ -1683,6 +2218,8 @@ final class DeniseLineRenderer {
         if (hardware) {
             Arrays.fill(palette, 0);
             Arrays.fill(paletteLineStart, 0);
+            Arrays.fill(paletteAga, 0);
+            Arrays.fill(paletteAgaLineStart, 0);
         }
         Arrays.fill(sprdata,  0);
         Arrays.fill(sprdatb,  0);

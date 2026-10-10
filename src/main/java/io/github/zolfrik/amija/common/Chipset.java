@@ -30,18 +30,26 @@ package io.github.zolfrik.amija.common;
  *       Amiga 500.</li>
  *   <li>{@link #ECS}: Enhanced Chip Set: Agnus 8372 "Fat" (1 MB), Denise 8373 "Super Denise"
  *       (super-hires, BPLCON3, DIWHIGH, ...).</li>
+ *   <li>{@link #AGA}: Advanced Graphics Architecture: Alice (2 MB, wide bitplane and sprite
+ *       fetch through FMODE) and Lisa (8 planes, 256 colour registers of 24 bits). Every ECS
+ *       feature is part of it.</li>
  * </ul>
  *
  * <p>Read from {@code amiga.properties} with the key {@code chipset} (default {@link #OCS}),
- * like {@code video.mode}. A change takes effect only after a restart (cold restart). The enum
- * can be extended with a third value {@code AGA} without touching the source of truth.
+ * like {@code video.mode}. A change takes effect only after a restart (cold restart).
  */
 public enum Chipset {
     OCS,
-    ECS;
+    ECS,
+    AGA;
 
     /** {@code true} if this chipset is ECS (or newer). */
     public boolean isEcs() {
         return this != OCS;
+    }
+
+    /** {@code true} if this chipset is AGA. */
+    public boolean isAga() {
+        return this == AGA;
     }
 }

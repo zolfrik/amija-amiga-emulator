@@ -305,7 +305,7 @@ public final class ConfigDialog {
         });
         JLabel cpuLabel = addRow(system, 4, "label.cpu", cpuCombo, null);
 
-        // OCS/ECS chipset: like the processor, a change requires a cold restart.
+        // OCS/ECS/AGA chipset: like the processor, a change requires a cold restart.
         JComboBox<Chipset> chipsetCombo = new JComboBox<>(Chipset.values());
         chipsetCombo.setSelectedItem(config.chipset());
         chipsetCombo.setMaximumSize(dim(160, 26));

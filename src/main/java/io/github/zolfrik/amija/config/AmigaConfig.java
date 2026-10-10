@@ -233,16 +233,31 @@ public final class AmigaConfig {
     private static final AutoDefaults AUTO_EXPANDED =
             new AutoDefaults("auto.hd.", 2048, 512, 8192, Chipset.ECS, CpuModel.M68020);
 
-    private static final AutoDefaults[] AUTO_PROFILES = { AUTO_FLOPPY, AUTO_EXPANDED };
+    /**
+     * Software that needs the AGA chipset: an A1200, with its 2 MB of Chip RAM and no Slow
+     * RAM. The Fast RAM applies only with a hard disk or WHDLoad, which keeps its own code
+     * there while the game takes the whole Chip RAM; from floppy the machine is a stock A1200.
+     */
+    private static final AutoDefaults AUTO_AGA =
+            new AutoDefaults("auto.aga.", 2048, 0, 8192, Chipset.AGA, CpuModel.M68020);
+
+    private static final AutoDefaults[] AUTO_PROFILES = { AUTO_FLOPPY, AUTO_EXPANDED, AUTO_AGA };
 
     /**
      * System settings derived by Auto mode: what the machine will really use at the next
      * start without the user having to choose anything.
      *
      * @param expanded {@code true} if a hard disk or WHDLoad is active (expanded profile)
+     * @param aga      {@code true} if the media needs the AGA chipset (A1200 profile)
      */
-    public record AutoProfile(String kickstartPath, boolean expanded, int chipRamKb,
-            int slowRamKb, int fastRamKb, Chipset chipset, CpuModel cpuModel, VideoMode videoMode) { }
+    public record AutoProfile(String kickstartPath, boolean expanded, boolean aga, int chipRamKb,
+            int slowRamKb, int fastRamKb, Chipset chipset, CpuModel cpuModel, VideoMode videoMode) {
+
+        /** {@code true} if the profile boots Kickstart 3.1 rather than 1.3. */
+        public boolean usesKickstart31() {
+            return expanded || aga;
+        }
+    }
 
     private final Properties props;
 
@@ -490,20 +505,55 @@ public final class AmigaConfig {
      * System settings derived by Auto mode for the media described by the parameters;
      * {@link #autoProfile()} is the same applied to the current state.
      *
-     * <p>The profile is one of two: floppy only (stock A500, Kickstart 1.3) or hard
-     * disk/WHDLoad (expanded machine, Kickstart 3.1). Every value comes from
-     * {@code amiga.properties} ({@code auto.floppy.*} / {@code auto.hd.*}), so anyone can
+     * <p>The profile is one of three: floppy only (stock A500, Kickstart 1.3), hard
+     * disk/WHDLoad (expanded machine, Kickstart 3.1), or AGA software (A1200, Kickstart 3.1),
+     * which wins over the other two. Every value comes from {@code amiga.properties}
+     * ({@code auto.floppy.*} / {@code auto.hd.*} / {@code auto.aga.*}), so anyone can
      * change it by hand without giving up the automation.
      *
      * @param expanded    a hard disk or WHDLoad is active
-     * @param activeFiles files in use, for the PAL/NTSC derivation
+     * @param activeFiles files in use, for the PAL/NTSC and AGA derivations
      */
     private AutoProfile autoProfile(boolean expanded, java.util.List<String> activeFiles) {
-        AutoDefaults d = expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
-        return new AutoProfile(autoKickstartPath(expanded), expanded,
-                d.chipRamKb(this), d.slowRamKb(this), d.fastRamKb(this), d.chipset(this),
+        final boolean aga = agaRequired(activeFiles);
+        AutoDefaults d = aga ? AUTO_AGA : expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
+        int fastRamKb = aga && !expanded ? 0 : d.fastRamKb(this);
+        return new AutoProfile(autoKickstartPath(expanded || aga), expanded, aga,
+                d.chipRamKb(this), d.slowRamKb(this), fastRamKb, d.chipset(this),
                 d.cpuModel(this),
                 autoVideoMode(activeFiles));
+    }
+
+    /**
+     * {@code true} if the active media need the AGA chipset: the WHDLoad slave says so in its
+     * header ({@link io.github.zolfrik.amija.whdload.WhdLoadManager#requiresAga}), or a file
+     * says so in its name ({@link #impliesAga}).
+     */
+    private boolean agaRequired(java.util.List<String> activeFiles) {
+        if (whdloadEnabled() && io.github.zolfrik.amija.whdload.WhdLoadManager
+                .requiresAga(whdloadFile())) {
+            return true;
+        }
+        return impliesAga(activeFiles);
+    }
+
+    /**
+     * {@code true} if one of the active files declares itself AGA in its <b>name</b>: the
+     * word {@code AGA} standing on its own, as the collections write it ({@code (AGA)},
+     * {@code (OCS, AGA)}, {@code _AGA_}, {@code _AGA.lha}). Only the file name is looked at,
+     * not the folder: a collection kept in a folder called {@code #AGA} still says it per file.
+     */
+    public static boolean impliesAga(java.util.List<String> files) {
+        for (String f : files) {
+            if (f == null) continue;
+            String name = fileName(f).toUpperCase(java.util.Locale.ROOT);
+            for (int i = name.indexOf("AGA"); i >= 0; i = name.indexOf("AGA", i + 1)) {
+                boolean before = i == 0 || !Character.isLetterOrDigit(name.charAt(i - 1));
+                boolean after = i + 3 >= name.length() || !Character.isLetterOrDigit(name.charAt(i + 3));
+                if (before && after) return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -825,9 +875,10 @@ public final class AmigaConfig {
     }
 
     /**
-     * Custom chipset of the emulated machine: {@link Chipset#OCS} (default) or
-     * {@link Chipset#ECS}. Selects the Agnus/Denise variant instantiated and enables the
-     * ECS-only registers (BEAMCON0, DIWHIGH, BPLCON3, super-hires, ...). A change takes
+     * Custom chipset of the emulated machine: {@link Chipset#OCS} (default),
+     * {@link Chipset#ECS} or {@link Chipset#AGA}. Selects the Agnus/Denise variant
+     * instantiated and enables the ECS registers (BEAMCON0, DIWHIGH, BPLCON3, super-hires,
+     * ...) and the AGA ones. A change takes
      * effect only after a restart (cold restart).
      */
     public Chipset chipset() {
@@ -1304,10 +1355,11 @@ public final class AmigaConfig {
         sb.append("# itself, AmiJa works the machine out from the files you load and the\n");
         sb.append("# System section disappears from the popup:\n");
         sb.append("#  - Kickstart: the 1.3 below for plain floppy games, the 3.1 as soon as a\n");
-        sb.append("#    hard disk or WHDLoad is in use;\n");
+        sb.append("#    hard disk or WHDLoad is in use, or the software needs AGA;\n");
         sb.append("#  - memory, chipset and processor: the auto.floppy.* profile (68000), or\n");
-        sb.append("#    auto.hd.* (68020) when a hard disk or WHDLoad is in use. Both are\n");
-        sb.append("#    editable right below;\n");
+        sb.append("#    auto.hd.* (68020) when a hard disk or WHDLoad is in use, or auto.aga.*\n");
+        sb.append("#    (A1200: AGA, 68020) when the WHDLoad slave requires AGA or a file name\n");
+        sb.append("#    contains the word AGA. All three are editable right below;\n");
         sb.append("#  - video mode: PAL, unless the name of an active file (floppy, hard disk or\n");
         sb.append("#    WHDLoad archive) contains \"NTSC\" or \"(USA)\", in any case.\n");
         sb.append("# The hand-picked settings further down are left untouched and come back into\n");
@@ -1318,8 +1370,10 @@ public final class AmigaConfig {
         line(sb, K_AUTO_KS13, autoKickstart13());
         line(sb, K_AUTO_KS31, autoKickstart31());
 
-        sb.append("\n# The two hardware profiles of the automatic configuration: auto.floppy.* is\n");
-        sb.append("# used when only floppies are in play, auto.hd.* when a hard disk or WHDLoad is.\n");
+        sb.append("\n# The three hardware profiles of the automatic configuration: auto.floppy.* is\n");
+        sb.append("# used when only floppies are in play, auto.hd.* when a hard disk or WHDLoad is,\n");
+        sb.append("# auto.aga.* when the software needs AGA (its Fast RAM only with a hard disk or\n");
+        sb.append("# WHDLoad: from floppy it is a stock A1200).\n");
         sb.append("# Same units and values as the hand-picked settings below.\n");
         for (AutoDefaults d : AUTO_PROFILES) {
             line(sb, d.prefix() + "chipram.kb", Integer.toString(d.chipRamKb(this)));
@@ -1437,8 +1491,8 @@ public final class AmigaConfig {
         sb.append("# the emulator (cold restart).\n");
         line(sb, K_VIDEO_MODE, storedVideoMode().name());
 
-        sb.append("\n# Custom chipset: OCS (default) or ECS. Selects the Agnus/Denise variant\n");
-        sb.append("# and enables the ECS-only registers. Chip RAM > 512 KB requires ECS.\n");
+        sb.append("\n# Custom chipset: OCS (default), ECS or AGA. Selects the Agnus/Denise variant\n");
+        sb.append("# and enables the ECS and AGA registers. Chip RAM > 512 KB requires ECS or AGA.\n");
         sb.append("# Automatic configuration off. The change takes effect only after restarting\n");
         sb.append("# the emulator (cold restart).\n");
         line(sb, K_CHIPSET, storedChipset().name());

@@ -43,20 +43,27 @@ public final class DeniseLineJob {
     // The shift-register log of the line (see AbstractDenise.bplEvents). Every event opens
     // with a header: the half-CCK step it happened at, its type and one argument bit. A load
     // is followed by the cursor and the three plane words of its group, already masked by
-    // the BPU latched at load.
+    // the BPU latched at load. A wide load (Lisa) is followed by the cursor, the word length
+    // in bits and the four plane words of its group, each as two ints, high half first.
     static final int BPL_EV_LOAD = 0;
     static final int BPL_EV_HIRES = 1;
-    static final int BPL_EV_TYPE = 1;
+    static final int BPL_EV_LOAD_WIDE = 2;
+    /** Lisa: change of super-hires; the argument is the new state. */
+    static final int BPL_EV_SHRES = 3;
+    static final int BPL_EV_TYPE = 3;
     /** Load: the even group. Resolution change: the new resolution is hires. */
-    static final int BPL_EV_ARG = 2;
-    static final int BPL_EV_STEP_SHIFT = 2;
+    static final int BPL_EV_ARG = 4;
+    static final int BPL_EV_STEP_SHIFT = 3;
     static final int BPL_LOAD_SIZE = 5;
+    static final int BPL_LOAD_WIDE_SIZE = 11;
     static final int BPL_EVENTS_INITIAL = 1024;
 
     int[] bplEvents = new int[BPL_EVENTS_INITIAL];
     int bplEventCount;
     /** The live resolution when the line's log started. */
     boolean bplStartHires;
+    /** Lisa: super-hires was on when the line's log started. */
+    boolean bplStartShres;
 
     /** Raw bitplane colour index of the line: written and consumed by the renderer. */
     byte[] dBuffer = new byte[HPIXELS + 64 + 8];
@@ -76,14 +83,25 @@ public final class DeniseLineJob {
     int maxHpos;
     int hcounterRenderHead;
     int clxcon;
+    /** CLXCON2 (Lisa). */
+    int clxcon2;
 
     /** Live register values at the end of the line. */
     int bplcon0, bplcon2, hstrt, hstop, armed;
+    /** BPLCON3 and BPLCON4 at the end of the line; read on Lisa only. */
+    int bplcon3, bplcon4;
+    /** Lisa's FMODE at the end of the line. */
+    int fmode;
     final int[] palette = new int[32];
+    /** Lisa's 256 colour registers, 24-bit; filled on AGA only. */
+    final int[] paletteAga = new int[256];
     final int[] sprpos  = new int[8];
     final int[] sprctl  = new int[8];
     final int[] sprdata = new int[8];
     final int[] sprdatb = new int[8];
+    /** Lisa's sprite data registers, left-aligned; filled on AGA only. */
+    final long[] sprdataWide = new long[8];
+    final long[] sprdatbWide = new long[8];
 
     // -- Results, written by the renderer ------------------------------------------------
 
@@ -108,7 +126,7 @@ public final class DeniseLineJob {
     }
 
     /**
-     * Which of the four sub-pixels of the right-border wrap cell, starting at
+     * Which of the sub-pixels of the two colour clocks past the end of the line, starting at
      * {@link AbstractDenise#RIGHT_HBLANK_WRAP_COL}, carry content (bit k = sub-pixel k). See
      * {@link AbstractDenise#isPlayfieldAt(int)}.
      */

@@ -423,7 +423,7 @@ public final class Blitter {
     public void reset() {
         state = State.IDLE;
         running = false; clearBbusy(); dmaEnabled = false;
-        startPending = false; startCountdown = 0; clearBusyCountdown = 0;
+        startPending = false; startCountdown = 0; clearBusyCountdown = 0; agaDoneCountdown = 0;
         bltcon0 = 0; bltcon1 = 0;
         bltafwm = 0xFFFF; bltalwm = 0xFFFF;
         bltapt = 0; bltbpt = 0; bltcpt = 0; bltdpt = 0;
@@ -584,6 +584,7 @@ public final class Blitter {
         irqCountdown = 0;
         bltpc   = 0;
         clearBusyCountdown = 0;
+        agaDoneCountdown = 0;
         aold = 0; bold = 0;
 
         if ((bltcon1 & BLTCON1_LINE) != 0) {
@@ -632,6 +633,7 @@ public final class Blitter {
             stepCck(true);
         }
         if (running) endBlit(); // guard expired: do not leave BBUSY stuck
+        if (agaDoneCountdown > 0) { agaDoneCountdown = 0; armBlitInterrupt(); }
         clearBusyCountdown = 0; clearBbusy(); // no further ticks in immediate mode
         // Immediate: no later tick, so the armed interrupt is delivered here.
         if (irqCountdown > 0) { irqCountdown = 0; agnus.blitterFinished(); }
@@ -663,6 +665,12 @@ public final class Blitter {
     private int clearBusyCountdown = 0;
 
     /**
+     * CCKs left before BBUSY falls and the interrupt is armed on Alice, after the last word
+     * of a blit that writes D. 0 = inactive.
+     */
+    private int agaDoneCountdown = 0;
+
+    /**
      * Deferred BBUSY clear of line mode: armed to 1 at the last bus cycle of the last pixel
      * (LINE_LAST_BUS), visible to the CPU from the next CCK. Called by Agnus ONCE per CCK,
      * BEFORE the Blitter step and REGARDLESS of {@link #isRunning()} (endBlit does not
@@ -672,6 +680,10 @@ public final class Blitter {
     public void tickBusyClear() {
         if (irqCountdown > 0 && --irqCountdown == 0) {
             agnus.blitterFinished();
+        }
+        if (agaDoneCountdown > 0 && --agaDoneCountdown == 0) {
+            clearBbusy();
+            armBlitInterrupt();
         }
         if (clearBusyCountdown == 1) {
             clearBusyCountdown = 0;
@@ -783,8 +795,13 @@ public final class Blitter {
                 // the (2WH+1)-th allocated slot COUNTING the warm-up and is visible one CCK
                 // later; for the null W2H2 blit, 9th slot = b+10, visible at b+11 = our last
                 // REPEAT at b+11. The blit goes on (D drain).
-                clearBbusy();
-                armBlitInterrupt();
+                // Alice holds BBUSY and the interrupt two CCKs longer when the blit writes D.
+                if (agnus != null && agnus.isAGA() && (bltcon0 & 0x0100) != 0) {
+                    agaDoneCountdown = 2;
+                } else {
+                    clearBbusy();
+                    armBlitInterrupt();
+                }
             }
         }
 
@@ -839,12 +856,12 @@ public final class Blitter {
         // the exit slot that turns BBUSY off (measured on bbusy0 v202, BPU=4). The countdown
         // is completed by tickBusyClear. Paths with no countdown (line mode, guards) clear
         // at once.
-        if (clearBusyCountdown == 0) clearBbusy();
+        if (clearBusyCountdown == 0 && agaDoneCountdown == 0) clearBbusy();
         state   = State.IDLE;
         // The interrupt is already armed at the BBUSY edge (armBlitInterrupt). A path that
         // gets here without arming it (line mode with the deferred clear already consumed,
         // or a guard) arms it here, from the same instant.
-        armBlitInterrupt();
+        if (agaDoneCountdown == 0) armBlitInterrupt();
     }
 
     // =========================================================================

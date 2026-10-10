@@ -355,7 +355,7 @@ public abstract class AbstractAgnus {
         SPR0CTL, SPR1CTL, SPR2CTL, SPR3CTL, SPR4CTL, SPR5CTL, SPR6CTL, SPR7CTL,
         SPR0PTH, SPR1PTH, SPR2PTH, SPR3PTH, SPR4PTH, SPR5PTH, SPR6PTH, SPR7PTH,
         SPR0PTL, SPR1PTL, SPR2PTL, SPR3PTL, SPR4PTL, SPR5PTL, SPR6PTL, SPR7PTL,
-        DSKPTH, DSKPTL, COPCON
+        DSKPTH, DSKPTL, COPCON, FMODE_FETCH
     }
 
     public void recordRegisterChange(long delay, AgnusReg reg, int value) {
@@ -613,6 +613,10 @@ public abstract class AbstractAgnus {
                 if (paula != null) paula.setDiskDmaPointer(dskpt);
                 break;
             case COPCON: copper.writeRegister(0x02E, value); break;
+            case FMODE_FETCH:
+                bplFetchFmode = value & 3;
+                sprFetchFmode = (value >> 2) & 3;
+                break;
         }
     }
 
@@ -644,6 +648,20 @@ public abstract class AbstractAgnus {
         sprStartStop(idx);
         setSPRxPOS(idx, value);
         sprStartStop(idx);
+        // Alice: bit 7 of SPRxPOS marks the sprite for scan doubling under SSCAN2.
+        sprScanDouble[idx] = isAGA() && (value & 0x80) != 0;
+    }
+
+    /** Per sprite: bit 7 of its last SPRxPOS on Alice, the SSCAN2 doubling flag. */
+    private final boolean[] sprScanDouble = new boolean[8];
+
+    /**
+     * SSCAN2 (FMODE bit 15): a doubled sprite fetches its data only on the lines of the parity
+     * of its VSTART, so every data line shows twice.
+     */
+    private boolean sprScanDoubleSkip(int idx) {
+        return sprScanDouble[idx] && (fmode & 0x8000) != 0 && sprDmaEnabled[idx]
+                && (vpos & 1) != (sprVStart[idx] & 1);
     }
 
     /** SPRxCTL: start/stop check, update, start/stop check. */
@@ -753,6 +771,7 @@ public abstract class AbstractAgnus {
         if (seqBplcon0Count == seqBplcon0Pending.length) {
             // Cannot happen: at most one write per CCK and each waits two. Apply the oldest.
             seqBplcon0 = seqBplcon0Pending[0];
+            updateFetchGeometry();
             System.arraycopy(seqBplcon0Pending, 1, seqBplcon0Pending, 0, seqBplcon0Count - 1);
             System.arraycopy(seqBplcon0Due, 1, seqBplcon0Due, 0, seqBplcon0Count - 1);
             seqBplcon0Count--;
@@ -770,6 +789,7 @@ public abstract class AbstractAgnus {
             seqBplcon0 = seqBplcon0Pending[n++];
         }
         if (n > 0) {
+            updateFetchGeometry();
             seqBplcon0Count -= n;
             System.arraycopy(seqBplcon0Pending, n, seqBplcon0Pending, 0, seqBplcon0Count);
             System.arraycopy(seqBplcon0Due, n, seqBplcon0Due, 0, seqBplcon0Count);
@@ -983,7 +1003,7 @@ public abstract class AbstractAgnus {
     private enum BusOwner {
         NONE, REFRESH, DISK, AUDIO0, AUDIO1, AUDIO2, AUDIO3,
         SPRITE0, SPRITE1, SPRITE2, SPRITE3, SPRITE4, SPRITE5, SPRITE6, SPRITE7,
-        BPL1, BPL2, BPL3, BPL4, BPL5, BPL6, COPPER, BLITTER, CPU, BLOCKED
+        BPL1, BPL2, BPL3, BPL4, BPL5, BPL6, BPL7, BPL8, COPPER, BLITTER, CPU, BLOCKED
     }
 
     /**
@@ -1514,10 +1534,10 @@ public abstract class AbstractAgnus {
     private int scrollEven = 0;
 
     /** Bitplane pointers (BPLxPT registers, written by the CPU). */
-    private final int[] bplPt          = new int[6];
+    private final int[] bplPt          = new int[8];
 
     /** Current bitplane pointers during DMA (updated at every fetch). */
-    private final int[] bplPtrInternal = new int[6];
+    private final int[] bplPtrInternal = new int[8];
 
     /** Sprite pointers (SPRxPT registers). */
     private final int[] sprPt          = new int[8];
@@ -1613,22 +1633,159 @@ public abstract class AbstractAgnus {
     private int bpl1modFetch = 0, bpl2modFetch = 0;
     private int bpl1modStage = 0, bpl2modStage = 0;
 
-    /**
-     * ddfCckStart SAMPLED when the fetch window opens (at the first CCK where CCK equals the
-     * live ddfCckStart) and used for the fetch phase and the window bounds for the whole
-     * line. The bitplane fetch sequence is "armed" at the first DDFSTRT match: a DDFSTRT
-     * change in the middle of the line (a split screen like Last Battle's status bar) must
-     * NOT move the fetch phase of the current line. Computing the phase as
-     * (CCK - ddfCckStart) from the LIVE register made it jump by 4 when the Copper rewrote
-     * DDFSTRT mid-line ($34 -> $38), adding or removing a fetch depending on the exact CCK of
-     * the Copper's MOVE (which moves by +-2 CCK between frames with sprite DMA contention):
-     * the bitplane pointer drifted by +-2 bytes on alternate frames, the status bar
-     * flickered and the odd/even planes went out of alignment.
-     */
-    private int fetchUnitDdfStart = 0;
-
     /** BPLCON0 as the bitplane sequencer sees it: each write reaches it two CCKs later. */
     private int seqBplcon0 = 0;
+
+    // =========================================================================
+    // Fetch geometry: what the sequencer fetches, from its BPLCON0 and FMODE
+    // =========================================================================
+
+    /**
+     * FMODE ($1FC), the fetch width of bitplanes (bits 0-1) and sprites (bits 2-3) and the
+     * scan doubling bits (14-15). Only Alice has it; it stays 0 elsewhere.
+     */
+    protected int fmode;
+
+    /**
+     * Index of the fetch width: 0 = 16 bits (FMODE 0), 1 = 32 bits (FMODE 1 or 2),
+     * 2 = 64 bits (FMODE 3).
+     */
+    private int fetchMode;
+
+    /**
+     * Fetch unit, the indivisible block of the sequence (8, 16 or 32 CCK), and fetch start, the
+     * distance between two fetches of the same plane, as masks of the sequencer counter.
+     */
+    private int fetchUnitMask = 7, fetchStartMask = 7;
+
+    /** Planes the current block holds (8, 4 or 2): it picks the cycle order and the modulo CCKs. */
+    private int fmMaxPlane = 8;
+
+    /** The plane each CCK of the block fetches, 0-based, -1 for a free cycle. */
+    private int[] fetchSequence = FETCH_SEQUENCE_8;
+
+    /** Planes really fetched: 0 when the planes BPLCON0 asks for do not fit the block. */
+    private int fetchPlanes;
+
+    /**
+     * The bitplane and sprite fetch width as the transfers use it: FMODE bits 0-1 and 2-3,
+     * which reach the data path two CCKs after the write. 0 is 16 bits; 1 and 3 are 32 and 64
+     * bits; 2 (page mode alone) is a 32-bit cycle carrying one word twice.
+     */
+    private int bplFetchFmode, sprFetchFmode;
+
+    /**
+     * A wide bitplane fetch: the long (FMODE 1 and 2) or the quad word (FMODE 3) the pointer
+     * lies in. A pointer to the second word of a long reads that word twice; FMODE 2 reads the
+     * first word of the long twice.
+     */
+    private long fetchWideBitplane(int addr, int fm) {
+        if (fm == 3) {
+            final int base = addr & ~7;
+            final int l1 = (addr & 4) != 0 ? base + 4 : base;
+            final int l2 = base + 4;
+            if ((addr & 2) != 0) {
+                final long w1 = dmaReadWord(l1 + 2) & 0xFFFFL;
+                final long w2 = dmaReadWord(l2 + 2) & 0xFFFFL;
+                return (w1 << 48) | (w1 << 32) | (w2 << 16) | w2;
+            }
+            return (readChipLongDma(l1) << 32) | readChipLongDma(l2);
+        }
+        final int base = addr & ~3;
+        final long w;
+        if ((addr & 2) != 0) {
+            w = dmaReadWord(base + 2) & 0xFFFFL;
+        } else if ((fm & 2) != 0) {
+            w = dmaReadWord(base) & 0xFFFFL;
+        } else {
+            return readChipLongDma(base);
+        }
+        return (w << 16) | w;
+    }
+
+    private long readChipLongDma(int addr) {
+        return ((dmaReadWord(addr) & 0xFFFFL) << 16) | (dmaReadWord(addr + 2) & 0xFFFFL);
+    }
+
+    /**
+     * The pointer after a wide fetch: the part below the fetch width is dropped and the step
+     * and the modulo added.
+     */
+    private static int advanceWidePointer(int ptr, int mod, int fm) {
+        return fm == 3 ? (ptr & ~7) + 8 + mod : (ptr & ~3) + 4 + mod;
+    }
+
+    private static final int[] FETCH_UNITS  = { 8, 8, 8, 0, 16, 8, 8, 0, 32, 16, 8, 0 };
+    private static final int[] FETCH_STARTS = { 3, 2, 1, 0, 4, 3, 2, 0, 5, 4, 3, 0 };
+    private static final int[] FM_MAXPLANES = { 3, 2, 1, 0, 3, 3, 2, 0, 3, 3, 3, 0 };
+
+    private static final int[] FETCH_SEQUENCE_8 = sequence(7, 3, 5, 1, 6, 2, 4, 0);
+    private static final int[] FETCH_SEQUENCE_4 = sequence(3, 1, 2, 0);
+    private static final int[] FETCH_SEQUENCE_2 = sequence(1, 0);
+
+    private static int[] sequence(int... planes) {
+        final int[] s = new int[32];
+        Arrays.fill(s, -1);
+        System.arraycopy(planes, 0, s, 0, planes.length);
+        return s;
+    }
+
+    /**
+     * Planes BPLCON0 asks the sequencer for: BPU3 (bit 4) alone is eight, BPU3 with any BPU bit
+     * is none. Without Alice the bit does not exist.
+     */
+    private int requestedPlanes(int bplcon0) {
+        if (isAGA() && (bplcon0 & 0x0010) != 0) return (bplcon0 & 0x7000) != 0 ? 0 : 8;
+        return (bplcon0 >> 12) & 7;
+    }
+
+    /** Resolution the sequencer fetches for: 0 lores, 1 hires, 2 super-hires (Alice only). */
+    private int fetchResolution(int bplcon0) {
+        if (isAGA() && (bplcon0 & 0x0040) != 0) return 2;
+        return (bplcon0 & 0x8000) != 0 ? 1 : 0;
+    }
+
+    /**
+     * Recomputes the fetch geometry from the sequencer's BPLCON0 and FMODE.
+     *
+     * <p>When the planes do not fit the block, bitplane DMA does not truncate them: it fetches
+     * nothing at all, so five or six planes in hires (FMODE 0) leave every slot free. Seven
+     * planes in lores fetch four without Alice; Denise still draws six, the two high ones
+     * keeping their old data.
+     */
+    private void updateFetchGeometry() {
+        final int f = fmode & 3;
+        fetchMode = f == 0 ? 0 : f == 3 ? 2 : 1;
+        final int res = fetchResolution(seqBplcon0);
+        final int k = fetchMode * 4 + res;
+        fetchUnitMask = FETCH_UNITS[k] - 1;
+        fetchStartMask = (1 << FETCH_STARTS[k]) - 1;
+        fmMaxPlane = 1 << FM_MAXPLANES[k];
+        fetchSequence = fmMaxPlane == 8 ? FETCH_SEQUENCE_8
+                      : fmMaxPlane == 4 ? FETCH_SEQUENCE_4 : FETCH_SEQUENCE_2;
+        int planes = requestedPlanes(seqBplcon0);
+        if (planes > fmMaxPlane) {
+            planes = 0;
+        } else if (planes == 7 && fetchMode == 0 && res == 0 && !isAGA()) {
+            planes = 4;
+        }
+        fetchPlanes = planes;
+    }
+
+    /**
+     * Whether the sequencer counter stands on the last CCK of its block. On Alice the last
+     * block of the line ends after eight CCKs whatever the fetch unit.
+     */
+    private boolean lastOfFetchBlock() {
+        return isAGA() && ddfStopping == 2
+                ? (bprunCycle & 7) == 7
+                : (bprunCycle & fetchUnitMask) == fetchUnitMask;
+    }
+
+    /** Whether the CCK {@code cycle} (0-7) of the last block adds the modulo. */
+    private boolean modCycle(int cycle) {
+        return fmMaxPlane == 8 || (fmMaxPlane == 4 && cycle >= 4) || (fmMaxPlane == 2 && cycle >= 6);
+    }
 
     /** Writes of BPLCON0 still on their way to the sequencer: value and the CCK they land on. */
     private final int[] seqBplcon0Pending = new int[4];
@@ -1735,9 +1892,14 @@ public abstract class AbstractAgnus {
         this.dmaPtrMask = (Integer.highestOneBit(dmaMask) << 1) - 1;
         this.dmaPtrHiMask = dmaPtrMask & 0xFFFF0000;
         // Building the machine is its power-on: dynamic RAM starts with a pattern set by
-        // the Agnus address multiplexing, not with zeroes.
-        chipRAM.fillPowerOnPattern(isECS());
-        if (slowRAM != null) slowRAM.fillPowerOnPattern(isECS());
+        // the Agnus address multiplexing, not with zeroes. Alice multiplexes differently.
+        if (isAGA()) {
+            chipRAM.fillPowerOnPatternAga();
+            if (slowRAM != null) slowRAM.fillPowerOnPatternAga();
+        } else {
+            chipRAM.fillPowerOnPattern(isECS());
+            if (slowRAM != null) slowRAM.fillPowerOnPattern(isECS());
+        }
 
         if (mode == VideoMode.NTSC) {
             this.maxVpos   = 262;
@@ -1779,6 +1941,8 @@ public abstract class AbstractAgnus {
             gary.setChipRamSize(chipRAM.size());
             gary.setSlowRamPresent(slowRAM != null);
             gary.setSlowRamSize(slowRAM != null ? slowRAM.size() : 0);
+            // Alice lives on the A1200 motherboard, whose address decoding is Gayle's.
+            gary.setGayleDecode(isAGA());
         }
 
         this.df0 = new FloppyDrive("DF0", FloppyDrive.DriveType.DD_INT);
@@ -2227,6 +2391,15 @@ public abstract class AbstractAgnus {
             // stays with the CPU and the Blitter, which need no position.
             // `Agnus/Registers/VPOS/ersy2` measures it: with the lines running, the ~125 CCK
             // of freeze fetched 16 words per plane, and the picture came out 32 bytes off.
+            //
+            // The freeze STARTS where the chip's horizontal counter reaches the end of the
+            // line (and not on an NTSC long line), which on our CCK grid is SEQ_PHASE before
+            // the wrap, not at the BPLCON0 write. An ERSY switched on and off WITHIN the same
+            // line freezes nothing: `Agnus/Registers/VPOS/ersy1`, where the Copper raises the
+            // bit at hpos $31 and lowers it at $B1 sixteen times in a row.
+            if (cck == (maxHpos >> 1) + SEQ_PHASE && !syncsStopped && ersyActive() && !lol) {
+                syncsStopped = true;
+            }
             final boolean beamFrozen = syncsStopped;
 
             // Loading the modulo is the FIRST thing of the CCK, before any slot. See the
@@ -2336,14 +2509,16 @@ public abstract class AbstractAgnus {
                 // same pipeline. Read live, a mid-line resolution change came in 4 CCK too
                 // early: the whole residue of `DMACON/resmod1-4`, which write
                 // `BPLCON0 $A200 -> $2200`.
+                // The geometry of the block (its length, the plane order, how many planes fit)
+                // follows the same copy, and FMODE on Alice: see updateFetchGeometry().
                 boolean hires = (seqBplcon0 & 0x8000) != 0;
-                boolean lastOfBlock = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
+                boolean lastOfBlock = lastOfFetchBlock();
                 if (dmaconBplSeq) {
-                    int plane = bplSequence(bprunCycle, hires);
-                    if (plane >= 0 && plane < bitplaneDmaPlaneLimit((seqBplcon0 >> 12) & 7, hires)) {
+                    int plane = fetchSequence[bprunCycle & fetchStartMask];
+                    if (plane >= 0 && plane < fetchPlanes) {
                         // The modulo belongs to the last block of the line, which is the
                         // state the sequencer is in when it decides the slot.
-                        boolean domod = ddfStopping == 2 && (!hires || (bprunCycle & 7) >= 4);
+                        boolean domod = ddfStopping == 2 && modCycle(bprunCycle & 7);
                         bplReqLater = plane | (hires ? BPLREQ_HIRES : 0) | (domod ? BPLREQ_MOD : 0);
                     }
                 }
@@ -2383,10 +2558,11 @@ public abstract class AbstractAgnus {
                     // CCK" but the STATE of bprun TWO CCKs earlier: the difference the
                     // `blocked*` tests measure by widening the DDF window over the sprite
                     // slots.
-                    final boolean lastBplSeq = (bprunCycle & FETCHUNIT_MASK) == FETCHUNIT_MASK;
+                    final boolean lastBplSeq = lastOfFetchBlock();
                     final boolean bplConflict = bprun != 0 && ddfStopping == 2 && lastBplSeq;
                     sprSlotFetch[latchIdx][latchSub] =
-                            sprDmaCycle[latchIdx] != 0 && (bprun != 1 || bplConflict);
+                            sprDmaCycle[latchIdx] != 0 && (bprun != 1 || bplConflict)
+                            && !sprScanDoubleSkip(latchIdx);
                     sprSlotDataPhase[latchIdx][latchSub] = sprDmaEnabled[latchIdx];
                     // The DMA cycle advances at the decision, not at the transfer.
                     if (sprDmaCycle[latchIdx] != 0) {
@@ -2964,14 +3140,6 @@ public abstract class AbstractAgnus {
         scheduleSyncEvent(EVFL_HSYNC);
         scheduleSyncEvent(EVFL_EOL);
 
-        // The ERSY freeze STARTS HERE, at the line boundary (and not on an NTSC long line),
-        // not at the BPLCON0 write. An ERSY switched on and off WITHIN the same line freezes
-        // nothing: `Agnus/Registers/VPOS/ersy1`, where the Copper raises the bit at hpos $31
-        // and lowers it at $B1 sixteen times in a row.
-        if (!syncsStopped && ersyActive() && !lol) {
-            syncsStopped = true;
-        }
-
         // LOL: on an NTSC Agnus the line alternates 227/228 CCK. The toggle applies to the
         // line about to start, only with NTSC *and* LOLDIS clear; otherwise the line goes
         // back to short and stays there. BEAMCON0 decides the mode, not the machine (see
@@ -3477,6 +3645,9 @@ public abstract class AbstractAgnus {
     /** Refresh address width. */
     protected int refreshMask() { return 0x7FFFF; }
 
+    /** REFPTR after a reset, on the chips that reset it. */
+    protected int refreshResetValue() { return 0; }
+
     /**
      * Whether a refresh cycle is allocated in CCK {@code cck}, one CCK before it runs. A REFPTR
      * write in that CCK is lost.
@@ -3589,6 +3760,10 @@ public abstract class AbstractAgnus {
         int subSlot = (relCck % 4) / 2;   // 0 = first slot (N), 1 = second slot (N+2)
 
         if (sprIdx < 0 || sprIdx > 7) return;
+        if (sprFetchFmode != 0) {
+            handleWideSpriteDMA(cck, sprIdx, subSlot);
+            return;
+        }
 
         int addr = sprPtrInternal[sprIdx];
         int data = dmaReadWord(addr);
@@ -3609,11 +3784,41 @@ public abstract class AbstractAgnus {
             }
         } else {
             // -- DATA/DATB phase: sprite pixel fetch -------------------------------
-            if (subSlot == 0) {
+            if (isAGA()) {
+                // On Lisa a fetched word fills the high half of the sprite data register.
+                denise.writeSpriteWide(sprIdx, subSlot != 0, data, 16);
+            } else if (subSlot == 0) {
                 denise.writeRegister(0x144 + sprIdx * 8, data); // SPRxDATA
             } else {
                 denise.writeRegister(0x146 + sprIdx * 8, data); // SPRxDATB
             }
+        }
+    }
+
+    /**
+     * A sprite slot with a wide fetch (FMODE bits 2-3): 32 or 64 bits read as for a bitplane.
+     * The descriptor words SPRxPOS and SPRxCTL are the top word of what is read; the data
+     * words go to Denise whole. The pointer steps by the sprite width.
+     */
+    private void handleWideSpriteDMA(int cck, int sprIdx, int subSlot) {
+        final int fm = sprFetchFmode;
+        final int addr = sprPtrInternal[sprIdx];
+        final long data = fetchWideBitplane(addr, fm);
+        final int bits = fm == 3 ? 64 : 32;
+        final int top = (int) (data >>> (bits - 16)) & 0xFFFF;
+        openBusLatch = top;
+        sprPtrInternal[sprIdx] = advanceWidePointer(addr, 0, fm);
+        markDeniseDmaSlot(cck);
+        if (!sprSlotDataPhase[sprIdx][subSlot]) {
+            if (subSlot == 0) {
+                writeSPRxPOS(sprIdx, top);
+                denise.writeRegister(0x140 + sprIdx * 8, top);
+            } else {
+                writeSPRxCTL(sprIdx, top);
+                denise.writeRegister(0x142 + sprIdx * 8, top);
+            }
+        } else {
+            denise.writeSpriteWide(sprIdx, subSlot != 0, data, bits);
         }
     }
 
@@ -3684,7 +3889,11 @@ public abstract class AbstractAgnus {
 
     private void handleBitplaneDMA(int cck, int bplIdx, boolean hires, boolean domod) {
         if (denise == null) return;
-        if (bplIdx < 0 || bplIdx >= 6) return;
+        if (bplIdx < 0 || bplIdx >= 8) return;
+        if (bplFetchFmode != 0) {
+            handleWideBitplaneDMA(cck, bplIdx, domod);
+            return;
+        }
 
         int addr = bplPtrInternal[bplIdx];
         int data = dmaReadWord(addr);
@@ -3713,7 +3922,7 @@ public abstract class AbstractAgnus {
             // The modulo is the one SAMPLED at the top of the CCK, not the live register:
             // see bpl1modFetch. Read live, a Copper write in the previous CCK came in one
             // CCK too early.
-            int mod = (bplIdx % 2 == 0) ? bpl1modFetch : bpl2modFetch;
+            int mod = bitplaneModulo(bplIdx);
             // The modulo is added WITHOUT a mask: wrapping within the installed Chip RAM is
             // dmaReadWord's job, at the fetch. A mask hard-wired to 1 MB made a plane above
             // $0FFFFF lose bit 20 at every line with 2 MB of Chip RAM, collapsing the display
@@ -3724,6 +3933,36 @@ public abstract class AbstractAgnus {
         } else {
             rgaSlotBplMod[(int) (masterClock >> 1) & 3] = 0;
         }
+    }
+
+    /**
+     * A bitplane fetch wider than a word (FMODE 1-3): the long or quad word goes to Denise in
+     * one transfer, and the pointer steps by the width, the modulo added in the last block as
+     * for a word.
+     */
+    private void handleWideBitplaneDMA(int cck, int bplIdx, boolean domod) {
+        final int fm = bplFetchFmode;
+        final int addr = bplPtrInternal[bplIdx];
+        final long data = fetchWideBitplane(addr, fm);
+        openBusLatch = (int) data & 0xFFFF;
+        denise.writeBitplaneWide(bplIdx, data, fm == 3 ? 64 : 32, cck * 4 - 70);
+        markDeniseDmaSlot(cck);
+        final int mod = domod ? bitplaneModulo(bplIdx) : 0;
+        bplPtrInternal[bplIdx] = advanceWidePointer(addr, mod, fm);
+        rgaSlotBplMod[(int) (masterClock >> 1) & 3] = mod;
+    }
+
+    /**
+     * The modulo a plane adds in the last block: BPL1MOD for the odd planes, BPL2MOD for the
+     * even ones. With BSCAN2 (FMODE bit 14) the choice goes by line instead, alternating
+     * against the parity of DIWSTRT's start line, so that a scan-doubled screen fetches every
+     * line twice.
+     */
+    private int bitplaneModulo(int plane) {
+        if ((fmode & 0x4000) != 0) {
+            return (((diwStrt >> 8) ^ (vpos ^ 1)) & 1) != 0 ? bpl1modFetch : bpl2modFetch;
+        }
+        return (plane & 1) == 0 ? bpl1modFetch : bpl2modFetch;
     }
 
     /**
@@ -3801,12 +4040,21 @@ public abstract class AbstractAgnus {
         if (denise.getBpu() <= 0) return;
 
         boolean hires = (bplcon0Val & 0x8000) != 0;
-        int cycleLen = hires ? 4 : 8;
+        int cycleLen, subOdd, subEven;
+        if (isAGA()) {
+            // Lisa: the block lasts as long as its word, which the fetch width makes up to
+            // 64 bits, and the scroll has two more bits on each side. See lisaScrollSub.
+            cycleLen = denise.lisaWordCcks();
+            subOdd  = denise.lisaScrollSub(false);
+            subEven = denise.lisaScrollSub(true);
+        } else {
+            cycleLen = hires ? 4 : 8;
+            // COARSE part of the scroll: how many CCKs to delay the block. See
+            // scrollSubPixels for the single rule and why hires differs from lores.
+            subOdd  = scrollSubPixels(bplcon1, hires);
+            subEven = scrollSubPixels(bplcon1 >> 4, hires);
+        }
         int mask = cycleLen - 1;
-        // COARSE part of the scroll: how many CCKs to delay the block. See scrollSubPixels
-        // for the single rule and why hires differs from lores.
-        int subOdd  = scrollSubPixels(bplcon1, hires);
-        int subEven = scrollSubPixels(bplcon1 >> 4, hires);
         // The scroll is matched against Denise's own horizontal counter. On a line whose
         // strobe did not reset it the counter runs offset from the CCK, and the block the
         // scroll selects moves with it. The line's strobe comes after the draw of its CCK, so
@@ -4418,8 +4666,9 @@ public abstract class AbstractAgnus {
                     int b = (data >> 8) & 0xFF;
                     writeCustomRegister(eff, (b << 8) | b);
                 } else if (lds) {
+                    // Alice takes a byte at an odd address as the low byte alone.
                     int b = data & 0xFF;
-                    writeCustomRegister(eff, (b << 8) | b);
+                    writeCustomRegister(eff, isAGA() ? b : (b << 8) | b);
                 }
                 break;
 
@@ -4645,7 +4894,8 @@ public abstract class AbstractAgnus {
      */
     private int faultyCustomRead(int regAddr) {
         int busVal = neutralFloatingBus ? 0 : (openBusLatch & 0xFFFF);
-        if (!peeking) writeCustomRegister(regAddr, busVal);
+        // On Alice the register is rewritten with 0, not with the bus value.
+        if (!peeking) writeCustomRegister(regAddr, isAGA() ? 0 : busVal);
         return busVal;
     }
 
@@ -4804,7 +5054,8 @@ public abstract class AbstractAgnus {
         if (regAddr == 0x036 || regAddr == 0x038 || regAddr == 0x03A || regAddr == 0x03C || regAddr == 0x03E || regAddr == 0x098
                 || regAddr == 0x104 || regAddr == 0x106 || regAddr == 0x10C
                 || (regAddr >= 0x110 && regAddr <= 0x11A)
-                || (regAddr >= 0x140 && regAddr <= 0x1BE)) {
+                || (regAddr >= 0x140 && regAddr <= 0x1BE)
+                || (isAGA() && (regAddr == 0x10E || regAddr == 0x11C || regAddr == 0x11E))) {
             // SPRxPOS/SPRxCTL ($140-$17E) are not Denise's alone: VSTART/VSTOP live in
             // AGNUS and drive the sprite DMA state machine, so a Copper/CPU write updates
             // sprVStart/sprVStop too. Games that (re)position sprites by writing POS/CTL
@@ -4976,6 +5227,35 @@ public abstract class AbstractAgnus {
             case 0x1E4: // DIWHIGH (ECS only): extends DIWSTRT/STOP. No-op on OCS.
                 writeDIWHIGH(value);
                 break;
+
+            // BPL7PT/BPL8PT: the two planes Alice adds.
+            case 0x0F8: case 0x0FC: {
+                if (!isAGA()) break;
+                int bidx = (regAddr - 0x0E0) / 4;
+                if (bplPointerWriteIsLost(bidx)) break;
+                bplPt[bidx] = (bplPt[bidx] & 0x0000FFFF) | ((value << 16) & dmaPtrHiMask);
+                bplPtrInternal[bidx] = (bplPtrInternal[bidx] & 0x0000FFFF) | (bplPt[bidx] & dmaPtrHiMask);
+                break;
+            }
+            case 0x0FA: case 0x0FE: {
+                if (!isAGA()) break;
+                int bidx = (regAddr - 0x0E2) / 4;
+                if (bplPointerWriteIsLost(bidx)) break;
+                bplPt[bidx] = (bplPt[bidx] & dmaPtrHiMask) | (value & 0xFFFE);
+                bplPtrInternal[bidx] = bplPt[bidx];
+                break;
+            }
+
+            case 0x1FC: // FMODE (Alice only)
+                if (isAGA()) {
+                    fmode = value & 0xC00F;
+                    updateFetchGeometry();
+                    // The geometry of the block follows at once; the width of the data and
+                    // the step of the pointers two CCKs later.
+                    recordRegisterChange(4, AgnusReg.FMODE_FETCH, fmode);
+                    if (denise != null) denise.writeRegister(0x1FC, value);
+                }
+                break;
         }
     }
 
@@ -5052,6 +5332,10 @@ public abstract class AbstractAgnus {
         cpuCurrentRoute = null;
         bprun = 0; bprunCycle = 0; ddfStopping = 0;
         seqBplcon0 = 0; seqBplcon0Count = 0;
+        fmode = 0;
+        bplFetchFmode = 0;
+        sprFetchFmode = 0;
+        updateFetchGeometry();
         bplReqNext = -1; bplReqLater = -1;
         dasSlotAllocated = false;
         ddfEnableOn = false; ddfLimitIn = false; ddfLimitOut = false;
@@ -5067,11 +5351,14 @@ public abstract class AbstractAgnus {
         Arrays.fill(bplPt, 0); Arrays.fill(sprPt, 0);
         Arrays.fill(bplPtrInternal, 0); Arrays.fill(sprPtrInternal, 0);
         Arrays.fill(sprDmaEnabled, false);   // every sprite in the POS/CTL phase
+        Arrays.fill(sprScanDouble, false);
         Arrays.fill(sprVStart, 0);
         Arrays.fill(sprVStop, 0);
         bpl1mod = 0; bpl2mod = 0;
         bpl1modFetch = 0; bpl2modFetch = 0;
         bpl1modStage = 0; bpl2modStage = 0;
+        // Alice restarts its refresh address at the top of the 2 MB space at every reset.
+        if (isAGA()) refptr = refreshResetValue();
         lastCiaAPra = -1;
         lastCiaADdra = -1;
         if (copper  != null) copper.reset();
@@ -5373,6 +5660,14 @@ public abstract class AbstractAgnus {
         return !isOCS();
     }
 
+    /**
+     * {@code true} on the AGA Agnus (Alice): FMODE, eight bitplanes and the wide fetch. Every
+     * ECS rule applies to it too ({@link #isECS()} is true).
+     */
+    public boolean isAGA() {
+        return false;
+    }
+
     // =========================================================================
     // Chipset specialisation hooks
     // =========================================================================
@@ -5444,11 +5739,12 @@ public abstract class AbstractAgnus {
      * A write to DIWHIGH ($1E4), the ECS-only register that extends the high V bits of
      * DIWSTRT/STOP (Agnus side) and passes the H part (HSTART/HSTOP bit 8) on to Denise.
      * No-op on OCS. Layout (mask 0x2727): bits 0-2 = VSTART V8-V10, bit 5 = HSTART H8,
-     * bits 8-10 = VSTOP V8-V10, bit 13 = HSTOP H8.
+     * bits 8-10 = VSTOP V8-V10, bit 13 = HSTOP H8. Alice adds the fine horizontal bits 3-4
+     * and 11-12 (mask 0x3F3F), which only Denise uses.
      */
     protected void writeDIWHIGH(int value) {
         if (!isECS()) return; // DIWHIGH is ECS-only: ignored on OCS.
-        value &= 0x2727;
+        value &= isAGA() ? 0x3F3F : 0x2727;
         diwVStart = (diwVStart & 0xFF) | ((value & 0x07) << 8);
         diwVStop  = (diwVStop  & 0xFF) | (((value >> 8) & 0x07) << 8);
         // Same vertical re-check as DIWSTRT/DIWSTOP.
@@ -5465,86 +5761,8 @@ public abstract class AbstractAgnus {
     }
 
     // =========================================================================
-    // Bitplane slots
-    // =========================================================================
-
-    /**
-     * Which bitplane to fetch in the current CCK.
-     *
-     * @return bitplane index (0-5) or -1 if the slot is unused.
-     */
-    private int getBitplaneIndexForRasterPosition(int hpos, int bplCount, boolean hires) {
-        int cck = hpos >> 1;
-        // The fetch window is HALF-OPEN: [ddfCckStart, getEffectiveDdfStopCck), the second
-        // being the first CCK *outside* the window. An inclusive comparison fetched one CCK
-        // too many: in hires it always fell on plane 3, whose pointer drifted by +2
-        // bytes/line (e.g. the green band of DiagROM's 640x512 screen).
-        int limit = bitplaneDmaPlaneLimit(bplCount, hires);
-        if (cck < fetchUnitDdfStart || cck >= getEffectiveDdfStopCck(hires) || limit <= 0) return -1;
-        if ((hpos & 1) != 0) return -1;
-
-        int plane = getBitplaneIndexForFetchUnit(cck - fetchUnitDdfStart, hires);
-        return plane < limit ? plane : -1;
-    }
-
-    /**
-     * How many planes bitplane DMA really fetches, given BPLCON0's raw BPU.
-     *
-     * <p><b>Not a truncation to the slot count: when the planes do not fit, bitplane DMA
-     * turns off altogether.</b> The maximum is 8 in lores and <b>4 in hires</b>; more than
-     * that fetches nothing, and 7 planes in lores fetch 4. So five or six planes in hires
-     * (the illegal configuration of {@code BPLPTR/drop5x}, {@code drop6x} and
-     * {@code dropcpu6x}) fetch nothing and leave every slot free.
-     *
-     * <p>The {@code 7 -> 4} case is why the <b>raw</b> BPU arrives here
-     * ({@link AbstractDenise#getRawBpu()}) and not Denise's: the two chips have the same
-     * threshold but not the same table, and seven planes in lores are four fetches with six
-     * planes drawn (the two high ones keep their old data).
-     */
-    static int bitplaneDmaPlaneLimit(int rawBpu, boolean hires) {
-        if (hires) return rawBpu > 4 ? 0 : rawBpu;
-        return rawBpu == 7 ? 4 : rawBpu;
-    }
-
-    private int getEffectiveDdfStopCck(boolean hires) {
-        // HARD end-of-fetch limit: at CCK $D7 Agnus raises the DDFSTOP condition anyway,
-        // even if DDFSTOP is programmed further right: a min() between DDFSTOP and $D7.
-        // Without this ceiling a DDFSTOP beyond $D7 (Crack, LINEL 1988: DDFSTRT=$30,
-        // DDFSTOP=$DF) widened the window by a whole fetch unit:
-        //  - the extra unit was cut by the end of the line, so only the plane whose slot is
-        //    right after the boundary fetched one word too many and drifted 2 bytes/line;
-        //  - BPLxMOD, applied in the LAST unit, fell in that phantom unit and was never
-        //    applied to the other planes: they advanced 44 bytes/line instead of 64.
-        int stop = ddfCckStop;
-        if (!ddfHardLimitsDisabled()) {
-            stop = Math.min(stop, DDF_HARD_STOP_CCK + 8);
-        }
-        // Anchored to the SAMPLED start (fetchUnitDdfStart), not the live register: the
-        // rounding to 8-CCK units must use the same origin as the fetch phase.
-        int relStop = Math.max(0, stop - fetchUnitDdfStart);
-        // Bitplane fetches come in units of 8 CCK. If DDFSTOP is not aligned to the unit
-        // (relative to DDFSTRT) the DMA completes the current unit anyway, one fetch more.
-        // That matches the display line width to the buffer the Blitter produced: cracktros
-        // (e.g. "Tv sports basket") use an odd DDFSTOP ($D4) with DDFSTRT=$30, and without
-        // the rounding the display advanced 2 bytes/line less than the blit (progressive
-        // shear).
-        return fetchUnitDdfStart + ((relStop + 7) & ~7);
-    }
-
-    // PERF: preallocated fetch tables (hot path of the bitplane fetch).
-    private static final int[] HIRES_FETCH = { 3, 1, 2, 0 };
-    private static final int[] LORES_FETCH = { -1, 3, 5, 1, -1, 2, 4, 0 };
-
-    // =========================================================================
     // Bitplane sequencer
     // =========================================================================
-
-    /**
-     * The fetch block lasts <b>eight</b> CCKs in every resolution. What changes with the
-     * resolution is the length of the <b>sequence</b> within the block (8 CCK in lores, 4 in
-     * hires) and how many planes fit (8 and 4).
-     */
-    private static final int FETCHUNIT_MASK = 7;
 
     /**
      * Offset between our CCK and the chip's horizontal counter, added to the DDF values
@@ -5590,11 +5808,6 @@ public abstract class AbstractAgnus {
         int h = cck - SEQ_PHASE - 1;
         if (h >= lineCck) h -= lineCck;
         return (h & 1) != 0;
-    }
-
-    /** Which plane is fetched at phase {@code bprunCycle}; -1 if the slot is free. */
-    private static int bplSequence(int bprunCycle, boolean hires) {
-        return hires ? HIRES_FETCH[bprunCycle & 0x3] : LORES_FETCH[bprunCycle & 0x7];
     }
 
     /** {@code bprun} state: 0 = stopped, 1 = running, 2/3 = switching off over two CCKs. */
@@ -5826,10 +6039,6 @@ public abstract class AbstractAgnus {
         if (!isECS()) ddfLimitIn = true;
     }
 
-    private static int getBitplaneIndexForFetchUnit(int relCck, boolean hires) {
-        return hires ? HIRES_FETCH[relCck & 0x3] : LORES_FETCH[relCck & 0x7];
-    }
-
     private int decodeDdfStopCck(int value) {
         return (value & ddfMask()) + 8;
     }
@@ -5847,7 +6056,7 @@ public abstract class AbstractAgnus {
                 case DISK -> "DISK_DMA";
                 case AUDIO0, AUDIO1, AUDIO2, AUDIO3 -> "AUDIO_DMA";
                 case SPRITE0, SPRITE1, SPRITE2, SPRITE3, SPRITE4, SPRITE5, SPRITE6, SPRITE7 -> "SPRITE_DMA";
-                case BPL1, BPL2, BPL3, BPL4, BPL5, BPL6 -> "BITPLANE_DMA";
+                case BPL1, BPL2, BPL3, BPL4, BPL5, BPL6, BPL7, BPL8 -> "BITPLANE_DMA";
                 case COPPER -> "COPPER_FETCH";
                 case BLITTER -> "BLITTER_FETCH";
                 default -> "CUSTOM_DMA";
