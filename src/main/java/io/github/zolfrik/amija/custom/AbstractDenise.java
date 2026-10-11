@@ -175,7 +175,7 @@ public abstract class AbstractDenise {
     // the bitplane decoding hot path. They depend ONLY on bplcon0.
     private int     bpu   = 0;            // planes DRAWN by Denise: see deniseBpu()
     private boolean hires = false;        // (bplcon0 & 0x8000) != 0
-    private boolean shres = false;        // Lisa: (bplcon0 & 0x0040) != 0
+    private boolean shres = false;        // ECS and Lisa: (bplcon0 & 0x0040) != 0
 
     private int     hstrt,   hstop;
 
@@ -364,14 +364,15 @@ public abstract class AbstractDenise {
     public void setField(int field)               { this.field   = field;   }
 
     private void updateBplcon0Derived() {
-        bpu   = isAGA ? lisaPlanes(bplcon0) : deniseBpu(bplcon0);
+        bpu   = isAGA ? lisaPlanes(bplcon0) : isECS ? ecsPlanes(bplcon0) : deniseBpu(bplcon0);
         final boolean h = (bplcon0 & 0x8000) != 0;
         if (h != hires) {
             hires = h;
             recordBplEvent(DeniseLineJob.BPL_EV_HIRES | (h ? DeniseLineJob.BPL_EV_ARG : 0));
         }
-        // Lisa: super-hires (bit 6) shifts out two bits per sub-pixel, whatever bit 15 says.
-        final boolean sh = isAGA && (bplcon0 & 0x0040) != 0;
+        // Super-hires (bit 6, ECS and Lisa) shifts out two bits per sub-pixel, whatever bit
+        // 15 says. An OCS Denise has no such bit.
+        final boolean sh = isECS && (bplcon0 & 0x0040) != 0;
         if (sh != shres) {
             shres = sh;
             recordBplEvent(DeniseLineJob.BPL_EV_SHRES | (sh ? DeniseLineJob.BPL_EV_ARG : 0));
@@ -395,6 +396,15 @@ public abstract class AbstractDenise {
         int planes = (bplcon0 >> 12) & 7;
         if ((bplcon0 & 0x8000) != 0 && planes > 4) return 0;
         return Math.min(planes, 6);
+    }
+
+    /**
+     * Planes an ECS Denise composes: as on OCS, plus super-hires, where more than two planes
+     * do not fit the 16-bit data and none is drawn.
+     */
+    private static int ecsPlanes(int bplcon0) {
+        final int planes = deniseBpu(bplcon0);
+        return (bplcon0 & 0x0040) != 0 && planes > 2 ? 0 : planes;
     }
 
     /**
@@ -590,9 +600,11 @@ public abstract class AbstractDenise {
                 // insert the line on which the Copper raises BPU to 6 would be coloured at
                 // full brightness throughout (line 22 of `BPLPTR/drop6x` and `dropcpu6x`).
                 // On Lisa the mode also follows BPU3 and dual playfield: every change of the
-                // plane count or of the HAM and DPF bits is replayed.
+                // plane count or of the HAM and DPF bits is replayed. On an ECS Denise super-
+                // hires is a colour mode too: its pixels take two bits per gun.
                 if (isAGA ? ((bplcon0 ^ value) & 0x7C10) != 0
-                          : isHamActive(bplcon0) != isHamActive(value) || isEHB(bplcon0) != isEHB(value)) {
+                          : isHamActive(bplcon0) != isHamActive(value) || isEHB(bplcon0) != isEHB(value)
+                            || (isECS && ((bplcon0 ^ value) & 0x0040) != 0)) {
                     // Same stage as the conChanges above: HAM and EHB come from Denise's
                     // copy of BPLCON0, not from the early (colour) stage.
                     colChanges.insert(pixel + CON_DELAY_PX, address, value);
@@ -712,40 +724,12 @@ public abstract class AbstractDenise {
             //   OCS/ECS detection.
             case 0x07C: return deniseId;
 
-            // BPLCON0 ($DFF100): write-only on OCS.
-            //
-            //   The Kickstart at $FCAF42 runs:
-            //     MOVE.W  BPLCON0, D0   ; reads BPLCON0
-            //     ORI.W   #$1200, D0    ; adds the display bits
-            //     MOVE.W  D0, BPLCON0   ; writes the result
-            //
-            //   Returning the shadow value ($0102, written by the init at $FCAFBA) would give
-            //     D0 = $0102 | $1200 = $1302  -> wrong BPLCON0
-            //   On OCS BPLCON0 is write-only and does not return the shadow value, so
-            //     D0 = $0000 | $1200 = $1200  -> right BPLCON0
-            //
-            // ECS Denise makes every control register readable: it returns the current
-            // shadow value.
-            case 0x100: return isECS ? bplcon0 : 0;
-
-            // BPLCON1 ($DFF102): write-only on OCS, readable on ECS.
-            case 0x102: return isECS ? bplcon1 : 0;
-
-            // BPLCON2 ($DFF104): write-only on OCS, readable on ECS.
-            case 0x104: return isECS ? bplcon2 : 0;
-
-            // BPLCON3 ($DFF106): ECS register, absent on OCS.
-            case 0x106: return isECS ? bplcon3 : 0;
-
-            // BPLCON4 ($DFF10C): ECS/AGA register, absent on OCS.
-            case 0x10C: return isECS ? bplcon4 : 0;
-
             default:
-                // Colour registers ($DFF180-$DFF1BE): readable on ECS Denise; write-only
-                // on OCS (the bus returns 0 for registers not implemented for reading).
-                if (address >= 0x180 && address <= 0x1BE) {
-                    if (isAGA) return readColorAga((address - 0x180) / 2);
-                    return isECS ? palette[(address - 0x180) / 2] : 0;
+                // Colour registers ($DFF180-$DFF1BE): Lisa reads them back under RDRAM.
+                // BPLCON0-4 and, on OCS and ECS, the colours are write-only and never reach
+                // here: the bus handles their read.
+                if (isAGA && address >= 0x180 && address <= 0x1BE) {
+                    return readColorAga((address - 0x180) / 2);
                 }
                 return 0xFFFF;
         }
@@ -863,22 +847,29 @@ public abstract class AbstractDenise {
         return (bplcon0 & 0x0040) != 0 && isECS ? 2 : (bplcon0 & 0x8000) != 0 ? 1 : 0;
     }
 
+    /** Super-hires is in force: BPLCON0 bit 6 on an ECS Denise or on Lisa. */
+    boolean superHires() {
+        return shres;
+    }
+
     /**
-     * Lisa: how many CCKs a word of the shift registers lasts, the period at which a new one
-     * loads: its width in pixels at the current resolution, two lores pixels per CCK.
+     * How many CCKs a word of the shift registers lasts, the period at which a new one loads:
+     * its width in pixels at the current resolution, two lores pixels per CCK. Used on Lisa,
+     * whose words are up to 64 bits wide, and in super-hires, where a 16-bit word lasts two.
      */
-    int lisaWordCcks() {
+    int wordCcks() {
         return Math.max(1, pipeWidth >> (resolution() + 1));
     }
 
     /**
-     * Lisa: the scroll of the odd or even planes in sub-pixels (hires pixels). Each field of
-     * BPLCON1 is a delay in lores pixels of six bits (bits 0-3 and 10-11 for the odd planes,
-     * 4-7 and 14-15 for the even ones), masked to the length of a word at the current
-     * resolution, plus two bits in super-hires pixels (8-9 and 12-13), of which a hires pixel
-     * keeps the upper one.
+     * The scroll of the odd or even planes in sub-pixels (hires pixels), on Lisa and in
+     * super-hires. Each field of BPLCON1 is a delay in lores pixels, masked to the length of a
+     * word at the current resolution (three lores pixels for a 16-bit word in super-hires).
+     * On Lisa the field has six bits (bits 0-3 and 10-11 for the odd planes, 4-7 and 14-15
+     * for the even ones) plus two in super-hires pixels (8-9 and 12-13), of which a hires
+     * pixel keeps the upper one; an ECS Denise holds only the low byte.
      */
-    int lisaScrollSub(boolean even) {
+    int scrollSub(boolean even) {
         final int v = even ? bplcon1 >> 4 : bplcon1;
         final int delay = (v & 0x0F) | ((v & 0x0C00) >> 6);
         final int hr = even ? (bplcon1 >> 12) & 3 : (bplcon1 >> 8) & 3;

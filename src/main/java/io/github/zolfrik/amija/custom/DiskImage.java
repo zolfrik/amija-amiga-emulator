@@ -1052,7 +1052,9 @@ public final class DiskImage implements AutoCloseable {
             if (b == im.blockCnt - 1 && trackDiff > 0) gapBits += trackDiff;
 
             decodeBlockStream(raw, area + dataOffset, w); // blockbits cells (sync + data)
+            int gapStart = w.pos();
             w.fillGap(gapBits);                            // gap cells (MFM of zeros)
+            w.alignGapTail(gapStart, gapBits, b == im.blockCnt - 1);
         }
         return w.buf();
     }
@@ -1097,6 +1099,7 @@ public final class DiskImage implements AutoCloseable {
             this.buf = new byte[(this.trackBits + 7) / 8];
         }
         byte[] buf() { return buf; }
+        int pos() { return pos; }
         void seek(int bitPos) { pos = ((bitPos % trackBits) + trackBits) % trackBits; }
 
         private void cell(int bit) {
@@ -1126,6 +1129,37 @@ public final class DiskImage implements AutoCloseable {
                     cell(d);
                     prevData = d;
                 }
+            }
+        }
+
+        /**
+         * Rewrites the second part of a gap so that it lines up with the block that follows.
+         *
+         * <p>A gap is laid down from both of its ends: the first part continues the cell
+         * pattern of the block before it (what {@link #fillGap} writes), the second part is
+         * the clock,0 pattern anchored to the start of the next block, so the cell just
+         * before that block is always a data cell. The two meet halfway, or at the index
+         * when the gap runs across it. Where the two parts disagree in phase, the second
+         * one wins. On the track gap (the gap of the last block, which absorbs the
+         * difference between the track length and its blocks) the first cells of the
+         * second part are inverted: three of them, or the second and third when the first
+         * part has an odd number of cells and the second an even one.
+         */
+        void alignGapTail(int gapStart, int cells, boolean trackGap) {
+            if (cells <= 0) return;
+            final int n = trackBits;
+            final int gapEnd = (gapStart + cells) % n;
+            final int junction = gapStart + cells > n ? 0 : (gapStart + cells / 2) % n;
+            final int first = (junction - gapStart + n) % n;
+            final int second = (gapEnd - junction + n) % n;
+            final int invertFrom = (trackGap && (first & 1) == 1 && (second & 1) == 0) ? 1 : 0;
+            for (int k = 0; k < second; k++) {
+                int p = (junction + k) % n;
+                int bit = ((second - k) & 1) == 1 ? 0 : 1;   // data cell 0, clock cell 1
+                if (trackGap && k >= invertFrom && k < 3) bit ^= 1;
+                int mask = 0x80 >> (p & 7);
+                if (bit != 0) buf[p >> 3] |= (byte) mask;
+                else          buf[p >> 3] &= (byte) ~mask;
             }
         }
 

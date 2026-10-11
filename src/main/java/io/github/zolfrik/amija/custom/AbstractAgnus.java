@@ -169,6 +169,8 @@ public abstract class AbstractAgnus {
     private final MOS8520 ciaB;
     private Keyboard keyboard;
     private final BatteryBackedClock batteryClock = new BatteryBackedClock();
+    /** Gayle's registers; decoded only on the A1200 board (see {@link Gary#setGayleDecode}). */
+    private final Gayle gayle = new Gayle();
 
     private final FloppyDrive df0, df1, df2, df3;
 
@@ -1019,6 +1021,16 @@ public abstract class AbstractAgnus {
      */
     private static final int CIA_ANCHOR = 5;
 
+    /**
+     * {@link #CIA_ANCHOR} for this machine. The CIA clock grid follows the point of the E
+     * cycle where the CPU's accesses to the CIAs land, so it moves with
+     * {@link #eClockSyncPhase()}: on the A1200 an access waits for a sync point two master
+     * cycles later and starts two master cycles later after it, and the grid moves by four.
+     */
+    private int ciaAnchor() {
+        return CIA_ANCHOR + 2 * (eClockSyncPhase() - 2);
+    }
+
     // PERF: busOwners as an int[] of ordinals instead of BusOwner[]: Arrays.fill(int[]) is
     // faster than filling a reference array (no card marking) and runs ~15,600 times/s
     // (eolHandler). 0 == BusOwner.NONE.ordinal(), so the int default is NONE.
@@ -1233,8 +1245,14 @@ public abstract class AbstractAgnus {
      */
     private static final int TOD_ALIGN_CCK = 20;
 
-    /** Final correction of the TOD increment delay, in CCK. */
+    /** Final correction of the TOD increment delay, in CCK, on the A500 board. */
     private static final int TOD_ECLOCK_TOD_CCK = -2;
+
+    /**
+     * The same correction on the A1200 board, where Gayle generates the E clock with its CIA
+     * accesses two CCK later in the E cycle (see {@link #eClockSyncPhase()}).
+     */
+    private static final int TOD_ECLOCK_TOD_CCK_GAYLE = 0;
 
     /**
      * Width of the TOD pulse, in system clocks. Two E-clock periods: the CIA sees its rising
@@ -1739,9 +1757,9 @@ public abstract class AbstractAgnus {
         return (bplcon0 >> 12) & 7;
     }
 
-    /** Resolution the sequencer fetches for: 0 lores, 1 hires, 2 super-hires (Alice only). */
+    /** Resolution the sequencer fetches for: 0 lores, 1 hires, 2 super-hires (ECS and Alice). */
     private int fetchResolution(int bplcon0) {
-        if (isAGA() && (bplcon0 & 0x0040) != 0) return 2;
+        if (isECS() && (bplcon0 & 0x0040) != 0) return 2;
         return (bplcon0 & 0x8000) != 0 ? 1 : 0;
     }
 
@@ -1945,7 +1963,9 @@ public abstract class AbstractAgnus {
             gary.setGayleDecode(isAGA());
         }
 
-        this.df0 = new FloppyDrive("DF0", FloppyDrive.DriveType.DD_INT);
+        // The A500's internal drive has no ID hardware; the A1200's answers like any 3.5" DD.
+        this.df0 = new FloppyDrive("DF0",
+                isAGA() ? FloppyDrive.DriveType.DD_EXT : FloppyDrive.DriveType.DD_INT);
         this.df1 = new FloppyDrive("DF1", FloppyDrive.DriveType.DD_EXT);
         this.df2 = new FloppyDrive("DF2", FloppyDrive.DriveType.DD_EXT);
         this.df3 = new FloppyDrive("DF3", FloppyDrive.DriveType.DD_EXT);
@@ -1996,7 +2016,7 @@ public abstract class AbstractAgnus {
         // AbstractMotorola.eClockCounter and docs/vamigats-import-order.md, memtim1 outcomes).
         //
         // CiaEClockPhaseTest freezes the invariant.
-        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + CIA_ANCHOR, EventID.CIA_EXECUTE);
+        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + ciaAnchor(), EventID.CIA_EXECUTE);
 
         // Arms audio sample production as an event. SLOT_CH0/AUDIO_MIX reschedules itself;
         // this is only the first arm (as for SLOT_CIAA). internalReset rearms it after
@@ -2960,12 +2980,21 @@ public abstract class AbstractAgnus {
      * @param hoffset      the pulse source's offset within the line (hsync or vsync end)
      * @param lineStartCck the absolute CCK of our wrap of {@code hpos}
      */
-    private static int todIncOffsetCck(int hoffset, long lineStartCck) {
+    private int todIncOffsetCck(int hoffset, long lineStartCck) {
         final int hoff = hoffset + 1;
         // The alignment grid is taken at the instant the line's CIA handler runs, which is
         // TOD_HANDLER_LEAD_CCK after our wrap of hpos on the absolute CCK counter.
         final int div10 = (int) Math.floorMod(lineStartCck + TOD_HANDLER_LEAD_CCK + 3 + hoff, TOD_ALIGN_CCK);
-        return hoff + TOD_INC_DELAY_CCK + (TOD_ALIGN_CCK - div10) + TOD_ECLOCK_TOD_CCK;
+        return hoff + TOD_INC_DELAY_CCK + (TOD_ALIGN_CCK - div10)
+                + (isAGA() ? TOD_ECLOCK_TOD_CCK_GAYLE : TOD_ECLOCK_TOD_CCK);
+    }
+
+    /**
+     * Half-CCK phase of the E cycle at which a CPU access to a CIA starts its E-clock
+     * cycle: 2 on the A500 board, 4 on the A1200 one, where Gayle drives the CIA bus.
+     */
+    public final int eClockSyncPhase() {
+        return isAGA() ? 4 : 2;
     }
 
     /**
@@ -3261,6 +3290,8 @@ public abstract class AbstractAgnus {
         if (pra != lastCiaAPra || ddra != lastCiaADdra) {
             lastCiaAPra = pra;
             lastCiaADdra = ddra;
+            // On the A1200 PA0 drives nothing: Gayle owns the overlay (see Gary.route).
+            final boolean paOwnsOvl = !gary.isGayleDecode();
 
             // OVL: controlled by CIA-A PA0, which drives the /OVL line to Gary.
             //   - As an OUTPUT (DDRA bit0 = 1) the line reflects the PRA latch
@@ -3273,7 +3304,7 @@ public abstract class AbstractAgnus {
             //     ExecBase/RAM contents and faulting forever (endless guru blink).
             boolean ciaOvlEnabled = (ddra & 0x01) == 0 || (pra & 0x01) != 0;
 
-            if (ciaOvlEnabled != gary.isRomOverlayEnabled()) {
+            if (paOwnsOvl && ciaOvlEnabled != gary.isRomOverlayEnabled()) {
                 gary.setRomOverlay(ciaOvlEnabled);
             }
 
@@ -4041,12 +4072,13 @@ public abstract class AbstractAgnus {
 
         boolean hires = (bplcon0Val & 0x8000) != 0;
         int cycleLen, subOdd, subEven;
-        if (isAGA()) {
-            // Lisa: the block lasts as long as its word, which the fetch width makes up to
-            // 64 bits, and the scroll has two more bits on each side. See lisaScrollSub.
-            cycleLen = denise.lisaWordCcks();
-            subOdd  = denise.lisaScrollSub(false);
-            subEven = denise.lisaScrollSub(true);
+        if (isAGA() || denise.superHires()) {
+            // The block lasts as long as its word: on Lisa the fetch width makes it up to 64
+            // bits and the scroll has two more bits on each side, in super-hires a 16-bit
+            // word lasts two CCKs. See AbstractDenise.scrollSub.
+            cycleLen = denise.wordCcks();
+            subOdd  = denise.scrollSub(false);
+            subEven = denise.scrollSub(true);
         } else {
             cycleLen = hires ? 4 : 8;
             // COARSE part of the scroll: how many CCKs to delay the block. See
@@ -4539,6 +4571,8 @@ public abstract class AbstractAgnus {
      * decide whether to load its directory).
      */
     private int floatingBusRead(int addr) {
+        // The A1200 board pulls the undriven data bus to zero.
+        if (gary.isGayleDecode()) return 0;
         if (isExecutingFromRom()) return 0;
         // The value is the last word FETCHED by the prefetch. When `irc` has been consumed
         // and the prefetch refilling it is still in flight, `ircValid` is false and `irc`
@@ -4596,6 +4630,8 @@ public abstract class AbstractAgnus {
             }
             case RTC ->
                 readRtcBusData(route, addr);
+            case GAYLE ->
+                readGayleBusData(route, addr);
             default ->
                 // Open bus: no device drives the data bus. See floatingBusRead().
                 floatingBusRead(addr);
@@ -4630,6 +4666,13 @@ public abstract class AbstractAgnus {
         if (route.lds) {
             value |= batteryClock.readByte(addr | 1) & 0xFF;
         }
+        return value;
+    }
+
+    private int readGayleBusData(Gary.Route route, int addr) {
+        int value = 0;
+        if (route.uds) value |= gayle.readByte(addr & ~1) << 8;
+        if (route.lds) value |= gayle.readByte(addr | 1);
         return value;
     }
 
@@ -4724,6 +4767,11 @@ public abstract class AbstractAgnus {
             case RTC:
                 if (uds) batteryClock.writeByte(addr & ~1, (data >> 8) & 0xFF);
                 if (lds) batteryClock.writeByte(addr | 1, data & 0xFF);
+                break;
+
+            case GAYLE:
+                if (uds) gayle.writeByte(addr & ~1, (data >> 8) & 0xFF);
+                if (lds) gayle.writeByte(addr | 1, data & 0xFF);
                 break;
         }
     }
@@ -4912,20 +4960,20 @@ public abstract class AbstractAgnus {
             return faultyCustomRead(regAddr);
         }
 
-        // Denise (readable registers: JOY0/1DAT, CLXDAT, DENISEID, BPLCONx on ECS)
+        // Denise (readable registers: JOY0/1DAT, CLXDAT, DENISEID)
         if (regAddr == 0x00A || regAddr == 0x00C || regAddr == 0x00E || regAddr == 0x07C
-                || (regAddr >= 0x100 && regAddr <= 0x106) || regAddr == 0x10C
                 || (regAddr >= 0x110 && regAddr <= 0x11A)) {
             return denise != null ? denise.readRegister(regAddr) : 0xFFFF;
         }
 
-        // Sprite pos/ctl/data + colour registers ($140-$1BE). On an ECS Denise the colours
-        // read back (diagnostic behaviour); on OCS they are write-only: the read returns the
-        // (floating) bus value AND rewrites it INTO the register. That is what makes
-        // "garbage" colours visible when a handler does an RMW on a write-only custom
-        // register (e.g. nbcd (a4) with a4=$DFF181 in the vAmigaTS CPU/Timing tests).
-        if (regAddr >= 0x140 && regAddr <= 0x1BE) {
-            if (denise != null && denise.isECS()) {
+        // BPLCON0-4, sprite pos/ctl/data and colour registers ($140-$1BE) are write-only on
+        // every Denise: the read returns the (floating) bus value AND rewrites it INTO the
+        // register. That is what makes "garbage" colours visible when a handler does an RMW
+        // on a write-only custom register (e.g. nbcd (a4) with a4=$DFF181 in the vAmigaTS
+        // CPU/Timing tests). Lisa alone reads its colour registers back, under RDRAM.
+        if ((regAddr >= 0x100 && regAddr <= 0x106) || regAddr == 0x10C
+                || (regAddr >= 0x140 && regAddr <= 0x1BE)) {
+            if (regAddr >= 0x180 && denise != null && denise.isAGA()) {
                 return denise.readRegister(regAddr);
             }
             return faultyCustomRead(regAddr);
@@ -5280,6 +5328,7 @@ public abstract class AbstractAgnus {
     public void softReset()  { internalReset(false); }
 
     private void internalReset(boolean hardware) {
+        gayle.reset();
         if (hardware) {
             masterClock = 0;
             vpos = 0;
@@ -5298,7 +5347,7 @@ public abstract class AbstractAgnus {
         // CIAs would stop after a CPU RESET instruction (softReset). The anchor is the same
         // phase as the arm at construction and must change with it: see the note there and
         // CiaEClockPhaseTest.
-        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + CIA_ANCHOR, EventID.CIA_EXECUTE);
+        scheduleAbs(EventSlot.SLOT_CIAA, masterClock + ciaAnchor(), EventID.CIA_EXECUTE);
         // Rearm audio sample production (SLOT_CH0): like SLOT_CIAA, the event reschedules
         // itself but the scheduler has just been cleared.
         if (paula != null) {
@@ -5376,6 +5425,9 @@ public abstract class AbstractAgnus {
             // OVL flip-flop, which is cleared only by the first bus write after power-on or
             // driven by CIA-A PA0.
             if (gary != null) gary.reset();
+        } else if (gary != null && gary.isGayleDecode()) {
+            // Gayle is one of the chips the RESET instruction reaches.
+            gary.resetOverlay();
         }
         floppyCatchUp();
         if (df0  != null) df0.reset();

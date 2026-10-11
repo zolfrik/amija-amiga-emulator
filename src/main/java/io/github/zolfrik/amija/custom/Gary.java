@@ -126,6 +126,7 @@ public final class Gary {
         RTC,
         AUTOCONFIG,
         HD_CONTROLLER, // Zorro II board of the hard disk controller (exprom + ports)
+        GAYLE,         // A1200: Gayle's IDE/PCMCIA registers and ID register
         OVERLAY_ROM,   // read in the $000000 area with the overlay on: ROM
         OPEN_BUS,      // area not decoded: reads the current value of the data bus
         OTHER_IO,
@@ -434,11 +435,22 @@ public final class Gary {
 
     /**
      * A1200 decoding (Gayle in place of Gary): the CIAs answer only in {@code $BF0000-$BFFFFF},
-     * and the custom chips only in their own pages {@code $DE0000-$DFFFFF}. The rest of
-     * {@code $A00000-$BEFFFF}, and the Slow RAM window above the installed RAM, decode to
-     * nothing. See {@link #setGayleDecode}.
+     * the Kickstart is mirrored at {@code $B00000-$B7FFFF}, Gayle's registers sit in
+     * {@code $D80000-$DBFFFF} and {@code $DD0000-$DEFFFF}, and the custom chips only in
+     * {@code $DF0000-$DFFFFF}. Everything else in {@code $A00000-$DEFFFF}, the Slow RAM window
+     * above the installed RAM included, decodes to nothing. See {@link #setGayleDecode}.
      */
     private boolean gayleDecode = false;
+
+    /** Gayle's two register windows (see {@link Gayle#decodes}). */
+    private final Region gayleRegion = new Region(0xD80000, 0xDEFFFF, Target.GAYLE, "CS_GAYLE",
+            gayleRules());
+
+    private static RegionRules gayleRules() {
+        RegionRules r = new RegionRules();
+        r.generateAddressErrorOnOddWord = false;
+        return r;
+    }
 
     // -------------------------------------------------------------------------
     // Keyboard reset (/KBRST)
@@ -662,11 +674,14 @@ public final class Gary {
      *
      * <p>On the A500 the CIA chip selects are decoded over the whole of {@code $A00000-$BFFFFF}
      * and the custom chip select over {@code $C00000-$DFFFFF}, with the trapdoor RAM covering
-     * its low part. On the A1200 the CIAs sit in {@code $BF0000-$BFFFFF} only, and nothing
-     * answers in {@code $A00000-$BEFFFF} or in {@code $C00000-$DBFFFF} past the installed Slow
-     * RAM: an access there is an open bus access that never reaches the E clock or the chip
-     * bus. The Kickstart 3.1 probe of the PCMCIA attribute space at {@code $A00000} is such an
-     * access.
+     * its low part. On the A1200 the CIAs sit in {@code $BF0000-$BFFFFF} only, the Kickstart
+     * is mirrored at {@code $B00000-$B7FFFF}, Gayle answers in {@code $D80000-$DBFFFF} and
+     * {@code $DD0000-$DEFFFF}, and the custom chips in {@code $DF0000-$DFFFFF} only. Nothing
+     * answers in the rest of {@code $A00000-$DEFFFF}: an access there is an open bus access
+     * that never reaches the E clock or the chip bus. The Kickstart 3.1 probe of the PCMCIA
+     * attribute space at {@code $A00000} is such an access. Inside the CIA page only
+     * {@code $BFD000-$BFEFFF} reaches the CIAs ({@link #isGayleCiaSelect}), and there is no
+     * Kickstart mirror at {@code $E00000}.
      */
     public void setGayleDecode(boolean on) {
         this.gayleDecode = on;
@@ -674,6 +689,15 @@ public final class Gary {
 
     public boolean isGayleDecode() {
         return gayleDecode;
+    }
+
+    /**
+     * Gayle selects a CIA only in the two 4 KB blocks {@code $xxD000-$xxDFFF} and
+     * {@code $xxE000-$xxEFFF} of its CIA page; the rest of the page decodes to nothing.
+     */
+    public static boolean isGayleCiaSelect(int addr) {
+        int block = addr & 0xF000;
+        return block == 0xD000 || block == 0xE000;
     }
 
     /** Lowest address of the CIA decoding window. */
@@ -833,7 +857,7 @@ public final class Gary {
      * {@link #route}).
      */
     public void reset() {
-        this.ovlFlipFlop    = true;
+        resetOverlay();
         this.ciaOwnsOvl     = false;  // at reset CIA-A does not drive /OVL yet
         this.kbResetLine    = false;
         this.resetAsserted  = false;
@@ -901,13 +925,23 @@ public final class Gary {
      * caller instead of allocating a new Route. The caller must own a dedicated scratch for
      * every route it keeps beyond the next call (see {@link Route}).
      */
+    /**
+     * The overlay at a /RESET of the board: the ROM shows at {@code $000000} again. On the A500
+     * only a power-on reaches Gary (a RESET instruction leaves the flip-flop to CIA-A's PA0);
+     * on the A1200 Gayle takes the RESET instruction too.
+     */
+    public void resetOverlay() {
+        this.ovlFlipFlop = true;
+    }
+
     public Route route(int rawAddress, AccessType type, boolean uds, boolean lds, boolean isCpu, Route out) {
         final int addr = rawAddress & 0x00FFFFFF;
 
         // -- 1. OVL auto-clear ----------------------------------------------------
         // Gary disables the overlay at the first write on the bus. Any write cycle (CIA,
-        // custom, RAM...) triggers the flip-flop.
-        if (type == AccessType.WRITE && ovlFlipFlop && !ciaOwnsOvl) {
+        // custom, RAM...) triggers the flip-flop. Gayle clears it at the first write to
+        // CIA-A instead (step 2).
+        if (type == AccessType.WRITE && ovlFlipFlop && !ciaOwnsOvl && !gayleDecode) {
             ovlFlipFlop = false;
         }
 
@@ -915,7 +949,18 @@ public final class Gary {
         // Gary decodes the whole range for the CIAs; the A1200 only its last 64 KB, and
         // nothing answers below.
         if (addr >= 0xA00000 && addr <= 0xBFFFFF) {
-            if (addr < ciaWindowStart()) return out.fillOpenBus(addr);
+            if (addr < ciaWindowStart()) {
+                if (gayleDecode && addr >= 0xB00000 && addr <= 0xB7FFFF) {
+                    return routeRomMirror(addr, type, uds, lds, out);
+                }
+                return out.fillOpenBus(addr);
+            }
+            if (gayleDecode) {
+                if (!isGayleCiaSelect(addr)) return out.fillOpenBus(addr);
+                // A12 low selects CIA-A, whatever the byte lane: its first write ends the
+                // overlay, and PA0 never brings it back.
+                if (type == AccessType.WRITE && (addr & 0x1000) == 0) ovlFlipFlop = false;
+            }
             return routeCia(addr, type, uds, lds, out);
         }
 
@@ -926,17 +971,15 @@ public final class Gary {
             return routeOverlay(addr, type, uds, lds, out);
         }
 
-        // -- 4. ROM mirror at $E00000 -----------------------------------------------
-        if (addr >= 0xE00000 && addr <= 0xE7FFFF) {
-            Region rom = findFirstRegionByTarget(Target.KICKSTART_ROM);
-            if (rom != null) {
-                int effectiveAddr = addr & (romSize - 1);
-                if (type == AccessType.WRITE) {
-                    return out.fillOkReadOnly(rom, uds, lds, rom.rules.dtackCycles, effectiveAddr);
-                }
-                return out.set(true, Target.KICKSTART_ROM, rom.chipSelect,
-                        uds, lds, rom.rules.dtackCycles, false, false, rom, effectiveAddr, false);
-            }
+        // -- 4. ROM mirror at $E00000 (not on the A1200) ---------------------------
+        if (addr >= 0xE00000 && addr <= 0xE7FFFF && !gayleDecode) {
+            return routeRomMirror(addr, type, uds, lds, out);
+        }
+
+        // -- 4b. A1200: Gayle's registers; no custom chips and no clock below $DF0000 --
+        if (gayleDecode && addr >= 0xD80000 && addr <= 0xDEFFFF) {
+            if (Gayle.decodes(addr)) return applyRules(gayleRegion, addr, type, uds, lds, addr, out);
+            return out.fillOpenBus(addr);
         }
 
         // -- 5. Normal decoding by registered region ---------------------------------
@@ -981,6 +1024,18 @@ public final class Gary {
         }
 
         return applyRules(hit, addr, type, uds, lds, effectiveAddr, out);
+    }
+
+    /** A mirror of the Kickstart ROM outside its socket window. */
+    private Route routeRomMirror(int addr, AccessType type, boolean uds, boolean lds, Route out) {
+        Region rom = findFirstRegionByTarget(Target.KICKSTART_ROM);
+        if (rom == null) return out.fillOpenBus(addr);
+        int effectiveAddr = addr & (romSize - 1);
+        if (type == AccessType.WRITE) {
+            return out.fillOkReadOnly(rom, uds, lds, rom.rules.dtackCycles, effectiveAddr);
+        }
+        return out.set(true, Target.KICKSTART_ROM, rom.chipSelect,
+                uds, lds, rom.rules.dtackCycles, false, false, rom, effectiveAddr, false);
     }
 
     // =========================================================================

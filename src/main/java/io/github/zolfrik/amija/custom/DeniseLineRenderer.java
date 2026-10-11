@@ -57,13 +57,18 @@ final class DeniseLineRenderer {
 
     void setEcs(boolean ecs) {
         this.isECS = ecs;
+        ecsShres = isECS && !isAGA;
     }
 
     private boolean isAGA;
 
     void setAga(boolean aga) {
         this.isAGA = aga;
+        ecsShres = isECS && !isAGA;
     }
+
+    /** An ECS Denise, not Lisa: its super-hires pairs two pixels into one colour register. */
+    private boolean ecsShres;
 
     // Inputs of the line being rendered, taken from its job.
     private byte[] dBuffer;
@@ -680,8 +685,10 @@ final class DeniseLineRenderer {
     }
 
     /**
-     * Super-hires on Lisa: a pixel is half a sub-pixel, so each sub-pixel takes two bits and
-     * shows the first of them.
+     * Super-hires: a pixel is half a sub-pixel, so each sub-pixel takes two bits. Lisa shows
+     * the first of them. An ECS Denise, with at most two planes, keeps both: the first pixel's
+     * planes in index bits 0-1 and the second's in bits 2-3, the four-bit index of the colour
+     * register the pair shows (see colorizeNormal).
      */
     private void emitGroupShres(int grp, int subPixels) {
         final byte[] slices = srSlice[grp];
@@ -691,7 +698,9 @@ final class DeniseLineRenderer {
         int cursor = srCursor[grp];
         for (int i = 0; i < subPixels && count > 0; i++) {
             if (cursor >= 0 && cursor < dBuffer.length) {
-                dBuffer[cursor] = (byte) ((dBuffer[cursor] & keepMask) | slices[len - count]);
+                int slice = slices[len - count];
+                if (ecsShres && count > 1) slice |= slices[len - count + 1] << 2;
+                dBuffer[cursor] = (byte) ((dBuffer[cursor] & keepMask) | slice);
             }
             cursor++;
             count = Math.max(0, count - 2);
@@ -1934,11 +1943,14 @@ final class DeniseLineRenderer {
         // PF2PRI in the middle of the screen: without it the band with PF1 in front would
         // start and end one line late.
         boolean hamDpfPri = (initialBplcon2 & 0x0040) != 0;
+        // ECS super-hires follows BPLCON0 within the line like HAM and EHB.
+        boolean shres = ecsShres && (initialBplcon0 & 0x0040) != 0;
         int     colIdx  = 0;
 
         while (colIdx < colChanges.size()) {
             int trigger = colChanges.keys[colIdx];
             if (hamMode) hold = colorizeHAM(vpos, pixel, trigger, hold, hamDpf, hamDpfPri);
+            else if (shres)   colorizeShresEcs(pixel, trigger);
             else              colorizeNormal(vpos, pixel, trigger, ehbMode, killEhb);
             pixel = trigger;
             RegChange c = colChanges.elements[colIdx++];
@@ -1947,6 +1959,7 @@ final class DeniseLineRenderer {
                 hamMode = isHamActive(c.value);
                 ehbMode = isEHB(c.value) && !killEhb;
                 hamDpf  = (c.value & 0x0400) != 0;
+                shres   = ecsShres && (c.value & 0x0040) != 0;
             }
             else if (c.reg == 0x104)  hamDpfPri = (c.value & 0x0040) != 0;
             else if (c.reg == COLCHANGE_KILLEHB) {
@@ -1956,6 +1969,7 @@ final class DeniseLineRenderer {
             else if (c.reg >= 0x180)  palette[(c.reg - 0x180) / 2] = c.value & 0xFFF;
         }
         if (hamMode) colorizeHAM(vpos, pixel, HPIXELS, hold, hamDpf, hamDpfPri);
+        else if (shres) colorizeShresEcs(pixel, HPIXELS);
         else         colorizeNormal(vpos, pixel, HPIXELS, ehbMode, killEhb);
 
         colChanges.clear();
@@ -1990,6 +2004,28 @@ final class DeniseLineRenderer {
                 // last maximum (see renderPlanes) while the shift register finishes
                 // emptying, which is what a six-plane dual-playfield line does when it
                 // turns into single playfield in its last colour clock.
+                color = 0;
+            }
+            rgbLine[i] = amigaToRGB(color);
+        }
+    }
+
+    /**
+     * Colorize in super-hires on an ECS Denise. A hires pixel of the output is a pair of
+     * super-hires pixels, and the pair's four plane bits (see emitGroupShres) select one of
+     * sixteen colour registers; the first pixel of the pair shows the upper two bits of each
+     * gun of that register, widened to four by repeating them. The border, index 0, is
+     * quantised the same way. Sprites keep their full colour.
+     */
+    private void colorizeShresEcs(int from, int to) {
+        for (int i = from; i < to && i < HPIXELS; i++) {
+            int cIdx  = lineIsVBorder ? (borderColor & 0x3F)
+                      : (bBuffer[i] == (byte) 0xFF) ? (mBuffer[i] & 0x3F) : (bBuffer[i] & 0x3F);
+            int color = palette[cIdx & 0x1F];
+            if (cIdx < 16) {
+                color &= 0xCCC;
+                color |= color >> 2;
+            } else if (cIdx >= 32) {
                 color = 0;
             }
             rgbLine[i] = amigaToRGB(color);

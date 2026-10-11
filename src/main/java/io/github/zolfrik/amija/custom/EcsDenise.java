@@ -26,30 +26,25 @@ package io.github.zolfrik.amija.custom;
  * <p>Sets the chip in ECS mode (DENISEID {@code 0xFFFC}); as a consequence, through the
  * {@code isECS} gating already in {@link AbstractDenise}, these become active:
  * <ul>
- *   <li><b>D1 DENISEID</b> ($07C) = {@code 0xFFFC} (the Kickstart detects ECS).</li>
- *   <li><b>D4 Readback</b>: BPLCON0/1/2/3/4 and the colour registers ($180-$1BE) are
- *       readable.</li>
- *   <li><b>D5 DIWHIGH-H</b>: the high H8 bits of HSTART/HSTOP (handled in
+ *   <li><b>DENISEID</b> ($07C) = {@code 0xFFFC} (the Kickstart detects ECS).</li>
+ *   <li><b>DIWHIGH-H</b>: the high H8 bits of HSTART/HSTOP (handled in
  *       {@code AbstractDenise.writeRegisterAtPixel}, case $1E4, gate {@code isECS}).</li>
+ *   <li><b>Super-hires</b> (BPLCON0 bit 6, 35 ns pixels) with at most two planes. The output
+ *       stays at hires resolution: each output pixel is a pair of super-hires pixels whose
+ *       four plane bits select one of sixteen colour registers, shown with the upper two bits
+ *       of each gun.</li>
+ *   <li><b>KILLEHB</b> (BPLCON2 bit 9).</li>
  * </ul>
  *
- * <p><b>Not implemented yet</b> (they need ECS content for validation; see
- * {@code docs/ECS-Chipset-Implementation-Plan.md}):
- * <ul>
- *   <li><b>D2 Super-hires</b> (BPLCON0 bit 6 SHRES, 35 ns/pixel): needs doubling the width of
- *       the raw framebuffer ({@code RAW_LINE_PIXELS} is at hires resolution) and adapting
- *       VirtualCRT/display. A SHRES bit is ignored (rendered as hires) so OCS does not
- *       regress.</li>
- *   <li><b>D3/D6 BPLCON3 effects</b> (BRDRBLNK, BRDSPRT/sprites in the border, colour bank): the
- *       register is stored and readable, but the rendering effects are not applied, so the OCS
- *       border/sprite fixes (North &amp; South, Last Battle) do not regress.</li>
- * </ul>
+ * <p>BPLCON0-4 and the colour registers are write-only, as on OCS. The BPLCON3 border bits
+ * (BRDRBLNK, BRDNTRAN) need ECSENA; with the full-overscan output the border keeps COLOR00
+ * either way. Sprites over a super-hires line are drawn as on any other line.
  */
 public final class EcsDenise extends AbstractDenise {
 
     public EcsDenise() {
         super();
-        // DENISEID 0xFFFC -> isECS = true (attiva readback + DIWHIGH-H).
+        // DENISEID 0xFFFC -> isECS = true.
         setDeniseId(0xFFFC);
     }
 }

@@ -48,9 +48,9 @@ public final class FloppyDrive {
     // -------------------------------------------------------------------------
 
     public enum DriveType {
-        /** DF0: internal DD drive, no external ID. */
+        /** DF0 of the A500: internal DD drive, no ID hardware. */
         DD_INT(0x00000000),
-        /** DF1/DF2/DF3: standard external 3.5" DD drive. */
+        /** A 3.5" DD drive with ID hardware: DF1/DF2/DF3, and DF0 of the A1200. */
         DD_EXT(0xFFFFFFFF),
         /** External HD drive (A3000/A4000). */
         HD_EXT(0xAAAAAAAA);
@@ -514,6 +514,16 @@ public final class FloppyDrive {
             return;
         }
 
+        // /SIDE acts at once, on every drive: the line is common to all of them and the head
+        // is chosen electronically, with no settle, so the bits that follow the write already
+        // come from the new side. A drive that is not selected changes head too, and its
+        // position is rescaled to the new track as for a selected one.
+        if (this.currentSide != side) {
+            flushWrittenTrack();   // the track written so far belongs to the old side
+            currentSide = side;
+            if (diskInserted && diskImage != null) loadCurrentTrack();
+        }
+
         if (!selected) {
             this.selected = false;
             prevSelected = false;
@@ -541,16 +551,6 @@ public final class FloppyDrive {
         }
 
         this.selected = selected;
-
-        if (selected) {
-            // /SIDE acts at once: the head that reads is chosen electronically, with no
-            // settle, so the bits that follow the write already come from the new side.
-            if (this.currentSide != side) {
-                flushWrittenTrack();   // the track written so far belongs to the old side
-                currentSide = side;
-                if (diskInserted && diskImage != null) loadCurrentTrack();
-            }
-        }
 
         prevSelected = selected;
         prevStep     = step;
@@ -897,9 +897,9 @@ public final class FloppyDrive {
      * grace period would make DF0 with a disk inside announce a spurious ID ($E0000000), and
      * trackdisk 2.0+ would never mount it.
      *
-     * <p>DF0 (the A500's internal drive) has no ID hardware: {@link DriveType#DD_INT} is
-     * $00000000, so {@code idBit} stays false and the line reads zeros, which is what
-     * trackdisk expects from a standard Amiga drive.
+     * <p>DF0 of the A500 has no ID hardware: {@link DriveType#DD_INT} is $00000000, so
+     * {@code idBit} stays false and the line reads zeros, which is what trackdisk expects
+     * from a standard Amiga drive. DF0 of the A1200 reports the DD ID like an external one.
      */
     public boolean isReadyRaw() {
         if (!connected) return false;

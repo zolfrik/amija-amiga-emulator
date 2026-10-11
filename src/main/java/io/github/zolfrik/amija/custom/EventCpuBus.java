@@ -78,6 +78,11 @@ public final class EventCpuBus implements CpuBus {
     private int iplChanges;
     private int lastIpl;
 
+    /** A1200 decoding: only part of the CIA page reaches the CIAs (see {@link #ciaAccess}). */
+    private final boolean gayle;
+    /** See {@link AbstractAgnus#eClockSyncPhase()}. */
+    private final int eClockSync;
+
     public EventCpuBus(AbstractAgnus agnus, CpuModel model) {
         this.agnus = agnus;
         this.bus16 = model != CpuModel.M68020;
@@ -86,7 +91,8 @@ public final class EventCpuBus implements CpuBus {
         final int slowPages = agnus.slowRamBytes() >>> 16;
         // The A1200 decoding leaves $A00000-$BEFFFF to nobody: an access there ends without
         // the E clock.
-        final boolean gayle = agnus.isAGA();
+        this.gayle = agnus.isAGA();
+        this.eClockSync = agnus.eClockSyncPhase();
         for (int p = 0; p < 256; p++) {
             final byte t;
             if (p < 0x20) t = chip32 ? CHIP32 : CHIP16;
@@ -241,14 +247,18 @@ public final class EventCpuBus implements CpuBus {
         }
     }
 
-    /** A CIA access, synchronised to the E clock. */
+    /**
+     * A CIA access, synchronised to the E clock. On the A1200 an address of the CIA page that
+     * Gayle does not decode as a CIA ends at once, without the E clock and without wait states.
+     */
     private int ciaAccess(int address, boolean read, int size, int data) {
+        if (gayle && !Gary.isGayleCiaSelect(address)) return fastAccess(address, read, size, data, 0);
         final int phase = bus16 ? (agnus.eClockPhase() + extra / HALF_CCK) % 10 : agnus.eClockPhase();
-        final int sync = 2;
+        final int sync = eClockSync;
         int add = 0;
         if (phase < sync) add = sync - phase;
         else if (phase > sync) add = 10 - phase + sync;
-        idle((add + 4) * HALF_CCK);
+        idle((add + sync + 2) * HALF_CCK);
         final int v = agnus.eventTransfer(address, read, size, data);
         idle(6 * HALF_CCK);
         if (bus16) iplLate = iplAt(now() - 2 * TimeBase.CLOCK_7MHZ);
