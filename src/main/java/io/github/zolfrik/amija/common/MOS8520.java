@@ -1148,7 +1148,10 @@ public class MOS8520 {
                     delay |= CIACountA0 | CIACountA1; feed |= CIACountA0;
                     if ((cra & 0x01) == 0) pb67Toggle |= 0x40;
                 } else {
-                    delay &= ~(CIACountA1 | CIACountA0); feed &= ~CIACountA0;
+                    // A stop drops the decrement due at the next clock and the stages still to
+                    // come, but not the one behind it: the timer counts once more, at the
+                    // second clock after the write.
+                    delay &= ~(CIACountA3 | CIACountA1 | CIACountA0); feed &= ~CIACountA0;
                 }
                 if ((val & 0x02) != 0) {
                     pb67TimerMode |= 0x40;
@@ -1181,7 +1184,10 @@ public class MOS8520 {
                     delay |= CIACountB0 | CIACountB1; feed |= CIACountB0;
                     if ((crb & 0x01) == 0) pb67Toggle |= 0x80;
                 } else {
-                    delay &= ~(CIACountB1 | CIACountB0); feed &= ~CIACountB0;
+                    // A stop drops the decrement due at the next clock and the stages still to
+                    // come, but not the one behind it: the timer counts once more, at the
+                    // second clock after the write.
+                    delay &= ~(CIACountB3 | CIACountB1 | CIACountB0); feed &= ~CIACountB0;
                 }
                 if ((val & 0x02) != 0) {
                     pb67TimerMode |= 0x80;
