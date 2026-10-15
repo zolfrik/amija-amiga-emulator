@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -21,7 +21,7 @@
 package io.github.zolfrik.amija.custom;
 
 /**
- * Blitter (Block Image Transferrer) of the Amiga 500.
+ * Blitter (Block Image Transferrer) of the Amiga.
  *
  * <p>The copy blit is a <b>micro-program</b> engine (docs/agnus-timing-refactor-plan.md
  * sections 9 and 10). Each CCK executes one micro-op (bitmask

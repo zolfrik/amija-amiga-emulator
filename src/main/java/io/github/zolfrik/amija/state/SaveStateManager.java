@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -54,7 +54,7 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * Saving and restoring the whole state of the A500 machine to a file. There are
+ * Saving and restoring the whole state of the emulated machine to a file. There are
  * {@link #SLOT_COUNT} independent slots, one per folder ({@code savestate/Slot1/} ...
  * {@code savestate/Slot5/}); which one is active is said by the configuration
  * ({@code savestate.slot}), here only slot numbers are received. A custom compressed

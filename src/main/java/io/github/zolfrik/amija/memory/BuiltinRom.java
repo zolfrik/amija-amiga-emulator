@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -28,7 +28,7 @@ import java.nio.charset.StandardCharsets;
  * The AmiJa boot ROM, included in the jar.
  *
  * It is original firmware written for this project (source in {@code rom/}), not a Commodore
- * Kickstart: it can therefore be redistributed with the emulator. It lets the A500 start even
+ * Kickstart: it can therefore be redistributed with the emulator. It lets the Amiga start even
  * for those who own no Kickstart, and boots floppy games with a self-contained bootblock.
  *
  * It is not a full replacement for the Kickstart: it does not implement AmigaDOS, so disks

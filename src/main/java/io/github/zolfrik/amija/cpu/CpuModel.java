@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -32,7 +32,7 @@ import java.util.Locale;
  * Processor model of the emulated machine.
  *
  * <ul>
- *   <li>{@link #M68000}: the stock Amiga 500 CPU.</li>
+ *   <li>{@link #M68000}: the original Amiga CPU.</li>
  *   <li>{@link #M68010}: pin-compatible successor. Vector base register, privileged
  *       {@code MOVE SR}, four-word exception frames, loop mode, MOVEC/MOVES/RTD and
  *       different timing for a number of instructions.</li>

@@ -5,12 +5,12 @@
 <h1 align="center">AmiJa</h1>
 
 <p align="center">
-  A cycle-exact Amiga 500 emulator, written from scratch in Java.
+  A cycle-exact Amiga emulator, written from scratch in Java.
 </p>
 
 ---
 
-AmiJa emulates an Amiga 500 at the level of the individual bus cycle: all 
+AmiJa emulates an Amiga at the level of the individual bus cycle: all 
 components advance together on the same 7.09 MHz master clock, and DMA slots are
 arbitrated exactly as the real chipset does. 
 

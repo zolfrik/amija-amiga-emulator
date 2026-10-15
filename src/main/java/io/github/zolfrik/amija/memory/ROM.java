@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -23,7 +23,7 @@ package io.github.zolfrik.amija.memory;
 import java.util.Arrays;
 
 /**
- * ROM (Read-Only Memory) for the Kickstart and other non-writable areas of the Amiga 500.
+ * ROM (Read-Only Memory) for the Kickstart and other non-writable areas of the Amiga.
  *
  * CHARACTERISTICS
  *
@@ -34,7 +34,7 @@ import java.util.Arrays;
  *   - "Programming" operations (loadImage, load) always allowed: they are the loading of
  *     the ROM image when the emulator starts, not run-time CPU writes
  *
- * AMIGA 500 KICKSTART ROM
+ * AMIGA KICKSTART ROM
  *
  * Kickstart 1.3 (256 KB):
  *   ROM rom = new ROM(256 * 1024);

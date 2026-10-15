@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -101,7 +101,7 @@ import javax.swing.UIManager;
 import javax.swing.UnsupportedLookAndFeelException;
 
 /**
- * Main class of AmiJa, the Amiga 500 emulator. Creates and wires all the internal
+ * Main class of AmiJa, the Amiga emulator. Creates and wires all the internal
  * components and starts the cycle-exact simulation.
  *
  * <p>It is also the controller of the machine's life cycle: the configuration is read from
@@ -2038,7 +2038,7 @@ public class Amija implements RemotePlayControl {
     // Building / tearing down the machine
     // =========================================================================
 
-    /** Builds and starts a whole A500 machine from {@link #config}. */
+    /** Builds and starts a whole Amiga machine from {@link #config}. */
     private void bootMachine() {
         try {
             // Apply the current language: rebuilding the display (setDrives) regenerates the
@@ -2454,7 +2454,7 @@ public class Amija implements RemotePlayControl {
     // =========================================================================
 
     /**
-     * Checks that the configured Kickstart exists and is usable on an A500; if not, tells
+     * Checks that the configured Kickstart exists and is usable on the Amiga; if not, tells
      * the user what is wrong. The check goes beyond the file's existence because the typical
      * ROM collection is full of images that are not socket Kickstarts (CDTV extended ROMs,
      * ReKick images, freezer cartridges): without this message the only symptom would be a

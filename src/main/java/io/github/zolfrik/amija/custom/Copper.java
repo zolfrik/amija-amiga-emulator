@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -24,7 +24,7 @@ import io.github.zolfrik.amija.common.BusRequest;
 import io.github.zolfrik.amija.common.BusResponse;
 
 /**
- * Copper (co-processor) of the Amiga 500.
+ * Copper (co-processor) of the Amiga.
  *
  * The Copper is a co-processor synchronised with the video beam. It runs a list of
  * instructions (the Copper list) that can:

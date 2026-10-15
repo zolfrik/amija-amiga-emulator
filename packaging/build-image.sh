@@ -138,7 +138,7 @@ echo "-- jpackage --type app-image"
             --runtime-image "$JRE" \
             --icon "$ICON" \
             --vendor 'zolfrik' \
-            --description 'AmiJa - cycle-exact Amiga 500 emulator' \
+            --description 'AmiJa - cycle-exact Amiga emulator' \
             --copyright 'Copyright (C) 2026 zolfrik - GPL-3.0-or-later' \
             --java-options '--enable-native-access=ALL-UNNAMED' \
             --java-options "$HOME_OPTION" \

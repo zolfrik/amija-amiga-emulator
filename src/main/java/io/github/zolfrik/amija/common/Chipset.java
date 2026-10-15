@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -26,8 +26,8 @@ package io.github.zolfrik.amija.common;
  * Denise hierarchy) and the behaviour of the ECS-only registers.
  *
  * <ul>
- *   <li>{@link #OCS}: Original Chip Set: Agnus 8371 (512 KB chip RAM), Denise 8362. The stock
- *       Amiga 500.</li>
+ *   <li>{@link #OCS}: Original Chip Set: Agnus 8371 (512 KB chip RAM), Denise 8362. The first
+ *       Amiga chipset.</li>
  *   <li>{@link #ECS}: Enhanced Chip Set: Agnus 8372 "Fat" (1 MB), Denise 8373 "Super Denise"
  *       (super-hires, BPLCON3, DIWHIGH, ...).</li>
  *   <li>{@link #AGA}: Advanced Graphics Architecture: Alice (2 MB, wide bitplane and sprite

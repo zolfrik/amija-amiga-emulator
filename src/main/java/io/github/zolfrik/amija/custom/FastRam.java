@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -25,7 +25,7 @@ import io.github.zolfrik.amija.memory.RAM;
 /**
  * Zorro II Fast RAM expansion with AutoConfig.
  *
- * <p>The stock Amiga 500 has no Fast RAM: fast memory comes from expansion boards on the
+ * <p>A stock Amiga has no Fast RAM: fast memory comes from expansion boards on the
  * Zorro II bus (trapdoor slot or side bus). Unlike Chip/Slow RAM, Fast RAM is asynchronous
  * to the chip bus (no wait states, immediate DTACK) and is <b>not</b> accessible to the
  * custom chips (Agnus/Copper/Blitter): only the CPU sees it. Hence the name "Fast".

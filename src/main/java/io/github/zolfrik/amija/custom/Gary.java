@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -25,10 +25,10 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Gary (gate array): Amiga 500 address decoding and bus arbitration.
+ * Gary (gate array): Amiga address decoding and bus arbitration.
  *
  * Gary is the gate array that decodes addresses and generates the chip selects for every
- * device on the Amiga 500 bus. It is not publicly documented: its behaviour has been
+ * device on the Amiga bus. It is not publicly documented: its behaviour has been
  * reconstructed by reverse engineering and from third-party documentation.
  *
  * AMIGA 500 MEMORY MAP (24-bit address bus, 16 MB)
@@ -370,7 +370,7 @@ public final class Gary {
      * Lookup table per 64 KB page.
      *
      * {@link #findRegionByAddress} replaces an O(N) linear scan of {@code regions} (called
-     * ~3.5M/s) with an O(1) access indexed by bits A23..A16 of the address. On the A500 map
+     * ~3.5M/s) with an O(1) access indexed by bits A23..A16 of the address. On this map
      * every region resolved through findRegionByAddress is 64 KB aligned and disjoint, so
      * each page maps to exactly one region.
      *
@@ -417,7 +417,7 @@ public final class Gary {
 
     /**
      * Size of the installed Kickstart ROM.
-     * 256 KB ($40000): Kickstart 1.2, 1.3 (stock A500)
+     * 256 KB ($40000): Kickstart 1.2, 1.3 (stock OCS machines)
      * 512 KB ($80000): Kickstart 2.x, 3.x
      */
     private int romSize = 256 * 1024; // Default 256 KB
@@ -457,7 +457,7 @@ public final class Gary {
     // -------------------------------------------------------------------------
 
     /**
-     * State of the /KBRST line from the keyboard (pin 3 of the A500 keyboard connector).
+     * State of the /KBRST line from the keyboard (pin 3 of the keyboard connector).
      * The keyboard MPU detects CTRL+AMIGA+AMIGA and holds the line low, for at least 500 ms
      * and as long as the keys are held; the motherboard only propagates it to /RESET and
      * /HALT. Convention: true = asserted (low on the physical bus).
@@ -488,7 +488,7 @@ public final class Gary {
     public Gary() {}
 
     /**
-     * Creates and returns a Gary configuration for a standard Amiga 500 with Kickstart 1.3
+     * Creates and returns a Gary configuration for a standard Amiga with Kickstart 1.3
      * (256 KB ROM, 512 KB Chip RAM, trapdoor Slow RAM).
      *
      * The CIA decoding is NOT a static region: it is done in {@link #route} through the
@@ -527,7 +527,7 @@ public final class Gary {
         //
         // Measured by vAmigaTS Memory/Rom/mirror/custD, which writes COLOR00 in $200 steps
         // from $D00180 upward and flashes where the custom chips answer: the reference (and
-        // the photo of a real A500 next to it) shows a hole 768 iterations long
+        // the photo of a real Amiga next to it) shows a hole 768 iterations long
         // ($D80000-$DDFFFF) and the flashing resuming at $DE0000; without this page the
         // hole was 896 iterations long and the final block started 12 lines later. See
         // docs/vamigats-import-order.md, Memory/Rom outcomes.
@@ -550,7 +550,7 @@ public final class Gary {
         // trapdoor board: a standard 512 KB board answers at $C00000-$C7FFFF. Above the
         // installed RAM the custom registers answer (see route(), step 6).
         //
-        // dtackCycles = 1: the A500's Slow RAM is DRAM synchronous to Agnus's colour clock
+        // dtackCycles = 1: the trapdoor Slow RAM is DRAM synchronous to Agnus's colour clock
         // (chip bus). Unlike Fast RAM (asynchronous, immediate DTACK) it needs a bus cycle
         // synchronised to the CCK, i.e. one more wait state than the non-chip-bus areas.
         // Agnus handles the CCK sync (as for Chip RAM); the nominal delay at Gary's level
@@ -752,7 +752,7 @@ public final class Gary {
      * the first two megabytes ($000000-$1FFFFF) anyway: this value only sets where the
      * addresses wrap (alias) onto the first physical bytes.
      *
-     * With 512 KB (stock A500, 512K Agnus) accesses above $07FFFF mirror the first 512 KB;
+     * With 512 KB (stock OCS, 512K Agnus) accesses above $07FFFF mirror the first 512 KB;
      * with 1 MB (Fatter Agnus 8372A) Chip RAM is contiguous up to $0FFFFF; with 2 MB (Super
      * Agnus 8375) there is no mirror. That is how the Kickstart works out how much Chip RAM
      * there is, so it is also the ceiling WHDLoad sees when it checks the slave's

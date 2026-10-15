@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -40,7 +40,7 @@ public class MOS8520 {
     /**
      * Defect of the TODMED counter: see {@link #checkTodIrq(boolean)}.
      *
-     * <p><b>On</b>, as on the A500, the machine the bank's references are made with. With the
+     * <p><b>On</b>, as on the machine the bank's references are made with. With the
      * defect, {@code CIA/TOD/todbug1} goes from 25 984 differing pixels to <b>112</b>,
      * {@code todbug3} from 33 784 to <b>84</b>, {@code todbug4} from 104 764 to <b>996</b>,
      * and {@code todvice/0alarm} and {@code 1alarm}, the two that expect a <b>double</b>
@@ -396,7 +396,7 @@ public class MOS8520 {
      *
      * <p>On the 8520 <b>the DDR does not apply to every bit.</b> Honouring it everywhere,
      * i.e. returning the output value for every pin configured as an output, is the
-     * behaviour of the <b>391078-01</b> variant, not of the A500's CIA-A:
+     * behaviour of the <b>391078-01</b> variant, not of the Amiga's CIA-A:
      *
      * <pre>
      * v  = drive status &amp; 0x3c;                 // bits 2..5: ALWAYS from the drive
@@ -1212,7 +1212,7 @@ public class MOS8520 {
     public boolean isIrqAsserted() { return !irq; }
 
     /**
-     * State of CIA-A's /LED pin (PRA bit 1), which drives the A500's power LED and audio
+     * State of CIA-A's /LED pin (PRA bit 1), which drives the Amiga's power LED and audio
      * filter: a low bit lights the LED (bright) and enables the filter; a high bit leaves it
      * dim. Meaningful for CIA-A only.
      */

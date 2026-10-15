@@ -7,7 +7,7 @@
               /_/    \_\_| |_| |_| |_|\___/\__,_|
 
                      A m i J a   -   U s e r   M a n u a l
-                  A cycle-exact Amiga 500 emulator in Java
+                    A cycle-exact Amiga emulator in Java
 
 ===============================================================================
 
@@ -48,11 +48,11 @@ CONTENTS
  1.  ABOUT AMIJA
 ===============================================================================
 
-  AmiJa is an Amiga 500 emulator written entirely in Java. It reproduces the
+  AmiJa is an Amiga emulator written entirely in Java. It reproduces the
   machine at the cycle level: the CPU, the custom chips (Agnus, Denise, Paula),
   the two CIAs and the floppy drives all advance on the same 7.09 MHz master
   clock as the real hardware, so DMA arbitration, blitter timing, copper waits
-  and disk bitstreams behave the way they do on an A500.
+  and disk bitstreams behave the way they do on a real Amiga.
 
   What you get:
 
@@ -237,7 +237,7 @@ CONTENTS
      understand about this popup.
 
      Left OFF - the default - you supply the games and AmiJa builds the machine
-     around them. Load a floppy image and you get a stock A500 with Kickstart
+     around them. Load a floppy image and you get a stock Amiga with Kickstart
      1.3; load a hard disk image or a WHDLoad archive and you get the expanded
      machine those need, with Kickstart 3.1, 2 MB of Chip RAM, 8 MB of Fast RAM,
      the ECS chipset and a 68020 processor. Even the video standard follows the
@@ -293,7 +293,7 @@ CONTENTS
   +-------------------------------------------------------------------------+
   |  Processor:                                                   cpu.model  |
   +-------------------------------------------------------------------------+
-     The A500's 68000, or its drop-in successor the 68010: a little faster on
+     The classic 68000, or its drop-in successor the 68010: a little faster on
      some instructions, with a movable vector table, a loop mode that runs a
      one-instruction DBcc loop without fetching it again, and MOVEC, MOVES and
      RTD. MOVE from SR is privileged on the 68010, so a few old games written
@@ -308,7 +308,7 @@ CONTENTS
   +-------------------------------------------------------------------------+
   |  Chipset:                                                       chipset  |
   +-------------------------------------------------------------------------+
-     Custom chip generation. OCS is the original A500; ECS adds the enhanced
+     Custom chip generation. OCS is the original chipset; ECS adds the enhanced
      Agnus/Denise and their extra registers (BEAMCON0, DIWHIGH, BPLCON3,
      productivity modes) and is what ECS-only titles expect.
      Values . . . . . OCS / ECS         Applies . . . RESTART (automatic on OK)
@@ -317,7 +317,7 @@ CONTENTS
   |  Chip RAM:                                                chipram.kb  |
   +-------------------------------------------------------------------------+
      Memory shared by CPU and custom chips, from $000000 upwards. 512 KB is the
-     stock A500; 1 MB or 2 MB is what most WHDLoad titles ask for.
+     stock amount; 1 MB or 2 MB is what most WHDLoad titles ask for.
      Values . . . . . 256 / 512 / 1024 / 2048 (KB)
      Applies . . . . . BOOT
 
@@ -325,7 +325,7 @@ CONTENTS
   |  Slow RAM:                                                   slowram.kb  |
   +-------------------------------------------------------------------------+
      The classic "trapdoor" expansion at $C00000, seen by the system as slow
-     Fast RAM. 512 KB gives you the familiar 1 MB A500.
+     Fast RAM. 512 KB gives you the familiar 1 MB Amiga.
      Values . . . . . 0 / 512 / 1024 / 1536 / 1792 (KB), 0 = none
      Applies . . . . . BOOT
 
@@ -516,7 +516,7 @@ CONTENTS
      they live in the whdload.prefs.* section of amiga.properties - see 4.6.
 
      A word on requirements: most WHDLoad titles want more memory than a stock
-     A500. If a game refuses to start, raise Chip RAM to 1 MB and give it a few
+     Amiga. If a game refuses to start, raise Chip RAM to 1 MB and give it a few
      megabytes of Fast RAM.
 
      Values . . . . . true / false, absolute path to .lha or .lzh
@@ -1031,7 +1031,7 @@ CONTENTS
      Property                    Default   Applies to
      ----------------------------------------------------------------------
      auto.floppy.chipram.kb      512       a floppy-only setup: the stock
-     auto.floppy.slowram.kb      512       A500 with the trapdoor expansion,
+     auto.floppy.slowram.kb      512       Amiga with the trapdoor expansion,
      auto.floppy.fastram.kb      0         which is what floppy games expect
      auto.floppy.chipset         OCS
      auto.floppy.cpu             68000E
@@ -1262,5 +1262,5 @@ LICENSE
 
 
 ===============================================================================
-            AmiJa 1.0.0  -  io.github.zolfrik:amija  -  Amiga 500 in Java
+              AmiJa 1.0.0  -  io.github.zolfrik:amija  -  Amiga in Java
 ===============================================================================

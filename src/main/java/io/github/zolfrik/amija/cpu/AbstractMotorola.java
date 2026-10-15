@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -2066,7 +2066,7 @@ public abstract class AbstractMotorola implements Processor {
      * <p>The SingleStepTests JSON vectors give {@code 2*(extensions)} instead, i.e. this
      * value minus {@code 2 + delta}: they disagree on 3 modes of 5. The hardware decides:
      * the {@code expected000} values of vAmigaTS {@code CPU/Exceptions/StackFrame}, measured
-     * on a real A500, agree with this rule. The same arbitration as for Bcc in
+     * on a real Amiga, agree with this rule. The same arbitration as for Bcc in
      * {@code docs/castle-master-copylock-investigation.md}, cause 6.
      */
     private int group0DataFaultPcOffset() {

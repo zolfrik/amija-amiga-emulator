@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -34,7 +34,7 @@ import java.util.Arrays;
 import java.util.function.IntConsumer;
 
 /**
- * Agnus (8361/8367/8372): DMA controller, Copper, Blitter and bus arbiter of the Amiga 500.
+ * Agnus (8361/8367/8372): DMA controller, Copper, Blitter and bus arbiter of the Amiga.
  *
  * Agnus is the heart of the Amiga's DMA system. It:
  *   - generates the video sync signals (hpos/vpos);
@@ -97,7 +97,7 @@ public abstract class AbstractAgnus {
     private final ROM     rom;
 
     /**
-     * Zorro II Fast RAM expansion (AutoConfig). null = no Fast RAM (A500 default). Injected
+     * Zorro II Fast RAM expansion (AutoConfig). null = no Fast RAM (stock default). Injected
      * after construction through {@link #setFastRam(FastRam)}. Seen by the CPU only: the
      * DMA masters (Copper/Blitter/bitplanes) never reach Fast RAM.
      */
@@ -2039,7 +2039,7 @@ public abstract class AbstractAgnus {
      * Attaches a Zorro II Fast RAM expansion (AutoConfig), right after the constructor. With
      * the board present, Gary decodes the AutoConfig space ($E80000) so the Kickstart can
      * find it and give it a base address. {@code null} (or an empty board) leaves the base
-     * A500 configuration without Fast RAM.
+     * configuration without Fast RAM.
      */
     public void setFastRam(FastRam fastRam) {
         this.fastRam = (fastRam != null && fastRam.present()) ? fastRam : null;
@@ -2331,7 +2331,7 @@ public abstract class AbstractAgnus {
 
         // -- Read shifter with no drive turning -----------------------------
         // With no connected drive selected the floppy data line rests at its pull-up
-        // (zeros on the A500), yet Paula's read shift register keeps shifting at the
+        // (zeros on the Amiga), yet Paula's read shift register keeps shifting at the
         // nominal cell rate: the comparator keeps comparing, and a read DMA keeps
         // transferring the words. A drive not connected does not count as selected.
         // With a drive selected but none turning the data line floats, and the shifter
@@ -4996,7 +4996,7 @@ public abstract class AbstractAgnus {
         // DENISEID ($07C) on OCS: the register does NOT EXIST, and the read is not 0xFFFF but
         // a "faulty" write-only read like any other missing register. Returning 0xFFFF lit
         // all 16 bars of vAmigaTS Denise/Misc/Id/deniseid. The vAmigaTS README warns that on
-        // a real A500 the value is NOT deterministic ("in most cases 0xFFFF, but not
+        // a real Amiga the value is NOT deterministic ("in most cases 0xFFFF, but not
         // always"): the signature of a floating bus.
         // On the 32-bit bus of a 68020 the missing register reads all ones.
         if (regAddr == 0x07C && denise != null && !denise.isECS() && !wideBusCpu) {

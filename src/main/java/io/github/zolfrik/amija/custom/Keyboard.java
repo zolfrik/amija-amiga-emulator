@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.Deque;
 
 /**
- * Amiga 500 keyboard.
+ * Amiga keyboard.
  *
  * Implements the serial protocol on CIA-A (KDAT = SP, KCLK = CNT).
  * Hardware reference: Amiga Hardware Reference Manual, appendix A, and schematics rev. 6A.
@@ -65,7 +65,7 @@ import java.util.Deque;
  *   - After MAX_RETRIES failed attempts the byte is dropped
  *
  * CTRL+AMIGA+AMIGA reset:
- *   - The keyboard MPU detects the combination and asserts /KBRST (pin 3 of the A500
+ *   - The keyboard MPU detects the combination and asserts /KBRST (pin 3 of the
  *     keyboard connector), which on the motherboard drives /RESET and /HALT to the 68000
  *     and every chip.
  *   - While /KBRST is low the keyboard transmits NOTHING: the keycodes of the three keys
@@ -449,7 +449,7 @@ public class Keyboard implements AmigaKeyTarget {
     /**
      * Drives the /KBRST line from the reset combination.
      *
-     * Behaviour of the A500 keyboard MPU (6570-036):
+     * Behaviour of the Amiga keyboard MPU (6570-036):
      *   1. As soon as the three keys are held together, it pulls /KBRST low and abandons
      *      any transmission in progress.
      *   2. It holds the line low for at least 500 ms, and for as long as the keys are held:

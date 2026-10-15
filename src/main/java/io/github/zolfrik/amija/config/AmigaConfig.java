@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -216,7 +216,7 @@ public final class AmigaConfig {
         }
     }
 
-    /** Floppy only: the stock A500 configuration almost every game expects. */
+    /** Floppy only: the stock OCS configuration almost every game expects. */
     private static final AutoDefaults AUTO_FLOPPY =
             new AutoDefaults("auto.floppy.", 512, 512, 0, Chipset.OCS, CpuModel.M68000E);
 
@@ -505,7 +505,7 @@ public final class AmigaConfig {
      * System settings derived by Auto mode for the media described by the parameters;
      * {@link #autoProfile()} is the same applied to the current state.
      *
-     * <p>The profile is one of three: floppy only (stock A500, Kickstart 1.3), hard
+     * <p>The profile is one of three: floppy only (stock OCS machine, Kickstart 1.3), hard
      * disk/WHDLoad (expanded machine, Kickstart 3.1), or AGA software (A1200, Kickstart 3.1),
      * which wins over the other two. Every value comes from {@code amiga.properties}
      * ({@code auto.floppy.*} / {@code auto.hd.*} / {@code auto.aga.*}), so anyone can

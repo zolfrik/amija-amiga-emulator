@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -27,7 +27,7 @@ import io.github.zolfrik.amija.memory.RAM;
 import io.github.zolfrik.amija.memory.ROM;
 
 /**
- * OCS Agnus (8371): Original Chip Set variant of the stock Amiga 500 (512 KB chip RAM).
+ * OCS Agnus (8371): Original Chip Set variant (512 KB chip RAM).
  *
  * <p>All the behaviour lives in {@link AbstractAgnus}: its specialisation hooks already have
  * the OCS defaults, so this subclass is a <i>semantic no-op</i> (it overrides nothing). It

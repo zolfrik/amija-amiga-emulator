@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -24,7 +24,7 @@ import io.github.zolfrik.amija.input.GamePort;
 import java.util.Arrays;
 
 /**
- * Denise (8362 OCS / 8373 ECS): the display encoder of the Amiga 500.
+ * Denise (8362 OCS / 8373 ECS): the display encoder of the Amiga.
  *
  * Line-buffered architecture, in two halves:
  *   this class, during the line: registers, shift-register emission into the index buffer,
@@ -710,7 +710,7 @@ public abstract class AbstractDenise {
         switch (address) {
             // JOY0DATR / JOY1DATR: the port's quadrature counters. They do not depend on what
             // is plugged in: an empty port reads its own counters, not 0 (see GamePort). The
-            // 0 below applies only to a machine built WITHOUT that port, which the A500 is
+            // 0 below applies only to a machine built WITHOUT that port, which the Amiga is
             // not.
             case 0x00A: return (gamePort1 != null ? gamePort1.joydat() : 0) & 0xFFFF;
             case 0x00C: return (gamePort2 != null ? gamePort2.joydat() : 0) & 0xFFFF;

@@ -31,7 +31,7 @@ sizeMemory:
             ; specchia in basso, o non risponde nessuno. La prima si vede
             ; perche' cambia il valore in $100, la seconda perche' il valore
             ; scritto non si rilegge.
-            move.l  #$00080000,d0           ; 512 KB e' il minimo di un A500
+            move.l  #$00080000,d0           ; 512 KB e' il minimo di un Amiga
             lea     $00000100,a0
             move.l  #$C0FFEE01,(a0)
 scanChip:

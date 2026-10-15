@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -21,7 +21,7 @@
 package io.github.zolfrik.amija.custom;
 
 /**
- * OCS Denise (8362): display encoder of the stock Amiga 500.
+ * OCS Denise (8362): display encoder of the Original Chip Set.
  *
  * <p>All the behaviour lives in {@link AbstractDenise}. The OCS variant leaves the
  * {@code isECS} flag at its default ({@code false}): DENISEID returns {@code 0xFFFF}, the control

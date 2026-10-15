@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -951,7 +951,7 @@ public class AmigaDisplay {
     // Status LEDs (power / drive): cosmetic overlay in the overscan
     // -------------------------------------------------------------------------
 
-    // LED colours as on the real A500: POWER red, DRIVE green.
+    // LED colours as on the real Amiga: POWER red, DRIVE green.
     private static final Color LED_POWER = new Color(0xFF, 0x20, 0x40); // rosso alimentazione
     private static final Color LED_DRIVE = new Color(0x5A, 0xFF, 0x2A); // green floppy activity
     private static final Color LED_REFLECTION_OFF = new Color(255, 255, 255, 0);
@@ -1016,7 +1016,7 @@ public class AmigaDisplay {
     }
 
     /**
-     * Draws the LEDs as on the A500: thin stacked rectangular bars with the label on the
+     * Draws the LEDs as on the Amiga: thin stacked rectangular bars with the label on the
      * left of each, bottom right in the overscan. POWER is always there; the DRIVE row
      * appears only if at least one floppy is connected and the HD row only if at least one
      * hard disk is connected (master on the left, slave on the right). Each row is split

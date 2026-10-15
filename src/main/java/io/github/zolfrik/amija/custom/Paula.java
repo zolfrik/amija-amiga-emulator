@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -31,7 +31,7 @@ import java.util.Arrays;
 import java.util.function.IntSupplier;
 
 /**
- * Paula (8364): audio, interrupt controller, disk DMA and serial port of the Amiga 500.
+ * Paula (8364): audio, interrupt controller, disk DMA and serial port of the Amiga.
  */
 public final class Paula {
 
@@ -773,7 +773,7 @@ public final class Paula {
 
     /**
      * Read shifter with <b>no drive selected</b>: the floppy data line rests at its
-     * pull-up, zeros on the A500, and the shift register keeps shifting them in. Kickstart
+     * pull-up, zeros on the Amiga, and the shift register keeps shifting them in. Kickstart
      * 1.3 sees DSKSYN from here at boot, since DSKSYNC resets to zero.
      *
      * <p>It does <b>less</b> than {@link #shiftInDiskBit(int)}: it shifts, updates DSKBYTR at
@@ -1462,7 +1462,7 @@ public final class Paula {
      * reference, which the integration reaches exactly.
      *
      * <p>The residual at 28.8 dB is the images of Paula's 8-bit staircase (15.5 and 16.5 kHz
-     * for this signal), which the A500's fixed filter attenuates downstream. The
+     * for this signal), which the Amiga's fixed filter attenuates downstream. The
      * measurement lives in {@code PaulaAudioQualityTest}.
      */
     private void mixAudioSample() {

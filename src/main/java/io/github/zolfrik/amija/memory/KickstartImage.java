@@ -1,5 +1,5 @@
 /*
- * AmiJa - a cycle-exact Amiga 500 emulator in Java.
+ * AmiJa - a cycle-exact Amiga emulator in Java.
  * Copyright (C) 2026 zolfrik
  *
  * This program is free software: you can redistribute it and/or modify
@@ -29,7 +29,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 
 /**
- * Normalises the file of a Kickstart ROM into the image the Amiga 500 ROM socket would
+ * Normalises the file of a Kickstart ROM into the image the Amiga ROM socket would
  * really see, and tells its identity.
  *
  * <p>The dumps around are not "clean" images: the same ROM circulates in files with extra
@@ -38,7 +38,7 @@ import java.util.Arrays;
  * {@link io.github.zolfrik.amija.custom.Gary#setRomSize(int)}) or a black screen with no
  * explanation. This class recognises the variants, brings the image back to the canonical
  * form (a power of two, which the hardware mirroring requires) and tells the user whether
- * it makes sense in an A500 socket.
+ * it makes sense in the Kickstart socket.
  *
  * <h2>Variants recognised</h2>
  * <ul>
@@ -55,13 +55,13 @@ import java.util.Arrays;
  *       the same), but collapsing them makes the reported size and base address honest.</li>
  * </ul>
  *
- * <h2>A500 compatibility</h2>
+ * <h2>Socket compatibility</h2>
  * The first two longwords of every Amiga ROM are the two vectors the 68000 reads at reset:
  * the initial stack pointer and the PC. The <b>second</b>, the PC, tells at which address
  * the ROM expects to be mapped, and it is the criterion that separates a socket Kickstart
  * from everything else:
  * <ul>
- *   <li>{@code $F80000-$FFFFFF} -> socket Kickstart: what the A500 can use;</li>
+ *   <li>{@code $F80000-$FFFFFF} -> socket Kickstart: what the socket can use;</li>
  *   <li>{@code $F00000-$F7FFFF} -> extended ROM (CDTV/CD32): the <i>additional</i> ROM of
  *       those machines, not a Kickstart;</li>
  *   <li>any other address (typically {@code $200000}) -> image relocated for
@@ -111,7 +111,7 @@ public final class KickstartImage {
      */
     private static final int JMP_ABS_L = 0x4EF9;
 
-    /** Start of the window the A500 decodes for the ROM socket. */
+    /** Start of the window decoded for the ROM socket. */
     public static final int SOCKET_WINDOW_START = 0xF80000;
 
     /** Match word of a {@code struct Resident}. */
@@ -270,7 +270,7 @@ public final class KickstartImage {
 
     /** Outcome of the classification: where the ROM expects to live. */
     public enum Compatibility {
-        /** Socket Kickstart: mappable at {@code $F80000-$FFFFFF}, fine on the A500. */
+        /** Socket Kickstart: mappable at {@code $F80000-$FFFFFF}, fine in the socket. */
         SOCKET_ROM,
         /** CDTV/CD32 extended ROM: mapped at {@code $F00000}, not a Kickstart. */
         EXTENDED_ROM,
@@ -282,10 +282,10 @@ public final class KickstartImage {
 
     /** Where the ROM expects to be mapped, from the reset vector. */
     public Compatibility compatibility() {
-        // The A500 socket holds a 256 or 512 KB EPROM, and there are no smaller Kickstarts.
+        // The socket holds a 256 or 512 KB EPROM, and there are no smaller Kickstarts.
         // An image below 256 KB that still resets into the socket window is something else:
         // typically the A1000 bootstrap, which loads the Kickstart from disk into the WCS
-        // (writable RAM the A500 does not have).
+        // (writable RAM a stock Amiga does not have).
         if (data.length < 256 * 1024)               return Compatibility.NOT_A_KICKSTART;
         if (resetPc >= SOCKET_WINDOW_START)         return Compatibility.SOCKET_ROM;
         if (resetPc >= 0xF00000)                    return Compatibility.EXTENDED_ROM;
@@ -296,7 +296,7 @@ public final class KickstartImage {
     }
 
     /**
-     * True if the ROM can go in an A500 socket: its reset vector points inside the window
+     * True if the ROM can go in the Kickstart socket: its reset vector points inside the window
      * {@code $F80000-$FFFFFF} that Gary decodes.
      */
     public boolean isSocketRom() {
@@ -312,7 +312,7 @@ public final class KickstartImage {
                 return String.format("relocated image (ReKick/KickIt), reset vector at $%06X", resetPc);
             case NOT_A_KICKSTART:
                 if (data.length < 256 * 1024) {
-                    return String.format("%d KB: too small for a Kickstart (the A500 socket "
+                    return String.format("%d KB: too small for a Kickstart (the Kickstart socket "
                             + "takes 256 or 512 KB)", data.length / 1024);
                 }
                 return String.format("not a Kickstart: reset vector $%06X points nowhere usable", resetPc);
