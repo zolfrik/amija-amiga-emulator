@@ -2039,8 +2039,9 @@ final class DeniseLineRenderer {
      *   op  = dBuffer[5:4]  (00 = palette, 01 = modify B, 10 = modify R, 11 = modify G)
      *   val = dBuffer[3:0]
      *
-     * A sprite interrupts HAM only if its Z is above that of the current playfield
-     * (Z_ALL_SPRITES detects the sprite bits).
+     * A sprite whose Z is above that of the current playfield covers the output, but the
+     * HAM operation still runs on the bitplane data underneath it, so the colour after the
+     * sprite continues from the playfield's, not from the one before the sprite.
      *
      * In the border (bBuffer != 0xFF) the hold register is NOT updated: the bitplanes emit
      * no data there, so no HAM operation happens and hold persists. (The colour shown is
@@ -2064,17 +2065,6 @@ final class DeniseLineRenderer {
                 continue;
             }
 
-            // Is a sprite in front of the playfield? Detecting a sprite (Z_ALL_SPRITES) is
-            // not enough: the sprite's Z must be above the current playfield's Z.
-            // Integer.highestOneBit(sprBits) is the Z of the highest-priority sprite pixel.
-            int sprBits = zBuffer[i] & Z_ALL_SPRITES;
-            if (sprBits != 0 && Integer.highestOneBit(sprBits) > zpf) {
-                // The sprite is visible above the playfield: show the sprite colour but do
-                // NOT update hold (the HAM register is not touched).
-                rgbLine[i] = amigaToRGB(palette[mBuffer[i] & 0x1F]);
-                continue;
-            }
-
             // HAM: decode op and val from the bitplane's 6 raw bits
             int s   = dBuffer[i] & 0x3F;
             int op  = (s >> 4) & 3;
@@ -2092,6 +2082,15 @@ final class DeniseLineRenderer {
                 case 1: b = val; hold = (r<<8)|(g<<4)|b;    break; // modify B
                 case 2: r = val; hold = (r<<8)|(g<<4)|b;    break; // modify R
                 case 3: g = val; hold = (r<<8)|(g<<4)|b;    break; // modify G
+            }
+            // A sprite in front of the playfield replaces the output only: the HAM operation
+            // above has run on the bitplane data all the same. The sprite's Z must be above
+            // the current playfield's Z; Integer.highestOneBit(sprBits) is the Z of the
+            // highest-priority sprite pixel.
+            int sprBits = zBuffer[i] & Z_ALL_SPRITES;
+            if (sprBits != 0 && Integer.highestOneBit(sprBits) > zpf) {
+                rgbLine[i] = amigaToRGB(palette[mBuffer[i] & 0x1F]);
+                continue;
             }
             rgbLine[i] = amigaToRGB(hold);
         }
@@ -2186,9 +2185,9 @@ final class DeniseLineRenderer {
     /**
      * HAM on Lisa. With six planes bits 5:4 select the operation and the four low bits, doubled
      * into a byte, are the new component; with eight planes bits 1:0 select it and the six high
-     * bits replace the top of the component, the two low bits of the held colour staying. A
-     * sprite in front of the playfield and the border show their colour and leave the held
-     * one alone.
+     * bits replace the top of the component, the two low bits of the held colour staying. The
+     * border shows its colour and leaves the held one alone; a sprite in front of the
+     * playfield only covers the output, the operation still runs on the bitplane data.
      */
     private int colorizeHamAga(int from, int to, int hold, int planes, int xor) {
         final int[] pal = paletteAga;
@@ -2197,11 +2196,6 @@ final class DeniseLineRenderer {
         for (int i = from; i < to && i < HPIXELS; i++) {
             if (lineIsVBorder || bBuffer[i] != (byte) 0xFF) {
                 rgbLine[i] = borderSprite && sBuffer[i] != 0 ? pal[mBuffer[i] & 0xFF] : pal[0];
-                continue;
-            }
-            int sprBits = zBuffer[i] & Z_ALL_SPRITES;
-            if (sprBits != 0 && Integer.highestOneBit(sprBits) > zpf) {
-                rgbLine[i] = pal[mBuffer[i] & 0xFF];
                 continue;
             }
             int s = dBuffer[i] & 0xFF;
@@ -2222,7 +2216,9 @@ final class DeniseLineRenderer {
                     default:   hold = (hold & 0xFF00FF) | (v << 8); break;
                 }
             }
-            rgbLine[i] = hold;
+            int sprBits = zBuffer[i] & Z_ALL_SPRITES;
+            rgbLine[i] = sprBits != 0 && Integer.highestOneBit(sprBits) > zpf
+                    ? pal[mBuffer[i] & 0xFF] : hold;
         }
         return hold;
     }
