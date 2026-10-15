@@ -184,6 +184,10 @@ Copy-Item (Join-Path $Root 'whdload\readme.txt') (Join-Path $Pkg 'whdload')
 foreach ($f in @('LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md', 'USER_MANUAL.txt')) {
     Copy-Item (Join-Path $Root $f) $Pkg
 }
+# Il logo che README.md mostra in testa: stesso percorso relativo che ha nel
+# repository, cosi' l'<img> funziona sia su GitHub sia dall'archivio scompattato.
+New-Item -ItemType Directory -Path (Join-Path $Pkg 'logo') | Out-Null
+Copy-Item (Join-Path $Root 'logo\amija-256.png') (Join-Path $Pkg 'logo')
 
 # ---------------------------------------------------------------------------
 # 5) Smoke test: la home non deve dipendere dalla working directory

@@ -49,6 +49,18 @@
             </includes>
             <fileMode>0644</fileMode>
         </fileSet>
+        <!-- Il logo che README.md mostra in testa, allo stesso percorso relativo che
+             ha nel repository: cosi' l'<img> del README funziona sia su GitHub sia
+             dallo zip scompattato. Solo questo file, non l'originale da 1024 px. -->
+        <fileSet>
+            <directory>${project.basedir}/logo</directory>
+            <outputDirectory>logo</outputDirectory>
+            <includes>
+                <include>amija-256.png</include>
+            </includes>
+            <fileMode>0644</fileMode>
+            <directoryMode>0755</directoryMode>
+        </fileSet>
 
         <!-- Pack di shader RetroArch usati dal renderer OpenGL: sono
              ridistribuibili (GPL-2.0-or-later / MIT, vedi THIRD-PARTY-NOTICES.md)

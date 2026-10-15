@@ -56,7 +56,8 @@ CONTENTS
 
   What you get:
 
-    *  OCS and ECS chipsets, PAL and NTSC video
+    *  OCS, ECS and AGA chipsets, PAL and NTSC video - AGA on an emulated
+       A1200 board
     *  68000, 68010 or 68020 processor
     *  Chip / Slow / Fast RAM configurations, up to four floppy drives
     *  ADF, IPF (copy-protected originals) and ZIP disk sets
@@ -93,24 +94,25 @@ CONTENTS
   an Amiga you own.
 
   Once you have the file, press F12 and drop it into "Kickstart 1.3". If you
-  also play hard-disk or WHDLoad games, add a Kickstart 3.1 in the box below
-  it: AmiJa picks whichever the game needs. Press OK and the machine boots.
+  also play hard-disk, WHDLoad or AGA games, add a Kickstart 3.1 in the box
+  below it - preferably the A1200 release, see 3.2. AmiJa picks whichever the
+  game needs. Press OK and the machine boots.
 
   ---------------------------------------------------------------------------
   2.1   FILES AND FOLDERS
   ---------------------------------------------------------------------------
 
   Everything is resolved relative to AmiJa's HOME: the folder that holds the
-  program itself - AmiJa.exe, bin/AmiJa, AmiJa.app or AmiJa.jar, depending on
-  how you got it. It does not matter which directory you start it from, or
-  whether you launch it from a shortcut, a menu entry or the Dock.
+  program itself - AmiJa.exe, bin/AmiJa or AmiJa.jar, depending on how you got
+  it. It does not matter which directory you start it from, or whether you
+  launch it from a shortcut or a menu entry.
 
   (Started some other way, with no such folder to speak of - from an IDE, or
   from "mvn exec" - AmiJa falls back to the working directory instead.)
 
   Because AmiJa keeps everything next to itself, its home must be a folder you
   can WRITE to. Extract the archive into your own space rather than into
-  Program Files, /opt or /Applications, or nothing will be saved.
+  Program Files or /opt, or nothing will be saved.
 
     amiga.properties     the configuration file. Searched in the home folder
                          first, then on the classpath; if it is missing
@@ -184,7 +186,8 @@ CONTENTS
 
   So the popup shows, in this order:
 
-    System (3.2)          the machine: ROM, memory, chipset, video standard
+    System (3.2)          the machine: ROM, processor, chipset, memory, video
+                          standard
     Drives (3.3)          ... in automatic mode
       or Floppy drives, Hard disks, WHDLoad (3.4 - 3.6) in expert mode
     Saved state (3.7)     the save slot, with a thumbnail of what is in it
@@ -240,11 +243,17 @@ CONTENTS
      around them. Load a floppy image and you get a stock Amiga with Kickstart
      1.3; load a hard disk image or a WHDLoad archive and you get the expanded
      machine those need, with Kickstart 3.1, 2 MB of Chip RAM, 8 MB of Fast RAM,
-     the ECS chipset and a 68020 processor. Even the video standard follows the
-     file: a name containing "NTSC" or "(USA)" - the convention TOSEC, No-Intro
-     and WHDLoad use - selects NTSC, everything else PAL. The memory, chipset,
-     processor and video rows below then show what was deduced and cannot be
-     edited.
+     the ECS chipset and a 68020 processor. Load software that needs AGA and
+     you get an A1200: Kickstart 3.1, the AGA chipset, 2 MB of Chip RAM and a
+     68020, plus 8 MB of Fast RAM when it comes as a hard disk or a WHDLoad
+     archive. AmiJa knows a title needs AGA when its WHDLoad slave says so, or
+     when the word "AGA" stands on its own in the file name - "(AGA)",
+     "_AGA.lha" - the way the collections write it.
+
+     Even the video standard follows the file: a name containing "NTSC" or
+     "(USA)" - the convention TOSEC, No-Intro and WHDLoad use - selects NTSC,
+     everything else PAL. The memory, chipset, processor and video rows below
+     then show what was deduced and cannot be edited.
 
      Ticked, nothing is deduced: every setting is yours, as on a real Amiga,
      and the drive list is replaced by the three per-kind sections (3.4 - 3.6).
@@ -266,7 +275,12 @@ CONTENTS
      The two ROMs the automatic mode chooses between: the 1.3 for plain floppy
      games, which is what almost all of them expect, and the 3.1 for anything
      involving a hard disk or WHDLoad, where a 1.x Kickstart usually is not
-     enough. You set them once and never think about them again.
+     enough, and for AGA software. You set them once and never think about
+     them again.
+
+     For the 3.1 box prefer the A1200 release (40.68) to the one for the
+     other models (40.63). It is the ROM an A1200 shipped with, and some AGA
+     games started through WHDLoad check the version and stop on the other.
 
      Only one of the two is required. If the profile AmiJa wants is empty it
      falls back to the other, and then to the expert-mode kickstart.path below
@@ -310,14 +324,21 @@ CONTENTS
   +-------------------------------------------------------------------------+
      Custom chip generation. OCS is the original chipset; ECS adds the enhanced
      Agnus/Denise and their extra registers (BEAMCON0, DIWHIGH, BPLCON3,
-     productivity modes) and is what ECS-only titles expect.
-     Values . . . . . OCS / ECS         Applies . . . RESTART (automatic on OK)
+     super-hires, productivity modes) and is what ECS-only titles expect.
+
+     AGA is the chipset of the A1200: Alice and Lisa, with up to 8 bitplanes,
+     256 colours from a 24-bit palette, HAM8 and wider sprites. Choosing it
+     builds the whole A1200 board, not just the chips: Gayle takes Gary's
+     place in decoding the address space. Pair it with Kickstart 3.1, 2 MB of
+     Chip RAM and the 68020 - a 1.x Kickstart does not know the AGA chips.
+     Values . . . . . OCS / ECS / AGA   Applies . . . RESTART (automatic on OK)
 
   +-------------------------------------------------------------------------+
   |  Chip RAM:                                                chipram.kb  |
   +-------------------------------------------------------------------------+
      Memory shared by CPU and custom chips, from $000000 upwards. 512 KB is the
-     stock amount; 1 MB or 2 MB is what most WHDLoad titles ask for.
+     stock amount; 1 MB or 2 MB is what most WHDLoad titles ask for, and 2 MB
+     is what an A1200 has.
      Values . . . . . 256 / 512 / 1024 / 2048 (KB)
      Applies . . . . . BOOT
 
@@ -325,7 +346,8 @@ CONTENTS
   |  Slow RAM:                                                   slowram.kb  |
   +-------------------------------------------------------------------------+
      The classic "trapdoor" expansion at $C00000, seen by the system as slow
-     Fast RAM. 512 KB gives you the familiar 1 MB Amiga.
+     Fast RAM. 512 KB gives you the familiar 1 MB Amiga. The A1200 has no
+     such slot, so with the AGA chipset leave it at 0.
      Values . . . . . 0 / 512 / 1024 / 1536 / 1792 (KB), 0 = none
      Applies . . . . . BOOT
 
@@ -912,7 +934,7 @@ CONTENTS
      what arrived is what was expected before unpacking it, and says so if the
      archive upstream has changed since it was last verified.
 
-     The whole section disappears from the popup once all three are installed -
+     The whole section disappears from the popup once both are installed -
      there would be nothing left to offer. It is also what the WHDLoad section
      points you at when you try to start an archive without the loader.
 
@@ -1024,9 +1046,10 @@ CONTENTS
   ---------------------------------------------------------------------------
 
   What the automatic mode (3.2) builds when it recognises what you loaded.
-  There are two profiles - plain floppy, and the expanded machine a hard disk
-  or WHDLoad needs - and these properties are the machine each one produces.
-  Editing them keeps the automation and changes its result.
+  There are three profiles - plain floppy, the expanded machine a hard disk or
+  WHDLoad needs, and the A1200 for AGA software - and these properties are the
+  machine each one produces. Editing them keeps the automation and changes its
+  result.
 
      Property                    Default   Applies to
      ----------------------------------------------------------------------
@@ -1042,12 +1065,22 @@ CONTENTS
      auto.hd.chipset             ECS
      auto.hd.cpu                 68020
 
+     auto.aga.chipram.kb         2048      software that needs AGA, from
+     auto.aga.slowram.kb         0         floppy, hard disk or WHDLoad: an
+     auto.aga.fastram.kb         8192      A1200. The Fast RAM is added only
+     auto.aga.chipset            AGA       with a hard disk or WHDLoad; from
+     auto.aga.cpu                68020     floppy it is a stock A1200
+
      The values accepted are the same as the corresponding System settings
      (3.2). Applies . . . BOOT
 
-  Two more things the automatic mode decides are not properties, because they
-  are read from what you loaded. The ROM comes from the two Kickstart paths of
-  the System section, whichever suits the profile. The video standard is read
+  Three more things the automatic mode decides are not properties, because
+  they are read from what you loaded. The profile itself: AGA when the WHDLoad
+  slave declares it or a file name contains the word "AGA" on its own, the
+  expanded one when a hard disk or WHDLoad archive is active, floppy
+  otherwise. The ROM comes from the two Kickstart paths of the System
+  section: 1.3 for the floppy profile, 3.1 for the other two. The video
+  standard is read
   from the file name: it is NTSC when the name of an active file contains
   "NTSC" or "(USA)", and PAL otherwise. Only the name is examined, not the
   folders above it, so a directory called "USA dumps" does not drag everything
@@ -1132,7 +1165,7 @@ CONTENTS
     whdload.prefs.savePath          WHDSaves:   Base directory for saved games
                                                 (the persistent volume)
     whdload.prefs.noNetwork         true        Do not connect to the internet
-    whdload.prefs.noWriteCache      false*      Disable the disk write cache
+    whdload.prefs.noWriteCache      true        Disable the disk write cache
     whdload.prefs.noWriteInfo       false       Do not write .info files next to
                                                 saved games
     whdload.prefs.chipNoCache       false       Make Chip memory non-cacheable
@@ -1161,9 +1194,6 @@ CONTENTS
                                                 Execute S:WHDLoad-Startup
     whdload.prefs.executeCleanup    (empty)     Command run after the game
 
-    (*) noWriteCache ships as true in the bundled amiga.properties, which is
-        the safer setting; the built-in default is false.
-
     All of them apply at BOOT - the prefs file is generated while the WHDLoad
     hard disk is being built.
 
@@ -1174,6 +1204,11 @@ CONTENTS
 
   Key                            Where                        Applies
   ---------------------------------------------------------------------------
+  auto.aga.chipram.kb            file only (4.2)              BOOT
+  auto.aga.chipset               file only (4.2)              BOOT
+  auto.aga.cpu                   file only (4.2)              BOOT
+  auto.aga.fastram.kb            file only (4.2)              BOOT
+  auto.aga.slowram.kb            file only (4.2)              BOOT
   auto.enabled                   System (3.2)                 BOOT
   auto.floppy.chipram.kb         file only (4.2)              BOOT
   auto.floppy.chipset            file only (4.2)              BOOT
@@ -1224,6 +1259,7 @@ CONTENTS
   remoteplay.last.host           file only (4.3)              -
   remoteplay.port                Remote play (3.9)            on hosting
   remoteplay.upnp                Remote play (3.9)            on hosting
+  savestate.slot                 Saved state (3.7)            LIVE
   slowram.kb                     System (3.2)                 BOOT
   ui.language                    System (3.2)                 BOOT
   ui.scale                       System (3.2)                 RELAUNCH
@@ -1251,8 +1287,9 @@ LICENSE
     distributed derivative work must in turn be released under the same
     license, with its source code.
 
-    Third-party components bundled with the emulator - LWJGL, the RetroArch
-    shader packs in shaders/ and blurs/, and the virtualhd.device boot ROM -
+    Third-party components bundled with the emulator - LWJGL, FlatLaf, the
+    RetroArch shader packs in shaders/ and blurs/, and the virtualhd.device
+    boot ROM -
     keep their own licenses. THIRD-PARTY-NOTICES.md records each of them,
     and explains why Kickstart ROMs, disk images and WHDLoad system files
     are NOT included and must be supplied by you.
@@ -1262,5 +1299,5 @@ LICENSE
 
 
 ===============================================================================
-              AmiJa 1.0.0  -  io.github.zolfrik:amija  -  Amiga in Java
+                  AmiJa  -  io.github.zolfrik:amija  -  Amiga in Java
 ===============================================================================

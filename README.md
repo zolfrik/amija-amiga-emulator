@@ -1,60 +1,72 @@
 <p align="center">
-  <img src="src/main/resources/icons/amija-128.png" alt="AmiJa" width="128" height="128">
+  <img src="logo/amija-256.png" alt="AmiJa" width="128" height="128">
 </p>
 
 <h1 align="center">AmiJa</h1>
 
 <p align="center">
-  A cycle-exact Amiga emulator, written from scratch in Java.
+  A cycle-exact Amiga emulator in Java.
 </p>
 
 ---
 
-AmiJa emulates an Amiga at the level of the individual bus cycle: all 
+AmiJa emulates an Amiga at the level of the individual bus cycle: all
 components advance together on the same 7.09 MHz master clock, and DMA slots are
-arbitrated exactly as the real chipset does. 
-
-The project has started as an experiment: the point was to find out what AI coding
-assistants can really do when they are pointed at a large, genuinely difficult
-piece of software. Cycle-exact emulation is an unforgiving subject for that.
-
-This is a personal project; it isn't meant to compete with anyone. WinUAE and vAmiga 
-are the work of decades of reverse engineering, and here they were the reference 
-and the arbiter. The [Acknowledgements](#acknowledgements) at the bottom say what 
-AmiJa owes them, and it owes them a great deal.
+arbitrated exactly as the real chipset does.
 
 **Features**
 
-- OCS and ECS chipsets, PAL and NTSC
-- floppy drives DF0–DF3 with reading *and* writing, ADF and IPF images
+- OCS, ECS and AGA chipsets, PAL and NTSC — AGA on an emulated A1200 board
+- 68000, 68010 and 68020 processors
+- an automatic mode that builds the right machine around whatever you load:
+  a stock OCS Amiga for floppy games, an expanded one for hard disks and
+  WHDLoad, an A1200 for AGA software
+- floppy drives DF0–DF3 with reading *and* writing, ADF and IPF images, and
+  multi-disk sets in a `.zip`
 - hard disk support (`.hdf`, Zorro II autoconfig) and WHDLoad `.lha` auto-run
-- save / load state
+- save / load state, five slots with a thumbnail each
 - audio, real joysticks (via GLFW), mouse, and full keyboard mapping
 - software renderer or an OpenGL backend with RetroArch CRT shaders — the
   `.glslp` presets are included, `.slangp` ones are supported and installed by you
 - remote play: a second player joins over the network and takes one of the two
   game ports, without needing a Kickstart or a copy of the game
 
+## Download
+
+Each release on the
+[Releases page](https://github.com/zolfrik/amija-amiga-emulator/releases) comes
+in these forms:
+
+| System      | Archive                          | What is inside                                                           |
+| ----------- | -------------------------------- | ------------------------------------------------------------------------ |
+| Windows x64 | `AmiJa-<ver>-windows-x64.zip`    | `AmiJa.exe` and its own Java runtime: nothing else to install            |
+| Linux x64   | `AmiJa-<ver>-linux-x64.tar.gz`   | the `bin/AmiJa` launcher and its own Java runtime                        |
+| Linux ARM64 | `AmiJa-<ver>-linux-arm64.tar.gz` | the same, for ARM64                                                      |
+| any         | `AmiJa-<ver>.zip`                | the portable `AmiJa.jar` with the same folders, for a JDK you already have |
+
+Unpack the archive into a folder you can write to — not *Program Files* or
+`/opt` — because AmiJa keeps its configuration, save states and screenshots
+next to itself.
+
 ## Requirements
 
-To run the **jar** you need a **JDK 26** or newer. You will also need a reasonably 
-fast CPU; on a modern desktop or laptop it runs at full speed with room to spare, 
-while an old or low-power machine may fall below 100%.
+The Windows and Linux archives bring their own Java runtime. To run the
+**jar** you need a **JDK 26** or newer. Either way you will also need a
+reasonably fast CPU.
 
 ## Running
 
-Grab or build `AmiJa.jar` (see below) and start it:
+Start `AmiJa.exe` (Windows) or `bin/AmiJa` (Linux). With the portable package,
+or a jar you built yourself (see below):
 
 ```bash
 java -jar AmiJa.jar
 ```
 
 On a first start no Kickstart ROM is configured, so AmiJa boots its own: a small
-firmware written for this project, which ships with the emulator because it contains 
-no Commodore code at all. It starts the good part of the classic library that boots 
-straight from a self-loading boot block. It is not a full Kickstart — it has no 
-AmigaDOS. Disks that hand over to `dos.library`, hard-disk installs, and WHDLoad 
-all still need a real Kickstart.
+firmware written for this project, which ships with the emulator. It is not a full 
+Kickstart — it has no AmigaDOS. Disks that hand over to `dos.library`, hard-disk 
+installs, and WHDLoad all still need a real Kickstart.
 
 The full guide to every setting and every key is in
 [USER_MANUAL.txt](USER_MANUAL.txt).
@@ -88,7 +100,7 @@ powershell -File packaging\build-image.ps1    # Windows
 
 | Contents                                                                                                                                                                | Path                               | Feature                                                                                                   |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Kickstart ROM images (1.3 and 3.1)                                                                                                                                      | configured into `amiga.properties` | AmigaDOS disks, hard disks, WHDLoad — floppy games with a self-loading boot block run on the built-in ROM |
+| Kickstart ROM images (1.3 and 3.1; the A1200 release of 3.1 for AGA software)                                                                                           | configured into `amiga.properties` | AmigaDOS disks, hard disks, WHDLoad, AGA — floppy games with a self-loading boot block run on the built-in ROM |
 | the WHDLoad loader (`C/`, `S/`) from <https://www.whdload.de/>, plus the `.RTB` relocation tables in `Devs/Kickstarts/` for installs that emulate a different Kickstart | `whdload/WHDLoad_files/`           | running `.lha` WHDLoad archives                                                                           |
 
 **AmiJa can fetch WHDLoad for you.** Press **F12**, then *Optional files* →

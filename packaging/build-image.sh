@@ -173,6 +173,10 @@ cp "$ROOT/whdload/readme.txt" "$PKG/whdload/"
 for f in LICENSE README.md THIRD-PARTY-NOTICES.md USER_MANUAL.txt; do
     cp "$ROOT/$f" "$PKG/"
 done
+# Il logo che README.md mostra in testa: stesso percorso relativo che ha nel
+# repository, cosi' l'<img> funziona sia su GitHub sia dall'archivio scompattato.
+mkdir -p "$PKG/logo"
+cp "$ROOT/logo/amija-256.png" "$PKG/logo/"
 
 # ---------------------------------------------------------------------------
 # 5) Smoke test: la home non deve dipendere dalla working directory
