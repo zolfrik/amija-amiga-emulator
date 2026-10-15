@@ -80,8 +80,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # Quali target costruire. Su tag: sempre tutti. A mano (workflow_dispatch): quelli
   # scelti nella tendina, che per default sono Windows x64 + Linux x64 — su un
-  # repository PRIVATO i runner macOS e ARM64 non hanno le stesse condizioni di uno
-  # pubblico (sono i piu' cari a minuto), mentre ubuntu-latest e' il piu' economico
+  # repository PRIVATO i runner ARM64 non hanno le stesse condizioni di uno
+  # pubblico (sono fra i piu' cari a minuto), mentre ubuntu-latest e' il piu' economico
   # che ci sia: aggiungerlo alla prova della pipeline costa pochissimo e in cambio
   # copre l'altro ramo degli script di packaging (build-image.sh, non solo il .ps1).
   #
@@ -92,6 +92,12 @@ jobs:
   # Windows on ARM esegue in emulazione l'archivio windows-x64, ed e' quello che il
   # README consiglia. Il giorno in cui il JDK arriva, si aggiunge alla lista "tutte":
   #   {"target":"windows-arm64","os":"windows-11-arm"}
+  #
+  # macOS non e' fra i target: non c'e' modo di provare la distribuzione su un Mac, e
+  # un archivio mai avviato non si pubblica. build-image.sh ne conserva il ramo; per
+  # riaprirlo basta aggiungere {"target":"macos-arm64","os":"macos-latest"} a "tutte",
+  # un passo "Build image (macOS)" uguale a quello Linux senza xvfb-run, e la riga e la
+  # nota su Gatekeeper alle note della release.
   # ---------------------------------------------------------------------------
   plan:
     runs-on: ubuntu-latest
@@ -105,7 +111,7 @@ jobs:
           if [ "${{ inputs.targets }}" = "windows-linux-x64" ]; then
             MATRIX='[{"target":"windows-x64","os":"windows-latest"},{"target":"linux-x64","os":"ubuntu-latest"}]'
           else
-            MATRIX='[{"target":"windows-x64","os":"windows-latest"},{"target":"linux-x64","os":"ubuntu-latest"},{"target":"linux-arm64","os":"ubuntu-24.04-arm"},{"target":"macos-arm64","os":"macos-latest"}]'
+            MATRIX='[{"target":"windows-x64","os":"windows-latest"},{"target":"linux-x64","os":"ubuntu-latest"},{"target":"linux-arm64","os":"ubuntu-24.04-arm"}]'
           fi
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "Target da costruire: $MATRIX"
@@ -161,18 +167,9 @@ jobs:
           chmod +x packaging/build-image.sh
           xvfb-run -a ./packaging/build-image.sh --smoke-test
 
-      - name: Build image (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          chmod +x packaging/build-image.sh
-          ./packaging/build-image.sh --smoke-test
-
       # Lo script stampa la riga [HOME] dell'applicazione dentro target/smoke.log.
-      # Su macOS e' l'unico modo di sapere a quanti ".." corrisponde $ROOTDIR
-      # dentro il bundle .app: va letta al primo giro e confrontata con la
-      # cartella che contiene AmiJa.app.
       - name: Home risolta dall'applicazione
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         run: grep -F '[HOME]' target/smoke.log || echo "(nessuna riga [HOME])"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -225,7 +222,6 @@ jobs:
           | Windows (x64, e ARM in emulazione) | `AmiJa-<ver>-windows-x64.zip` |
           | Linux x64 | `AmiJa-<ver>-linux-x64.tar.gz` |
           | Linux ARM64 | `AmiJa-<ver>-linux-arm64.tar.gz` |
-          | macOS (Apple Silicon) | `AmiJa-<ver>-macos-arm64.tar.gz` |
 
           Questi archivi **contengono gia' il runtime Java**: si scompattano e si lanciano,
           non serve installare nulla. Estrarli in una cartella **scrivibile** — AmiJa salva
@@ -238,9 +234,6 @@ jobs:
           l'eseguibile non e' firmato. *Ulteriori informazioni* → *Esegui comunque*, oppure
           sblocca lo **zip** prima di scompattarlo (tasto destro → *Proprieta'* → *Annulla
           blocco*, o `Unblock-File` da PowerShell): cosi' il marchio non passa ai file estratti.
-
-          macOS: al primo avvio Gatekeeper blocca l'app perche' non e' firmata. Sbloccarla con
-          `xattr -dr com.apple.quarantine AmiJa.app`.
 
           `SHA256SUMS` contiene le impronte di tutti i file.
           NOTES
