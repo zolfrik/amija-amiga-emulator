@@ -80,7 +80,7 @@ section instead — launcher, bundled Java runtime and all — run the packaging
 script for your system:
 
 ```bash
-packaging/build-image.sh                      # Linux, macOS
+packaging/build-image.sh                      # Linux
 powershell -File packaging\build-image.ps1    # Windows
 ```
 

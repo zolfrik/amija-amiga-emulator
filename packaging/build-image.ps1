@@ -12,7 +12,7 @@
     Passi: mvn package -> jlink -> jpackage -> copia dei contenuti -> zip.
     Serve un JDK 26 con jlink e jpackage nel PATH (o in JAVA_HOME).
 
-    Il gemello per Linux/macOS e' build-image.sh: i due file fanno le stesse cose
+    Il gemello per Linux e' build-image.sh: i due file fanno le stesse cose
     e vanno tenuti allineati.
 
 .PARAMETER Version

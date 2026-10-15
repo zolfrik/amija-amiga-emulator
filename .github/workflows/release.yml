@@ -94,10 +94,10 @@ jobs:
   #   {"target":"windows-arm64","os":"windows-11-arm"}
   #
   # macOS non e' fra i target: non c'e' modo di provare la distribuzione su un Mac, e
-  # un archivio mai avviato non si pubblica. build-image.sh ne conserva il ramo; per
-  # riaprirlo basta aggiungere {"target":"macos-arm64","os":"macos-latest"} a "tutte",
-  # un passo "Build image (macOS)" uguale a quello Linux senza xvfb-run, e la riga e la
-  # nota su Gatekeeper alle note della release.
+  # un archivio mai avviato non si pubblica. Il ramo macOS di build-image.sh (bundle
+  # .app, icona .icns, home due livelli sopra $ROOTDIR) e' stato tolto anch'esso: per
+  # riaprirlo va ripreso dalla storia git, insieme al target in "tutte", al passo
+  # "Build image (macOS)" e alla nota su Gatekeeper nelle note della release.
   # ---------------------------------------------------------------------------
   plan:
     runs-on: ubuntu-latest

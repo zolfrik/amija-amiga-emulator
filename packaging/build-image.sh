@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Costruisce la distribuzione nativa di AmiJa per Linux e macOS (app-image portatile).
+# Costruisce la distribuzione nativa di AmiJa per Linux (app-image portatile).
 #
 # Produce una cartella autoconsistente — launcher nativo + runtime Java ridotto +
 # tutto quello che l'emulatore legge dalla propria home — e la comprime in
@@ -68,7 +68,6 @@ APP_VERSION="${VERSION%%-*}"
 
 case "$(uname -s)" in
     Linux)  OS_NAME="linux" ;;
-    Darwin) OS_NAME="macos" ;;
     *) echo "Sistema non gestito: $(uname -s)" >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
@@ -120,32 +119,8 @@ rm -rf "$INPUT" "$STAGE"
 mkdir -p "$INPUT" "$STAGE"
 cp "$JAR" "$INPUT/"
 
-if [ "$OS_NAME" = "macos" ]; then
-    ICON="$ROOT/target/amija.icns"
-    echo "-- icns (iconutil)"
-    ICONSET="$ROOT/target/amija.iconset"
-    rm -rf "$ICONSET"; mkdir -p "$ICONSET"
-    # iconutil pretende ESATTAMENTE questi nomi. Gli @2x sono l'immagine di taglia
-    # doppia riusata: e' quello che fa un .iconset costruito a mano dai PNG.
-    ICONS_SRC="$ROOT/src/main/resources/icons"
-    cp "$ICONS_SRC/amija-16.png"  "$ICONSET/icon_16x16.png"
-    cp "$ICONS_SRC/amija-32.png"  "$ICONSET/icon_16x16@2x.png"
-    cp "$ICONS_SRC/amija-32.png"  "$ICONSET/icon_32x32.png"
-    cp "$ICONS_SRC/amija-64.png"  "$ICONSET/icon_32x32@2x.png"
-    cp "$ICONS_SRC/amija-128.png" "$ICONSET/icon_128x128.png"
-    cp "$ICONS_SRC/amija-256.png" "$ICONSET/icon_128x128@2x.png"
-    cp "$ICONS_SRC/amija-256.png" "$ICONSET/icon_256x256.png"
-    cp "$ICONS_SRC/amija-512.png" "$ICONSET/icon_256x256@2x.png"
-    cp "$ICONS_SRC/amija-512.png" "$ICONSET/icon_512x512.png"
-    iconutil -c icns "$ICONSET" -o "$ICON"
-    # Dentro un bundle .app il jar sta in AmiJa.app/Contents/app e $ROOTDIR e'
-    # AmiJa.app/Contents: la home e' la cartella che CONTIENE il bundle, dove questo
-    # script deposita shaders/, blurs/ e i documenti. Da qui i due livelli di "..".
-    HOME_OPTION='-Damija.home=$ROOTDIR/../..'
-else
-    ICON="$ROOT/src/main/resources/icons/amija-256.png"
-    HOME_OPTION='-Damija.home=$ROOTDIR'
-fi
+ICON="$ROOT/src/main/resources/icons/amija-256.png"
+HOME_OPTION='-Damija.home=$ROOTDIR'
 
 echo "-- jpackage --type app-image"
 # NB: HOME_OPTION e' fra apici SINGOLI di proposito. $ROOTDIR non e' una variabile di
@@ -181,15 +156,9 @@ PKG="$DIST/$PKG_NAME"
 rm -rf "$PKG"
 mkdir -p "$PKG"
 
-if [ "$OS_NAME" = "macos" ]; then
-    # Il bundle resta intero; i contenuti gli vanno ACCANTO, non dentro.
-    mv "$STAGE/AmiJa.app" "$PKG/"
-    LAUNCHER="$PKG/AmiJa.app/Contents/MacOS/AmiJa"
-else
-    # Il contenuto di stage/AmiJa (bin/, lib/) va alla RADICE dell'archivio.
-    mv "$STAGE/AmiJa/"* "$PKG/"
-    LAUNCHER="$PKG/bin/AmiJa"
-fi
+# Il contenuto di stage/AmiJa (bin/, lib/) va alla RADICE dell'archivio.
+mv "$STAGE/AmiJa/"* "$PKG/"
+LAUNCHER="$PKG/bin/AmiJa"
 
 echo "-- copia di shaders/, blurs/, floppysounds/, segnaposto e documenti"
 cp -R "$ROOT/shaders"       "$PKG/"
