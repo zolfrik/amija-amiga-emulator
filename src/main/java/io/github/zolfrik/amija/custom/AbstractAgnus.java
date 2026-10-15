@@ -2694,6 +2694,9 @@ public abstract class AbstractAgnus {
 
             busOwners[cck] = owner.ordinal();
             dmaOwners[cck] = owner.ordinal();
+            if (owner != BusOwner.NONE && owner != BusOwner.CPU && owner != BusOwner.BLOCKED) {
+                lastRgaMasterClock = masterClock;
+            }
 
             // AFTER the arbitration, not before: the DMA requests of the CCK are generated
             // first and the bitplane sequencer decides after. A machine armed at CCK X decides
@@ -3641,7 +3644,7 @@ public abstract class AbstractAgnus {
             bplPtrInternal[plane] = addr + 2;
         } else {
             int data = dmaReadWord(addr);
-            openBusLatch = data & 0xFFFF;
+            dmaDrivesBus(data);
             denise.writeRegisterAtPixel(0x110 + plane * 2, data, cck * 4 - 70);
             markDeniseDmaSlot(cck);
             bplPtrInternal[plane] = addr;
@@ -3710,7 +3713,7 @@ public abstract class AbstractAgnus {
             int word = paula.serviceDiskReadSlot((cck - SLOT_DISK_1) / 2);
             if (word >= 0) {
                 dmaWriteWord(addr, word);
-                openBusLatch = word & 0xFFFF;
+                dmaDrivesBus(word);
             }
             paula.setDiskDmaPointer((addr + 2) & 0x1FFFFE);
             return;
@@ -3721,7 +3724,7 @@ public abstract class AbstractAgnus {
         // so the transfer follows the rotation of the medium, not the DMA slots.
         if (!paula.isWriteWordNeeded()) return;
         int data = dmaReadWord(addr);
-        openBusLatch = data & 0xFFFF; // the DMA fetch drives the data bus
+        dmaDrivesBus(data); // the DMA fetch drives the data bus
         paula.loadWriteWord(data);
         paula.setDiskDmaPointer(addr);
         paula.advanceDiskDma();
@@ -3745,7 +3748,7 @@ public abstract class AbstractAgnus {
             int chan = (cck - SLOT_AUDIO_0) / 2;
             int addr = paula.getAudioDmaAddress(chan);
             int data = dmaReadWord(addr);
-            openBusLatch = data & 0xFFFF; // the DMA fetch drives the data bus
+            dmaDrivesBus(data); // the DMA fetch drives the data bus
             paula.receiveAudioDmaWord(chan, data);
         }
     }
@@ -3798,7 +3801,7 @@ public abstract class AbstractAgnus {
 
         int addr = sprPtrInternal[sprIdx];
         int data = dmaReadWord(addr);
-        openBusLatch = data & 0xFFFF; // the DMA fetch drives the data bus
+        dmaDrivesBus(data); // the DMA fetch drives the data bus
         sprPtrInternal[sprIdx] += 2;
         markDeniseDmaSlot(cck);
 
@@ -3837,7 +3840,7 @@ public abstract class AbstractAgnus {
         final long data = fetchWideBitplane(addr, fm);
         final int bits = fm == 3 ? 64 : 32;
         final int top = (int) (data >>> (bits - 16)) & 0xFFFF;
-        openBusLatch = top;
+        dmaDrivesBus(top);
         sprPtrInternal[sprIdx] = advanceWidePointer(addr, 0, fm);
         markDeniseDmaSlot(cck);
         if (!sprSlotDataPhase[sprIdx][subSlot]) {
@@ -3928,7 +3931,7 @@ public abstract class AbstractAgnus {
 
         int addr = bplPtrInternal[bplIdx];
         int data = dmaReadWord(addr);
-        openBusLatch = data & 0xFFFF; // the DMA fetch drives the data bus
+        dmaDrivesBus(data); // the DMA fetch drives the data bus
         denise.writeRegisterAtPixel(0x110 + bplIdx * 2, data, cck * 4 - 70); // BPLxDAT
         markDeniseDmaSlot(cck);
         bplPtrInternal[bplIdx] += 2;
@@ -3975,7 +3978,7 @@ public abstract class AbstractAgnus {
         final int fm = bplFetchFmode;
         final int addr = bplPtrInternal[bplIdx];
         final long data = fetchWideBitplane(addr, fm);
-        openBusLatch = (int) data & 0xFFFF;
+        dmaDrivesBus((int) data);
         denise.writeBitplaneWide(bplIdx, data, fm == 3 ? 64 : 32, cck * 4 - 70);
         markDeniseDmaSlot(cck);
         final int mod = domod ? bitplaneModulo(bplIdx) : 0;
@@ -4014,7 +4017,7 @@ public abstract class AbstractAgnus {
         int pv = bplPtrInternal[plane] | sprPtrInternal[idx];
         if (reg >= 0x110 && reg < 0x120 && denise != null) {
             int data = dmaReadWord(pv);
-            openBusLatch = data & 0xFFFF;
+            dmaDrivesBus(data);
             denise.writeRegisterAtPixel(reg, data, cck * 4 - 70);
             markDeniseDmaSlot(cck);
         }
@@ -4042,7 +4045,7 @@ public abstract class AbstractAgnus {
         final int word = paula.serviceDiskReadSlot(disk ? (cck - SLOT_DISK_1) / 2 : 0);
         if (word >= 0) {
             dmaWriteWord(pv, word);
-            openBusLatch = word & 0xFFFF;
+            dmaDrivesBus(word);
         }
         if (disk) {
             paula.setDiskDmaPointer((pv + 2) & 0x1FFFFE);
@@ -4115,7 +4118,7 @@ public abstract class AbstractAgnus {
             // A Copper fetch is DMA: it is decoded by Agnus, not by Gary.
             if (!copperBusProcessed) {
                 copperBusResp.dataIn = dmaReadWord(copperBusReq.address);
-                openBusLatch = copperBusResp.dataIn & 0xFFFF;
+                dmaDrivesBus(copperBusResp.dataIn);
                 copperBusProcessed = true;
             }
             copperBusResp.ack = true;
@@ -4149,14 +4152,14 @@ public abstract class AbstractAgnus {
      */
     public int blitterImmediateRead(int address) {
         final int data = dmaReadWord(address);
-        openBusLatch = data & 0xFFFF;
+        dmaDrivesBus(data);
         return data;
     }
 
     /** Synchronous memory write for the immediate blitter (see {@link #blitterImmediateRead}). */
     public void blitterImmediateWrite(int address, int data) {
         dmaWriteWord(address, data);
-        openBusLatch = data & 0xFFFF;
+        dmaDrivesBus(data);
     }
 
     private void handleCpuBusCycle() {
@@ -4552,6 +4555,33 @@ public abstract class AbstractAgnus {
     private int openBusLatch = 0xFFFF;
 
     /**
+     * Last data of a chip bus cycle: a processor access to Chip RAM, Slow RAM or the custom
+     * registers, or a DMA transfer. A 68020 moves an aligned long word in one cycle and the
+     * latch then holds all 32 bits; anything else leaves 8 or 16 bits, zero-extended. Only
+     * Alice reads it back (see {@link #faultyCustomRead}).
+     */
+    private int chipBusLatch;
+
+    /** {@link #masterClock} of the arbitration of the last colour clock a DMA channel took. */
+    private long lastRgaMasterClock = Long.MIN_VALUE / 2;
+
+    /** A DMA transfer drives the data bus with {@code word}. */
+    private void dmaDrivesBus(int word) {
+        openBusLatch = word & 0xFFFF;
+        chipBusLatch = openBusLatch;
+    }
+
+    /** The processor has moved the long word {@code value} over the 32-bit chip bus. */
+    final void cpuChipLongTransferred(int value) {
+        chipBusLatch = value;
+    }
+
+    private static boolean isChipBusTarget(Gary.Target t) {
+        return t == Gary.Target.CHIP_RAM || t == Gary.Target.OVERLAY_ROM
+                || t == Gary.Target.SLOW_RAM || t == Gary.Target.CUSTOM_REGS;
+    }
+
+    /**
      * The value the CPU reads from an address where no device answers. On the 68000 it is
      * <em>not</em> the last data seen on the bus, but
      * <ul>
@@ -4638,7 +4668,10 @@ public abstract class AbstractAgnus {
         };
 
         // Latch the value on the data bus for the next open-bus read.
-        if (route.target != Gary.Target.OPEN_BUS) openBusLatch = busLatchValue(value, route.uds, route.lds);
+        if (route.target != Gary.Target.OPEN_BUS) {
+            openBusLatch = busLatchValue(value, route.uds, route.lds);
+            if (isChipBusTarget(route.target)) chipBusLatch = openBusLatch;
+        }
         return value;
     }
 
@@ -4684,6 +4717,7 @@ public abstract class AbstractAgnus {
         openBusLatch = (route.target == Gary.Target.CUSTOM_REGS)
                 ? (data & 0xFFFF)
                 : busLatchValue(data, uds, lds);
+        if (isChipBusTarget(route.target)) chipBusLatch = openBusLatch;
 
         switch (route.target) {
             case CHIP_RAM:
@@ -4941,9 +4975,18 @@ public abstract class AbstractAgnus {
      * (floating) data bus and, as a side effect, rewrites that value INTO the register.
      */
     private int faultyCustomRead(int regAddr) {
+        if (isAGA()) {
+            // Alice rewrites the register with 0. The processor reads the chip bus latch:
+            // the word a DMA transfer left there if a DMA channel had the previous colour
+            // clock, otherwise the half of the 32-bit latch on the lanes of this address
+            // (the upper one for a register at a multiple of four).
+            if (!peeking) writeCustomRegister(regAddr, 0);
+            if (neutralFloatingBus) return 0;
+            if (masterClock - lastRgaMasterClock < 4) return chipBusLatch & 0xFFFF;
+            return (chipBusLatch >>> ((regAddr & 2) != 0 ? 0 : 16)) & 0xFFFF;
+        }
         int busVal = neutralFloatingBus ? 0 : (openBusLatch & 0xFFFF);
-        // On Alice the register is rewritten with 0, not with the bus value.
-        if (!peeking) writeCustomRegister(regAddr, isAGA() ? 0 : busVal);
+        if (!peeking) writeCustomRegister(regAddr, busVal);
         return busVal;
     }
 
@@ -5068,6 +5111,15 @@ public abstract class AbstractAgnus {
                 return copper.isDanger() ? 0x0002 : 0x0000;
             case 0x1DC: // BEAMCON0 (ECS)
                 return beamcon0;
+            case 0x1DA: { // HHPOSR (ECS and AGA Agnus)
+                // The horizontal counter itself: one colour clock behind the position
+                // VHPOSR reports at the same instant, which is counted one ahead.
+                if (!isECS()) return faultyCustomRead(regAddr);
+                if (syncsStopped) return 0;
+                int hp = beamPosHAhead(beamReadHpos()) - 1;
+                if (hp < 0) hp += maxHpos >> 1;
+                return hp & 0xFF;
+            }
             default:
                 // Write-only / unmapped custom registers: the read returns the floating
                 // data bus value (and rewrites it into the register). Tests read a

@@ -243,6 +243,7 @@ public final class EventCpuBus implements CpuBus {
             cycles += CCK;
             trackIpl();
             if (hi < 0 || lo < 0) throw BusFault.INSTANCE;
+            agnus.cpuChipLongTransferred(read ? (hi << 16) | (lo & 0xFFFF) : data);
             return (hi << 16) | (lo & 0xFFFF);
         }
     }
@@ -368,6 +369,7 @@ public final class EventCpuBus implements CpuBus {
             case CHIP16: {
                 final int hi = chipAccess(address, true, 2, 0);
                 final int lo = chipAccess(address + 2, true, 2, 0);
+                if (!bus16) agnus.cpuChipLongTransferred((hi << 16) | lo);
                 return (hi << 16) | lo;
             }
             case FAST32: {
@@ -422,6 +424,7 @@ public final class EventCpuBus implements CpuBus {
             case CHIP16: {
                 final int hi = chipAccess(address, true, 2, 0);
                 final int lo = chipAccess(address + 2, true, 2, 0);
+                if (!bus16) agnus.cpuChipLongTransferred((hi << 16) | lo);
                 return (hi << 16) | lo;
             }
             case CIA: {
@@ -479,6 +482,7 @@ public final class EventCpuBus implements CpuBus {
             case CHIP16:
                 chipAccess(address, false, 2, value >>> 16);
                 chipAccess(address + 2, false, 2, value);
+                if (!bus16) agnus.cpuChipLongTransferred(value);
                 break;
             case CIA:
                 ciaAccess(address, false, 2, value >>> 16);
