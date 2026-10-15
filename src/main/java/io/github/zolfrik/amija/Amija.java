@@ -1601,10 +1601,6 @@ public class Amija implements RemotePlayControl {
         if (guestPort == 0) d0 = null;
         if (guestPort == 1) d1 = null;
 
-        // Hardware device reported by each port (for the JOYxDAT/POTINP reads).
-        if (d0 != null) gamePort1.setDevice(d0.hardwareDevice());
-        if (d1 != null) gamePort2.setDevice(d1.hardwareDevice());
-
         // Host mouse -> the port set to MOUSE ("Port 0" first if both are).
         GamePort mousePort = (d0 == PortDevice.MOUSE) ? gamePort1
                            : (d1 == PortDevice.MOUSE) ? gamePort2 : null;
@@ -1629,6 +1625,14 @@ public class Amija implements RemotePlayControl {
         if (d0 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort1);
         if (d1 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort2);
         joystickService.setPorts(realPorts);
+
+        // Hardware device reported by each port (for the JOYxDAT/POTINP reads), declared
+        // after the adapters above have been redirected: an adapter leaving a port releases
+        // what it held on it, and every release makes the GamePort infer its own device.
+        // Declared first, a switch to "Empty" would leave a stationary joystick or a mouse
+        // on the port, and a switch from joystick to mouse a joystick.
+        if (d0 != null) gamePort1.setDevice(d0.hardwareDevice());
+        if (d1 != null) gamePort2.setDevice(d1.hardwareDevice());
 
         // The port given away is declared empty, and LAST. Detaching the host's adapters from
         // it makes them release what they held pressed (right and necessary), but every
