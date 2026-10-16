@@ -84,10 +84,11 @@ public final class SaveStateManager {
     /**
      * Format version. 2: adds to the header the instant of the save and the copy of
      * {@code amiga.properties}. 3: adds the AutoConfig boards (FastRam, HdController) to the
-     * roots, so the dynamic memory map is rebuilt on load. Slots of an earlier version no
-     * longer load: they are a single snapshot, redone by pressing "Save State" again.
+     * roots, so the dynamic memory map is rebuilt on load. 4: adds Gayle. Slots of an earlier
+     * version no longer load: they are a single snapshot, redone by pressing "Save State"
+     * again.
      */
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
 
     /** How many state slots exist. They are numbered from 1 to {@code SLOT_COUNT}. */
     public static final int SLOT_COUNT = 5;
@@ -382,6 +383,7 @@ public final class SaveStateManager {
         }
         add(roots, agnus);
         add(roots, field(agnus, "gary"));   // address decoder: OVL flip-flop, reset/halt...
+        add(roots, field(agnus, "gayle"));  // A1200 gate array: ID sequence, interrupt registers
         add(roots, field(agnus, "copper"));
         add(roots, field(agnus, "blitter"));
         Object denise = field(agnus, "denise");
