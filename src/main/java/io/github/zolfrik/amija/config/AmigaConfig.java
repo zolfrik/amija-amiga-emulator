@@ -201,11 +201,17 @@ public final class AmigaConfig {
     private record AutoDefaults(String prefix, int chipRamKb, int slowRamKb, int fastRamKb,
             Chipset chipset, CpuModel cpuModel) {
 
-        int chipRamKb(AmigaConfig c) { return c.getInt(prefix + "chipram.kb", chipRamKb); }
+        int chipRamKb(AmigaConfig c) {
+            return HardwareRules.chipRamKb(c.getInt(prefix + "chipram.kb", chipRamKb));
+        }
 
-        int slowRamKb(AmigaConfig c) { return c.getInt(prefix + "slowram.kb", slowRamKb); }
+        int slowRamKb(AmigaConfig c) {
+            return HardwareRules.slowRamKb(c.getInt(prefix + "slowram.kb", slowRamKb));
+        }
 
-        int fastRamKb(AmigaConfig c) { return c.getInt(prefix + "fastram.kb", fastRamKb); }
+        int fastRamKb(AmigaConfig c) {
+            return HardwareRules.fastRamKb(c.getInt(prefix + "fastram.kb", fastRamKb));
+        }
 
         Chipset chipset(AmigaConfig c) {
             return parseChipset(c.props.getProperty(prefix + "chipset"), chipset);
@@ -263,6 +269,13 @@ public final class AmigaConfig {
 
     private AmigaConfig(Properties props) {
         this.props = props;
+    }
+
+    /** An independent copy: settings can be tried on it without touching this one. */
+    public AmigaConfig copy() {
+        Properties p = new Properties();
+        p.putAll(props);
+        return new AmigaConfig(p);
     }
 
     // =========================================================================
@@ -518,10 +531,13 @@ public final class AmigaConfig {
         final boolean aga = agaRequired(activeFiles);
         AutoDefaults d = aga ? AUTO_AGA : expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
         int fastRamKb = aga && !expanded ? 0 : d.fastRamKb(this);
-        return new AutoProfile(autoKickstartPath(expanded || aga), expanded, aga,
+        String kickstart = autoKickstartPath(expanded || aga);
+        // The profile's processor is a floor: a Kickstart built for the 68020 raises it.
+        CpuModel cpu = HardwareRules.satisfying(HardwareRules.romFacts(kickstart).cpu(),
+                d.cpuModel(this));
+        return new AutoProfile(kickstart, expanded, aga,
                 d.chipRamKb(this), d.slowRamKb(this), fastRamKb, d.chipset(this),
-                d.cpuModel(this),
-                autoVideoMode(activeFiles));
+                cpu, autoVideoMode(activeFiles));
     }
 
     /**
@@ -628,19 +644,28 @@ public final class AmigaConfig {
         return props.getProperty(K_KICKSTART, "").trim();
     }
 
-    /** Chip RAM chosen by hand, ignored by Auto. */
+    /** Chip RAM chosen by hand, ignored by Auto; brought within {@link HardwareRules}. */
     public int storedChipRamKb() {
-        return getInt(K_CHIPRAM_KB, 512);
+        return HardwareRules.chipRamKb(getInt(K_CHIPRAM_KB, 512));
     }
 
-    /** Slow RAM chosen by hand, ignored by Auto. */
+    /** Slow RAM chosen by hand, ignored by Auto; brought within {@link HardwareRules}. */
     public int storedSlowRamKb() {
-        return getInt(K_SLOWRAM_KB, 512);
+        return HardwareRules.slowRamKb(getInt(K_SLOWRAM_KB, 512));
     }
 
-    /** Fast RAM chosen by hand, ignored by Auto. */
+    /** Fast RAM chosen by hand, ignored by Auto; brought within {@link HardwareRules}. */
     public int storedFastRamKb() {
-        return getInt(K_FASTRAM_KB, 0);
+        return HardwareRules.fastRamKb(getInt(K_FASTRAM_KB, 0));
+    }
+
+    /**
+     * Requirements of the Kickstart in use that the rest of the configured machine does not
+     * meet; empty if the machine can be built. See {@link HardwareRules#conflicts}.
+     */
+    public java.util.List<HardwareRules.Conflict> hardwareConflicts() {
+        return HardwareRules.conflicts(HardwareRules.romFacts(kickstartPath()), cpuModel(),
+                expandedMediaActive());
     }
 
     /** {@code true} if drive {@code df<index>} (0..3) is connected. */

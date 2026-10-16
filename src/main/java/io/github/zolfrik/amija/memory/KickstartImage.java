@@ -27,6 +27,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Map;
+import java.util.zip.CRC32;
 
 /**
  * Normalises the file of a Kickstart ROM into the image the Amiga ROM socket would
@@ -259,6 +261,77 @@ public final class KickstartImage {
      */
     public String identifier() { return identifier; }
 
+    /**
+     * Version of the {@code exec.library} resident in the image ({@code rt_Version}: 34 for
+     * Kickstart 1.3, 37 for 2.04, 40 for 3.1), or -1 if the image carries none.
+     */
+    public int execVersion() { return readExecVersion(data); }
+
+    /** Processor a Kickstart needs, as far as AmiJa can tell. */
+    public enum CpuRequirement {
+        /** Runs on every processor AmiJa emulates. */
+        ANY,
+        /** Built for the 68020: its code does not run on a 68000 or a 68010. */
+        M68020,
+        /**
+         * Needs a 68020 with the full 32-bit address bus, or a 68030: the A3000 and A4000
+         * ROMs. AmiJa's processors all have a 24-bit address bus, so none can run it.
+         */
+        UNSUPPORTED
+    }
+
+    /**
+     * Kickstarts compiled for a processor beyond the 68000, by the CRC32 of the 512 KB image.
+     * Every other Kickstart, recognised or not, is taken to run on a 68000.
+     */
+    private static final Map<Long, CpuRequirement> CPU_BY_CRC = Map.ofEntries(
+            // A1200 and CD32: 68EC020.
+            Map.entry(0x1483A091L, CpuRequirement.M68020),     // 3.1 40.68 (A1200)
+            Map.entry(0xF17FA97FL, CpuRequirement.M68020),     // 3.1.4 (A1200)
+            Map.entry(0xB87506A7L, CpuRequirement.M68020),     // 3.1.4.2 (A1200)
+            Map.entry(0xBD1FF75EL, CpuRequirement.M68020),     // 3.2 (A1200)
+            Map.entry(0x2B653371L, CpuRequirement.M68020),     // 3.2.1 (A1200)
+            Map.entry(0x5C40328AL, CpuRequirement.M68020),     // 3.2.2 (A1200)
+            Map.entry(0xB18D3B67L, CpuRequirement.M68020),     // 3.2.3 (A1200)
+            Map.entry(0x1E62D4A5L, CpuRequirement.M68020),     // 3.1 40.60 (CD32)
+            // A3000 and A4000: 32-bit address bus or 68030.
+            Map.entry(0xBC0EC13FL, CpuRequirement.UNSUPPORTED), // 1.4 36.16 (A3000)
+            Map.entry(0x234A7233L, CpuRequirement.UNSUPPORTED), // 2.04 37.175 (A3000)
+            Map.entry(0x9E6AC152L, CpuRequirement.UNSUPPORTED), // 3.0 39.106 (A4000)
+            Map.entry(0x2B4566F1L, CpuRequirement.UNSUPPORTED), // 3.1 40.70 (A4000)
+            Map.entry(0xEFB239CCL, CpuRequirement.UNSUPPORTED), // 3.1 40.68 (A3000)
+            Map.entry(0x43B6DD22L, CpuRequirement.UNSUPPORTED), // 3.1 40.68 (A4000)
+            Map.entry(0xD6BAE334L, CpuRequirement.UNSUPPORTED), // 3.1 40.68 (A4000)
+            Map.entry(0x75932C3AL, CpuRequirement.UNSUPPORTED), // 3.1 40.70 (A4000T)
+            Map.entry(0x3AC99EDCL, CpuRequirement.UNSUPPORTED), // 3.X (A4000)
+            Map.entry(0x50C3529CL, CpuRequirement.UNSUPPORTED), // 3.1.4 (A3000)
+            Map.entry(0xD47E18FDL, CpuRequirement.UNSUPPORTED), // 3.1.4 (A4000)
+            Map.entry(0x75A2B2A5L, CpuRequirement.UNSUPPORTED), // 3.1.4 (A4000T)
+            Map.entry(0xBA35F8EBL, CpuRequirement.UNSUPPORTED), // 3.1.4.2 (A3000)
+            Map.entry(0x1B84CB33L, CpuRequirement.UNSUPPORTED), // 3.1.4.2 (A4000)
+            Map.entry(0xD6D0EF3EL, CpuRequirement.UNSUPPORTED), // 3.1.4.2 (A4000T)
+            Map.entry(0xF3AF46CCL, CpuRequirement.UNSUPPORTED), // 3.2 (A3000)
+            Map.entry(0x9BB8FC93L, CpuRequirement.UNSUPPORTED), // 3.2 (A4000)
+            Map.entry(0x9188A509L, CpuRequirement.UNSUPPORTED), // 3.2 (A4000T)
+            Map.entry(0x261339F8L, CpuRequirement.UNSUPPORTED), // 3.2 (Walker)
+            Map.entry(0x0078F607L, CpuRequirement.UNSUPPORTED), // 3.2.1 (A3000)
+            Map.entry(0xF3CED3B8L, CpuRequirement.UNSUPPORTED), // 3.2.1 (A4000)
+            Map.entry(0xAF3452ECL, CpuRequirement.UNSUPPORTED), // 3.2.1 (A4000T)
+            Map.entry(0x46335B57L, CpuRequirement.UNSUPPORTED), // 3.2.2 (A3000)
+            Map.entry(0x4BEA9798L, CpuRequirement.UNSUPPORTED), // 3.2.2 (A4000)
+            Map.entry(0x36BBCD8AL, CpuRequirement.UNSUPPORTED), // 3.2.2 (A4000T)
+            Map.entry(0x74C0B23FL, CpuRequirement.UNSUPPORTED), // 3.2.3 (A3000)
+            Map.entry(0xB6A4698EL, CpuRequirement.UNSUPPORTED), // 3.2.3 (A4000)
+            Map.entry(0x588A5E6DL, CpuRequirement.UNSUPPORTED)  // 3.2.3 (A4000T)
+    );
+
+    /** Processor this Kickstart needs (see {@link CpuRequirement}). */
+    public CpuRequirement cpuRequirement() {
+        CRC32 crc = new CRC32();
+        crc.update(data);
+        return CPU_BY_CRC.getOrDefault(crc.getValue(), CpuRequirement.ANY);
+    }
+
     /** True if the 32-bit checksum with carry is {@code $FFFFFFFF} (intact ROM). */
     public boolean isChecksumValid() { return checksumValid; }
 
@@ -435,6 +508,19 @@ public final class KickstartImage {
             return "exec " + (b[off + 11] & 0xFF);
         }
         return null;
+    }
+
+    /** {@code rt_Version} of the exec.library resident, or -1 if there is none. */
+    private static int readExecVersion(byte[] b) {
+        int base = 0x1000000 - b.length;
+        for (int off = 0; off + 26 <= b.length; off += 2) {
+            if (readWord(b, off) != RTC_MATCHWORD) continue;
+            if (readLong(b, off + 2) != base + off) continue;
+            if ("exec.library".equals(readString(b, base, readLong(b, off + 14)))) {
+                return b[off + 11] & 0xFF;
+            }
+        }
+        return -1;
     }
 
     /** Reads a NUL-terminated string from a ROM pointer, or null if outside the image. */

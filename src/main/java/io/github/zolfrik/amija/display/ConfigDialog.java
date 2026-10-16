@@ -32,6 +32,7 @@ import io.github.zolfrik.amija.common.Chipset;
 import io.github.zolfrik.amija.cpu.CpuModel;
 import io.github.zolfrik.amija.common.VideoMode;
 import io.github.zolfrik.amija.config.AmigaConfig;
+import io.github.zolfrik.amija.config.HardwareRules;
 import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.JoystickKeyMap;
@@ -969,47 +970,62 @@ public final class ConfigDialog {
             }
         });
 
-        Runnable applyConfig = () -> {
-            config.setAutoEnabled(simpleMode.getAsBoolean());
-            config.setAutoKickstart13(ks13Field.getText());
-            config.setAutoKickstart31(ks31Field.getText());
+        java.util.function.Consumer<AmigaConfig> applyTo = cfg -> {
+            cfg.setAutoEnabled(simpleMode.getAsBoolean());
+            cfg.setAutoKickstart13(ks13Field.getText());
+            cfg.setAutoKickstart31(ks31Field.getText());
             // With Expert off the system parameters are derived, not chosen: the saved ones
             // are NOT touched, so switching Expert on gives the user back exactly the machine
             // they configured by hand.
             if (!simpleMode.getAsBoolean()) {
-                config.setKickstartPath(kickField.getText());
-                config.setChipRamKb((Integer) chipCombo.getSelectedItem());
-                config.setSlowRamKb((Integer) slowCombo.getSelectedItem());
-                config.setFastRamKb((Integer) fastCombo.getSelectedItem());
-                config.setVideoMode((VideoMode) videoModeCombo.getSelectedItem());
-                config.setChipset((Chipset) chipsetCombo.getSelectedItem());
-                config.setCpuModel((CpuModel) cpuCombo.getSelectedItem());
+                cfg.setKickstartPath(kickField.getText());
+                cfg.setChipRamKb((Integer) chipCombo.getSelectedItem());
+                cfg.setSlowRamKb((Integer) slowCombo.getSelectedItem());
+                cfg.setFastRamKb((Integer) fastCombo.getSelectedItem());
+                cfg.setVideoMode((VideoMode) videoModeCombo.getSelectedItem());
+                cfg.setChipset((Chipset) chipsetCombo.getSelectedItem());
+                cfg.setCpuModel((CpuModel) cpuCombo.getSelectedItem());
             }
             // The media come from the view the user has in front of them: the single list
             // with Expert off, the three per-type sections with Expert on.
-            (simpleMode.getAsBoolean() ? driveList.toMediaState() : classicMedia.get()).toConfig(config);
-            config.setFloppySoundVolume((Integer) soundSpinner.getValue());
-            config.setLedsVisible(ledCheck.isSelected());
-            config.setOverscanEnabled(overscanCheck.isSelected());
-            config.setWindowMode((AmigaWindowMode) windowModeCombo.getSelectedItem());
-            config.setMonitorIndex((Integer) monitorCombo.getSelectedItem());
-            config.setRenderer((RendererType) rendererCombo.getSelectedItem());
-            config.setShader((String) shaderCombo.getSelectedItem());
-            config.setPortDevice(0, (PortDevice) port0Combo.getSelectedItem());
-            config.setPortDevice(1, (PortDevice) port1Combo.getSelectedItem());
-            config.setJoystickKeyMap(0, joyKeyMaps[0]);
-            config.setJoystickKeyMap(1, joyKeyMaps[1]);
-            config.setLanguage(langCombo.getSelectedIndex() == 1 ? "it" : "en");
-            config.setIntegerScaling((Integer) scalingSpinner.getValue());
-            config.setUiScale((Double) uiScaleCombo.getSelectedItem());
+            (simpleMode.getAsBoolean() ? driveList.toMediaState() : classicMedia.get()).toConfig(cfg);
+            cfg.setFloppySoundVolume((Integer) soundSpinner.getValue());
+            cfg.setLedsVisible(ledCheck.isSelected());
+            cfg.setOverscanEnabled(overscanCheck.isSelected());
+            cfg.setWindowMode((AmigaWindowMode) windowModeCombo.getSelectedItem());
+            cfg.setMonitorIndex((Integer) monitorCombo.getSelectedItem());
+            cfg.setRenderer((RendererType) rendererCombo.getSelectedItem());
+            cfg.setShader((String) shaderCombo.getSelectedItem());
+            cfg.setPortDevice(0, (PortDevice) port0Combo.getSelectedItem());
+            cfg.setPortDevice(1, (PortDevice) port1Combo.getSelectedItem());
+            cfg.setJoystickKeyMap(0, joyKeyMaps[0]);
+            cfg.setJoystickKeyMap(1, joyKeyMaps[1]);
+            cfg.setLanguage(langCombo.getSelectedIndex() == 1 ? "it" : "en");
+            cfg.setIntegerScaling((Integer) scalingSpinner.getValue());
+            cfg.setUiScale((Double) uiScaleCombo.getSelectedItem());
+        };
+        Runnable applyConfig = () -> applyTo.accept(config);
+
+        // The choices are tried on a copy first: a machine whose Kickstart demands what the
+        // rest of it lacks would not start, so the popup stays open and says what clashes.
+        java.util.function.BooleanSupplier hardwareOk = () -> {
+            AmigaConfig probe = config.copy();
+            applyTo.accept(probe);
+            java.util.List<HardwareRules.Conflict> conflicts = probe.hardwareConflicts();
+            if (conflicts.isEmpty()) return true;
+            JOptionPane.showMessageDialog(dialog, HardwareRules.describe(conflicts, probe, false),
+                    Messages.t("app.title"), JOptionPane.WARNING_MESSAGE);
+            return false;
         };
 
         softReset.addActionListener(e -> {
+            if (!hardwareOk.getAsBoolean()) return;
             applyConfig.run();
             result[0] = Result.SOFT_RESET;
             dialog.dispose();
         });
         restart.addActionListener(e -> {
+            if (!hardwareOk.getAsBoolean()) return;
             applyConfig.run();
             result[0] = Result.RESTART;
             dialog.dispose();
@@ -1017,6 +1033,7 @@ public final class ConfigDialog {
         quit.addActionListener(e -> { result[0] = Result.QUIT; dialog.dispose(); });
         cancel.addActionListener(e -> { result[0] = Result.CANCEL; dialog.dispose(); });
         ok.addActionListener(e -> {
+            if (!hardwareOk.getAsBoolean()) return;
             // Applies the modified values to the AmigaConfig before closing.
             applyConfig.run();
             if (remotePlaySection != null) {

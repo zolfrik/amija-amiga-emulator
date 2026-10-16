@@ -23,6 +23,7 @@ package io.github.zolfrik.amija;
 import com.formdev.flatlaf.FlatDarkLaf;
 
 import io.github.zolfrik.amija.config.AmigaConfig;
+import io.github.zolfrik.amija.config.HardwareRules;
 import io.github.zolfrik.amija.display.AmigaWindowMode;
 import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.common.BusRequest;
@@ -2489,6 +2490,14 @@ public class Amija implements RemotePlayControl {
 
     private boolean validateRom(AmigaConfig cfg) {
         String path = cfg.kickstartPath();
+
+        // A machine whose Kickstart demands what the rest of it lacks is not built: the
+        // user is told what clashes and how to resolve it.
+        java.util.List<HardwareRules.Conflict> conflicts = cfg.hardwareConflicts();
+        if (!conflicts.isEmpty() && (usingBuiltinRom(path) || new File(path).isFile())) {
+            error(HardwareRules.describe(conflicts, cfg, true));
+            return false;
+        }
 
         // No Kickstart, or the file is gone: start anyway with the built-in ROM. The user is
         // told once, because it is not an error but a fallback they must know they are using.
