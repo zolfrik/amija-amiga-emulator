@@ -608,6 +608,7 @@ public final class ConfigDialog {
         // -------------------------------------------------------------------
         Runnable syncAuto = () -> {
             boolean simple = simpleMode.getAsBoolean();
+            expertCheck.setToolTipText(expertTip(config, simple));
             setRowVisible(!simple, kickLabel, kickField, kickBrowse);
             setRowVisible(simple, ks13Label, ks13Field, ks13Browse);
             setRowVisible(simple, ks31Label, ks31Field, ks31Browse);
@@ -1572,6 +1573,33 @@ public final class ConfigDialog {
         for (JComponent c : components) {
             applyTip(c, html);
         }
+    }
+
+    /**
+     * Tooltip of "Expert mode". With the box unticked it ends with the machine Auto mode is
+     * running now, one component per line; the media are left out, the list above shows them.
+     */
+    private static String expertTip(AmigaConfig config, boolean simple) {
+        String text = Messages.t("label.expert.tip");
+        if (simple) {
+            AmigaConfig.AutoProfile p = config.autoProfile();
+            String ks = p.kickstartPath();
+            String ksName = ks == null || ks.isEmpty() ? Messages.t("ram.none")
+                    : ks.substring(Math.max(ks.lastIndexOf('/'), ks.lastIndexOf('\\')) + 1);
+            text += "<br><br><b>" + Messages.t("label.expert.current") + "</b>"
+                    + "<br>Kickstart: " + escapeHtml(ksName)
+                    + "<br>" + Messages.t("label.cpu") + " " + p.cpuModel().partNumber()
+                    + "<br>" + Messages.t("label.chipset") + " " + p.chipset()
+                    + "<br>" + Messages.t("label.chipram") + " " + formatKb(p.chipRamKb())
+                    + "<br>" + Messages.t("label.slowram") + " " + formatKb(p.slowRamKb())
+                    + "<br>" + Messages.t("label.fastram") + " " + formatKb(p.fastRamKb())
+                    + "<br>" + Messages.t("label.videomode") + " " + p.videoMode();
+        }
+        return "<html><body style='width: 260px'>" + text + "</body></html>";
+    }
+
+    private static String escapeHtml(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     /**
