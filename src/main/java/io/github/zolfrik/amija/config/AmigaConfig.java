@@ -235,9 +235,15 @@ public final class AmigaConfig {
      * with "you need chipmem up to $xxxxxx". Quite a few want more than 1 MB (e.g. Dragon's
      * Lair asks for $180000, 1.5 MB), while those that want less run the same on a larger
      * machine: the maximum is the only choice that never fails.
+     *
+     * <p>The 68010, not the 68020: a game written for the 68000 keeps a timing close to the
+     * one it was made for (on this machine a 68020 with its cache off reaches Chip RAM through
+     * the 16-bit bus, and runs such code at a different speed than the original), while the
+     * movable vector table still lets WHDLoad keep its own. A slave that declares it needs
+     * the 68020 gets it (see {@link #autoProfile}).
      */
     private static final AutoDefaults AUTO_EXPANDED =
-            new AutoDefaults("auto.hd.", 2048, 512, 8192, Chipset.ECS, CpuModel.M68020);
+            new AutoDefaults("auto.hd.", 2048, 512, 8192, Chipset.ECS, CpuModel.M68010E);
 
     /**
      * Software that needs the AGA chipset: an A1200, with its 2 MB of Chip RAM and no Slow
@@ -532,9 +538,14 @@ public final class AmigaConfig {
         AutoDefaults d = aga ? AUTO_AGA : expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
         int fastRamKb = aga && !expanded ? 0 : d.fastRamKb(this);
         String kickstart = autoKickstartPath(expanded || aga);
-        // The profile's processor is a floor: a Kickstart built for the 68020 raises it.
+        // The profile's processor is a floor: a Kickstart built for the 68020 raises it, and so
+        // does a WHDLoad slave that declares it needs one.
         CpuModel cpu = HardwareRules.satisfying(HardwareRules.romFacts(kickstart).cpu(),
                 d.cpuModel(this));
+        if (whdloadEnabled() && io.github.zolfrik.amija.whdload.WhdLoadManager
+                .requires68020(whdloadFile())) {
+            cpu = CpuModel.M68020;
+        }
         return new AutoProfile(kickstart, expanded, aga,
                 d.chipRamKb(this), d.slowRamKb(this), fastRamKb, d.chipset(this),
                 cpu, autoVideoMode(activeFiles));
@@ -1382,9 +1393,10 @@ public final class AmigaConfig {
         sb.append("#  - Kickstart: the 1.3 below for plain floppy games, the 3.1 as soon as a\n");
         sb.append("#    hard disk or WHDLoad is in use, or the software needs AGA;\n");
         sb.append("#  - memory, chipset and processor: the auto.floppy.* profile (68000), or\n");
-        sb.append("#    auto.hd.* (68020) when a hard disk or WHDLoad is in use, or auto.aga.*\n");
+        sb.append("#    auto.hd.* (68010) when a hard disk or WHDLoad is in use, or auto.aga.*\n");
         sb.append("#    (A1200: AGA, 68020) when the WHDLoad slave requires AGA or a file name\n");
-        sb.append("#    contains the word AGA. All three are editable right below;\n");
+        sb.append("#    contains the word AGA. All three are editable right below. A WHDLoad\n");
+        sb.append("#    slave that declares it needs the 68020 gets it whatever the profile says;\n");
         sb.append("#  - video mode: PAL, unless the name of an active file (floppy, hard disk or\n");
         sb.append("#    WHDLoad archive) contains \"NTSC\" or \"(USA)\", in any case.\n");
         sb.append("# The hand-picked settings further down are left untouched and come back into\n");

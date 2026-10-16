@@ -222,41 +222,58 @@ public final class WhdLoadManager {
         return found;
     }
 
-    /** Memory of the answers of {@link #requiresAga}, per archive + modification date. */
-    private static final Map<String, Boolean> requiresAgaCache =
+    /** Memory of the answers of {@link #slaveFlags}, per archive + modification date. */
+    private static final Map<String, Integer> slaveFlagsCache =
             new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** WHDLF_Req68020: bit 4 of the slave's {@code ws_Flags}, a 68020 or better is required. */
+    private static final int WHDLF_REQ68020 = 0x0010;
 
     /** WHDLF_ReqAGA: bit 5 of the slave's {@code ws_Flags}, the AGA chipset is required. */
     private static final int WHDLF_REQAGA = 0x0020;
 
     /**
-     * {@code true} if a slave of the WHDLoad archive {@code lhaPath} declares in its header
-     * that it needs the AGA chipset ({@code WHDLF_ReqAGA} in {@code ws_Flags}, the word that
-     * follows {@code ws_Version} after the {@code WHDLOADS} identifier). Without AGA WHDLoad
-     * refuses such a slave, so Auto mode builds an A1200 for it.
-     *
-     * <p>Reads only the {@code .slave} files of the archive. {@code false} when the archive
-     * cannot be read: not knowing is a normal outcome.
+     * The {@code ws_Flags} of the slaves of the WHDLoad archive {@code lhaPath}, OR-ed
+     * together: the word that follows {@code ws_Version} after the {@code WHDLOADS}
+     * identifier of each {@code .slave} file. 0 when the archive cannot be read: not knowing
+     * is a normal outcome.
      */
-    public static boolean requiresAga(String lhaPath) {
-        if (lhaPath == null || lhaPath.isEmpty()) return false;
+    private static int slaveFlags(String lhaPath) {
+        if (lhaPath == null || lhaPath.isEmpty()) return 0;
         String key = lhaPath + '\0' + new java.io.File(lhaPath).lastModified();
-        Boolean cached = requiresAgaCache.get(key);
+        Integer cached = slaveFlagsCache.get(key);
         if (cached != null) return cached;
 
-        boolean found = false;
+        int flags = 0;
         try {
             for (byte[] slave : LhaExtractor.extractBySuffix(lhaPath, ".slave").values()) {
                 int id = indexOf(slave, "WHDLOADS".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
                 if (id < 0 || id + 12 > slave.length) continue;
-                int flags = ((slave[id + 10] & 0xFF) << 8) | (slave[id + 11] & 0xFF);
-                if ((flags & WHDLF_REQAGA) != 0) { found = true; break; }
+                flags |= ((slave[id + 10] & 0xFF) << 8) | (slave[id + 11] & 0xFF);
             }
         } catch (IOException | RuntimeException e) {
-            return false;
+            return 0;
         }
-        requiresAgaCache.put(key, found);
-        return found;
+        slaveFlagsCache.put(key, flags);
+        return flags;
+    }
+
+    /**
+     * {@code true} if a slave of the WHDLoad archive {@code lhaPath} declares in its header
+     * that it needs the AGA chipset ({@code WHDLF_ReqAGA}). Without AGA WHDLoad refuses such
+     * a slave, so Auto mode builds an A1200 for it.
+     */
+    public static boolean requiresAga(String lhaPath) {
+        return (slaveFlags(lhaPath) & WHDLF_REQAGA) != 0;
+    }
+
+    /**
+     * {@code true} if a slave of the WHDLoad archive {@code lhaPath} declares in its header
+     * that it needs a 68020 or better ({@code WHDLF_Req68020}). WHDLoad refuses such a slave
+     * on a 68000 or a 68010, so Auto mode raises the processor to the 68020 for it.
+     */
+    public static boolean requires68020(String lhaPath) {
+        return (slaveFlags(lhaPath) & WHDLF_REQ68020) != 0;
     }
 
     private static int indexOf(byte[] data, byte[] pattern) {
