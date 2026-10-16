@@ -1651,6 +1651,53 @@ public final class AmigaConfig {
     }
 
     /**
+     * Files the machine described by this configuration reads at start-up: the Kickstart
+     * (when one is named) and every medium actually mounted, i.e. the disk of each connected
+     * drive, the image of each enabled hard disk unit and the WHDLoad archive when its boot is
+     * on. A floppy taken from a zip set names the zip file itself.
+     */
+    public java.util.List<String> machineFiles() {
+        java.util.List<String> files = new java.util.ArrayList<>();
+        String ks = kickstartPath();
+        if (!ks.isEmpty()) files.add(ks);
+        for (int i = 0; i < 4; i++) {
+            String disk = driveDisk(i);
+            if (driveEnabled(i) && disk != null) {
+                files.add(io.github.zolfrik.amija.custom.DiskImage.isZipDisk(disk)
+                        ? io.github.zolfrik.amija.custom.DiskImage.pathOf(disk).toString()
+                        : disk);
+            }
+        }
+        for (int unit = 0; unit < HD_UNITS.length; unit++) {
+            String disk = hdDisk(unit);
+            if (hdEnabled(unit) && disk != null) files.add(disk);
+        }
+        if (whdloadEnabled() && whdloadFile() != null) files.add(whdloadFile());
+        return files;
+    }
+
+    /**
+     * The files the machine described by {@code saved} needs (see {@link #machineFiles()})
+     * that are not on the file system now. Empty when that machine can be rebuilt.
+     */
+    public static java.util.List<String> missingMachineFiles(Properties saved) {
+        java.util.List<String> missing = new java.util.ArrayList<>();
+        if (saved == null) return missing;
+        Properties copy = new Properties();
+        copy.putAll(saved);
+        for (String f : new AmigaConfig(copy).machineFiles()) {
+            boolean present;
+            try {
+                present = Files.isRegularFile(Path.of(f));
+            } catch (java.nio.file.InvalidPathException e) {
+                present = false;
+            }
+            if (!present) missing.add(f);
+        }
+        return missing;
+    }
+
+    /**
      * Independent copy of the current properties, i.e. {@code amiga.properties} as it is in
      * memory. Save states keep one inside the slot: it is the only description of the
      * machine that state requires.

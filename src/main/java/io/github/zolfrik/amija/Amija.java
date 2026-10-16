@@ -1930,6 +1930,15 @@ public class Amija implements RemotePlayControl {
                     Messages.t("savestate.load.ok", slot));
         } catch (SaveStateManager.IncompatibleStateException e) {
             if (canRebuildMachineFor(file)) {
+                // The rebuilt machine must mount the very files of the save: if one is gone,
+                // the state cannot be resumed and the running machine is left untouched.
+                java.util.List<String> missing = missingFilesFor(file);
+                if (!missing.isEmpty()) {
+                    return ConfigDialog.LoadStateOutcome.done(
+                            Messages.t("savestate.load.incompatible",
+                                    Messages.t("savestate.err.missing",
+                                            String.join("\n", missing))));
+                }
                 System.out.println("[STATE] macchina diversa da quella dello slot ("
                         + e.getMessage() + "): la ricostruisco e ritento");
                 return ConfigDialog.LoadStateOutcome.restart();
@@ -1954,6 +1963,15 @@ public class Amija implements RemotePlayControl {
             return config.machineDiffers(SaveStateManager.readInfo(slot).config());
         } catch (IOException e) {
             return false;
+        }
+    }
+
+    /** Files the slot's machine needs that are not on the file system now. */
+    private static java.util.List<String> missingFilesFor(File slot) {
+        try {
+            return AmigaConfig.missingMachineFiles(SaveStateManager.readInfo(slot).config());
+        } catch (IOException e) {
+            return java.util.List.of();
         }
     }
 

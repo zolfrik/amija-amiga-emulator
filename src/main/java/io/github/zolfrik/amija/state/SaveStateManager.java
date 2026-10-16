@@ -274,7 +274,12 @@ public final class SaveStateManager {
 
         try (DataInputStream in = openSlot(file)) {
             SlotInfo info = readHeader(in);
-            if (!info.fingerprint().equals(fingerprint(cfg))) {
+            // The fingerprint covers memory, chipset, Kickstart and floppies only; the saved
+            // configuration covers every mounted medium too (hard disks, WHDLoad archive,
+            // drive and unit switches). A state resumed over other media would keep running
+            // on files that are not the ones it was saved with.
+            if (!info.fingerprint().equals(fingerprint(cfg))
+                    || cfg.machineDiffers(info.config())) {
                 throw new IncompatibleStateException(Messages.t("savestate.err.machine"));
             }
             List<Object> roots = buildRoots(cpu, eventBus, agnus, port1, port2);
