@@ -32,11 +32,15 @@ public final class JavaSoundAudioOutput implements Runnable {
 
     public static final int OUTPUT_RATE = 44_100;
     private static final int CHUNK_FRAMES = 1024;
-    private static final int LINE_BUFFER_FRAMES = CHUNK_FRAMES * 4;
+    private static final int LINE_BUFFER_FRAMES = CHUNK_FRAMES * 2;
+    // Below this the ring is treated as empty (underrun); above it a short read is played.
+    private static final int MIN_READ_FRAMES = CHUNK_FRAMES / 4;
+    // Above this the ring is cut back to the cushion (about 190 ms of latency).
+    private static final int MAX_FILL_FRAMES = CHUNK_FRAMES * 8;
     // Cushion to accumulate before starting to drain (priming): avoids starting dry, where the
     // producer's slightest jitter would cause an underrun. Kept a little below the target level
     // of the producer's ASR.
-    private static final int PRIME_FRAMES = CHUNK_FRAMES * 3;
+    private static final int PRIME_FRAMES = CHUNK_FRAMES + CHUNK_FRAMES / 2;
 
     // The A500's analogue chain, one per side (see A500AudioFilter): a single pole would be
     // darker than the real filter and have the wrong slope above the cut-off.
@@ -140,6 +144,17 @@ public final class JavaSoundAudioOutput implements Runnable {
             long statOverflowBase = ringBuffer.overflowCount();
 
             while (running) {
+                // Read only when the line has room for a whole chunk: it then still holds
+                // about one, and the ring has had that long to refill since the last read.
+                while (running && line.available() < pcm.length) {
+                    Thread.sleep(1);
+                }
+                // A ring this full means the consumer was held up (the sound device starting,
+                // a stall of the host): everything beyond the cushion is pure latency, and
+                // draining it through the ASR would take seconds at a lowered pitch.
+                if (ringBuffer.available() > MAX_FILL_FRAMES) {
+                    ringBuffer.discardDownTo(PRIME_FRAMES);
+                }
                 long fillBefore = ringBuffer.available();
                 if (fillBefore < statMinFill) statMinFill = fillBefore;
                 if (fillBefore > statMaxFill) statMaxFill = fillBefore;
@@ -147,7 +162,11 @@ public final class JavaSoundAudioOutput implements Runnable {
                 statChunks++;
 
                 int got = ringBuffer.read(tmpL, tmpR, CHUNK_FRAMES);
-                if (got < CHUNK_FRAMES) {
+                // A short read is played as it is: the line still holds about a chunk, so
+                // a brief dip of the ring costs nothing audible. Only a nearly empty ring is
+                // an underrun.
+                int frames = got;
+                if (got < MIN_READ_FRAMES) {
                     statUnderflows++;
                     // Underrun: instead of a hard cut or a DC hold (click), fade the available
                     // samples to zero with a falling ramp and fill the rest with silence.
@@ -161,10 +180,11 @@ public final class JavaSoundAudioOutput implements Runnable {
                         tmpL[i] = 0.0f;
                         tmpR[i] = 0.0f;
                     }
+                    frames = CHUNK_FRAMES;
                 }
 
                 boolean led = ledFilterEnabled;
-                for (int i = 0; i < CHUNK_FRAMES; i++) {
+                for (int i = 0; i < frames; i++) {
                     float l = filterLeft.process(tmpL[i], led);
                     float r = filterRight.process(tmpR[i], led);
                     int li = (int) (clamp(l) * 32767.0f);
@@ -182,10 +202,10 @@ public final class JavaSoundAudioOutput implements Runnable {
                 // the feature is off, and is outside the emulation thread anyway.
                 PcmTap tap = pcmTap;
                 if (tap != null) {
-                    tap.onChunk(pcm, CHUNK_FRAMES);
+                    tap.onChunk(pcm, frames);
                 }
 
-                line.write(pcm, 0, pcm.length);
+                line.write(pcm, 0, frames * 4);
 
                 long now = System.nanoTime();
                 if (loggingEnabled && now - statLastNs >= 1_000_000_000L) {

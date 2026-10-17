@@ -61,6 +61,15 @@ public final class AudioRingBuffer {
         return toRead;
     }
 
+    /** Drops the oldest samples so that at most {@code keep} are left to read. */
+    public void discardDownTo(long keep) {
+        long rp = readPos.get();
+        long available = writePos.get() - rp;
+        if (available > keep) {
+            readPos.lazySet(rp + available - keep);
+        }
+    }
+
     public long available() {
         return writePos.get() - readPos.get();
     }

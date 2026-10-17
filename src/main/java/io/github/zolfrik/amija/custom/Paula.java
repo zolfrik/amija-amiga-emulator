@@ -205,9 +205,9 @@ public final class Paula {
     // crackle) or full (overflow -> clicks). The ASR varies the production rate
     // imperceptibly to keep the buffer around its target level.
     // -------------------------------------------------------------------------
-    private static final double ASR_TARGET_FILL = 0.12;   // target fill of the ring (~90 ms of cushion)
+    private static final double ASR_TARGET_FILL = 0.0625; // target fill of the ring (~46 ms of cushion)
     // TWO-ZONE ASR (dead zone), against audible pitch wobble. A purely proportional
-    // controller chases the sawtooth of the fill level (+-1500 samples from per-frame
+    // controller chases the sawtooth of the fill level (+-500 samples from per-frame
     // rendering stalls) and keeps correcting by +-100-300 Hz: audible wow/flutter.
     //   - INSIDE the dead zone (|fill-target| <= ASR_DEADZONE, where all the normal
     //     oscillation falls): a tiny linear correction, at most +-ASR_FINE_MAX Hz (~0.07%,
@@ -216,7 +216,7 @@ public final class Paula {
     //   - OUTSIDE (large imbalance: start-up, long stall): the correction grows up to
     //     +-ASR_COARSE_MAX to recover quickly before an underrun.
     // The slow host/Amiga drift (<0.1%) is well within the fine zone.
-    private static final double ASR_DEADZONE = 0.06;      // +-~2000 samples around the target (covers the normal oscillation)
+    private static final double ASR_DEADZONE = 0.03;      // +-~1000 samples around the target (covers the normal oscillation)
     private static final double ASR_FINE_MAX = 30.0;      // Hz: max correction inside the dead zone (~0.07%, inaudible)
     private static final double ASR_COARSE_GAIN = 25000.0; // proportional gain outside the dead zone
     private static final double ASR_COARSE_MAX = 3000.0;  // Hz: max correction outside (fast recovery from large imbalances)
