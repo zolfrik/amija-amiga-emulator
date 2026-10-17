@@ -1586,7 +1586,7 @@ public final class ConfigDialog {
             String ks = p.kickstartPath();
             String ksName = ks == null || ks.isEmpty() ? Messages.t("ram.none")
                     : ks.substring(Math.max(ks.lastIndexOf('/'), ks.lastIndexOf('\\')) + 1);
-            text += "<br><br><b>" + Messages.t("label.expert.current") + "</b>"
+            text += "<br><br><b>" + Messages.t("msg.expert.current") + "</b>"
                     + "<br>Kickstart: " + escapeHtml(ksName)
                     + "<br>" + Messages.t("label.cpu") + " " + p.cpuModel().partNumber()
                     + "<br>" + Messages.t("label.chipset") + " " + p.chipset()
