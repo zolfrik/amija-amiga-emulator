@@ -41,6 +41,9 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -48,17 +51,17 @@ import java.util.zip.ZipFile;
 /**
  * Downloads and installs an {@link AssetPackage} on the user's behalf.
  *
- * <p>The flow: download into a temporary file (computing the SHA-256 while the bytes flow) ->
- * check -> selective unpacking into the destination folder -> deletion of the temporaries.
+ * <p>The flow: download into a temporary file -> check -> selective unpacking into the destination folder -> deletion of the temporaries.
  * No external dependency: HTTP from the JDK's client, ZIP from {@code java.util.zip}, LHA from
  * the extractor that already serves the WHDLoad packages.
  *
  * <p><b>The check has two stages, of different severity.</b> The <i>structural</i> check (the
  * expected entries must be there) blocks: if it fails, the downloaded file is not what we
- * thought and installing it would do harm. The SHA-256 comparison is only a warning: the
- * upstream URLs are not versioned, so a new release changes the fingerprint quite
- * legitimately, and treating it as a fatal error would break the assistant at every upstream
- * update.
+ * thought and installing it would do harm. The checksum comparison only warns, and only
+ * happens when the source publishes a checksum ({@link AssetPackage#checksumUrl()}), read at
+ * download time: comparing against a value stored in AmiJa would raise a false alarm at
+ * every upstream release, since the URLs are not versioned. When the published checksum
+ * cannot be read, nothing is reported.
  */
 public final class AssetInstaller {
 
@@ -152,7 +155,6 @@ public final class AssetInstaller {
         }
 
         long total = response.headers().firstValueAsLong("content-length").orElse(pkg.approxBytes());
-        MessageDigest digest = sha256();
         Path tmp = Files.createTempFile("amija-asset-", ".bin");
         try (InputStream in = response.body(); OutputStream out = Files.newOutputStream(tmp)) {
             byte[] buf = new byte[BUFFER];
@@ -161,7 +163,6 @@ public final class AssetInstaller {
             while ((n = in.read(buf)) > 0) {
                 if (p.cancelled()) throw new IOException(Messages.t("assets.error.cancelled"));
                 out.write(buf, 0, n);
-                digest.update(buf, 0, n);
                 done += n;
                 p.bytes(done, total);
             }
@@ -170,20 +171,69 @@ public final class AssetInstaller {
             throw e;
         }
 
-        String actual = HexFormat.of().formatHex(digest.digest());
-        if (pkg.sha256() != null && !pkg.sha256().equalsIgnoreCase(actual)) {
-            // Not an error: the URL always points to the latest release, which changes
-            // upstream without telling us. Warn and carry on with the structural check.
-            warnings.add(Messages.t("assets.warn.hash", pkg.displayName(), actual, pkg.sha256()));
-        }
+        verifyPublishedChecksum(pkg, client, tmp, warnings);
         return tmp;
     }
 
-    private static MessageDigest sha256() {
+    // =========================================================================
+    // Published checksum
+    // =========================================================================
+
+    /** First checksum-shaped hex token of a checksum file (MD5, SHA-1, SHA-256, SHA-512). */
+    private static final Pattern CHECKSUM_TOKEN = Pattern.compile(
+            "(?<![0-9A-Fa-f])([0-9A-Fa-f]{128}|[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})(?![0-9A-Fa-f])");
+
+    private static final Duration CHECKSUM_TIMEOUT = Duration.ofSeconds(20);
+
+    /**
+     * Compares the downloaded file with the checksum its source publishes right now. Adds a
+     * warning only on a mismatch; a source without a checksum, or one that cannot be read
+     * or parsed, adds nothing.
+     */
+    private static void verifyPublishedChecksum(AssetPackage pkg, HttpClient client, Path file,
+                                                List<String> warnings) {
+        if (pkg.checksumUrl() == null) return;
+        String expected = fetchPublishedChecksum(client, pkg.checksumUrl());
+        if (expected == null) return;
+        String algorithm = switch (expected.length()) {
+            case 32 -> "MD5";
+            case 40 -> "SHA-1";
+            case 64 -> "SHA-256";
+            default -> "SHA-512";
+        };
+        String actual;
+        try (InputStream in = Files.newInputStream(file)) {
+            MessageDigest digest = MessageDigest.getInstance(algorithm);
+            byte[] buf = new byte[BUFFER];
+            int n;
+            while ((n = in.read(buf)) > 0) digest.update(buf, 0, n);
+            actual = HexFormat.of().formatHex(digest.digest());
+        } catch (IOException | NoSuchAlgorithmException e) {
+            return;
+        }
+        if (!expected.equalsIgnoreCase(actual)) {
+            warnings.add(Messages.t("assets.warn.hash", pkg.displayName(), actual,
+                    expected.toLowerCase(Locale.ROOT)));
+        }
+    }
+
+    /** The checksum published at {@code url}, or {@code null} if it cannot be obtained. */
+    private static String fetchPublishedChecksum(HttpClient client, String url) {
         try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 è obbligatorio in ogni JDK", e);
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                    .header("User-Agent", USER_AGENT)
+                    .timeout(CHECKSUM_TIMEOUT)
+                    .GET()
+                    .build();
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) return null;
+            Matcher m = CHECKSUM_TOKEN.matcher(response.body());
+            return m.find() ? m.group(1) : null;
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (IOException | IllegalArgumentException e) {
+            return null;
         }
     }
 

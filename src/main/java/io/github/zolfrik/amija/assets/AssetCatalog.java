@@ -39,9 +39,10 @@ import java.util.Locale;
  * <p><b>Never</b> add Kickstart ROMs or disk images here: they remain the user's
  * responsibility and no automation can fetch them.
  *
- * <p>The SHA-256 values were checked by hand on 2026-08-01 by downloading the archives. They
- * are indicative: the URLs are not versioned (they always point to the latest release), so an
- * upstream update will legitimately change them; see {@link AssetPackage#sha256()}.
+ * <p>No fingerprint is stored here: the URLs are not versioned (they always point to the
+ * latest release), so a stored value would go stale at every upstream update. A package is
+ * checked against a checksum only when its source publishes one; see
+ * {@link AssetPackage#checksumUrl()}. None of the current sources does.
  *
  * <p>The drive sound samples were here until 2026-08-07, when AmiJa started bringing its
  * own: {@code floppysounds/} is full at installation and there is nothing to download.
@@ -92,7 +93,7 @@ public final class AssetCatalog {
         return new AssetPackage(
                 "whdload",
                 url(config, "whdload", "https://whdload.de/whdload/WHDLoad_usr.lha"),
-                "093333953737528d79c1eda7d21a16a0aa298698722624e7cfb31f588a0a156d",
+                null,
                 1_499_481L,
                 "WHDLoad, © 1995-2026 Bert Jahn",
                 true,
@@ -120,7 +121,7 @@ public final class AssetCatalog {
         return new AssetPackage(
                 "whdloadrtb",
                 url(config, "whdloadrtb", "https://aminet.net/util/boot/skick346.lha"),
-                "02b4d01852d12ab391c6469064f917221a0f7319fd0b3ba6c359403ec1d59f96",
+                null,
                 96_878L,
                 "SoftKick, © SinSoft / Pavel Troller",
                 true,
@@ -182,9 +183,8 @@ public final class AssetCatalog {
     //     shaders_slang/bezel/Mega_Bezel, so the root must be exactly two folders below
     //     shaders/.
     //
-    // The sha256 is not fixed: the archive is 347 MB and was not downloaded to compute it.
-    // The URL is anchored to the RC4.1 tag, though, so the content does not change under
-    // our feet, and requiredEntries checks the integrity.
+    // The URL is anchored to the RC4.1 tag, so the content does not change under our feet,
+    // and requiredEntries checks the integrity.
     // -------------------------------------------------------------------------
     private static AssetPackage megaBezelCommodore(AmigaConfig config) {
         Path dest = AppHome.resolve("shaders", "Mega_Bezel_Packs", "thenamec-commodore-pack");

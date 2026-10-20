@@ -41,10 +41,12 @@ import java.util.function.UnaryOperator;
  * @param id             stable identifier; the i18n keys {@code assets.<id>.name} and
  *                       {@code assets.<id>.desc} derive from it
  * @param url            download URL at the official source
- * @param sha256         fingerprint of the file checked by hand, in lower-case hex. It is
- *                       <b>indicative</b>: the URLs are not versioned, so an upstream release
- *                       will legitimately change it. A mismatch is to be reported, not
- *                       treated as a fatal error.
+ * @param checksumUrl    URL of a checksum file the source itself publishes for {@code url}
+ *                       (MD5, SHA-1, SHA-256 or SHA-512 in hex), or {@code null} when the
+ *                       source publishes none. It is read at download time, so the
+ *                       comparison is always against what the source says now; no
+ *                       fingerprint is stored in AmiJa, since the URLs are not versioned
+ *                       and a stored one would go stale at the next upstream release
  * @param approxBytes    expected size, used for the progress bar when the server sends no
  *                       {@code Content-Length}
  * @param rightsHolder   rights holder, shown to the user before the download
@@ -63,7 +65,7 @@ import java.util.function.UnaryOperator;
 public record AssetPackage(
         String id,
         String url,
-        String sha256,
+        String checksumUrl,
         long approxBytes,
         String rightsHolder,
         boolean preselected,
