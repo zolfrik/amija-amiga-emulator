@@ -218,29 +218,35 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           NOTES="$(cat <<'NOTES'
-          ## Quale file scaricare
+          ## Which file to download
 
-          | Sistema | File |
+          | System | File |
           |---|---|
-          | Windows (x64, e ARM in emulazione) | `AmiJa-<ver>-windows-x64.zip` |
+          | Windows x64 | `AmiJa-<ver>-windows-x64.zip` |
           | Linux x64 | `AmiJa-<ver>-linux-x64.tar.gz` |
           | Linux ARM64 | `AmiJa-<ver>-linux-arm64.tar.gz` |
 
-          Questi archivi **contengono gia' il runtime Java**: si scompattano e si lanciano,
-          non serve installare nulla. Estrarli in una cartella **scrivibile** — AmiJa salva
-          configurazione, savestate e screenshot accanto a se'.
+          These archives **include the Java runtime**: extract and run, nothing to install.
+          Extract them to a **writable** folder: AmiJa keeps its configuration, savestates
+          and screenshots next to itself.
 
-          Per chi ha gia' un JDK 26: `AmiJa-<ver>.zip` (senza runtime) oppure il solo
-          `AmiJa.jar`.
+          If you already have JDK 26: `AmiJa-<ver>.zip` (no runtime) or just `AmiJa.jar`.
 
-          Windows: al primo avvio SmartScreen mostra «PC protetto da Windows» perche'
-          l'eseguibile non e' firmato. *Ulteriori informazioni* → *Esegui comunque*, oppure
-          sblocca lo **zip** prima di scompattarlo (tasto destro → *Proprieta'* → *Annulla
-          blocco*, o `Unblock-File` da PowerShell): cosi' il marchio non passa ai file estratti.
+          **You need your own Kickstart ROM** (not included, it is copyrighted). Amiga
+          Forever or a dump of your own machine both work.
 
-          `SHA256SUMS` contiene le impronte di tutti i file.
+          **Windows:** the executable is not signed, so SmartScreen may say "Windows
+          protected your PC". Click *More info* → *Run anyway*, or unblock the zip before
+          extracting (right click → *Properties* → *Unblock*, or `Unblock-File` in
+          PowerShell) so the mark does not pass to the extracted files.
+
+          Please report problems in the Issues tab, with the game/disk name and your settings.
+
+          `SHA256SUMS` lists the checksums of all files.
           NOTES
           )"
+          # Il segnaposto <ver> diventa la versione del tag (v0.5.0 -> 0.5.0).
+          NOTES="${NOTES//<ver>/${GITHUB_REF_NAME#v}}"
 
           # Creare un tag dalla pagina "Releases" di GitHub crea ANCHE la release:
           # in quel caso "gh release create" fallirebbe a build gia' fatta, dopo una
