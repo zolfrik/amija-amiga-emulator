@@ -228,7 +228,11 @@ if ($SmokeTest) {
 $Zip = Join-Path $Dist "$PkgName.zip"
 if (Test-Path $Zip) { Remove-Item -Force $Zip }
 Write-Host "-- zip"
-Compress-Archive -Path $Pkg -DestinationPath $Zip -CompressionLevel Optimal
+# Il tar di Windows (bsdtar) e non Compress-Archive: quello di Windows PowerShell 5.1
+# scrive i percorsi interni con '\', fuori standard zip. Percorso esplicito, perche'
+# sul PATH puo' esserci il tar GNU di Git, che lo zip non lo sa fare.
+& (Join-Path $env:SystemRoot 'System32\tar.exe') -a -c -f $Zip -C $Dist $PkgName
+if ($LASTEXITCODE -ne 0) { throw "tar fallito (exit $LASTEXITCODE)" }
 
 $sizeMb = [math]::Round((Get-Item $Zip).Length / 1MB, 1)
 Write-Host "== fatto: $Zip ($sizeMb MB)" -ForegroundColor Green
