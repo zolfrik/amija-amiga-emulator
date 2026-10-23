@@ -213,6 +213,9 @@ jobs:
       - name: Crea la release (draft)
         env:
           GH_TOKEN: ${{ github.token }}
+          # Questo job non fa checkout: senza GH_REPO gh cerca il repository nel
+          # remote git della cartella corrente, non lo trova e fallisce.
+          GH_REPO: ${{ github.repository }}
         run: |
           NOTES="$(cat <<'NOTES'
           ## Quale file scaricare
