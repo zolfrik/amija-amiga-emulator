@@ -8,6 +8,12 @@
   A cycle-exact Amiga emulator in Java.
 </p>
 
+<p align="center">
+  <a href="https://zolfrik.github.io/amija-amiga-emulator/"><b>Website</b></a> ·
+  <a href="https://github.com/zolfrik/amija-amiga-emulator/releases">Download</a> ·
+  <a href="https://www.youtube.com/playlist?list=PLdkiRBBNki2g">Videos</a>
+</p>
+
 ---
 
 AmiJa emulates an Amiga at the level of the individual bus cycle: all
