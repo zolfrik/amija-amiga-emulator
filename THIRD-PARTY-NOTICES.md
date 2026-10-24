@@ -255,3 +255,26 @@ that folder; nothing else should either.
 Adoptium publishes no Temurin build for Windows on ARM64, hence the absence of a
 `windows-arm64` archive (see the matrix comment in
 `.github/workflows/release.yml`).
+
+## 7. Project website — the `gh-pages` branch
+
+The website (`https://zolfrik.github.io/amija-amiga-emulator/`) lives on the
+`gh-pages` branch, not in the emulator: nothing in this section ships in a jar or
+an archive. It is developed in the private tree and copied there as is.
+
+| Component | Licence | Origin |
+|---|---|---|
+| `fonts/Topaz_a500_v1.0.ttf` — the Kickstart 1.x Topaz font as TrueType | GPL with the GNU font exception (GPL-FE) | [rewtnull/amigafonts](https://github.com/rewtnull/amigafonts), by dMG/t!s^dS! |
+| `sounds/*.wav` — three drive sounds | GPL-3.0-or-later | AmiJa's own synthesised samples (see `floppysounds/readme.txt`), at a third of their level |
+| page, styles, scripts, pixel art, logo | GPL-3.0-or-later | AmiJa |
+
+**Why the font is allowed.** The package states its licence as GPL-FE in its
+README (section 14), kept next to the font on the branch as
+`fonts/README.amigafonts.txt`, with `fonts/LICENSE.txt` summarising it. The font
+exception lets a document embed the font without the document becoming GPL; the
+font file itself stays under the GPL. The same README notes that the Topaz
+design is (c) Amiga Inc. — the TrueType files are dMG's work and are what the
+licence covers.
+
+The site embeds YouTube videos and reads the release list from the GitHub API at
+view time; neither is redistributed.
