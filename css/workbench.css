@@ -1,0 +1,820 @@
+/*
+ * AmiJa website - Workbench 1.3 look.
+ *
+ * The screen is drawn in "hires" units: one column (--u) is S px wide and one
+ * line (--l) is 2S px tall, the shape of an Amiga hires pixel on a PAL monitor.
+ * Topaz at 16S px is exactly 8 columns by 8 lines per character. S is 1 or 2
+ * and is set by workbench.js from the viewport size.
+ */
+
+@font-face {
+  font-family: "Topaz";
+  src: url("../fonts/Topaz_a500_v1.0.ttf") format("truetype");
+  font-display: block;
+}
+
+:root {
+  --S: 1;
+  --u: calc(var(--S) * 1px);
+  --l: calc(var(--S) * 2px);
+  --ch: calc(var(--S) * 8px);
+  --line: calc(var(--S) * 16px);
+
+  --blue: #0055ad;
+  --white: #ffffff;
+  --black: #000021;
+  --orange: #ff8a00;
+
+  --bar-h: calc(var(--l) * 10);
+  --border-r: calc(var(--u) * 16);
+  --border-b: calc(var(--l) * 9);
+  --border-l: calc(var(--u) * 2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--blue);
+  color: var(--white);
+  font-family: "Topaz", "Courier New", monospace;
+  font-size: var(--line);
+  line-height: var(--line);
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: weight style;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: var(--u) dashed var(--orange);
+  outline-offset: var(--u);
+}
+
+/* ---------------------------------------------------------------- screen bar */
+
+/* Ten lines of white, the title at line 1, the depth gadgets at the right:
+   [gap][front][gap][back][gap][3 white columns], as on the real screen. */
+#screenbar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: var(--bar-h);
+  background: var(--white);
+  color: var(--blue);
+  display: flex;
+  align-items: flex-start;
+  white-space: nowrap;
+  overflow: hidden;
+  z-index: 10;
+}
+
+#screenbar h1 {
+  margin: var(--l) 0 0 calc(var(--u) * 5);
+  font: inherit;
+  flex: 0 0 auto;
+}
+
+#screenbar .memory {
+  flex: 1 1 auto;
+  margin-top: var(--l);
+  text-align: center;
+  padding: 0 var(--ch);
+}
+
+/* --------------------------------------------------------- gadget strips */
+
+.strip {
+  display: flex;
+  flex: 0 0 auto;
+  height: var(--bar-h);
+}
+
+.strip .gap {
+  width: calc(var(--u) * 2);
+  background: var(--blue);
+}
+
+.strip .edge {
+  width: calc(var(--u) * 3);
+  background: var(--white);
+}
+
+/* ------------------------------------------------------------------- desktop */
+
+#desktop {
+  position: absolute;
+  inset: var(--bar-h) 0 0 0;
+}
+
+#icons {
+  position: absolute;
+  top: calc(var(--l) * 5);
+  right: calc(var(--u) * 10);
+  width: calc(var(--ch) * 13);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--l) * 5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#icons li {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--l) * 2);
+  padding: 0;
+  text-align: center;
+}
+
+/* Every image sits in a box of the same height, bottom aligned, so the
+   labels fall on a regular grid and the icons share one centre line. */
+.icon .image {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: calc(var(--l) * 22);
+}
+
+.icon .label {
+  white-space: nowrap;
+  background: var(--blue);
+  color: var(--white);
+}
+
+/* ------------------------------------------------------------------- windows */
+
+/* Window frame, in columns and lines:
+     title bar  10 lines: [4 white][gap][close 20][gap][title][stripes][gap][front 22][gap][back 22][gap][3 white]
+     body       [2 white] content [16: up 7 lines, proportional gadget, down 7 lines]
+     bottom      9 lines: [left 17] proportional gadget [right 17][size 16]          */
+.win {
+  position: absolute;
+  display: grid;
+  grid-template-columns: var(--border-l) minmax(0, 1fr) var(--border-r);
+  grid-template-rows: var(--bar-h) minmax(0, 1fr) var(--border-b);
+  background: var(--blue);
+  z-index: 5;
+}
+
+.win-title {
+  grid-column: 1 / -1;
+  display: flex;
+  overflow: hidden;
+  white-space: nowrap;
+  background: var(--blue);
+}
+
+.win-title .edge-l {
+  flex: 0 0 auto;
+  width: calc(var(--u) * 4);
+  background: var(--white);
+}
+
+.win-title .gap {
+  flex: 0 0 auto;
+  width: calc(var(--u) * 2);
+}
+
+.win-title .edge {
+  flex: 0 0 auto;
+  width: calc(var(--u) * 3);
+  background: var(--white);
+}
+
+.win-title .name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  font: inherit;
+  height: var(--bar-h);
+  padding: var(--l) calc(var(--u) * 4) 0 calc(var(--u) * 2);
+  line-height: var(--line);
+  color: var(--blue);
+  background: var(--white);
+}
+
+.win-title .drag {
+  flex: 1 1 auto;
+  min-width: 0;
+  background-image: var(--stripes-inactive);
+  background-size: calc(var(--u) * 4) var(--bar-h);
+}
+
+.win.active .win-title .drag {
+  background-image: var(--stripes-active);
+}
+
+.win-left {
+  grid-column: 1;
+  grid-row: 2;
+  background: var(--white);
+}
+
+.win-body {
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
+  min-height: 0;
+}
+
+.win-content {
+  position: absolute;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: calc(var(--l) * 4) calc(var(--u) * 12);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.win-content::-webkit-scrollbar {
+  display: none;
+}
+
+.win-right {
+  grid-column: 3;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.win-bottom {
+  grid-column: 1 / 3;
+  grid-row: 3;
+  display: flex;
+  min-width: 0;
+}
+
+.win-size {
+  grid-column: 3;
+  grid-row: 3;
+}
+
+/* Proportional gadgets: white rails, a blue gap, a solid white knob. */
+.prop {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  border-style: solid;
+  border-color: var(--white);
+  touch-action: none;
+}
+
+.prop.v {
+  border-width: 0 calc(var(--u) * 2);
+}
+
+.prop.h {
+  border-width: var(--l) 0;
+}
+
+.prop .knob {
+  position: absolute;
+  background: var(--white);
+}
+
+.prop.v .knob {
+  left: calc(var(--u) * 2);
+  right: calc(var(--u) * 2);
+}
+
+.prop.h .knob {
+  top: var(--l);
+  bottom: var(--l);
+  left: 0;
+  right: 0;
+}
+
+/* Gadgets and icons carry two images: normal and complemented. */
+.gadget {
+  flex: 0 0 auto;
+}
+
+.gadget .on,
+.icon .on {
+  display: none;
+}
+
+.gadget.pressed .on,
+.icon.selected .on {
+  display: block;
+}
+
+.gadget.pressed .off,
+.icon.selected .off {
+  display: none;
+}
+
+/* ------------------------------------------------------------ window content */
+
+.win-content h2,
+.win-content h3,
+.win-content h4 {
+  font: inherit;
+  color: var(--orange);
+  margin: calc(var(--l) * 8) 0 calc(var(--l) * 4);
+}
+
+.win-content h2 {
+  text-decoration: underline;
+  text-underline-offset: calc(var(--l) * 1);
+}
+
+.win-content h3 {
+  font-weight: bold;
+}
+
+.win-content > :first-child {
+  margin-top: 0;
+}
+
+.win-content p,
+.win-content ul,
+.win-content pre,
+.win-content .table {
+  margin: 0 0 calc(var(--l) * 8);
+}
+
+.win-content ul {
+  list-style: none;
+  padding-left: calc(var(--ch) * 2);
+}
+
+.win-content li {
+  position: relative;
+  margin-bottom: calc(var(--l) * 2);
+}
+
+.win-content li::before {
+  content: "*";
+  position: absolute;
+  left: calc(var(--ch) * -2);
+  color: var(--orange);
+}
+
+.win-content strong,
+.win-content b {
+  font-weight: bold;
+}
+
+.win-content a {
+  color: var(--orange);
+  text-decoration: underline;
+  text-underline-offset: var(--l);
+}
+
+.win-content a:hover {
+  color: var(--blue);
+  background: var(--orange);
+}
+
+.win-content code {
+  font: inherit;
+  color: var(--black);
+  background: var(--white);
+  padding: 0 var(--u);
+}
+
+.win-content pre {
+  font: inherit;
+  color: var(--white);
+  border-style: solid;
+  border-color: var(--white);
+  border-width: var(--l) calc(var(--u) * 2);
+  padding: calc(var(--l) * 2) var(--ch);
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--white) var(--blue);
+}
+
+.win-content pre code {
+  color: inherit;
+  background: none;
+  padding: 0;
+}
+
+.win-content pre .comment {
+  color: var(--orange);
+}
+
+.win-content .table {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--white) var(--blue);
+}
+
+.win-content table {
+  border-collapse: collapse;
+  font: inherit;
+}
+
+.win-content th,
+.win-content td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--l) var(--ch);
+  border-style: solid;
+  border-color: var(--white);
+  border-width: var(--l) var(--u);
+}
+
+.win-content th {
+  color: var(--blue);
+  background: var(--white);
+  font-weight: normal;
+}
+
+.win-content td:first-child {
+  white-space: nowrap;
+}
+
+.win-content .lead {
+  text-align: center;
+}
+
+.win-content .logo {
+  display: flex;
+  justify-content: center;
+  margin: calc(var(--l) * 4) 0 calc(var(--l) * 6);
+}
+
+.win-content .title {
+  text-align: center;
+  color: var(--orange);
+  font-weight: bold;
+  margin-bottom: calc(var(--l) * 2);
+}
+
+.win-content .rule {
+  border: 0;
+  border-top: var(--l) solid var(--white);
+  margin: calc(var(--l) * 8) 0;
+}
+
+.win-content .note {
+  color: var(--white);
+  border-style: solid;
+  border-color: var(--orange);
+  border-width: var(--l) calc(var(--u) * 2);
+  padding: calc(var(--l) * 3) var(--ch);
+}
+
+/* Boolean gadgets (buttons). */
+.wb-button {
+  display: inline-block;
+  color: var(--white);
+  background: var(--blue);
+  border-style: solid;
+  border-color: var(--white);
+  border-width: var(--l) calc(var(--u) * 2);
+  padding: var(--l) var(--ch);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.win-content a.wb-button {
+  color: var(--white);
+  text-decoration: none;
+}
+
+.wb-button:hover,
+.win-content a.wb-button:hover {
+  color: var(--white);
+  background: var(--blue);
+}
+
+.wb-button:active,
+.win-content a.wb-button:active {
+  color: var(--black);
+  background: var(--orange);
+}
+
+.wb-button[disabled] {
+  opacity: 0.5;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--l) * 3) var(--ch);
+  align-items: center;
+}
+
+/* Thumbnail grids: screenshots and videos. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--ch) * 22), 1fr));
+  gap: calc(var(--l) * 8) calc(var(--ch) * 2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.win-content .grid li {
+  margin: 0;
+}
+
+.win-content .grid li::before {
+  content: none;
+}
+
+.thumb {
+  display: block;
+  width: 100%;
+  text-align: center;
+}
+
+.thumb .frame {
+  display: block;
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-style: solid;
+  border-color: var(--white);
+  border-width: var(--l) calc(var(--u) * 2);
+  background: var(--black);
+  overflow: hidden;
+}
+
+.thumb.video .frame {
+  aspect-ratio: 16 / 9;
+}
+
+.thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thumb .duration {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  color: var(--black);
+  background: var(--white);
+  padding: 0 var(--u);
+}
+
+.thumb .caption {
+  display: block;
+  margin-top: calc(var(--l) * 2);
+  color: var(--white);
+  overflow-wrap: anywhere;
+}
+
+.thumb:hover .frame,
+.thumb:focus-visible .frame {
+  border-color: var(--orange);
+}
+
+.thumb:active .frame {
+  border-color: var(--orange);
+  filter: invert(1);
+}
+
+/* Viewer windows: one screenshot or one video. */
+.viewer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--l) * 4);
+  min-height: 100%;
+}
+
+.win-content.fill {
+  padding: calc(var(--l) * 3) calc(var(--u) * 6);
+  overflow: hidden;
+}
+
+.viewer .stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.viewer img {
+  max-width: 100%;
+  max-height: 100%;
+  border-style: solid;
+  border-color: var(--white);
+  border-width: var(--l) calc(var(--u) * 2);
+}
+
+.viewer img.pixelated {
+  image-rendering: pixelated;
+}
+
+.viewer iframe {
+  display: block;
+  border: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--black);
+}
+
+.viewer .offline {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--black);
+}
+
+.viewer .offline img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 0;
+  opacity: 0.6;
+}
+
+.win-content .viewer .offline .note {
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--white);
+  background: var(--blue);
+  border-style: solid;
+  border-color: var(--white);
+  border-width: var(--l) calc(var(--u) * 2);
+  padding: calc(var(--l) * 3) var(--ch);
+  text-align: center;
+  text-decoration: none;
+}
+
+.viewer .caption {
+  text-align: center;
+}
+
+/* Releases. */
+.release {
+  margin-bottom: calc(var(--l) * 10);
+}
+
+.release .tag {
+  color: var(--black);
+  background: var(--orange);
+  padding: 0 var(--u);
+}
+
+.release .notes {
+  overflow-wrap: anywhere;
+}
+
+.win-content td code {
+  white-space: nowrap;
+}
+
+.win-content:focus-visible {
+  outline: none;
+}
+
+.assets {
+  list-style: none;
+  padding: 0;
+}
+
+.win-content .assets li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--l) var(--ch);
+  margin-bottom: calc(var(--l) * 3);
+}
+
+.win-content .assets li::before {
+  content: none;
+}
+
+.assets .size {
+  color: var(--white);
+}
+
+.blink {
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------------------------- narrow / portrait */
+
+body.narrow #icons {
+  top: calc(var(--l) * 2);
+  right: 0;
+  left: 0;
+  width: auto;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: space-evenly;
+  align-items: flex-end;
+  gap: calc(var(--l) * 2) var(--u);
+}
+
+body.narrow #icons li {
+  width: auto;
+}
+
+body.narrow .icon .image {
+  height: calc(var(--l) * 22);
+}
+
+body.narrow #screenbar .memory {
+  padding: 0 var(--u);
+}
+
+body.narrow .win-content {
+  padding: calc(var(--l) * 3) calc(var(--u) * 6);
+}
+
+body.narrow .grid {
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--ch) * 16), 1fr));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blink {
+    animation: none;
+  }
+}
+
+noscript {
+  position: absolute;
+  inset: var(--bar-h) 0 0 0;
+  padding: calc(var(--l) * 10) calc(var(--ch) * 2);
+}
+
+noscript a {
+  color: var(--orange);
+}
+
+.win-content .logo img {
+  display: block;
+  width: calc(var(--S) * 128px);
+  height: calc(var(--S) * 128px);
+}
+
+/* A file name that is also a download link. */
+.win-content a code {
+  color: var(--black);
+  background: var(--orange);
+}
+
+.win-content a:hover code {
+  color: var(--orange);
+  background: var(--black);
+}

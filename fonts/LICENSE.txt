@@ -1,0 +1,12 @@
+Topaz_a500_v1.0.ttf
+===================
+
+The Kickstart 1.x Topaz font as a TrueType file, from the "amigafonts" package
+by dMG/t!s^dS! (Trueschool): https://github.com/rewtnull/amigafonts
+
+Released under the GPL with the GNU font exception (GPL-FE):
+https://www.gnu.org/licenses/gpl-faq.html#FontException
+
+The package's own README, which carries that statement (section 14), is kept
+next to this file as README.amigafonts.txt. It also notes that the Topaz
+design itself is (c) Amiga Inc.
