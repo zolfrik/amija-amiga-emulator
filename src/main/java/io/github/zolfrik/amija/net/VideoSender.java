@@ -90,8 +90,9 @@ public final class VideoSender implements AutoCloseable {
         int payloadLength = encoder.encode(pixels, reference);
         encodeNanos += System.nanoTime() - t0;
 
-        int blobLength = VideoFrameHeader.SIZE + payloadLength;
-        if (blobLength > BLOB_CAPACITY) {
+        int blobLength = pack(blob, refFrameId, width, height, info, encoder.payload(),
+                payloadLength);
+        if (blobLength < 0) {
             // Never happened on the scenes measured (the most expensive keyframe is 22 KB against
             // the 74 available), but a frame that does not fit the fragmentation must be
             // skipped, not truncated: better one frame less than a corrupt one. The next frame
@@ -102,26 +103,7 @@ public final class VideoSender implements AutoCloseable {
         }
 
         long frameId = nextFrameId++;
-        ByteBuffer b = RemotePlayProtocol.wrap(blob, 0, VideoFrameHeader.SIZE);
-        VideoFrameHeader.of(refFrameId, width, height, info, payloadLength).writeTo(b);
-        System.arraycopy(encoder.payload(), 0, blob, VideoFrameHeader.SIZE, payloadLength);
-
-        int fragCount = (blobLength + RemotePlayProtocol.FRAGMENT_DATA - 1)
-                / RemotePlayProtocol.FRAGMENT_DATA;
-        for (int i = 0; i < fragCount; i++) {
-            int off = i * RemotePlayProtocol.FRAGMENT_DATA;
-            int n = Math.min(RemotePlayProtocol.FRAGMENT_DATA, blobLength - off);
-            fragment[0] = (byte) frameId;
-            fragment[1] = (byte) (frameId >>> 8);
-            fragment[2] = (byte) (frameId >>> 16);
-            fragment[3] = (byte) (frameId >>> 24);
-            fragment[4] = (byte) i;
-            fragment[5] = (byte) (i >>> 8);
-            fragment[6] = (byte) fragCount;
-            fragment[7] = (byte) (fragCount >>> 8);
-            System.arraycopy(blob, off, fragment, RemotePlayProtocol.FRAGMENT_HEADER, n);
-            sink.send(fragment, RemotePlayProtocol.FRAGMENT_HEADER + n);
-        }
+        sendFragments(blob, blobLength, frameId, fragment, sink);
 
         ring.store(frameId, pixels);
         framesSent++;
@@ -144,6 +126,49 @@ public final class VideoSender implements AutoCloseable {
         if (frameId > ackedFrameId && frameId < nextFrameId) {
             ackedFrameId = frameId;
         }
+    }
+
+    /**
+     * Writes header and payload of a frame into {@code blob}.
+     *
+     * @return the length of the blob, or {@code -1} if it does not fit the fragmentation
+     */
+    static int pack(byte[] blob, long refFrameId, int width, int height, FrameInfo info,
+                    byte[] payload, int payloadLength) {
+        int blobLength = VideoFrameHeader.SIZE + payloadLength;
+        if (blobLength > BLOB_CAPACITY) {
+            return -1;
+        }
+        ByteBuffer b = RemotePlayProtocol.wrap(blob, 0, VideoFrameHeader.SIZE);
+        VideoFrameHeader.of(refFrameId, width, height, info, payloadLength).writeTo(b);
+        System.arraycopy(payload, 0, blob, VideoFrameHeader.SIZE, payloadLength);
+        return blobLength;
+    }
+
+    /** Cuts a packed blob into fragments of equal capacity and hands them to {@code sink}. */
+    static void sendFragments(byte[] blob, int blobLength, long frameId, byte[] fragment,
+                              FragmentSink sink) throws IOException {
+        int fragCount = (blobLength + RemotePlayProtocol.FRAGMENT_DATA - 1)
+                / RemotePlayProtocol.FRAGMENT_DATA;
+        for (int i = 0; i < fragCount; i++) {
+            int off = i * RemotePlayProtocol.FRAGMENT_DATA;
+            int n = Math.min(RemotePlayProtocol.FRAGMENT_DATA, blobLength - off);
+            fragment[0] = (byte) frameId;
+            fragment[1] = (byte) (frameId >>> 8);
+            fragment[2] = (byte) (frameId >>> 16);
+            fragment[3] = (byte) (frameId >>> 24);
+            fragment[4] = (byte) i;
+            fragment[5] = (byte) (i >>> 8);
+            fragment[6] = (byte) fragCount;
+            fragment[7] = (byte) (fragCount >>> 8);
+            System.arraycopy(blob, off, fragment, RemotePlayProtocol.FRAGMENT_HEADER, n);
+            sink.send(fragment, RemotePlayProtocol.FRAGMENT_HEADER + n);
+        }
+    }
+
+    /** Capacity of a frame blob: {@link RemotePlayProtocol#MAX_FRAGMENTS} fragments. */
+    static int blobCapacity() {
+        return BLOB_CAPACITY;
     }
 
     /** Starts from scratch: new session generation, no shared reference. */

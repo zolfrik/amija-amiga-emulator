@@ -23,6 +23,7 @@ package io.github.zolfrik.amija;
 import com.formdev.flatlaf.FlatDarkLaf;
 
 import io.github.zolfrik.amija.config.AmigaConfig;
+import io.github.zolfrik.amija.config.CommandLine;
 import io.github.zolfrik.amija.config.HardwareRules;
 import io.github.zolfrik.amija.display.AmigaWindowMode;
 import io.github.zolfrik.amija.common.AppHome;
@@ -219,6 +220,9 @@ public class Amija implements RemotePlayControl {
             new java.util.ArrayList<>();
 
     public static void main(String[] args) {
+        // The command line first: --home must reach AppHome before anything resolves a path,
+        // and a malformed argument must stop the launch before a window appears.
+        launch = parseCommandLine(args);
         // BEFORE anything else (in particular before AWT initialises): declare the process
         // per-monitor DPI aware. The jpackage native launcher has no manifest and would start
         // DPI-unaware, making AWT take the system fonts at 96 DPI; at the first JFileChooser
@@ -243,9 +247,69 @@ public class Amija implements RemotePlayControl {
         // See docs/gui-scaling-flatlaf-plan.md.
         System.setProperty("sun.java2d.uiScale.enabled", "false");
         System.setProperty("sun.java2d.uiScale", "1");
-        applyUiScale(AmigaConfig.load());
+        applyUiScale(loadConfig());
         applyLookAndFeel();
         new Amija().start();
+    }
+
+    /** The command line of this process; see {@link CommandLine}. */
+    private static CommandLine launch = CommandLine.EMPTY;
+
+    /** The configuration file with the command-line values on top of it. */
+    private static AmigaConfig loadConfig() {
+        return AmigaConfig.load(launch.configFile(), launch.settings());
+    }
+
+    /**
+     * Parses and checks the command line (keys known, media files present), and serves {@code --help} and
+     * {@code --print-config}, which exit. A bad argument or an unknown key ends the process
+     * with status 2 and the reason on standard error: a frontend gets a clear failure
+     * instead of an emulator started with a setting silently ignored.
+     */
+    private static CommandLine parseCommandLine(String[] args) {
+        CommandLine cl;
+        try {
+            cl = CommandLine.parse(args);
+        } catch (IllegalArgumentException e) {
+            System.err.println("AmiJa: " + e.getMessage());
+            System.err.print(CommandLine.usage());
+            System.exit(2);
+            return CommandLine.EMPTY;
+        }
+        if (cl.help()) {
+            System.out.print(CommandLine.usage());
+            System.exit(0);
+        }
+        if (cl.home() != null) {
+            System.setProperty(AppHome.PROPERTY, cl.home());
+        }
+        java.util.List<String> unknown = AmigaConfig.unknownKeys(cl.overrides());
+        if (!unknown.isEmpty()) {
+            System.err.println("AmiJa: unknown configuration key(s): " + String.join(", ", unknown));
+            System.err.println("Every key: AmiJa --print-config");
+            System.exit(2);
+        }
+        java.util.List<String> missing = cl.missingMediaFiles();
+        if (!missing.isEmpty()) {
+            System.err.println("AmiJa: file not found: " + String.join(", ", missing));
+            System.exit(2);
+        }
+        if (cl.printConfig()) {
+            // Only the configuration on standard output, so it can be parsed as a
+            // properties file; the loading log goes to standard error.
+            java.io.PrintStream out = System.out;
+            System.setOut(System.err);
+            AmigaConfig cfg;
+            try {
+                cfg = AmigaConfig.load(cl.configFile(), cl.settings());
+            } finally {
+                System.setOut(out);
+            }
+            out.print(cfg.toPropertiesText());
+            out.flush();
+            System.exit(0);
+        }
+        return cl;
     }
 
     /**
@@ -307,7 +371,7 @@ public class Amija implements RemotePlayControl {
             System.out.println("========================================");
         }
 
-        config = AmigaConfig.load();
+        config = loadConfig();
         Messages.setLanguage(config.language()); // before creating any UI
         // The state saved when there was a single slot goes to Slot 1: once, here.
         SaveStateManager.migrateLegacySlot();
@@ -380,7 +444,8 @@ public class Amija implements RemotePlayControl {
                     settings.joinCode(), VirtualCRT.RAW_WIDTH, VirtualCRT.RAW_HEIGHT,
                     NetImpairment.fromSystemProperties(),
                     settings.guestGamePort(), settings.guestKeyboard(),
-                    settings.audioFormat(), config.remotePlayLanOnly());
+                    settings.audioFormat(), config.remotePlayLanOnly(),
+                    settings.maxSpectators(), settings.spectatorCode());
             remotePlaySettings = settings;
             remotePlayHost.start();
             attachRemoteInput();
@@ -456,8 +521,9 @@ public class Amija implements RemotePlayControl {
     private void joinRemoteHost(RemotePlaySettings settings) {
         try {
             remotePlayGuest = RemotePlayGuest.connect(settings.address(), settings.port(),
-                    settings.joinCode(), NetImpairment.fromSystemProperties(),
-                    guestFrameSink());
+                    settings.joinCode(), settings.spectator()
+                            ? RemotePlayProtocol.ROLE_SPECTATOR : RemotePlayProtocol.ROLE_PLAYER,
+                    NetImpairment.fromSystemProperties(), guestFrameSink());
         } catch (IOException e) {
             String message = Messages.t("msg.remoteplay.joinfailed",
                     settings.address() + ":" + settings.port(), joinFailureCause(e));
@@ -568,6 +634,10 @@ public class Amija implements RemotePlayControl {
                         Messages.t("msg.remoteplay.reject.shutdown");
                 case RemotePlayProtocol.REJECT_LAN_ONLY ->
                         Messages.t("msg.remoteplay.reject.lanonly");
+                case RemotePlayProtocol.REJECT_SPECTATORS_FULL ->
+                        Messages.t("msg.remoteplay.reject.spectatorsfull");
+                case RemotePlayProtocol.REJECT_NO_SPECTATORS ->
+                        Messages.t("msg.remoteplay.reject.nospectators");
                 default -> String.valueOf(rejected.getMessage());
             };
         }
@@ -654,6 +724,11 @@ public class Amija implements RemotePlayControl {
      * opens the popup of <b>this</b> machine and does not touch the host's.
      */
     private void installGuestInput() {
+        if (remotePlayGuest != null && remotePlayGuest.isSpectator()) {
+            // A spectator drives nothing: no adapters, no pointer capture.
+            remoteInputSender = null;
+            return;
+        }
         remoteInputSender = new RemoteInputSender();
         attachGuestInput();
     }
@@ -670,6 +745,9 @@ public class Amija implements RemotePlayControl {
      * method exists, the counters must carry on.
      */
     private void attachGuestInput() {
+        if (remoteInputSender == null) {
+            return;   // spectator
+        }
         remotePlayGuest.setInputSource(remoteInputSender::snapshot);
 
         joystickAdapter = new AmigaJoystickKeyAdapter();
@@ -834,15 +912,24 @@ public class Amija implements RemotePlayControl {
             if (!guest.isAlive()) return Messages.t("msg.remoteplay.disconnected");
             if (guest.hostPaused()) return Messages.t("msg.remoteplay.paused");
             var receiver = guest.receiver();
-            return Messages.t("msg.remoteplay.guestconnected",
+            return Messages.t(guest.isSpectator() ? "msg.remoteplay.spectating"
+                            : "msg.remoteplay.guestconnected",
                     receiver.framesDelivered(), receiver.droppedIncomplete());
         }
         if (remotePlayHost != null) {
-            if (!remotePlayHost.hasGuest()) return Messages.t("msg.remoteplay.waiting");
-            var sender = remotePlayHost.videoSender();
-            long frames = sender == null ? 0 : sender.framesSent();
-            return Messages.t("msg.remoteplay.hostconnected",
-                    frames, remotePlayHost.framesDroppedBusy());
+            String line;
+            if (!remotePlayHost.hasGuest()) {
+                line = Messages.t("msg.remoteplay.waiting");
+            } else {
+                var sender = remotePlayHost.videoSender();
+                long frames = sender == null ? 0 : sender.framesSent();
+                line = Messages.t("msg.remoteplay.hostconnected",
+                        frames, remotePlayHost.framesDroppedBusy());
+            }
+            int spectators = remotePlayHost.spectatorCount();
+            return spectators == 0 ? line : line + " - "
+                    + Messages.t("msg.remoteplay.spectators", spectators,
+                            remotePlayHost.maxSpectators());
         }
         // The negative outcome stays written here even after the user has closed the
         // message: the popup is the only place where it can be read again.
@@ -857,13 +944,15 @@ public class Amija implements RemotePlayControl {
             remotePlaySettings = new RemotePlaySettings(RemotePlaySettings.Mode.HOST, null,
                     config.remotePlayPort(), null, config.remotePlayBind(),
                     config.remotePlayGuestPort(), config.remotePlayGuestKeyboard(),
-                    config.remotePlayGuestAllowReset(), audioFormatFromConfig());
+                    config.remotePlayGuestAllowReset(), audioFormatFromConfig(),
+                    config.remotePlaySpectatorsMax(), null, false);
             remotePlayHost = new RemotePlayHost(remotePlaySettings.port(),
                     remotePlaySettings.bindAddress(), null,
                     VirtualCRT.RAW_WIDTH, VirtualCRT.RAW_HEIGHT,
                     NetImpairment.fromSystemProperties(),
                     remotePlaySettings.guestGamePort(), remotePlaySettings.guestKeyboard(),
-                    remotePlaySettings.audioFormat(), config.remotePlayLanOnly());
+                    remotePlaySettings.audioFormat(), config.remotePlayLanOnly(),
+                    remotePlaySettings.maxSpectators(), null);
             remotePlayHost.start();
             attachRemoteInput();
             openRouterPort(remotePlayHost.port());
@@ -882,7 +971,26 @@ public class Amija implements RemotePlayControl {
     }
 
     @Override
-    public String requestJoin(String address, String code) {
+    public boolean isSpectator() {
+        RemotePlayGuest guest = remotePlayGuest;
+        return guest != null && guest.isAlive() && guest.isSpectator();
+    }
+
+    @Override
+    public String spectatorCode() {
+        return remotePlayHost == null ? null : remotePlayHost.spectatorCode();
+    }
+
+    @Override
+    public int spectatorCount() {
+        return remotePlayHost == null ? 0 : remotePlayHost.spectatorCount();
+    }
+
+    /** Role of the join in flight; read by the connecting thread. */
+    private volatile boolean joinAsSpectator;
+
+    @Override
+    public String requestJoin(String address, String code, boolean spectator) {
         if (joining || isGuest()) {
             return null;   // already in progress or already connected: the popup realigns by itself
         }
@@ -898,6 +1006,7 @@ public class Amija implements RemotePlayControl {
             joinCancelled = false;
         }
         joiningAddress = host;
+        joinAsSpectator = spectator;
         remotePlayLastError = null;
         joining = true;
         Thread connect = new Thread(() -> connectToHost(host, joinCode),
@@ -928,12 +1037,14 @@ public class Amija implements RemotePlayControl {
                 RemotePlaySettings.Mode.GUEST, hostPart, port, joinCode,
                 config.remotePlayBind(), config.remotePlayGuestPort(),
                 config.remotePlayGuestKeyboard(), config.remotePlayGuestAllowReset(),
-                audioFormatFromConfig());
+                audioFormatFromConfig(), 0, null, joinAsSpectator);
 
         RemotePlayGuest guest = null;
         String failure = null;
         try {
             guest = RemotePlayGuest.connect(hostPart, port, joinCode,
+                    settings.spectator() ? RemotePlayProtocol.ROLE_SPECTATOR
+                            : RemotePlayProtocol.ROLE_PLAYER,
                     NetImpairment.fromSystemProperties(), guestFrameSink());
         } catch (IOException e) {
             failure = Messages.t("msg.remoteplay.joinfailed", address, joinFailureCause(e));
@@ -1786,6 +1897,8 @@ public class Amija implements RemotePlayControl {
             command.add("-cp");
             command.add(System.getProperty("java.class.path"));
             command.add(Amija.class.getName());
+            // The same command line: its values hold for the whole session, relaunch included.
+            command.addAll(launch.args());
             new ProcessBuilder(command)
                     .inheritIO()
                     .start();
@@ -2252,6 +2365,8 @@ public class Amija implements RemotePlayControl {
                 driver = eventBus.driver(eventCpu);
             }
             clock = new MasterClock(agnus, videoMode, virtualCRT, driver);
+            final MasterClock audioClock = clock;
+            paula.setAudioActiveSupplier(() -> !audioClock.isPaused());
             // If the emulation thread dies of an exception, without this hook the display
             // would just freeze (or stay black, if the failure comes before the first frame)
             // without a word.

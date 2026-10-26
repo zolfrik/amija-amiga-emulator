@@ -26,6 +26,8 @@ package io.github.zolfrik.amija.net;
  * <pre>
  *   -Damija.remoteplay.host=7788             hosts on the given port
  *   -Damija.remoteplay.join=192.168.1.20:7788   joins the given host
+ *   -Damija.remoteplay.watch=192.168.1.20:7788  joins the given host as a spectator,
+ *                                            with the spectator code as joincode
  *   -Damija.remoteplay.joincode=K7M2-Q4XZ    required to join, optional to host
  *                                            (one is generated if missing)
  *   -Damija.remoteplay.bind=192.168.1.20     interface to listen on (empty = all)
@@ -34,6 +36,8 @@ package io.github.zolfrik.amija.net;
  *   -Damija.remoteplay.guestkeyboard=true    the guest shares the keyboard
  *   -Damija.remoteplay.guestreset=false      the guest may reset with CTRL+Amiga+Amiga
  *   -Damija.remoteplay.audio=adpcm           adpcm (default) | pcm16 | off
+ *   -Damija.remoteplay.spectators=4          spectator places when hosting (default 0)
+ *   -Damija.remoteplay.spectatorcode=W8TC-H3RS  spectator code (one is generated if missing)
  * </pre>
  *
  * <p>The last three are decided by the <b>host</b>: it is its machine. It tells the guest in
@@ -58,7 +62,8 @@ package io.github.zolfrik.amija.net;
 public record RemotePlaySettings(Mode mode, String address, int port, String joinCode,
                                  String bindAddress, int guestGamePort,
                                  boolean guestKeyboard, boolean guestAllowReset,
-                                 int audioFormat) {
+                                 int audioFormat, int maxSpectators, String spectatorCode,
+                                 boolean spectator) {
 
     public enum Mode { OFF, HOST, GUEST }
 
@@ -98,14 +103,22 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
     public static RemotePlaySettings fromSystemProperties() {
         String host = trimmed("amija.remoteplay.host");
         String join = trimmed("amija.remoteplay.join");
+        String watch = trimmed("amija.remoteplay.watch");
         String joinCode = trimmed("amija.remoteplay.joincode");
         String bind = trimmed("amija.remoteplay.bind");
 
-        if (host != null && join != null) {
+        int roles = (host != null ? 1 : 0) + (join != null ? 1 : 0) + (watch != null ? 1 : 0);
+        if (roles > 1) {
             throw new IllegalArgumentException(
-                    "amija.remoteplay.host e amija.remoteplay.join si escludono: "
-                    + "una macchina o ospita o si unisce");
+                    "amija.remoteplay.host, .join e .watch si escludono: "
+                    + "una macchina o ospita, o gioca, o guarda");
         }
+        boolean spectator = watch != null;
+        if (spectator) {
+            join = watch;
+        }
+        int spectators = intProperty("amija.remoteplay.spectators", 0, 0, 16);
+        String spectatorCode = trimmed("amija.remoteplay.spectatorcode");
         int guestPort = guestGamePortProperty();
         boolean keyboard = booleanProperty("amija.remoteplay.guestkeyboard", true);
         boolean allowReset = booleanProperty("amija.remoteplay.guestreset", false);
@@ -113,7 +126,7 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
 
         if (host != null) {
             return new RemotePlaySettings(Mode.HOST, null, parsePort(host), joinCode, bind,
-                    guestPort, keyboard, allowReset, audio);
+                    guestPort, keyboard, allowReset, audio, spectators, spectatorCode, false);
         }
         if (join != null) {
             int colon = join.lastIndexOf(':');
@@ -125,7 +138,7 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
                         + " il codice mostrato dall'host");
             }
             return new RemotePlaySettings(Mode.GUEST, address, port, joinCode, bind,
-                    guestPort, keyboard, allowReset, audio);
+                    guestPort, keyboard, allowReset, audio, 0, null, spectator);
         }
         return off();
     }
@@ -133,7 +146,7 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
     /** Remote play off: the normal case. */
     public static RemotePlaySettings off() {
         return new RemotePlaySettings(Mode.OFF, null, 0, null, null,
-                DEFAULT_GUEST_GAME_PORT, true, false, DEFAULT_AUDIO_FORMAT);
+                DEFAULT_GUEST_GAME_PORT, true, false, DEFAULT_AUDIO_FORMAT, 0, null, false);
     }
 
     public boolean isOff() {
@@ -187,6 +200,23 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
                     "amija.remoteplay.guestport deve essere 0 o 1, non " + p);
         }
         return p;
+    }
+
+    private static int intProperty(String key, int fallback, int min, int max) {
+        String v = trimmed(key);
+        if (v == null) {
+            return fallback;
+        }
+        int n;
+        try {
+            n = Integer.parseInt(v);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(key + " non numerico: " + v, e);
+        }
+        if (n < min || n > max) {
+            throw new IllegalArgumentException(key + " fuori da " + min + ".." + max + ": " + n);
+        }
+        return n;
     }
 
     private static boolean booleanProperty(String key, boolean fallback) {

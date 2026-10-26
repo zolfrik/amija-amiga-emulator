@@ -41,6 +41,7 @@ CONTENTS
         4.5   Blitter
         4.6   WHDLoad parameters (WHDLoad.prefs)
     5.  Alphabetical property index
+    6.  Command line (for frontends)
     License
 
 
@@ -1274,6 +1275,75 @@ CONTENTS
   whdload.file                   Drives (3.3) / WHDLoad (3.6) BOOT
   whdload.prefs.*                file only (4.6)              BOOT
 
+
+
+===============================================================================
+ 6.  COMMAND LINE (FOR FRONTENDS)
+===============================================================================
+
+  Every property of amiga.properties can be set when AmiJa is launched, so
+  that a game launcher or any other frontend can start it with the machine
+  and the media it wants, without editing the file:
+
+      AmiJa [options] [file ...] [key=value ...]
+
+      java -jar AmiJa.jar [options] [file ...] [key=value ...]
+
+  file              A disk to insert: floppy (.adf, .ipf, .zip), hard disk
+                    (.hdf) or WHDLoad archive (.lha, .lzh). The files are
+                    placed exactly as in the "Drives" list of the F12 popup
+                    (3.3): floppies go to DF0, DF1, DF2, DF3 in the order
+                    given, hard disks to master then slave. When at least
+                    one file is given, the files are the whole set: every
+                    drive they do not fill is emptied, whatever
+                    amiga.properties says. At most four floppies, two hard
+                    disks and one WHDLoad archive; a hard disk and WHDLoad
+                    cannot be given together. A file that does not exist
+                    stops the launch.
+
+  key=value         Sets the property for this session. The key is any name
+                    from chapter 5; the value is written exactly as in the
+                    file. It wins over what the files decided, so
+                    drive.df0.readonly=true write-protects the first disk. Quote the whole argument when the value contains
+                    spaces. An empty value clears the property
+                    (drive.df0.disk= empties DF0). When a key appears twice,
+                    the last one wins.
+
+  --config FILE     Reads FILE instead of amiga.properties, and saves to it.
+                    If FILE does not exist it is created with the defaults.
+  --home DIR        The application home: where shaders/, savestate/,
+                    screenshots/, whdload/ and the default amiga.properties
+                    are looked for.
+  --print-config    Prints the resulting configuration (the file, plus the
+                    values given on the command line) and exits. Only the
+                    configuration goes to standard output, so it can be read
+                    as a properties file; this is also the full list of keys.
+  --help, -h        Prints a short help and exits.
+
+  Files and values given on the command line are NOT written to amiga.properties: when
+  the configuration is saved (OK in the F12 popup, or a file browser
+  remembering its folder), each of them is saved with the value the file had
+  before. Only a property you change yourself in the F12 popup during the
+  session is saved with the new value.
+
+  An unknown key or a malformed argument stops AmiJa before it opens a
+  window, with exit status 2 and the reason on standard error.
+
+  Examples:
+
+      AmiJa "C:\Games\Turrican II (Disk 1).adf" "C:\Games\Turrican II (Disk 2).adf"
+
+      AmiJa /games/Lotus2.lha video.windowMode=fullscreen
+
+      AmiJa --config C:\Frontend\amija-a1200.properties auto.enabled=false
+            chipset=AGA cpu.model=68020
+
+  In automatic mode (auto.enabled=true, the default) the Kickstart, memory,
+  chipset and processor follow the media; to impose them, pass
+  auto.enabled=false together with the keys of section 3.2.
+
+  The "Delay" of each value in chapter 5 does not apply here: everything on
+  the command line is in force from the first instant.
 
 ===============================================================================
 

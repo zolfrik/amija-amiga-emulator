@@ -349,6 +349,8 @@ public final class GlDisplaySurface {
     private void renderLoop() {
         try {
             while (running) {
+                // uploadedId is written only by this thread: no lock needed to read it here.
+                final long uploadedBefore = uploadedId;
                 try {
                     if (canvas.isValid()) {
                         canvas.render();
@@ -359,8 +361,15 @@ public final class GlDisplaySurface {
                         System.err.println("[GL] Errore di rendering: " + t);
                     }
                 }
-                // Waits for a new frame (or a short timeout, for canvas resizes).
+                // Waits for a new frame (or a short timeout, for canvas resizes). A frame handed
+                // over while this pass was drawing the previous one is already pending: its
+                // notification came before this wait, so waiting would hold it back by up to
+                // the whole timeout. Only when this pass did take a frame: a pass that took
+                // none (drag overlay, canvas not valid) leaves frames pending and must wait.
                 synchronized (lock) {
+                    if (submittedId != uploadedId && uploadedId != uploadedBefore) {
+                        continue;
+                    }
                     try {
                         lock.wait(8);
                     } catch (InterruptedException e) {

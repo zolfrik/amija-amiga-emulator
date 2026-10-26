@@ -30,12 +30,20 @@ import java.nio.charset.StandardCharsets;
  * The control channel handshake ({@code docs/remote-play-plan.md} sections 3, 8).
  *
  * <pre>
- *   GUEST -> HOST   HELLO      proto, appVersion, nonce
+ *   GUEST -> HOST   HELLO      proto, role, appVersion, nonce
  *   HOST  -> GUEST  CHALLENGE  salt, nonce2
  *   GUEST -> HOST   AUTH       guestTag = HMAC(master, "AJ-guest" | nonce | nonce2 | proto)
  *   HOST  -> GUEST  WELCOME    session parameters, hostTag
  *                   -- or --   REJECT  reason
  * </pre>
+ *
+ * <h2>Two roles, two codes</h2>
+ * The HELLO says whether the peer wants to <b>play</b> or only to <b>watch</b>
+ * ({@link RemotePlayProtocol#ROLE_PLAYER}, {@link RemotePlayProtocol#ROLE_SPECTATOR}), and the
+ * host checks the AUTH against the code of that role. The spectator code can be passed around
+ * freely: it proves nothing that lets anyone touch the machine. The role is not trusted by
+ * itself: claiming to be the player with the spectator code fails the HMAC like any wrong
+ * code. The WELCOME repeats the role, so the guest knows what it was admitted as.
  *
  * <h2>Authentication first, everything else after</h2>
  * The non-negotiable minimum of section 8: until the AUTH is verified, the socket gets
@@ -95,9 +103,14 @@ public final class Handshake {
             int audioFormat,
             int guestGamePort,
             boolean keyboardShared,
+            int role,
             String peerAppVersion,
             byte[] mediaKey,
             byte[] noncePrefix) {
+
+        public boolean isSpectator() {
+            return role == RemotePlayProtocol.ROLE_SPECTATOR;
+        }
 
         /** The media seal for the given direction. */
         public MediaCipher cipher(int direction) {
@@ -117,6 +130,21 @@ public final class Handshake {
             int audioFormat,
             int guestGamePort,
             boolean keyboardShared) {
+    }
+
+    /** What the host answers to the role asked in the HELLO: the code to check, and the offer. */
+    public record Admission(String joinCode, HostOffer offer) {
+    }
+
+    /**
+     * Decides whether a role may come in, <b>before</b> the AUTH is checked.
+     *
+     * <p>It is called with the role of the HELLO and must take the place for it, or refuse with a
+     * {@link RejectingException}. Whoever runs the handshake gives the place back if the
+     * handshake then fails.
+     */
+    public interface Admitter {
+        Admission admit(int role) throws RejectingException;
     }
 
     /** REJECT received: an expected outcome, not a failure, and it carries the reason. */
@@ -180,15 +208,40 @@ public final class Handshake {
      */
     public static Session accept(ControlChannel ch, String joinCode, HostOffer offer)
             throws IOException {
+        return accept(ch, role -> {
+            if (role != RemotePlayProtocol.ROLE_PLAYER) {
+                throw new RejectingException(RemotePlayProtocol.REJECT_NO_SPECTATORS,
+                        "ruolo " + role + " non accettato");
+            }
+            return new Admission(joinCode, offer);
+        });
+    }
+
+    /**
+     * Runs the host side of the handshake, with the role deciding code and offer.
+     *
+     * @see #accept(ControlChannel, String, HostOffer)
+     */
+    public static Session accept(ControlChannel ch, Admitter admitter) throws IOException {
         ch.setTimeout(HANDSHAKE_TIMEOUT_MS);
 
         ControlChannel.Message hello = ch.expect(RemotePlayProtocol.CTRL_HELLO);
         ByteBuffer hb = hello.body();
         int proto;
+        int role;
         String peerVersion;
         byte[] nonce = new byte[SessionCrypto.NONCE_BYTES];
         try {
             proto = hb.get() & 0xFF;
+            if (proto != RemotePlayProtocol.VERSION) {
+                // The reason is stated: "it does not work" sends the user to check the router
+                // for a problem solved by updating the emulator. Checked before anything else
+                // is read, because another version lays the HELLO out differently.
+                throw new RejectingException(RemotePlayProtocol.REJECT_PROTOCOL,
+                        "protocollo " + proto + ", questo host parla il "
+                        + RemotePlayProtocol.VERSION);
+            }
+            role = hb.get() & 0xFF;
             int versionLength = hb.get() & 0xFF;
             if (versionLength > MAX_APP_VERSION) {
                 throw new ProtocolException("appVersion di " + versionLength
@@ -201,13 +254,15 @@ public final class Handshake {
         } catch (java.nio.BufferUnderflowException e) {
             throw new ProtocolException("HELLO troncato", e);
         }
-        if (proto != RemotePlayProtocol.VERSION) {
-            // The reason is stated: "it does not work" sends the user to check the router for a
-            // problem solved by updating the emulator.
+        if (role != RemotePlayProtocol.ROLE_PLAYER && role != RemotePlayProtocol.ROLE_SPECTATOR) {
             throw new RejectingException(RemotePlayProtocol.REJECT_PROTOCOL,
-                    "protocollo " + proto + ", questo host parla il "
-                    + RemotePlayProtocol.VERSION);
+                    "ruolo sconosciuto: " + role);
         }
+        // The place is taken here, with the role known and nothing computed yet: a refusal for
+        // lack of room costs the host no derivation.
+        Admission admission = admitter.admit(role);
+        String joinCode = admission.joinCode();
+        HostOffer offer = admission.offer();
 
         byte[] salt = SessionCrypto.randomBytes(SessionCrypto.SALT_BYTES);
         byte[] nonce2 = SessionCrypto.randomBytes(SessionCrypto.NONCE_BYTES);
@@ -246,13 +301,14 @@ public final class Handshake {
         wb.put((byte) offer.guestGamePort());
         wb.put((byte) (offer.keyboardShared() ? 1 : 0));
         wb.put((byte) offer.audioFormat());      // 0 = no audio
+        wb.put((byte) role);
         wb.put(hostTag);
         ch.send(RemotePlayProtocol.CTRL_WELCOME, wb.array(), WELCOME_SIZE);
 
         Session session = new Session(offer.sessionId(), offer.sessionGen(), offer.mediaPort(),
                 offer.width(), offer.height(), offer.audioSampleRate(), offer.audioChannels(),
-                offer.audioFormat(), offer.guestGamePort(), offer.keyboardShared(), peerVersion,
-                crypto.mediaKey(nonce, nonce2), crypto.noncePrefix(nonce, nonce2));
+                offer.audioFormat(), offer.guestGamePort(), offer.keyboardShared(), role,
+                peerVersion, crypto.mediaKey(nonce, nonce2), crypto.noncePrefix(nonce, nonce2));
         crypto.destroy();
         return session;
     }
@@ -276,12 +332,24 @@ public final class Handshake {
      * @throws RejectedException if the host answered REJECT, with the reason to show
      */
     public static Session connect(ControlChannel ch, String joinCode) throws IOException {
+        return connect(ch, joinCode, RemotePlayProtocol.ROLE_PLAYER);
+    }
+
+    /**
+     * Runs the guest side of the handshake asking for a role.
+     *
+     * @param role {@link RemotePlayProtocol#ROLE_PLAYER} or {@link RemotePlayProtocol#ROLE_SPECTATOR}
+     * @throws RejectedException if the host answered REJECT, with the reason to show
+     */
+    public static Session connect(ControlChannel ch, String joinCode, int role)
+            throws IOException {
         ch.setTimeout(HANDSHAKE_TIMEOUT_MS);
 
         byte[] nonce = SessionCrypto.randomBytes(SessionCrypto.NONCE_BYTES);
         byte[] version = appVersion();
-        ByteBuffer hb = RemotePlayProtocol.buffer(2 + version.length + nonce.length);
+        ByteBuffer hb = RemotePlayProtocol.buffer(3 + version.length + nonce.length);
         hb.put((byte) RemotePlayProtocol.VERSION);
+        hb.put((byte) role);
         hb.put((byte) version.length);
         hb.put(version);
         hb.put(nonce);
@@ -318,6 +386,7 @@ public final class Handshake {
         int guestGamePort = wb.get() & 0xFF;
         boolean keyboardShared = (wb.get() & 0xFF) != 0;
         int audioFormat = wb.get() & 0xFF;
+        int grantedRole = wb.get() & 0xFF;
         byte[] hostTag = new byte[SessionCrypto.TAG_BYTES];
         wb.get(hostTag);
 
@@ -326,6 +395,11 @@ public final class Handshake {
             crypto.destroy();
             // Whoever is on the other side does not know the join code: no input is sent to it.
             throw new ProtocolException("l'host non ha dimostrato di conoscere il codice");
+        }
+        if (grantedRole != role) {
+            crypto.destroy();
+            throw new ProtocolException("l'host ha ammesso il ruolo " + grantedRole
+                    + " invece del " + role);
         }
         if (audioFormat != 0 && audioFormat != AudioBlockHeader.FORMAT_PCM16
                 && audioFormat != AudioBlockHeader.FORMAT_ADPCM) {
@@ -346,7 +420,7 @@ public final class Handshake {
         }
 
         Session session = new Session(sessionId, sessionGen, mediaPort, width, height,
-                audioRate, audioChannels, audioFormat, guestGamePort, keyboardShared, null,
+                audioRate, audioChannels, audioFormat, guestGamePort, keyboardShared, role, null,
                 crypto.mediaKey(nonce, nonce2), crypto.noncePrefix(nonce, nonce2));
         crypto.destroy();
         return session;
@@ -354,7 +428,7 @@ public final class Handshake {
 
     // =====================================================================
 
-    private static final int WELCOME_SIZE = 4 + 4 + 2 + 2 + 2 + 4 + 1 + 1 + 1 + 1
+    private static final int WELCOME_SIZE = 4 + 4 + 2 + 2 + 2 + 4 + 1 + 1 + 1 + 1 + 1
             + SessionCrypto.TAG_BYTES;
 
     private static ControlChannel.Message expectOrReject(ControlChannel ch, int type)

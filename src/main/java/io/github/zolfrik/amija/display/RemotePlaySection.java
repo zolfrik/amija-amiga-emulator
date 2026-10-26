@@ -45,11 +45,12 @@ import java.util.List;
  * user looks at the window, so a timer realigns the controls, and the rest of the class
  * exists to keep that realignment in one place.
  *
- * <h2>Three modes, and the rows that appear</h2>
- * The {@code Off / Host / Join} selector shows and hides the rows of the chosen role with
+ * <h2>Four modes, and the rows that appear</h2>
+ * The {@code Off / Host / Join / Watch} selector shows and hides the rows of the chosen role with
  * {@code setRowVisible}, as Auto mode already does. The same button changes label and action
  * ("Host" becomes "Stop hosting") instead of showing two side by side, one of them always
- * off.
+ * off. Watch is Join as a spectator (section 16): same rows, the spectator code instead of the
+ * join code, and nothing of this machine reaches the host's.
  *
  * <h2>No button closes the popup</h2>
  * Neither hosting nor connecting closes the window: they act at once and the result shows in
@@ -112,7 +113,8 @@ final class RemotePlaySection {
 
         // --- Modo -----------------------------------------------------------------
         JComboBox<Mode> modeCombo = widgets.combo(Mode.values());
-        modeCombo.setSelectedItem(control.isGuest() ? Mode.JOIN
+        modeCombo.setSelectedItem(control.isSpectator() ? Mode.WATCH
+                : control.isGuest() ? Mode.JOIN
                 : control.isHosting() ? Mode.HOST : Mode.OFF);
         widgets.addRow(panel, 0, "label.remoteplay.mode", modeCombo, null);
 
@@ -150,37 +152,52 @@ final class RemotePlaySection {
         JLabel codeLabel = widgets.addRow(panel, 6, "label.remoteplay.joincode",
                 codeField, copyCode);
 
+        // Shown only while spectators are accepted: there is no code to hand out otherwise.
+        JTextField spectatorCodeField = widgets.readOnlyText("");
+        JButton copySpectatorCode = widgets.button(Messages.t("button.remoteplay.copy"));
+        JLabel spectatorCodeLabel = widgets.addRow(panel, 7, "label.remoteplay.spectatorcode",
+                spectatorCodeField, copySpectatorCode);
+
+        Integer[] spectatorChoices = new Integer[AmigaConfig.MAX_SPECTATORS + 1];
+        for (int i = 0; i < spectatorChoices.length; i++) {
+            spectatorChoices[i] = i;
+        }
+        JComboBox<Integer> spectatorsCombo = widgets.combo(spectatorChoices);
+        spectatorsCombo.setSelectedItem(config.remotePlaySpectatorsMax());
+        JLabel spectatorsLabel = widgets.addRow(panel, 8, "label.remoteplay.spectators",
+                spectatorsCombo, null);
+
         JComboBox<GuestPort> guestPortCombo = widgets.combo(GuestPort.values());
         guestPortCombo.setSelectedItem(config.remotePlayGuestPort() == 0
                 ? GuestPort.PORT0 : GuestPort.PORT1);
         JCheckBox shareKeyboard = widgets.check(Messages.t("label.remoteplay.guestkeyboard"),
                 config.remotePlayGuestKeyboard());
-        JLabel guestPortLabel = widgets.addRow(panel, 7, "label.remoteplay.guestport",
+        JLabel guestPortLabel = widgets.addRow(panel, 9, "label.remoteplay.guestport",
                 guestPortCombo, shareKeyboard);
 
         JCheckBox allowReset = widgets.check(Messages.t("label.remoteplay.guestreset"),
                 config.remotePlayGuestAllowReset());
         JComboBox<AudioMode> audioCombo = widgets.combo(AudioMode.values());
         audioCombo.setSelectedItem(AudioMode.fromConfig(config.remotePlayAudioMode()));
-        JLabel audioLabel = widgets.addRow(panel, 8, "label.remoteplay.audio",
+        JLabel audioLabel = widgets.addRow(panel, 10, "label.remoteplay.audio",
                 audioCombo, allowReset);
 
         // --- Joiner rows -------------------------------------------------------------
         JTextField hostAddressField = widgets.text(config.remotePlayLastHost());
-        JLabel hostAddressLabel = widgets.addRow(panel, 9, "label.remoteplay.hostaddress",
+        JLabel hostAddressLabel = widgets.addRow(panel, 11, "label.remoteplay.hostaddress",
                 hostAddressField, null);
 
         JTextField joinCodeField = widgets.text("");
-        JLabel joinCodeLabel = widgets.addRow(panel, 10, "label.remoteplay.entercode",
+        JLabel joinCodeLabel = widgets.addRow(panel, 12, "label.remoteplay.entercode",
                 joinCodeField, null);
 
         JButton joinButton = widgets.button(Messages.t("button.remoteplay.connect"));
-        JLabel joinButtonLabel = widgets.addRow(panel, 11, "label.remoteplay.session2",
+        JLabel joinButtonLabel = widgets.addRow(panel, 13, "label.remoteplay.session2",
                 joinButton, null);
 
         // --- Status, always visible -------------------------------------------------
         JTextField statusField = widgets.readOnlyText("");
-        JLabel statusLabel = widgets.addRow(panel, 12, "label.remoteplay.status",
+        JLabel statusLabel = widgets.addRow(panel, 14, "label.remoteplay.status",
                 statusField, null);
 
         List<JComponent> hostRows = List.of(portLabel, portField, upnpCheck,
@@ -188,8 +205,11 @@ final class RemotePlaySection {
         List<JComponent> hostLiveRows = List.of(addressLabel, addressField, copyAddress,
                 internetLabel, internetField, copyInternet,
                 codeLabel, codeField, copyCode);
-        List<JComponent> hostOptionRows = List.of(guestPortLabel, guestPortCombo,
-                shareKeyboard, audioLabel, audioCombo, allowReset);
+        List<JComponent> spectatorCodeRows = List.of(spectatorCodeLabel, spectatorCodeField,
+                copySpectatorCode);
+        List<JComponent> hostOptionRows = List.of(spectatorsLabel, spectatorsCombo,
+                guestPortLabel, guestPortCombo, shareKeyboard, audioLabel, audioCombo,
+                allowReset);
         List<JComponent> joinRows = List.of(hostAddressLabel, hostAddressField,
                 joinCodeLabel, joinCodeField, joinButtonLabel, joinButton);
 
@@ -203,15 +223,20 @@ final class RemotePlaySection {
             // "Off" the rows would disappear, but the session would stay alive and OK would
             // confirm it anyway. The selector shows the rows of a role; here the role has
             // already been taken, and what is seen must say so.
-            if (guest || connecting) {
-                modeCombo.setSelectedItem(Mode.JOIN);   // re-enters here, and the second time it is a no-op
+            if (guest) {
+                // re-enters here, and the second time it is a no-op
+                modeCombo.setSelectedItem(control.isSpectator() ? Mode.WATCH : Mode.JOIN);
+            } else if (connecting && !((Mode) modeCombo.getSelectedItem()).joins()) {
+                modeCombo.setSelectedItem(Mode.JOIN);
             }
             Mode mode = (Mode) modeCombo.getSelectedItem();
 
             widgets.setRowVisible(mode == Mode.HOST, hostRows);
             widgets.setRowVisible(mode == Mode.HOST && hosting, hostLiveRows);
+            widgets.setRowVisible(mode == Mode.HOST && hosting
+                    && control.spectatorCode() != null, spectatorCodeRows);
             widgets.setRowVisible(mode == Mode.HOST, hostOptionRows);
-            widgets.setRowVisible(mode == Mode.JOIN, joinRows);
+            widgets.setRowVisible(mode.joins(), joinRows);
 
             hostButton.setText(Messages.t(hosting
                     ? "button.remoteplay.stop" : "button.remoteplay.start"));
@@ -237,10 +262,12 @@ final class RemotePlaySection {
             shareKeyboard.setEnabled(!hosting);
             allowReset.setEnabled(!hosting);
             audioCombo.setEnabled(!hosting);
+            spectatorsCombo.setEnabled(!hosting);
 
             if (hosting) {
                 addressField.setText(nullToEmpty(control.lanAddress()));
                 codeField.setText(nullToEmpty(control.joinCode()));
+                spectatorCodeField.setText(nullToEmpty(control.spectatorCode()));
                 // Either the public address, or the reason there is none. The "Copy" button
                 // applies only to the first: copying an error message to the clipboard would
                 // be an invitation to paste it to the other player.
@@ -264,7 +291,7 @@ final class RemotePlaySection {
                 // The popup's values go into the configuration BEFORE switching on: that is
                 // where startHosting() reads port, game port and audio from.
                 applyHostFields(config, portField, upnpCheck, lanOnlyCheck,
-                        guestPortCombo, shareKeyboard, allowReset, audioCombo);
+                        guestPortCombo, shareKeyboard, allowReset, audioCombo, spectatorsCombo);
                 String error = control.startHosting();
                 if (error != null) {
                     widgets.error(error);
@@ -291,7 +318,7 @@ final class RemotePlaySection {
             // The connection starts and returns at once: the status line says how it is
             // going, and if it fails the user gets a message anyway.
             String error = control.requestJoin(hostAddressField.getText(),
-                    joinCodeField.getText());
+                    joinCodeField.getText(), modeCombo.getSelectedItem() == Mode.WATCH);
             if (error != null) {
                 widgets.error(error);
             }
@@ -301,13 +328,15 @@ final class RemotePlaySection {
         copyAddress.addActionListener(e -> copy(addressField.getText()));
         copyCode.addActionListener(e -> copy(codeField.getText()));
         copyInternet.addActionListener(e -> copy(internetField.getText()));
+        copySpectatorCode.addActionListener(e -> copy(spectatorCodeField.getText()));
 
         // The trailing controls of the row: addRow does not touch them, and without these
         // calls their .tip would be text written and never shown.
         widgets.tip("label.remoteplay.upnp", upnpCheck);
         widgets.tip("label.remoteplay.guestkeyboard", shareKeyboard);
         widgets.tip("label.remoteplay.guestreset", allowReset);
-        widgets.tip("button.remoteplay.copy", copyAddress, copyCode, copyInternet);
+        widgets.tip("button.remoteplay.copy", copyAddress, copyCode, copyInternet,
+                copySpectatorCode);
         widgets.tip("label.remoteplay.session", hostButton);
         widgets.tip("label.remoteplay.session2", joinButton);
 
@@ -318,7 +347,8 @@ final class RemotePlaySection {
         sync.run();
 
         Runnable applyToConfig = () -> applyHostFields(config, portField, upnpCheck,
-                lanOnlyCheck, guestPortCombo, shareKeyboard, allowReset, audioCombo);
+                lanOnlyCheck, guestPortCombo, shareKeyboard, allowReset, audioCombo,
+                spectatorsCombo);
 
         return new Built(panel, () -> outcome[0], applyToConfig, timer::stop);
     }
@@ -327,7 +357,8 @@ final class RemotePlaySection {
 
     private static void applyHostFields(AmigaConfig config, JTextField portField,
             JCheckBox upnp, JCheckBox lanOnly, JComboBox<GuestPort> guestPort,
-            JCheckBox keyboard, JCheckBox allowReset, JComboBox<AudioMode> audio) {
+            JCheckBox keyboard, JCheckBox allowReset, JComboBox<AudioMode> audio,
+            JComboBox<Integer> spectators) {
         try {
             int port = Integer.parseInt(portField.getText().trim());
             if (port > 0 && port <= 65535) {
@@ -344,6 +375,10 @@ final class RemotePlaySection {
         config.setRemotePlayGuestKeyboard(keyboard.isSelected());
         config.setRemotePlayGuestAllowReset(allowReset.isSelected());
         config.setRemotePlayAudioMode(((AudioMode) audio.getSelectedItem()).configValue());
+        Object max = spectators.getSelectedItem();
+        if (max instanceof Integer n) {
+            config.setRemotePlaySpectatorsMax(n);
+        }
     }
 
     private static void copy(String text) {
@@ -395,7 +430,12 @@ final class RemotePlaySection {
     // =====================================================================
 
     enum Mode {
-        OFF, HOST, JOIN;
+        OFF, HOST, JOIN, WATCH;
+
+        /** Whether this mode connects to someone else's machine. */
+        boolean joins() {
+            return this == JOIN || this == WATCH;
+        }
 
         @Override
         public String toString() {

@@ -36,7 +36,6 @@ import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -53,9 +52,21 @@ import java.util.concurrent.atomic.AtomicLong;
  * one frame", the same principle {@code VirtualCRT} applies when the renderer is busy.
  * Queueing would build a latency spiral with no way out.
  *
- * <h2>One guest at a time</h2>
- * The Amiga has two game ports and the host takes one (section 3). A second connection gets
+ * <h2>One guest at a time, and the spectators</h2>
+ * The Amiga has two game ports and the host takes one (section 3). A second player gets
  * {@code REJECT busy} and is closed: an explicit, immediate refusal, not a wait.
+ *
+ * <p>Besides the player, up to {@code maxSpectators} peers may <b>watch</b> (section 16). They
+ * come in with a code of their own, receive one shared stream ({@link SpectatorBroadcast}) and
+ * send nothing that reaches the machine. With spectators off the door works exactly as before:
+ * the player's place is taken before the handshake, and a second connection is refused at once.
+ * With spectators on the role is known only from the HELLO, so the place is taken there; the
+ * immediate refusal stays for when the player's place and every spectator place are taken.
+ *
+ * <h2>One thread reads the UDP socket</h2>
+ * Player and spectators share the media socket, so a single thread ({@link #mediaLoop}) reads
+ * it and hands each datagram to the endpoint of its sender. Two threads reading the same socket
+ * would steal each other's datagrams.
  *
  * <h2>Why the same port for TCP and UDP</h2>
  * So UPnP has to create a single pair of mappings and the user has a single number to pass
@@ -78,6 +89,22 @@ public final class RemotePlayHost implements AutoCloseable {
     private static final int REJECT_QUEUE = 16;
 
     /**
+     * Handshakes in flight at once. One is all a player needs; with spectators a few may arrive
+     * together, and a silent peer must not hold the door for the others. Beyond this, the
+     * newcomer is refused at once instead of queueing.
+     */
+    private static final int HANDSHAKE_THREADS = 4;
+
+    /** How often the spectators' frame rate is reconsidered against the player's link. */
+    private static final long PLAYER_HEALTH_PERIOD_NANOS = 1_000_000_000L;
+
+    /** Healthy periods needed before the spectators get back a step of frame rate. */
+    private static final int PLAYER_HEALTHY_PERIODS = 5;
+
+    /** Thinnest spectator stream: one frame in eight. */
+    private static final int MAX_SPECTATOR_DIVISOR = 8;
+
+    /**
      * Overall limit of a handshake, beyond which the socket is closed and the guest's place
      * is free again. See {@link #startHandshakeDeadline}.
      */
@@ -93,6 +120,19 @@ public final class RemotePlayHost implements AutoCloseable {
     private final int audioFormat;
     /** Whether to accept only peers on the same local network (section 8.5). On by default. */
     private final boolean lanOnly;
+    /** Spectator places; 0 turns spectators off and keeps the door as it always was. */
+    private final int maxSpectators;
+    /** Code that admits a spectator; {@code null} when spectators are off. */
+    private final String spectatorCode;
+    /** Spectator places taken, by sessions alive or handshakes in progress. */
+    private final java.util.concurrent.atomic.AtomicInteger spectatorSlots =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** {@code null} when spectators are off. */
+    private final SpectatorBroadcast broadcast;
+    private Thread mediaThread;
+    private long nextHealthCheckNanos;
+    private long playerKeyframesSeen;
+    private int playerHealthyPeriods;
 
     private final ServerSocket controlSocket;
     private final DatagramSocket mediaSocket;
@@ -195,11 +235,43 @@ public final class RemotePlayHost implements AutoCloseable {
     public RemotePlayHost(int port, String bind, String joinCode, int width, int height,
                           NetImpairment impairment, int guestGamePort, boolean guestKeyboard,
                           int audioFormat, boolean lanOnly) throws IOException {
+        this(port, bind, joinCode, width, height, impairment, guestGamePort, guestKeyboard,
+                audioFormat, lanOnly, 0, null);
+    }
+
+    /**
+     * @param maxSpectators spectator places (section 16); 0 turns spectators off
+     * @param spectatorCode code that admits a spectator; {@code null} to generate one
+     */
+    public RemotePlayHost(int port, String bind, String joinCode, int width, int height,
+                          NetImpairment impairment, int guestGamePort, boolean guestKeyboard,
+                          int audioFormat, boolean lanOnly, int maxSpectators,
+                          String spectatorCode) throws IOException {
+        if (maxSpectators < 0) {
+            throw new IllegalArgumentException("posti per spettatori negativi: " + maxSpectators);
+        }
         this.width = width;
         this.height = height;
         this.lanOnly = lanOnly;
         this.joinCode = joinCode == null || joinCode.isBlank()
                 ? JoinCode.generate() : joinCode;
+        this.maxSpectators = maxSpectators;
+        if (maxSpectators == 0) {
+            this.spectatorCode = null;
+        } else if (spectatorCode != null && !spectatorCode.isBlank()) {
+            if (spectatorCode.equals(this.joinCode)) {
+                // One code for both roles would let every spectator play.
+                throw new IllegalArgumentException(
+                        "il codice degli spettatori deve essere diverso da quello dell'ospite");
+            }
+            this.spectatorCode = spectatorCode;
+        } else {
+            String generated;
+            do {
+                generated = JoinCode.generate();
+            } while (generated.equals(this.joinCode));
+            this.spectatorCode = generated;
+        }
         this.impairment = impairment == null ? NetImpairment.NONE : impairment;
         this.guestGamePort = guestGamePort;
         this.guestKeyboard = guestKeyboard;
@@ -247,15 +319,24 @@ public final class RemotePlayHost implements AutoCloseable {
         this.mediaSocket = udp;
         this.port = tcp.getLocalPort();
         this.controlSocket.setSoTimeout(ACCEPT_POLL_MS);
+        this.mediaSocket.setSoTimeout(ACCEPT_POLL_MS);
+        this.broadcast = maxSpectators == 0 ? null
+                : new SpectatorBroadcast(width, height, audioFormat);
     }
 
     /** Starts accepting. Returns at once: the wait lives on its own thread. */
     public void start() {
-        handshakeExecutor = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "amija-remoteplay-handshake");
-            t.setDaemon(true);
-            return t;
-        });
+        // No queue: a handshake either has a thread now or the peer is refused at once. With
+        // spectators off at most one handshake is ever in flight (the player's place is taken
+        // before it), so this changes nothing there.
+        handshakeExecutor = new java.util.concurrent.ThreadPoolExecutor(
+                0, HANDSHAKE_THREADS, 30L, TimeUnit.SECONDS,
+                new java.util.concurrent.SynchronousQueue<>(),
+                r -> {
+                    Thread t = new Thread(r, "amija-remoteplay-handshake");
+                    t.setDaemon(true);
+                    return t;
+                });
         rejectExecutor = new java.util.concurrent.ThreadPoolExecutor(
                 1, 1, 0L, TimeUnit.MILLISECONDS,
                 new java.util.concurrent.ArrayBlockingQueue<>(REJECT_QUEUE),
@@ -267,7 +348,15 @@ public final class RemotePlayHost implements AutoCloseable {
         acceptThread = new Thread(this::acceptLoop, "amija-remoteplay-accept");
         acceptThread.setDaemon(true);
         acceptThread.start();
-        RemotePlaySettings.say("in ascolto su %d (TCP+UDP), join code %s", port, joinCode);
+        mediaThread = new Thread(this::mediaLoop, "amija-remoteplay-host-media");
+        mediaThread.setDaemon(true);
+        mediaThread.start();
+        if (spectatorCode == null) {
+            RemotePlaySettings.say("in ascolto su %d (TCP+UDP), join code %s", port, joinCode);
+        } else {
+            RemotePlaySettings.say("in ascolto su %d (TCP+UDP), join code %s, codice spettatori"
+                    + " %s (%d posti)", port, joinCode, spectatorCode, maxSpectators);
+        }
     }
 
     public int port() {
@@ -283,6 +372,35 @@ public final class RemotePlayHost implements AutoCloseable {
         return s != null && s.alive;
     }
 
+    /** The code that admits a spectator, or {@code null} if spectators are off. */
+    public String spectatorCode() {
+        return spectatorCode;
+    }
+
+    public int maxSpectators() {
+        return maxSpectators;
+    }
+
+    /** Spectators connected now. */
+    public int spectatorCount() {
+        return broadcast == null ? 0 : broadcast.count();
+    }
+
+    /** Frames sent to the spectators, all of them counted once. */
+    public long spectatorFramesSent() {
+        return broadcast == null ? 0 : broadcast.framesSent();
+    }
+
+    /** Keyframes in the spectators' stream. */
+    public long spectatorKeyframesSent() {
+        return broadcast == null ? 0 : broadcast.keyframesSent();
+    }
+
+    /** One spectator frame every this many: above 1 while the player's link struggles. */
+    public int spectatorFrameDivisor() {
+        return broadcast == null ? 1 : broadcast.frameDivisor();
+    }
+
     /**
      * Hands over a frame just completed. <b>Called by the emulation thread.</b>
      *
@@ -290,6 +408,10 @@ public final class RemotePlayHost implements AutoCloseable {
      * previous frame, this one is lost, on purpose.
      */
     public void submitFrame(int[] pixels, FrameInfo info) {
+        SpectatorBroadcast b = broadcast;
+        if (b != null) {
+            b.submitFrame(pixels, info);
+        }
         Session s = session;
         if (s == null || !s.alive) {
             return;
@@ -338,6 +460,10 @@ public final class RemotePlayHost implements AutoCloseable {
      * boundary would cost more than the work.
      */
     public void submitAudio(byte[] pcm, int frames) {
+        SpectatorBroadcast b = broadcast;
+        if (b != null) {
+            b.submitAudio(pcm, frames);
+        }
         Session s = session;
         if (s == null || !s.alive || s.audioSender == null) {
             return;
@@ -419,6 +545,9 @@ public final class RemotePlayHost implements AutoCloseable {
      */
     public void notifyPaused(boolean paused) {
         this.paused = paused;
+        if (broadcast != null) {
+            broadcast.notifyPaused(paused);
+        }
         Session s = session;
         if (s != null && s.alive) {
             sendPauseState(s, paused);
@@ -441,6 +570,9 @@ public final class RemotePlayHost implements AutoCloseable {
         if (s != null) {
             s.stop(RemotePlayProtocol.REJECT_SHUTDOWN);
         }
+        if (broadcast != null) {
+            broadcast.close(RemotePlayProtocol.REJECT_SHUTDOWN);
+        }
         try {
             controlSocket.close();
         } catch (IOException ignored) {
@@ -453,6 +585,7 @@ public final class RemotePlayHost implements AutoCloseable {
         if (acceptThread != null) {
             join(acceptThread);
         }
+        join(mediaThread);
         // After the accepting thread, which is what hands it work: so no handshake just
         // queued is left on an executor already shut down.
         if (handshakeExecutor != null) {
@@ -529,19 +662,34 @@ public final class RemotePlayHost implements AutoCloseable {
                             socket.getRemoteSocketAddress(), wait);
                     continue;
                 }
-                if (!guestSlot.compareAndSet(false, true)) {
+                boolean reservePlayer = maxSpectators == 0;
+                if (reservePlayer ? !guestSlot.compareAndSet(false, true)
+                        : guestSlot.get() && spectatorSlots.get() >= maxSpectators) {
+                    // Spectators off: the player's place is taken right here, as it always was.
+                    // Spectators on: the role comes with the HELLO, but when every place is
+                    // taken there is no point in waiting for it.
                     Handshake.reject(channel, RemotePlayProtocol.REJECT_BUSY);
                     closeAside(channel);
                     RemotePlaySettings.say("rifiutato %s: c'e' gia' un ospite",
                             socket.getRemoteSocketAddress());
                     continue;
                 }
-                slotTaken = true;
-                // The place is taken: from here on handshake() takes care of returning it.
+                slotTaken = reservePlayer;
+                // From here on handshake() takes care of returning whatever place is taken.
                 final ControlChannel accepted = channel;
-                handshakeExecutor.execute(() -> handshake(accepted));
+                handshakeExecutor.execute(() -> handshake(accepted, reservePlayer));
                 slotTaken = false;   // delivered: the slot is now theirs
-            } catch (IOException | java.util.concurrent.RejectedExecutionException e) {
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                // Every handshake thread is busy: refused at once, with the reason.
+                RemotePlaySettings.say("rifiutato %s: troppi collegamenti in corso",
+                        socket.getRemoteSocketAddress());
+                if (slotTaken) {
+                    guestSlot.set(false);
+                    slotTaken = false;
+                }
+                Handshake.reject(channel, RemotePlayProtocol.REJECT_BUSY);
+                closeAside(channel);
+            } catch (IOException e) {
                 RemotePlaySettings.say("connessione da %s non accolta: %s",
                         socket.getRemoteSocketAddress(), e.getMessage());
                 // closeGracefully and not close: if the failure was a REJECT, that message is
@@ -600,8 +748,11 @@ public final class RemotePlayHost implements AutoCloseable {
      * <p>If the handshake does not complete, the guest's place must be returned: without it a
      * wrong code would close the listening to everyone forever.
      */
-    private void handshake(ControlChannel channel) {
+    private void handshake(ControlChannel channel, boolean playerReserved) {
         boolean established = false;
+        // Which place this handshake holds: taken by the accepting thread (spectators off) or
+        // by the admitter once the HELLO says the role. Returned below if nothing is established.
+        int[] held = { playerReserved ? RemotePlayProtocol.ROLE_PLAYER : -1 };
         // The reason of the refusal, if any. The REJECT is sent by the finally, AFTER the
         // place has been returned: see Handshake.RejectingException. Sent from inside
         // Handshake.accept, the guest would receive it while the place was still taken, and
@@ -615,7 +766,12 @@ public final class RemotePlayHost implements AutoCloseable {
         AtomicBoolean closing = new AtomicBoolean();
         Thread deadline = startHandshakeDeadline(channel, closing);
         try {
-            startSession(channel);
+            Handshake.Session negotiated = Handshake.accept(channel, role -> admit(role, held));
+            if (negotiated.isSpectator()) {
+                startSpectator(channel, negotiated);
+            } else {
+                startSession(channel, negotiated);
+            }
             established = true;
             throttle.recordSuccess(peer);
         } catch (Handshake.RejectingException e) {
@@ -645,6 +801,7 @@ public final class RemotePlayHost implements AutoCloseable {
                 // knows the difference, and whoever is guessing could fabricate it at will by
                 // disconnecting at the right moment.
                 throttle.recordFailure(peer);
+                release(held[0]);
                 // The place BEFORE saying anything to the guest, and the order is the
                 // guarantee: when the REJECT reaches the socket the place is already free, so
                 // whoever retries (after a wrong code, the normal case) cannot be told "there
@@ -652,7 +809,6 @@ public final class RemotePlayHost implements AutoCloseable {
                 // close is not enough if the REJECT leaves from inside Handshake.accept, i.e.
                 // before even getting here: the window would remain, as wide as
                 // recordFailure(), small but enough to be seen.
-                guestSlot.set(false);
                 if (rejectReason != 0) {
                     Handshake.reject(channel, rejectReason);
                 }
@@ -760,13 +916,72 @@ public final class RemotePlayHost implements AutoCloseable {
         return (mine[fullBytes] & mask) == (theirs[fullBytes] & mask);
     }
 
-    private void startSession(ControlChannel channel) throws IOException {
+    /**
+     * Takes the place for the role of the HELLO, or refuses.
+     *
+     * <p>The place is recorded in {@code held} so {@link #handshake} can give it back if the
+     * handshake then fails.
+     */
+    private Handshake.Admission admit(int role, int[] held) throws Handshake.RejectingException {
         int gen = (int) sessionCounter.incrementAndGet();
-        Handshake.HostOffer offer = new Handshake.HostOffer(
+        if (role == RemotePlayProtocol.ROLE_SPECTATOR) {
+            if (maxSpectators == 0) {
+                throw new Handshake.RejectingException(RemotePlayProtocol.REJECT_NO_SPECTATORS,
+                        "spettatori non ammessi");
+            }
+            while (true) {
+                int taken = spectatorSlots.get();
+                if (taken >= maxSpectators) {
+                    throw new Handshake.RejectingException(
+                            RemotePlayProtocol.REJECT_SPECTATORS_FULL,
+                            "posti per spettatori esauriti (" + maxSpectators + ")");
+                }
+                if (spectatorSlots.compareAndSet(taken, taken + 1)) {
+                    break;
+                }
+            }
+            held[0] = RemotePlayProtocol.ROLE_SPECTATOR;
+            // No game port and no keyboard: a spectator gets nothing to drive.
+            return new Handshake.Admission(spectatorCode, new Handshake.HostOffer(
+                    gen, gen, port, width, height, 44100, 2, audioFormat, 0, false));
+        }
+        if (held[0] != RemotePlayProtocol.ROLE_PLAYER) {
+            if (!guestSlot.compareAndSet(false, true)) {
+                throw new Handshake.RejectingException(RemotePlayProtocol.REJECT_BUSY,
+                        "c'e' gia' un ospite");
+            }
+            held[0] = RemotePlayProtocol.ROLE_PLAYER;
+        }
+        return new Handshake.Admission(joinCode, new Handshake.HostOffer(
                 gen, gen, port, width, height, 44100, 2, audioFormat,
-                guestGamePort, guestKeyboard);
-        Handshake.Session negotiated = Handshake.accept(channel, joinCode, offer);
+                guestGamePort, guestKeyboard));
+    }
 
+    /** Gives back the place a failed handshake held. */
+    private void release(int role) {
+        if (role == RemotePlayProtocol.ROLE_PLAYER) {
+            guestSlot.set(false);
+        } else if (role == RemotePlayProtocol.ROLE_SPECTATOR) {
+            spectatorSlots.decrementAndGet();
+        }
+    }
+
+    private void startSpectator(ControlChannel channel, Handshake.Session negotiated)
+            throws IOException {
+        AtomicBoolean released = new AtomicBoolean();
+        broadcast.add(channel, negotiated, mediaSocket, impairment, () -> {
+            if (released.compareAndSet(false, true)) {
+                spectatorSlots.decrementAndGet();
+            }
+        });
+        RemotePlaySettings.say("spettatore collegato da %s (AmiJa %s), %d su %d",
+                channel.socket().getRemoteSocketAddress(), negotiated.peerAppVersion(),
+                broadcast.count(), maxSpectators);
+    }
+
+    private void startSession(ControlChannel channel, Handshake.Session negotiated)
+            throws IOException {
+        int gen = negotiated.sessionGen();
         Session s = new Session(channel, negotiated);
         session = s;
         s.start();
@@ -780,10 +995,128 @@ public final class RemotePlayHost implements AutoCloseable {
     }
 
     // =====================================================================
+    // The media socket
+    // =====================================================================
+
+    /**
+     * Reads the UDP socket and hands each datagram to the endpoint of its sender.
+     *
+     * <p>An endpoint whose peer is already known is found by address, which costs a comparison
+     * and no decryption. A datagram from an unknown address is offered to the endpoints still
+     * waiting for their first datagram: the one whose key opens it adopts the sender
+     * ({@link MediaLink#accept}).
+     */
+    private void mediaLoop() {
+        byte[] datagram = new byte[RemotePlayProtocol.MAX_DATAGRAM];
+        byte[] plain = new byte[RemotePlayProtocol.MAX_PLAINTEXT];
+        java.net.DatagramPacket packet =
+                new java.net.DatagramPacket(datagram, RemotePlayProtocol.MAX_DATAGRAM);
+        List<MediaEndpoint> endpoints = new ArrayList<>();
+        long nextTimeoutCheck = System.nanoTime();
+        while (running) {
+            boolean got;
+            try {
+                packet.setData(datagram, 0, RemotePlayProtocol.MAX_DATAGRAM);
+                mediaSocket.receive(packet);
+                got = true;
+            } catch (SocketTimeoutException e) {
+                got = false;
+            } catch (IOException e) {
+                if (running) {
+                    RemotePlaySettings.say("ricezione media interrotta: %s", e.getMessage());
+                }
+                return;
+            }
+            endpoints.clear();
+            Session s = session;
+            if (s != null && s.alive) {
+                endpoints.add(s);
+            }
+            if (broadcast != null) {
+                endpoints.addAll(broadcast.peers());
+            }
+            if (got) {
+                dispatch(endpoints, datagram, packet.getLength(), packet.getSocketAddress(),
+                        plain);
+            }
+            long now = System.nanoTime();
+            if (now - nextTimeoutCheck >= 0) {
+                nextTimeoutCheck = now + ACCEPT_POLL_MS * 1_000_000L;
+                for (MediaEndpoint e : endpoints) {
+                    e.checkTimeout(now);
+                }
+                checkPlayerHealth(now);
+            }
+        }
+    }
+
+    private static void dispatch(List<MediaEndpoint> endpoints, byte[] datagram, int length,
+                                 java.net.SocketAddress from, byte[] plain) {
+        for (MediaEndpoint e : endpoints) {
+            if (from.equals(e.media().peer())) {
+                MediaLink.Received r = e.media().accept(datagram, length, from, plain);
+                if (r != null) {
+                    e.onDatagram(r, plain);
+                }
+                return;
+            }
+        }
+        for (MediaEndpoint e : endpoints) {
+            if (!e.media().hasPeer()) {
+                MediaLink.Received r = e.media().accept(datagram, length, from, plain);
+                if (r != null) {
+                    e.onDatagram(r, plain);
+                    return;
+                }
+            }
+        }
+        RemotePlaySettings.log("datagramma da %s senza destinatario", from);
+    }
+
+    /**
+     * Gives the spectators fewer frames while the player's link is in trouble, and gives them
+     * back once it has been fine for a while.
+     *
+     * <p>The sign of trouble is a keyframe in the player's stream after the start: it means the
+     * player's confirmations fell out of the ring, i.e. frames were lost or arrived too late.
+     * The uplink is shared, and the spectators are the ones who can wait.
+     */
+    private void checkPlayerHealth(long now) {
+        SpectatorBroadcast b = broadcast;
+        if (b == null || now - nextHealthCheckNanos < 0) {
+            return;
+        }
+        nextHealthCheckNanos = now + PLAYER_HEALTH_PERIOD_NANOS;
+        Session s = session;
+        if (s == null || !s.alive || b.count() == 0) {
+            playerKeyframesSeen = -1;
+            playerHealthyPeriods = 0;
+            b.setFrameDivisor(1);
+            return;
+        }
+        long keyframes = s.videoSender.keyframesSent();
+        boolean struggling = playerKeyframesSeen >= 0 && keyframes > playerKeyframesSeen
+                && now - s.startNanos > 2 * PLAYER_HEALTH_PERIOD_NANOS;
+        playerKeyframesSeen = keyframes;
+        if (struggling) {
+            playerHealthyPeriods = 0;
+            int divisor = Math.min(MAX_SPECTATOR_DIVISOR, b.frameDivisor() * 2);
+            if (divisor != b.frameDivisor()) {
+                RemotePlaySettings.log("collegamento dell'ospite in difficolta': agli spettatori"
+                        + " un frame ogni %d", divisor);
+            }
+            b.setFrameDivisor(divisor);
+        } else if (b.frameDivisor() > 1 && ++playerHealthyPeriods >= PLAYER_HEALTHY_PERIODS) {
+            playerHealthyPeriods = 0;
+            b.setFrameDivisor(b.frameDivisor() / 2);
+        }
+    }
+
+    // =====================================================================
     // One session
     // =====================================================================
 
-    private final class Session {
+    private final class Session implements MediaEndpoint {
 
         private final ControlChannel control;
         private final MediaLink media;
@@ -799,16 +1132,16 @@ public final class RemotePlayHost implements AutoCloseable {
         private volatile boolean alive = true;
         /**
          * Whether {@link #stop} has already been through here. Checking {@code alive} is not
-         * enough: {@code encodeLoop}, {@code feedbackLoop} and {@code controlLoop} can notice
+         * enough: {@code encodeLoop}, the media thread and {@code controlLoop} can notice
          * the end at the same instant and all pass it, and since closing also returns the
          * guest's place a second pass would free it a second time, giving it away while it
          * already belongs to someone else.
          */
         private final AtomicBoolean stopping = new AtomicBoolean();
         private volatile long lastFeedbackNanos = System.nanoTime();
+        private final long startNanos = System.nanoTime();
         private long lastFeedbackSeq = -1;
         private Thread encodeThread;
-        private Thread feedbackThread;
         private Thread controlThread;
 
         Session(ControlChannel control, Handshake.Session negotiated) throws IOException {
@@ -816,7 +1149,6 @@ public final class RemotePlayHost implements AutoCloseable {
             this.sessionGen = negotiated.sessionGen();
             this.media = new MediaLink(mediaSocket,
                     negotiated.cipher(Handshake.DIRECTION_HOST), null, impairment);
-            this.media.setTimeout(ACCEPT_POLL_MS);
             this.videoSender = new VideoSender(width, height);
             this.audioSender = audioFormat == 0 ? null : new AudioSender(audioFormat);
             this.lastApplied.clear();
@@ -827,7 +1159,6 @@ public final class RemotePlayHost implements AutoCloseable {
                 framePending = false;      // nothing left over from the previous connection
             }
             encodeThread = thread(this::encodeLoop, "amija-remoteplay-encode");
-            feedbackThread = thread(this::feedbackLoop, "amija-remoteplay-feedback");
             controlThread = thread(this::controlLoop, "amija-remoteplay-control");
         }
 
@@ -867,52 +1198,50 @@ public final class RemotePlayHost implements AutoCloseable {
             }
         }
 
-        /** Receives the guest's feedback: the video ACK and the inputs. */
-        private void feedbackLoop() {
-            while (alive && running) {
-                MediaLink.Received received;
-                try {
-                    received = media.receive(plain);
-                } catch (IOException e) {
-                    if (alive && running) {
-                        fail("ricezione media interrotta: " + e.getMessage());
-                    }
-                    return;
-                }
-                if (received == null) {
-                    if (System.nanoTime() - lastFeedbackNanos > SESSION_TIMEOUT_MS * 1_000_000L) {
-                        fail("l'ospite non risponde da " + SESSION_TIMEOUT_MS + " ms");
-                        return;
-                    }
-                    continue;
-                }
-                if (received.type() != RemotePlayProtocol.TYPE_FEEDBACK) {
-                    // The host -> guest direction has nothing to do here: a peer error.
-                    RemotePlaySettings.log("datagramma di tipo %d ignorato", received.type());
-                    continue;
-                }
-                try {
-                    incoming.readFrom(plain, received.length());
-                } catch (ProtocolException e) {
-                    RemotePlaySettings.log("feedback scartato: %s", e.getMessage());
-                    continue;
-                }
-                lastFeedbackNanos = System.nanoTime();
-                if (incoming.sessionGen != sessionGen) {
-                    continue;      // left over from the previous generation, in flight from the past
-                }
-                if (lastFeedbackSeq >= 0
-                        && Integer.compareUnsigned(incoming.seq, (int) lastFeedbackSeq) <= 0) {
-                    continue;      // old or repeated: the good state is the one already applied
-                }
-                lastFeedbackSeq = incoming.seq & 0xFFFFFFFFL;
-                if (incoming.hasAck()) {
-                    videoSender.noteAck(incoming.ackVideoFrameId);
-                }
-                synchronized (inputLock) {
-                    incoming.copyTo(lastApplied);
-                    inputDirty = true;
-                }
+        @Override
+        public MediaLink media() {
+            return media;
+        }
+
+        /**
+         * The guest's feedback: the video ACK and the inputs. On the media thread, which owns
+         * {@code plain} for the duration of the call.
+         */
+        @Override
+        public void onDatagram(MediaLink.Received received, byte[] plain) {
+            if (received.type() != RemotePlayProtocol.TYPE_FEEDBACK) {
+                // The host -> guest direction has nothing to do here: a peer error.
+                RemotePlaySettings.log("datagramma di tipo %d ignorato", received.type());
+                return;
+            }
+            try {
+                incoming.readFrom(plain, received.length());
+            } catch (ProtocolException e) {
+                RemotePlaySettings.log("feedback scartato: %s", e.getMessage());
+                return;
+            }
+            lastFeedbackNanos = System.nanoTime();
+            if (incoming.sessionGen != sessionGen) {
+                return;      // left over from the previous generation, in flight from the past
+            }
+            if (lastFeedbackSeq >= 0
+                    && Integer.compareUnsigned(incoming.seq, (int) lastFeedbackSeq) <= 0) {
+                return;      // old or repeated: the good state is the one already applied
+            }
+            lastFeedbackSeq = incoming.seq & 0xFFFFFFFFL;
+            if (incoming.hasAck()) {
+                videoSender.noteAck(incoming.ackVideoFrameId);
+            }
+            synchronized (inputLock) {
+                incoming.copyTo(lastApplied);
+                inputDirty = true;
+            }
+        }
+
+        @Override
+        public void checkTimeout(long nowNanos) {
+            if (alive && nowNanos - lastFeedbackNanos > SESSION_TIMEOUT_MS * 1_000_000L) {
+                fail("l'ospite non risponde da " + SESSION_TIMEOUT_MS + " ms");
             }
         }
 
@@ -952,10 +1281,9 @@ public final class RemotePlayHost implements AutoCloseable {
             }
         }
 
-        /** Waits until the three session threads have really finished. Never from inside. */
+        /** Waits until the session threads have really finished. Never from inside. */
         void awaitStop() {
             join(encodeThread);
-            join(feedbackThread);
             join(controlThread);
         }
 

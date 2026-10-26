@@ -205,18 +205,19 @@ public final class Paula {
     // crackle) or full (overflow -> clicks). The ASR varies the production rate
     // imperceptibly to keep the buffer around its target level.
     // -------------------------------------------------------------------------
-    private static final double ASR_TARGET_FILL = 0.0625; // target fill of the ring (~46 ms of cushion)
     // TWO-ZONE ASR (dead zone), against audible pitch wobble. A purely proportional
-    // controller chases the sawtooth of the fill level (+-500 samples from per-frame
-    // rendering stalls) and keeps correcting by +-100-300 Hz: audible wow/flutter.
-    //   - INSIDE the dead zone (|fill-target| <= ASR_DEADZONE, where all the normal
-    //     oscillation falls): a tiny linear correction, at most +-ASR_FINE_MAX Hz (~0.07%,
+    // controller chases the sawtooth of the fill level (the consumer reads whole blocks)
+    // and keeps correcting by +-100-300 Hz: audible wow/flutter.
+    //   - INSIDE the dead zone (|fill-target| <= ASR_DEADZONE * target, where all the
+    //     normal oscillation falls): a tiny linear correction, at most +-ASR_FINE_MAX Hz (~0.07%,
     //     below the pitch perception threshold), so the normal oscillation of the buffer
     //     does not modulate the pitch.
     //   - OUTSIDE (large imbalance: start-up, long stall): the correction grows up to
     //     +-ASR_COARSE_MAX to recover quickly before an underrun.
     // The slow host/Amiga drift (<0.1%) is well within the fine zone.
-    private static final double ASR_DEADZONE = 0.03;      // +-~1000 samples around the target (covers the normal oscillation)
+    // The target itself is the ring's cushion (AudioRingBuffer.targetFrames), which the
+    // consumer lengthens when it runs dry; the dead zone scales with it.
+    private static final double ASR_DEADZONE = 0.48;      // half-width of the dead zone, as a fraction of the target
     private static final double ASR_FINE_MAX = 30.0;      // Hz: max correction inside the dead zone (~0.07%, inaudible)
     private static final double ASR_COARSE_GAIN = 25000.0; // proportional gain outside the dead zone
     private static final double ASR_COARSE_MAX = 3000.0;  // Hz: max correction outside (fast recovery from large imbalances)
@@ -442,14 +443,16 @@ public final class Paula {
         asrCounter = 0;
 
         // error > 0 -> buffer too full -> slow production down (negative correction).
-        double error = audioRingBuffer.fillLevel() - ASR_TARGET_FILL;
+        double target = audioRingBuffer.targetFillLevel();
+        double deadzone = target * ASR_DEADZONE;
+        double error = audioRingBuffer.fillLevel() - target;
         double absErr = Math.abs(error);
 
         double correction;
-        if (absErr <= ASR_DEADZONE) {
+        if (absErr <= deadzone) {
             // Fine zone: tiny linear correction (inaudible). All the normal oscillation of
             // the buffer falls here, so the pitch is not modulated.
-            correction = -(error / ASR_DEADZONE) * ASR_FINE_MAX;
+            correction = -(error / deadzone) * ASR_FINE_MAX;
         } else {
             // Coarse zone: STRONG proportional control (high gain, clamped to
             // +-COARSE_MAX) to recover quickly from large imbalances (e.g. the boot, where
@@ -1595,6 +1598,11 @@ public final class Paula {
                 ch.writeData(value);
             }
         }
+    }
+
+    /** See {@link JavaSoundAudioOutput#setActiveSupplier}. */
+    public void setAudioActiveSupplier(java.util.function.BooleanSupplier supplier) {
+        audioOutput.setActiveSupplier(supplier);
     }
 
     public void startAudioOutput() {

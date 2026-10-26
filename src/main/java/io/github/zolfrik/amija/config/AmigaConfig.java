@@ -41,7 +41,10 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 
 /**
@@ -136,6 +139,7 @@ public final class AmigaConfig {
     private static final String K_RP_GUEST_ALLOWRESET = "remoteplay.guest.allowreset";
     private static final String K_RP_AUDIO_MODE = "remoteplay.audio.mode";
     private static final String K_RP_LAST_HOST = "remoteplay.last.host";
+    private static final String K_RP_SPECTATORS_MAX = "remoteplay.spectators.max";
 
     // =========================================================================
     // WHDLoad parameters (section whdload.prefs.* at the end of amiga.properties).
@@ -273,6 +277,25 @@ public final class AmigaConfig {
 
     private final Properties props;
 
+    /**
+     * Where {@link #save()} writes: {@code null} for {@code amiga.properties} in the home,
+     * otherwise the file named on the command line with {@code --config}.
+     */
+    private Path file;
+
+    /**
+     * Values imposed on the command line, in their canonical form (the one
+     * {@link #toPropertiesText()} writes). They hold for this session only: see
+     * {@link #save()}.
+     */
+    private final Map<String, String> overrides = new LinkedHashMap<>();
+
+    /**
+     * What the configuration file held, before the override, for each key in
+     * {@link #overrides}; {@code null} when the file did not have the key.
+     */
+    private final Map<String, String> overriddenFileValues = new HashMap<>();
+
     private AmigaConfig(Properties props) {
         this.props = props;
     }
@@ -281,7 +304,11 @@ public final class AmigaConfig {
     public AmigaConfig copy() {
         Properties p = new Properties();
         p.putAll(props);
-        return new AmigaConfig(p);
+        AmigaConfig c = new AmigaConfig(p);
+        c.file = file;
+        c.overrides.putAll(overrides);
+        c.overriddenFileValues.putAll(overriddenFileValues);
+        return c;
     }
 
     // =========================================================================
@@ -293,8 +320,30 @@ public final class AmigaConfig {
      * throws: on I/O problems it falls back on the default values in memory.
      */
     public static AmigaConfig load() {
-        // 1. File in the application home (normally the working directory).
-        Path homeFile = AppHome.resolve(FILE_NAME);
+        return load(null, Map.of());
+    }
+
+    /**
+     * Loads the configuration from {@code file} ({@code null} = the search order described
+     * in the class), then applies {@code overrides} on top of it. Never throws.
+     *
+     * <p>An explicit file that does not exist is created with the default values, like the
+     * one in the home; the class path is looked at only for the default file.
+     *
+     * @param overrides key/value pairs from the command line; every key should be one of
+     *                  {@link #knownKeys()}
+     */
+    public static AmigaConfig load(Path file, Map<String, String> overrides) {
+        AmigaConfig cfg = readConfig(file);
+        cfg.file = file;
+        cfg.applyOverrides(overrides);
+        return cfg;
+    }
+
+    private static AmigaConfig readConfig(Path explicitFile) {
+        // 1. File in the application home (normally the working directory), or the one
+        //    named on the command line.
+        Path homeFile = explicitFile != null ? explicitFile : AppHome.resolve(FILE_NAME);
         if (Files.isRegularFile(homeFile)) {
             // UTF-8, and through a Reader: see the comment of save(). With an InputStream
             // Properties decodes ISO-8859-1, which corrupted accented paths at every round
@@ -325,30 +374,152 @@ public final class AmigaConfig {
 
         // 2. File on the class path (e.g. src/main/resources/amiga.properties). UTF-8 like
         //    the other two paths: the charset of this file must be ONE, or the disagreement
-        //    that corrupted accented paths comes back.
-        try (InputStream in = AmigaConfig.class.getResourceAsStream("/" + FILE_NAME)) {
-            if (in != null) {
-                Properties p = new Properties();
-                p.load(new InputStreamReader(in, StandardCharsets.UTF_8));
-                System.out.println("[CONFIG] Loaded from classpath /" + FILE_NAME);
-                return new AmigaConfig(p);
+        //    that corrupted accented paths comes back. Only for the default file: a file
+        //    named explicitly is that file or nothing.
+        if (explicitFile == null) {
+            try (InputStream in = AmigaConfig.class.getResourceAsStream("/" + FILE_NAME)) {
+                if (in != null) {
+                    Properties p = new Properties();
+                    p.load(new InputStreamReader(in, StandardCharsets.UTF_8));
+                    System.out.println("[CONFIG] Loaded from classpath /" + FILE_NAME);
+                    return new AmigaConfig(p);
+                }
+            } catch (IOException e) {
+                System.err.println("[CONFIG] Failed to read from classpath: " + e.getMessage());
             }
-        } catch (IOException e) {
-            System.err.println("[CONFIG] Failed to read from classpath: " + e.getMessage());
         }
 
-        // 3. No file: create the default one in the home.
+        // 3. No file: create the default one.
         Properties defaults = defaultProperties();
-        try (Writer out = Files.newBufferedWriter(homeFile, StandardCharsets.UTF_8)) {
-            // store(Writer) and not store(OutputStream): the latter writes ISO-8859-1 and
-            // would put the two halves in disagreement again as soon as a default stopped
-            // being ASCII.
-            defaults.store(out, "AmiJa configuration - Java Amiga emulator");
-            System.out.println("[CONFIG] Created default file " + homeFile.toAbsolutePath());
+        try {
+            if (homeFile.getParent() != null) {
+                Files.createDirectories(homeFile.getParent());
+            }
+            try (Writer out = Files.newBufferedWriter(homeFile, StandardCharsets.UTF_8)) {
+                // store(Writer) and not store(OutputStream): the latter writes ISO-8859-1 and
+                // would put the two halves in disagreement again as soon as a default stopped
+                // being ASCII.
+                defaults.store(out, "AmiJa configuration - Java Amiga emulator");
+                System.out.println("[CONFIG] Created default file " + homeFile.toAbsolutePath());
+            }
         } catch (IOException e) {
             System.err.println("[CONFIG] Failed to create " + homeFile + ": " + e.getMessage());
         }
         return new AmigaConfig(defaults);
+    }
+
+    // =========================================================================
+    // Command-line overrides
+    // =========================================================================
+
+    /**
+     * Every key the configuration file can hold: those {@link #toPropertiesText()} writes,
+     * sorted. A key outside this set would be read by nobody and dropped at the next save.
+     */
+    public static java.util.SortedSet<String> knownKeys() {
+        java.util.SortedSet<String> keys = new java.util.TreeSet<>(
+                parseText(defaults().toPropertiesText()).stringPropertyNames());
+        keys.addAll(defaultProperties().stringPropertyNames());
+        return keys;
+    }
+
+    /**
+     * Every media key (drives, hard disk units, WHDLoad) with the value {@code media} gives
+     * it: the whole set, so that what is not in {@code media} is emptied rather than left as
+     * the configuration file had it.
+     */
+    public static Map<String, String> mediaProperties(MediaSet media) {
+        AmigaConfig c = defaults();
+        media.toConfig(c);
+        Map<String, String> out = new LinkedHashMap<>();
+        for (int i = 0; i < 4; i++) {
+            for (String k : new String[] { K_DRIVE_EN, K_DRIVE_DISK, K_DRIVE_RO }) {
+                String key = String.format(k, i);
+                out.put(key, c.props.getProperty(key, ""));
+            }
+        }
+        for (String unit : HD_UNITS) {
+            for (String k : new String[] { K_HD_EN, K_HD_DISK, K_HD_RO }) {
+                String key = String.format(k, unit);
+                out.put(key, c.props.getProperty(key, ""));
+            }
+        }
+        out.put(K_WHDLOAD_EN, c.props.getProperty(K_WHDLOAD_EN, ""));
+        out.put(K_WHDLOAD_FILE, c.props.getProperty(K_WHDLOAD_FILE, ""));
+        return out;
+    }
+
+    /** The keys of {@code values} that are not in {@link #knownKeys()}, sorted. */
+    public static java.util.List<String> unknownKeys(Map<String, String> values) {
+        java.util.SortedSet<String> known = knownKeys();
+        java.util.List<String> unknown = new java.util.ArrayList<>();
+        for (String key : new java.util.TreeSet<>(values.keySet())) {
+            if (!known.contains(key)) unknown.add(key);
+        }
+        return unknown;
+    }
+
+    /** The keys imposed on the command line for this session, with their canonical value. */
+    public Map<String, String> overrides() {
+        return java.util.Collections.unmodifiableMap(overrides);
+    }
+
+    /**
+     * Applies values imposed for this session. Each is stored in its canonical form, i.e.
+     * as the getters read it back and {@link #toPropertiesText()} writes it, so that
+     * {@link #save()} can tell whether the user changed it afterwards.
+     */
+    private void applyOverrides(Map<String, String> values) {
+        if (values.isEmpty()) return;
+        for (Map.Entry<String, String> e : values.entrySet()) {
+            if (!overrides.containsKey(e.getKey())) {
+                overriddenFileValues.put(e.getKey(), props.getProperty(e.getKey()));
+            }
+            props.setProperty(e.getKey(), e.getValue());
+        }
+        Properties canonical = parseText(toPropertiesText());
+        for (String key : values.keySet()) {
+            String value = canonical.getProperty(key, props.getProperty(key));
+            props.setProperty(key, value);
+            overrides.put(key, value);
+            System.out.println("[CONFIG] Command line: " + key + "=" + value);
+        }
+    }
+
+    /**
+     * The properties that {@link #save()} writes: the current ones, except that a key
+     * imposed on the command line and not changed since goes back to what the file held.
+     * A frontend that launches a game this way leaves the user's configuration as it was.
+     */
+    private Properties propertiesToSave() {
+        Properties out = new Properties();
+        out.putAll(props);
+        if (overrides.isEmpty()) return out;
+        Properties canonical = parseText(toPropertiesText());
+        for (Map.Entry<String, String> e : overrides.entrySet()) {
+            String key = e.getKey();
+            if (!java.util.Objects.equals(canonical.getProperty(key, props.getProperty(key)),
+                    e.getValue())) {
+                continue; // changed during the session: the user's choice is kept
+            }
+            String original = overriddenFileValues.get(key);
+            if (original == null) {
+                out.remove(key);
+            } else {
+                out.setProperty(key, original);
+            }
+        }
+        return out;
+    }
+
+    private static Properties parseText(String text) {
+        Properties p = new Properties();
+        try {
+            p.load(new java.io.StringReader(text));
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e); // a StringReader does not fail
+        }
+        return p;
     }
 
     /** Default properties used at the first run (file missing). */
@@ -435,6 +606,7 @@ public final class AmigaConfig {
         p.setProperty(K_RP_GUEST_ALLOWRESET, "false");
         p.setProperty(K_RP_AUDIO_MODE, "adpcm");         // section 15.5, closed while listening
         p.setProperty(K_RP_LAST_HOST, "");
+        p.setProperty(K_RP_SPECTATORS_MAX, Integer.toString(DEFAULT_SPECTATORS));
         // WHDLoad parameters (section whdload.prefs.*): defaults as in the stock WHDLoad.prefs.
         for (WhdPref pref : WHD_PREFS) {
             p.setProperty(pref.key(), pref.def());
@@ -1274,6 +1446,23 @@ public final class AmigaConfig {
         props.setProperty(K_RP_AUDIO_MODE, mode == null ? "adpcm" : mode.trim());
     }
 
+    /** Spectator places offered by default: the uplink, not the CPU, is the limit. */
+    public static final int DEFAULT_SPECTATORS = 4;
+
+    /** Most spectator places the popup and the file accept. */
+    public static final int MAX_SPECTATORS = 16;
+
+    /** Spectator places when hosting; 0 accepts no spectators. */
+    public int remotePlaySpectatorsMax() {
+        int n = getInt(K_RP_SPECTATORS_MAX, DEFAULT_SPECTATORS);
+        return Math.max(0, Math.min(MAX_SPECTATORS, n));
+    }
+
+    public void setRemotePlaySpectatorsMax(int n) {
+        props.setProperty(K_RP_SPECTATORS_MAX,
+                Integer.toString(Math.max(0, Math.min(MAX_SPECTATORS, n))));
+    }
+
     /** Last host joined: the popup offers it again. */
     public String remotePlayLastHost() {
         return props.getProperty(K_RP_LAST_HOST, "").trim();
@@ -1327,10 +1516,13 @@ public final class AmigaConfig {
      * interruption halfway (crash, full disk, the JVM exiting while the shutdown hook runs)
      * would leave a truncated configuration in place of the good one. With the atomic move
      * either the new file or still the old one is seen.
+     *
+     * <p><b>Command-line values are not saved.</b> A key imposed with {@code key=value} at
+     * launch is written with the value the file had, unless it was changed in the session.
      */
     public void save() throws IOException {
-        Path target = AppHome.resolve(FILE_NAME);
-        writeAtomically(target, toPropertiesText());
+        Path target = file != null ? file : AppHome.resolve(FILE_NAME);
+        writeAtomically(target, new AmigaConfig(propertiesToSave()).toPropertiesText());
         System.out.println("[CONFIG] Saved " + target.toAbsolutePath());
     }
 
@@ -1619,6 +1811,10 @@ public final class AmigaConfig {
         line(sb, K_RP_AUDIO_MODE, remotePlayAudioMode());
         sb.append("# Last host joined, so the popup can offer it again.\n");
         line(sb, K_RP_LAST_HOST, remotePlayLastHost());
+        sb.append("# Spectators: people who watch and listen without playing, with a code of\n");
+        sb.append("# their own. Each one costs as much upload as the guest, so 4 suits an\n");
+        sb.append("# ordinary connection. 0 accepts none; at most 16.\n");
+        line(sb, K_RP_SPECTATORS_MAX, Integer.toString(remotePlaySpectatorsMax()));
 
         sb.append("\n# ===================== WHDLoad parameters (WHDLoad.prefs) ====================\n");
         sb.append("# These values generate the S:WHDLoad.prefs file of the WHDLoad hard disk built\n");

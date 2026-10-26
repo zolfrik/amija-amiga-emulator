@@ -58,6 +58,13 @@ public interface RemotePlayControl {
     boolean isGuest();
 
     /**
+     * True if the session to the host is a spectator's: this machine watches and listens, and
+     * sends nothing that reaches the host's machine (section 16). {@link #isGuest()} is true
+     * as well.
+     */
+    boolean isSpectator();
+
+    /**
      * The game port involved in remote play (0 or 1), or {@code -1} if no role is active.
      *
      * <p>Who fills it is said by {@link #isHosting()} and {@link #isGuest()}, and the meaning
@@ -83,6 +90,15 @@ public interface RemotePlayControl {
 
     /** The code to pass to the other player, or {@code null} if not hosting. */
     String joinCode();
+
+    /**
+     * The code to pass to whoever only wants to watch, or {@code null} if not hosting or if
+     * spectators are off. It admits nobody to play, so it can be shared freely.
+     */
+    String spectatorCode();
+
+    /** Spectators watching now; 0 when not hosting. */
+    int spectatorCount();
 
     /** Address to give to someone on the same network, e.g. {@code 192.168.1.20:7788}. */
     String lanAddress();
@@ -130,11 +146,12 @@ public interface RemotePlayControl {
      * user watches, and a failure also makes an error message appear, because the user may
      * have pressed and looked away, and a status line nobody watches has warned nobody.
      *
+     * @param spectator whether to join as a spectator, with the spectator code
      * @return {@code null} if the attempt started, otherwise what is wrong with the
      *         parameters (empty address, malformed code): that is known at once and is not
      *         worth opening a socket to find out
      */
-    String requestJoin(String address, String joinCode);
+    String requestJoin(String address, String joinCode, boolean spectator);
 
     /**
      * Leaves the session.

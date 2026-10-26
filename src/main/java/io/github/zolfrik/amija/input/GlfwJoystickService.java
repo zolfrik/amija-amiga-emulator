@@ -36,7 +36,7 @@ import static org.lwjgl.glfw.GLFW.*;
  * OpenGL rendering goes through {@code AWTGLCanvas}/JAWT). GLFW's joystick API needs no
  * window: it queries the OS input subsystem directly. It must however be called entirely
  * from the thread that ran {@code glfwInit}: that is why the service owns a dedicated daemon
- * thread ("glfw-joystick") that initialises GLFW and polls at ~125 Hz.
+ * thread ("glfw-joystick") that initialises GLFW and polls every 2 ms.
  *
  * <p>The thread is started lazily at the first {@link #setPorts(List)} with at least one port
  * (i.e. only if the user selects "Joystick (real)"): while no port uses a real joystick, GLFW
@@ -61,8 +61,13 @@ public final class GlfwJoystickService {
 
     /** Threshold beyond which an analogue axis counts as "pressed" (digital direction). */
     private static final float AXIS_THRESHOLD = 0.5f;
-    /** Polling period (~125 Hz): responsive without weighing on the CPU. */
-    private static final long POLL_INTERVAL_MS = 8;
+    /**
+     * Polling period. The time a change waits to be seen is on average half the period, and
+     * a sleep on Windows lasts about 0.6 ms longer than asked: 2 ms keep that wait near 1 ms,
+     * well below the USB report interval of most controllers, at a cost of a few
+     * microseconds per poll.
+     */
+    private static final long POLL_INTERVAL_MS = 2;
 
     private static GlfwJoystickService instance;
 
@@ -179,7 +184,7 @@ public final class GlfwJoystickService {
      * One reading pass, <b>entirely under the lock</b>.
      *
      * <p>The lock is taken by {@link #setPorts} and here, and nowhere else: the contention is
-     * between a thread passing every 8 ms and a reconfiguration that happens when the user
+     * between a thread passing every 2 ms and a reconfiguration that happens when the user
      * confirms the popup, so there is nothing to optimise. In exchange a port that leaves the
      * list cannot receive a late write <i>after</i> being released, the only way fire would
      * stay held forever on a port nobody looks at any more.

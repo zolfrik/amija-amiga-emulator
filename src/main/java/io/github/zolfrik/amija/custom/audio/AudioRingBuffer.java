@@ -83,6 +83,43 @@ public final class AudioRingBuffer {
         return overflows.get();
     }
 
+    /** Shortest cushion the producer aims for: 1024 samples, about 23 ms. */
+    public static final int TARGET_MIN_FRAMES = 1024;
+    /** Longest cushion: 3072 samples, about 70 ms. */
+    public static final int TARGET_MAX_FRAMES = 3072;
+    /** Step by which the cushion grows after an underrun. */
+    public static final int TARGET_STEP_FRAMES = 512;
+
+    // The cushion is part of the audio latency: it starts short and is lengthened by the
+    // consumer when the producer fails to keep it filled (see raiseTarget).
+    private volatile int targetFrames = TARGET_MIN_FRAMES;
+
+    /** Number of samples the producer keeps in the buffer. */
+    public int targetFrames() {
+        return targetFrames;
+    }
+
+    /** {@link #targetFrames()} normalised like {@link #fillLevel()}. */
+    public double targetFillLevel() {
+        return (double) targetFrames / CAPACITY;
+    }
+
+    /** Sets the cushion, clamped to [{@link #TARGET_MIN_FRAMES}, {@link #TARGET_MAX_FRAMES}]. */
+    public void setTargetFrames(int frames) {
+        targetFrames = Math.max(TARGET_MIN_FRAMES, Math.min(TARGET_MAX_FRAMES, frames));
+    }
+
+    /**
+     * Lengthens the cushion by one step. Returns {@code false} if it is already at the
+     * maximum.
+     */
+    public boolean raiseTarget() {
+        int t = targetFrames;
+        if (t >= TARGET_MAX_FRAMES) return false;
+        setTargetFrames(t + TARGET_STEP_FRAMES);
+        return true;
+    }
+
     /**
      * Fill level of the buffer, normalised to [0,1]. 0 = empty (risk of underrun), 1 = full
      * (risk of overflow). Used by the ASR (Adaptive Sample Rate) algorithm to centre the

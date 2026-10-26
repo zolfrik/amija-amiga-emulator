@@ -155,9 +155,20 @@ public final class MediaLink implements AutoCloseable {
         } catch (SocketTimeoutException e) {
             return null;
         }
-        int length = rxPacket.getLength();
-        SocketAddress from = rxPacket.getSocketAddress();
+        return accept(rxBuffer, rxPacket.getLength(), rxPacket.getSocketAddress(), plainOut);
+    }
 
+    /**
+     * Opens a datagram that someone else read from the socket.
+     *
+     * <p>The host has one UDP socket for the player and every spectator, so a single thread
+     * reads it and hands each datagram to the link of its sender (section 16). This is the
+     * whole of {@link #receive} after the read: the filter on the peer, the adoption and the
+     * seal.
+     *
+     * @return the outcome, or {@code null} if the datagram is not this link's
+     */
+    public Received accept(byte[] datagram, int length, SocketAddress from, byte[] plainOut) {
         SocketAddress known = peer;
         if (known != null) {
             if (!known.equals(from)) {
@@ -171,19 +182,19 @@ public final class MediaLink implements AutoCloseable {
 
         int plainLength;
         try {
-            plainLength = cipher.open(rxBuffer, length, plainOut);
+            plainLength = cipher.open(datagram, length, plainOut);
         } catch (ProtocolException e) {
             rejectedUnsealed++;
             return null;
         }
 
         if (known == null) {
-            // It opened with the session key: it is the guest, wherever it is.
+            // It opened with the session key: it is the peer, wherever it is.
             peer = from;
         }
         datagramsReceived++;
-        return new Received(RemotePlayProtocol.headerType(rxBuffer), plainLength,
-                RemotePlayProtocol.headerSeq(rxBuffer));
+        return new Received(RemotePlayProtocol.headerType(datagram), plainLength,
+                RemotePlayProtocol.headerSeq(datagram));
     }
 
     /** Datagrams from a sender that is not the peer, or beyond the adoption rate. */

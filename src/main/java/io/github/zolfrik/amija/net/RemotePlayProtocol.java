@@ -66,8 +66,11 @@ public final class RemotePlayProtocol {
      * as zero, i.e. <i>empty port</i>, and would find its commands ignored with no error
      * anywhere: exactly the silent failure the version check exists to turn into a readable
      * sentence.
+     *
+     * <p>Version 3 added the spectator: a role byte in HELLO and WELCOME, and the
+     * {@link #TYPE_SPECTATOR} datagram.
      */
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     /** 'A','J': a zero-cost filter against traffic that does not concern us. */
     public static final int MAGIC = 0x414A;
@@ -75,6 +78,13 @@ public final class RemotePlayProtocol {
     public static final int TYPE_VIDEO = 1;
     public static final int TYPE_AUDIO = 2;      // Fase 4
     public static final int TYPE_FEEDBACK = 3;
+    /** Spectator to host: which video frames it holds ({@link SpectatorFeedback}). */
+    public static final int TYPE_SPECTATOR = 4;
+
+    /** The guest: sees, hears and plays. */
+    public static final int ROLE_PLAYER = 0;
+    /** The spectator: sees and hears, sends no input at all. */
+    public static final int ROLE_SPECTATOR = 1;
 
     /** Datagram header: magic, type, flags, seq. */
     public static final int DATAGRAM_HEADER = 8;
@@ -131,6 +141,10 @@ public final class RemotePlayProtocol {
     public static final int REJECT_SHUTDOWN = 4;
     /** The host accepts only its own local network (section 8.5) and this peer is not on it. */
     public static final int REJECT_LAN_ONLY = 5;
+    /** Every spectator place is taken. */
+    public static final int REJECT_SPECTATORS_FULL = 6;
+    /** The host does not accept spectators. */
+    public static final int REJECT_NO_SPECTATORS = 7;
 
     private RemotePlayProtocol() {
     }
@@ -142,6 +156,8 @@ public final class RemotePlayProtocol {
             case REJECT_PROTOCOL -> "versione di protocollo diversa";
             case REJECT_SHUTDOWN -> "l'host ha chiuso la sessione";
             case REJECT_LAN_ONLY -> "l'host accetta solo la propria rete locale";
+            case REJECT_SPECTATORS_FULL -> "posti per spettatori esauriti";
+            case REJECT_NO_SPECTATORS -> "l'host non accetta spettatori";
             default -> "motivo sconosciuto (" + code + ")";
         };
     }
@@ -185,7 +201,8 @@ public final class RemotePlayProtocol {
             throw new ProtocolException("magic 0x" + Integer.toHexString(magic) + " non nostro");
         }
         int type = src[2] & 0xFF;
-        if (type != TYPE_VIDEO && type != TYPE_AUDIO && type != TYPE_FEEDBACK) {
+        if (type != TYPE_VIDEO && type != TYPE_AUDIO && type != TYPE_FEEDBACK
+                && type != TYPE_SPECTATOR) {
             throw new ProtocolException("tipo di datagramma sconosciuto: " + type);
         }
         if (src[3] != 0) {

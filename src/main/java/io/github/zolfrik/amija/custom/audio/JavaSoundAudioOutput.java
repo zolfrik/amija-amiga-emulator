@@ -26,21 +26,28 @@ import javax.sound.sampled.DataLine;
 import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.SourceDataLine;
 
+import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
 
 public final class JavaSoundAudioOutput implements Runnable {
 
     public static final int OUTPUT_RATE = 44_100;
-    private static final int CHUNK_FRAMES = 1024;
+    // 512 samples, about 12 ms: the line holds between one and two of them.
+    private static final int CHUNK_FRAMES = 512;
     private static final int LINE_BUFFER_FRAMES = CHUNK_FRAMES * 2;
     // Below this the ring is treated as empty (underrun); above it a short read is played.
     private static final int MIN_READ_FRAMES = CHUNK_FRAMES / 4;
-    // Above this the ring is cut back to the cushion (about 190 ms of latency).
-    private static final int MAX_FILL_FRAMES = CHUNK_FRAMES * 8;
-    // Cushion to accumulate before starting to drain (priming): avoids starting dry, where the
-    // producer's slightest jitter would cause an underrun. Kept a little below the target level
-    // of the producer's ASR.
-    private static final int PRIME_FRAMES = CHUNK_FRAMES + CHUNK_FRAMES / 2;
+
+    // The cushion of the ring (AudioRingBuffer.targetFrames) starts at its minimum and grows
+    // by one step at each underrun that happens while the machine is emulating, at most one
+    // step per RAISE_INTERVAL_NS: a host that cannot keep the short cushion filled gets a
+    // longer one instead of a crackle every few seconds. Underruns during a pause, or in the
+    // first seconds after the start (JIT warm-up) or after a resume, do not count. What has
+    // been learned is kept for the rest of the session, across machine rebuilds.
+    private static final long START_GRACE_NS = 5_000_000_000L;
+    private static final long RESUME_GRACE_NS = 1_000_000_000L;
+    private static final long RAISE_INTERVAL_NS = 2_000_000_000L;
+    private static volatile int learnedTargetFrames = AudioRingBuffer.TARGET_MIN_FRAMES;
 
     // The A500's analogue chain, one per side (see A500AudioFilter): a single pole would be
     // darker than the real filter and have the wrong slope above the cut-off.
@@ -55,6 +62,14 @@ public final class JavaSoundAudioOutput implements Runnable {
     private SourceDataLine line;
 
     private DoubleSupplier correctionSupplier;
+
+    // True while the machine is emulating (not paused); underruns count only then.
+    private volatile BooleanSupplier activeSupplier = () -> true;
+
+    /** Tells the output whether the machine is emulating, so pauses are not taken for underruns. */
+    public void setActiveSupplier(BooleanSupplier supplier) {
+        this.activeSupplier = supplier != null ? supplier : () -> true;
+    }
 
     /**
      * Whoever receives a copy of the PCM chunk just before it reaches the sound card.
@@ -129,8 +144,11 @@ public final class JavaSoundAudioOutput implements Runnable {
             line.open(format, LINE_BUFFER_FRAMES * 4);
             line.start();
 
-            // Priming: accumulate an initial cushion before draining the buffer.
-            while (running && ringBuffer.available() < PRIME_FRAMES) {
+            ringBuffer.setTargetFrames(learnedTargetFrames);
+
+            // Priming: accumulate an initial cushion before draining the buffer. Kept a little
+            // below the target level of the producer's ASR, so it is always reached.
+            while (running && ringBuffer.available() < ringBuffer.targetFrames() * 3L / 4) {
                 Thread.sleep(2);
             }
 
@@ -143,17 +161,28 @@ public final class JavaSoundAudioOutput implements Runnable {
             int  statUnderflows = 0;
             long statOverflowBase = ringBuffer.overflowCount();
 
+            long activeSinceNs = 0;          // 0 = not emulating
+            long graceNs = START_GRACE_NS;
+            long lastRaiseNs = 0;
+
             while (running) {
                 // Read only when the line has room for a whole chunk: it then still holds
                 // about one, and the ring has had that long to refill since the last read.
                 while (running && line.available() < pcm.length) {
                     Thread.sleep(1);
                 }
+                if (activeSupplier.getAsBoolean()) {
+                    if (activeSinceNs == 0) activeSinceNs = System.nanoTime();
+                } else if (activeSinceNs != 0) {
+                    activeSinceNs = 0;
+                    graceNs = RESUME_GRACE_NS;
+                }
                 // A ring this full means the consumer was held up (the sound device starting,
                 // a stall of the host): everything beyond the cushion is pure latency, and
                 // draining it through the ASR would take seconds at a lowered pitch.
-                if (ringBuffer.available() > MAX_FILL_FRAMES) {
-                    ringBuffer.discardDownTo(PRIME_FRAMES);
+                int target = ringBuffer.targetFrames();
+                if (ringBuffer.available() > target * 4L) {
+                    ringBuffer.discardDownTo(target * 3L / 4);
                 }
                 long fillBefore = ringBuffer.available();
                 if (fillBefore < statMinFill) statMinFill = fillBefore;
@@ -168,6 +197,14 @@ public final class JavaSoundAudioOutput implements Runnable {
                 int frames = got;
                 if (got < MIN_READ_FRAMES) {
                     statUnderflows++;
+                    long nowNs = System.nanoTime();
+                    if (activeSinceNs != 0 && nowNs - activeSinceNs > graceNs
+                            && nowNs - lastRaiseNs > RAISE_INTERVAL_NS && ringBuffer.raiseTarget()) {
+                        lastRaiseNs = nowNs;
+                        learnedTargetFrames = ringBuffer.targetFrames();
+                        System.out.printf("[AUDIO] Underrun: audio cushion lengthened to %d ms%n",
+                                ringBuffer.targetFrames() * 1000 / OUTPUT_RATE);
+                    }
                     // Underrun: instead of a hard cut or a DC hold (click), fade the available
                     // samples to zero with a falling ramp and fill the rest with silence.
                     float n = got > 0 ? got : 1.0f;

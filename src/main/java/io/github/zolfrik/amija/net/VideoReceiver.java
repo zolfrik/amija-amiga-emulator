@@ -38,7 +38,7 @@ import java.nio.ByteBuffer;
  *
  * <h2>Old frames are thrown away, not decoded</h2>
  * A frame arriving after a newer one is useless (nobody wants to see backwards) but above all
- * <b>must not be written into the ring</b>: {@code frameId} and {@code frameId+4} share the slot,
+ * <b>must not be written into the ring</b>: {@code frameId} and {@code frameId+slots} share the slot,
  * so decoding a latecomer would evict a newer reference, doing harm to deliver something
  * useless. The rule is therefore strict: only what advances is accepted.
  *
@@ -65,6 +65,19 @@ public final class VideoReceiver implements AutoCloseable {
     /** Read by the thread sending the feedback: the number the ACK carries to the host. */
     private volatile long lastGoodFrameId = -1;
 
+    /**
+     * What a spectator reports: the newest frame held in the upper bits, the mask of
+     * {@link ReferenceRing#heldMask} in the low 16. One field, so the two are always read
+     * together.
+     */
+    private volatile long heldState = -1;
+
+    /**
+     * A frame arrived whose reference this receiver does not hold, and no keyframe has come
+     * since: the chain is broken and only a keyframe repairs it.
+     */
+    private volatile boolean needsKeyframe = true;
+
     private long framesDelivered;
     private long framesLate;
     private long framesNoReference;
@@ -73,10 +86,15 @@ public final class VideoReceiver implements AutoCloseable {
     private long decodeNanos;
 
     public VideoReceiver(int width, int height) {
+        this(width, height, ReferenceRing.SLOTS);
+    }
+
+    /** @param slots size of the ring of references: {@link ReferenceRing#SPECTATOR_SLOTS} for a spectator */
+    public VideoReceiver(int width, int height, int slots) {
         this.width = width;
         this.height = height;
         this.decoder = new FrameDecoder(width, height);
-        this.ring = new ReferenceRing(width * height);
+        this.ring = new ReferenceRing(width * height, slots);
     }
 
     /**
@@ -115,6 +133,7 @@ public final class VideoReceiver implements AutoCloseable {
                 // are lost for long; not an error, and the cure comes by itself: without ACKs
                 // the host ends up with no references and sends a keyframe.
                 framesNoReference++;
+                needsKeyframe = true;
                 return false;
             }
         }
@@ -134,6 +153,10 @@ public final class VideoReceiver implements AutoCloseable {
 
         ring.commit(frameId);
         lastGoodFrameId = frameId;
+        if (header.isKeyframe()) {
+            needsKeyframe = false;
+        }
+        heldState = (frameId << 16) | ring.heldMask(frameId);
         framesDelivered++;
         header.applyTo(info);
         if (sink != null) {
@@ -147,11 +170,26 @@ public final class VideoReceiver implements AutoCloseable {
         return lastGoodFrameId;
     }
 
+    /**
+     * The newest frame held and which of the frames before it are still in the ring, packed:
+     * {@code newest << 16 | mask}, or {@code -1} if nothing has been received yet.
+     */
+    public long heldState() {
+        return heldState;
+    }
+
+    /** Whether only a keyframe can repair this receiver's chain of references. */
+    public boolean needsKeyframe() {
+        return needsKeyframe;
+    }
+
     /** Starts from scratch: new session generation, no shared reference. */
     public void reset() {
         reassembler.reset();
         ring.clear();
         lastGoodFrameId = -1;
+        heldState = -1;
+        needsKeyframe = true;
     }
 
     public long framesDelivered() {

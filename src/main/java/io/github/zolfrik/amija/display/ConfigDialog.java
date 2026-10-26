@@ -32,6 +32,8 @@ import io.github.zolfrik.amija.common.Chipset;
 import io.github.zolfrik.amija.cpu.CpuModel;
 import io.github.zolfrik.amija.common.VideoMode;
 import io.github.zolfrik.amija.config.AmigaConfig;
+import io.github.zolfrik.amija.config.MediaSet;
+import io.github.zolfrik.amija.config.MediaSet.Kind;
 import io.github.zolfrik.amija.config.HardwareRules;
 import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.i18n.Messages;
@@ -557,12 +559,12 @@ public final class ConfigDialog {
         // -------------------------------------------------------------------
         JPanel media = section(Messages.t("section.media"));
         DriveList driveList = new DriveList(dialog, config, media, hardware);
-        driveList.seed(MediaState.fromConfig(config));
+        driveList.seed(MediaSet.fromConfig(config));
 
         // The media as the three classic sections see them, and how to put them back: the
         // two directions of the exchange with the single list.
-        java.util.function.Supplier<MediaState> classicMedia = () -> {
-            MediaState s = new MediaState();
+        java.util.function.Supplier<MediaSet> classicMedia = () -> {
+            MediaSet s = new MediaSet();
             for (int i = 0; i < 4; i++) {
                 s.floppyDisk[i] = driveDisk[i].getText();
                 s.floppyConnected[i] = driveEnabled[i].isSelected();
@@ -577,7 +579,7 @@ public final class ConfigDialog {
             s.whdloadFile = whdFile.getText();
             return s;
         };
-        java.util.function.Consumer<MediaState> applyToClassic = s -> {
+        java.util.function.Consumer<MediaSet> applyToClassic = s -> {
             for (int i = 0; i < 4; i++) {
                 driveDisk[i].setText(s.floppyDisk[i] == null ? "" : s.floppyDisk[i]);
                 driveDisk[i].setCaretPosition(0);
@@ -1856,64 +1858,6 @@ public final class ConfigDialog {
     }
 
     // =========================================================================
-    // Media: model shared by the two views
-    // =========================================================================
-
-    /**
-     * The media chosen by the user, in the exact form they take in {@code amiga.properties}.
-     * It is the currency exchanged between the two views of the popup (the three classic
-     * sections Floppy/Hard disk/WHDLoad and Auto mode's single list), so moving from one to
-     * the other does not lose what was just chosen.
-     */
-    private static final class MediaState {
-
-        final String[] floppyDisk = new String[4];
-        final boolean[] floppyConnected = new boolean[4];
-        final boolean[] floppyReadOnly = new boolean[4];
-        final String[] hdDisk = new String[AmigaConfig.HD_UNITS.length];
-        final boolean[] hdConnected = new boolean[AmigaConfig.HD_UNITS.length];
-        final boolean[] hdReadOnly = new boolean[AmigaConfig.HD_UNITS.length];
-        boolean whdloadEnabled;
-        String whdloadFile = "";
-
-        static MediaState fromConfig(AmigaConfig c) {
-            MediaState s = new MediaState();
-            for (int i = 0; i < 4; i++) {
-                s.floppyDisk[i] = c.driveDisk(i);
-                s.floppyConnected[i] = c.driveEnabled(i);
-                s.floppyReadOnly[i] = c.driveReadOnly(i);
-            }
-            for (int u = 0; u < s.hdDisk.length; u++) {
-                s.hdDisk[u] = c.hdDisk(u);
-                s.hdConnected[u] = c.hdEnabled(u);
-                s.hdReadOnly[u] = c.hdReadOnly(u);
-            }
-            s.whdloadEnabled = c.whdloadEnabled();
-            s.whdloadFile = c.whdloadFile() == null ? "" : c.whdloadFile();
-            return s;
-        }
-
-        void toConfig(AmigaConfig c) {
-            for (int i = 0; i < 4; i++) {
-                c.setDriveEnabled(i, floppyConnected[i]);
-                c.setDriveDisk(i, text(floppyDisk[i]));
-                c.setDriveReadOnly(i, floppyReadOnly[i] || isZipPath(text(floppyDisk[i])));
-            }
-            for (int u = 0; u < hdDisk.length; u++) {
-                c.setHdEnabled(u, hdConnected[u]);
-                c.setHdDisk(u, text(hdDisk[u]));
-                c.setHdReadOnly(u, hdReadOnly[u]);
-            }
-            c.setWhdloadEnabled(whdloadEnabled);
-            c.setWhdloadFile(text(whdloadFile));
-        }
-
-        private static String text(String s) {
-            return s == null ? "" : s.trim();
-        }
-    }
-
-    // =========================================================================
     // Single media list (Auto mode)
     // =========================================================================
 
@@ -1938,34 +1882,6 @@ public final class ConfigDialog {
      * disappear before the restart.
      */
     private static final class DriveList {
-
-        /** Media type, recognised from the file extension. */
-        private enum Kind {
-            FLOPPY(4, "adf", "ipf", "zip"),
-            HARDDISK(AmigaConfig.HD_UNITS.length, "hdf"),
-            WHDLOAD(1, "lha", "lzh");
-
-            final int max;
-            final String[] extensions;
-
-            Kind(int max, String... extensions) {
-                this.max = max;
-                this.extensions = extensions;
-            }
-
-            static Kind of(String path) {
-                String name = path.toLowerCase(java.util.Locale.ROOT);
-                // A multi-disk zip is addressed as <zip>!<n>: the archive is what counts.
-                int cut = name.indexOf(io.github.zolfrik.amija.custom.DiskImage.ZIP_ENTRY_SEPARATOR);
-                if (cut > 0) name = name.substring(0, cut);
-                for (Kind k : values()) {
-                    for (String ext : k.extensions) {
-                        if (name.endsWith("." + ext)) return k;
-                    }
-                }
-                return null;
-            }
-        }
 
         /** A file chosen by the user: its type and how it is to be mounted. */
         private static final class Item {
@@ -2000,11 +1916,11 @@ public final class ConfigDialog {
          * archive, and the disks it contains go back to their places by themselves at the
          * next start.
          */
-        void seed(MediaState state) {
+        void seed(MediaSet state) {
             items.clear();
-            String df0 = MediaState.text(state.floppyDisk[0]);
+            String df0 = MediaSet.text(state.floppyDisk[0]);
             for (int i = 0; i < 4; i++) {
-                String path = MediaState.text(state.floppyDisk[i]);
+                String path = MediaSet.text(state.floppyDisk[i]);
                 if (path.isEmpty() || !state.floppyConnected[i]) {
                     // The drive the running machine really has stays in the list even without
                     // a disk: what was ejected is the floppy, not the drive.
@@ -2015,10 +1931,10 @@ public final class ConfigDialog {
                 add(path, state.floppyReadOnly[i]);
             }
             for (int u = 0; u < state.hdDisk.length; u++) {
-                String path = MediaState.text(state.hdDisk[u]);
+                String path = MediaSet.text(state.hdDisk[u]);
                 if (!path.isEmpty() && state.hdConnected[u]) add(path, state.hdReadOnly[u]);
             }
-            String whd = MediaState.text(state.whdloadFile);
+            String whd = MediaSet.text(state.whdloadFile);
             if (state.whdloadEnabled && !whd.isEmpty()) add(whd, false);
             rebuild();
         }
@@ -2044,67 +1960,10 @@ public final class ConfigDialog {
         }
 
         /** The media of the list, spread over the machine's drives. */
-        MediaState toMediaState() {
-            MediaState s = new MediaState();
-            int floppies = 0;
-            int hds = 0;
-            for (Item item : items) {
-                switch (item.kind) {
-                    case FLOPPY -> {
-                        if (floppies >= 4) break;
-                        s.floppyDisk[floppies] = item.path;
-                        s.floppyReadOnly[floppies] = item.readOnly;
-                        floppies++;
-                    }
-                    case HARDDISK -> {
-                        if (hds >= s.hdDisk.length) break;
-                        s.hdDisk[hds] = item.path;
-                        s.hdConnected[hds] = true;
-                        s.hdReadOnly[hds] = item.readOnly;
-                        hds++;
-                    }
-                    case WHDLOAD -> {
-                        s.whdloadEnabled = true;
-                        s.whdloadFile = item.path;
-                    }
-                }
-            }
-            // One connected drive per disk, and as many for the disks of a multi-disk zip in
-            // DF0, if any (Amija spreads them at start-up, but only over the drives that
-            // exist).
-            //
-            // With no floppy in the list the drives stay disconnected, exactly like a machine
-            // configured by hand with no drive ticked: booting a hard disk or WHDLoad needs no
-            // drive, and having one there only costs the time the Kickstart spends polling it.
-            // The exception is a completely empty list: there DF0 stays connected because it
-            // is the only possible target of a disk dragged onto the window, and without it
-            // drag-and-drop would have nowhere to land (AmigaDisplay refuses a drop on
-            // drives that are not connected).
-            //
-            // A drive left empty keeps its place in the list while the machine runs (it is
-            // really there, and a disk can be put back in), but it is not requested at the
-            // next start: so the drives go up to the last one that has a disk, and the empty
-            // ones before it stay connected because without them that one would not exist.
-            int lastDisk = -1;
-            for (int i = 0; i < 4; i++) {
-                if (!MediaState.text(s.floppyDisk[i]).isEmpty()) lastDisk = i;
-            }
-            int connected = lastDisk + 1;
-            if (lastDisk >= 0) connected = Math.max(connected, zipDiskCount(s.floppyDisk[0]));
-            if (items.isEmpty()) connected = 1;
-            for (int i = 0; i < Math.min(4, connected); i++) s.floppyConnected[i] = true;
-            return s;
-        }
-
-        /** How many disks the archive contains, 1 if it is not a multi-disk zip. */
-        private static int zipDiskCount(String path) {
-            if (!isZipPath(path)) return 1;
-            try {
-                return Math.max(1, io.github.zolfrik.amija.custom.DiskImage
-                        .listZipDiskEntries(io.github.zolfrik.amija.custom.DiskImage.pathOf(path)).size());
-            } catch (IOException e) {
-                return 1;
-            }
+        MediaSet toMediaState() {
+            java.util.List<MediaSet.Entry> entries = new java.util.ArrayList<>();
+            for (Item item : items) entries.add(new MediaSet.Entry(item.kind, item.path, item.readOnly));
+            return MediaSet.fromList(entries);
         }
 
         /** {@code true} if {@code disk} is a disk extracted from the zip {@code zipPath}. */
@@ -2168,7 +2027,7 @@ public final class ConfigDialog {
             return switch (item.kind) {
                 // A multi-disk zip in DF0 wants one drive per disk.
                 case FLOPPY -> nth >= hardware.floppyDrives()
-                        || (nth == 0 && zipDiskCount(item.path) > hardware.floppyDrives());
+                        || (nth == 0 && MediaSet.zipDiskCount(item.path) > hardware.floppyDrives());
                 case HARDDISK -> nth >= hardware.hdDisks().size()
                         || !hardware.hdDisks().get(nth).equals(item.path);
                 case WHDLOAD -> !hardware.whdloadFile().equals(item.path);

@@ -47,11 +47,20 @@ import java.util.concurrent.locks.LockSupport;
  *
  * <p>The rate is {@value #FEEDBACK_HZ} Hz: 44 bytes a time, i.e. 70 kbit/s (nothing), and in
  * exchange the part of input latency due to sampling is halved (sections 4.3, 5).
+ *
+ * <h2>Spectator</h2>
+ * Connected with {@link RemotePlayProtocol#ROLE_SPECTATOR} the same class only watches
+ * (section 16): its ring holds {@link ReferenceRing#SPECTATOR_SLOTS} frames, and instead of the
+ * controls it reports which frames it holds ({@link SpectatorFeedback}), at
+ * {@value #SPECTATOR_FEEDBACK_HZ} Hz. No input source is ever read.
  */
 public final class RemotePlayGuest implements AutoCloseable {
 
     /** Sampling and sending of the controls' state: 200 Hz, i.e. once every 5 ms. */
     public static final int FEEDBACK_HZ = 200;
+
+    /** A spectator's report: often enough that the host's reference stays a frame or two old. */
+    public static final int SPECTATOR_FEEDBACK_HZ = 100;
 
     private static final int POLL_MS = 200;
     private static final int SESSION_TIMEOUT_MS = 10_000;
@@ -70,6 +79,8 @@ public final class RemotePlayGuest implements AutoCloseable {
 
     private final FeedbackPacket outgoing = new FeedbackPacket();
     private final byte[] outgoingBytes = new byte[FeedbackPacket.SIZE];
+    private final SpectatorFeedback report = new SpectatorFeedback();
+    private final byte[] reportBytes = new byte[SpectatorFeedback.SIZE];
     private final byte[] plain = new byte[RemotePlayProtocol.MAX_PLAINTEXT];
 
     private volatile InputSource inputSource;
@@ -94,12 +105,24 @@ public final class RemotePlayGuest implements AutoCloseable {
     public static RemotePlayGuest connect(String host, int port, String joinCode,
                                           NetImpairment impairment,
                                           VideoReceiver.FrameSink sink) throws IOException {
+        return connect(host, port, joinCode, RemotePlayProtocol.ROLE_PLAYER, impairment, sink);
+    }
+
+    /**
+     * Connects asking for a role.
+     *
+     * @param role {@link RemotePlayProtocol#ROLE_PLAYER} or {@link RemotePlayProtocol#ROLE_SPECTATOR}
+     * @throws Handshake.RejectedException if the host refused, with the reason to show
+     */
+    public static RemotePlayGuest connect(String host, int port, String joinCode, int role,
+                                          NetImpairment impairment,
+                                          VideoReceiver.FrameSink sink) throws IOException {
         Socket socket = new Socket();
         socket.connect(new InetSocketAddress(host, port), Handshake.HANDSHAKE_TIMEOUT_MS);
         ControlChannel channel = new ControlChannel(socket);
         Handshake.Session negotiated;
         try {
-            negotiated = Handshake.connect(channel, joinCode);
+            negotiated = Handshake.connect(channel, joinCode, role);
         } catch (IOException e) {
             channel.close();
             throw e;
@@ -114,7 +137,8 @@ public final class RemotePlayGuest implements AutoCloseable {
         this.session = session;
         this.sink = sink;
         this.impairment = impairment == null ? NetImpairment.NONE : impairment;
-        this.receiver = new VideoReceiver(session.width(), session.height());
+        this.receiver = new VideoReceiver(session.width(), session.height(),
+                session.isSpectator() ? ReferenceRing.SPECTATOR_SLOTS : ReferenceRing.SLOTS);
         this.mediaSocket = new DatagramSocket();
         this.media = new MediaLink(mediaSocket, session.cipher(Handshake.DIRECTION_GUEST),
                 new InetSocketAddress(host, session.mediaPort()), this.impairment);
@@ -122,6 +146,7 @@ public final class RemotePlayGuest implements AutoCloseable {
 
         outgoing.clear();
         outgoing.sessionGen = session.sessionGen();
+        report.sessionGen = session.sessionGen();
 
         // The receiver exists if the host sends audio; the PLAYER only if there is also a
         // card to play it. They are separate on purpose: a guest without a sound card must
@@ -147,12 +172,19 @@ public final class RemotePlayGuest implements AutoCloseable {
             }
         };
 
-        RemotePlaySettings.say("collegato a %s:%d — video %dx%d, audio %s, game port %d,"
-                + " tastiera %s",
-                host, session.mediaPort(), session.width(), session.height(),
-                audioReceiver == null ? "spento"
-                        : AudioBlockHeader.formatName(session.audioFormat()),
-                session.guestGamePort(), session.keyboardShared() ? "condivisa" : "solo host");
+        if (session.isSpectator()) {
+            RemotePlaySettings.say("collegato a %s:%d come spettatore — video %dx%d, audio %s",
+                    host, session.mediaPort(), session.width(), session.height(),
+                    audioReceiver == null ? "spento"
+                            : AudioBlockHeader.formatName(session.audioFormat()));
+        } else {
+            RemotePlaySettings.say("collegato a %s:%d — video %dx%d, audio %s, game port %d,"
+                    + " tastiera %s",
+                    host, session.mediaPort(), session.width(), session.height(),
+                    audioReceiver == null ? "spento"
+                            : AudioBlockHeader.formatName(session.audioFormat()),
+                    session.guestGamePort(), session.keyboardShared() ? "condivisa" : "solo host");
+        }
 
         mediaThread = thread(this::mediaLoop, "amija-remoteplay-media");
         feedbackThread = thread(this::feedbackLoop, "amija-remoteplay-feedback");
@@ -198,6 +230,11 @@ public final class RemotePlayGuest implements AutoCloseable {
     /** True while the host has the F12 popup open: the screen is still, not hung (section 9). */
     public boolean hostPaused() {
         return hostPaused;
+    }
+
+    /** Admitted as a spectator: watches and listens, drives nothing. */
+    public boolean isSpectator() {
+        return session.isSpectator();
     }
 
     public int width() {
@@ -379,6 +416,10 @@ public final class RemotePlayGuest implements AutoCloseable {
      * at the next tick instead of accumulating.
      */
     private void feedbackLoop() {
+        if (session.isSpectator()) {
+            spectatorLoop();
+            return;
+        }
         final long periodNanos = 1_000_000_000L / FEEDBACK_HZ;
         long next = System.nanoTime();
         while (alive) {
@@ -411,6 +452,38 @@ public final class RemotePlayGuest implements AutoCloseable {
                 LockSupport.parkNanos(wait);
             } else {
                 next = System.nanoTime();   // fell behind: restart from now
+            }
+        }
+    }
+
+    /**
+     * A spectator's reports: which frames it holds, and whether only a keyframe can help it.
+     * The input source, if any, is never read.
+     */
+    private void spectatorLoop() {
+        final long periodNanos = 1_000_000_000L / SPECTATOR_FEEDBACK_HZ;
+        long next = System.nanoTime();
+        while (alive) {
+            report.seq++;
+            report.fillFrom(receiver);
+            report.audioFillMs = audioPlayer == null ? 0 : audioPlayer.fillMillis();
+            report.writeTo(reportBytes);
+            try {
+                media.send(RemotePlayProtocol.TYPE_SPECTATOR, reportBytes, 0,
+                        SpectatorFeedback.SIZE);
+            } catch (IOException e) {
+                if (alive) {
+                    fail(EndCause.ERROR, "invio del rapporto interrotto: " + e.getMessage(),
+                            e.getMessage());
+                }
+                return;
+            }
+            next += periodNanos;
+            long wait = next - System.nanoTime();
+            if (wait > 0) {
+                LockSupport.parkNanos(wait);
+            } else {
+                next = System.nanoTime();
             }
         }
     }
