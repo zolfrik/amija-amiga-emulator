@@ -111,6 +111,8 @@ public final class AmigaConfig {
     private static final String K_JOY_KEY = "input.port%d.joystick.%s";
     private static final String K_LANGUAGE    = "ui.language";
     private static final String K_UI_SCALE    = "ui.scale";
+    /** Comma-separated ids of the collapsible F12 popup sections the user left open. */
+    private static final String K_UI_EXPANDED = "ui.popup.expanded";
     private static final String K_VIDEO_MODE  = "video.mode";
     private static final String K_CHIPSET     = "chipset";
     private static final String K_CPU_MODEL   = "cpu.model";
@@ -122,6 +124,8 @@ public final class AmigaConfig {
     private static final String K_SHADER = "video.shader";
     /** State slot "Save state" and "Load state" act on (1..5). */
     private static final String K_STATE_SLOT = "savestate.slot";
+    /** Seconds of rewind history kept while playing; 0 = rewind off. */
+    private static final String K_REWIND_SECONDS = "rewind.seconds";
     // Diagnostic overlays (NOT exposed in the F12 popup): file only.
     private static final String K_OVERLAY_FPS = "overlay.fps.enabled";
     private static final String K_OVERLAY_FRAMECOUNTER = "overlay.framecounter.enabled";
@@ -1314,6 +1318,30 @@ public final class AmigaConfig {
         }
     }
 
+    /**
+     * Ids of the collapsible sections of the F12 popup that are open. Every collapsible
+     * section starts closed: only the ones listed here are open, so a section added in a
+     * later version also starts closed. Ids are those used by {@code ConfigDialog}.
+     */
+    public java.util.Set<String> expandedPopupSections() {
+        java.util.Set<String> ids = new java.util.LinkedHashSet<>();
+        for (String id : props.getProperty(K_UI_EXPANDED, "").split(",")) {
+            if (!id.isBlank()) ids.add(id.trim());
+        }
+        return ids;
+    }
+
+    /**
+     * Opens or closes a collapsible section of the F12 popup. Like the active state slot it
+     * takes effect at once, even if the popup is closed with Cancel: it is the look of the
+     * popup, not a pending change to the machine.
+     */
+    public void setPopupSectionExpanded(String id, boolean expanded) {
+        java.util.Set<String> ids = expandedPopupSections();
+        if (expanded) ids.add(id); else ids.remove(id);
+        props.setProperty(K_UI_EXPANDED, String.join(",", ids));
+    }
+
     public void setLanguage(String lang) {
         props.setProperty(K_LANGUAGE, "it".equalsIgnoreCase(lang) ? "it" : "en");
     }
@@ -1337,6 +1365,18 @@ public final class AmigaConfig {
      */
     public void setSaveStateSlot(int slot) {
         props.setProperty(K_STATE_SLOT, Integer.toString(Math.max(1, slot)));
+    }
+
+    /**
+     * Seconds of play the rewind keeps (default 60); 0 turns it off. Not a machine
+     * parameter: changing it never restarts the machine.
+     */
+    public int rewindSeconds() {
+        return Math.max(0, getInt(K_REWIND_SECONDS, 60));
+    }
+
+    public void setRewindSeconds(int seconds) {
+        props.setProperty(K_REWIND_SECONDS, Integer.toString(Math.max(0, seconds)));
     }
 
     /**
@@ -1715,6 +1755,12 @@ public final class AmigaConfig {
         sb.append("# The change takes effect only after restarting the emulator.\n");
         line(sb, K_UI_SCALE, uiScaleValue());
 
+        sb.append("\n# Collapsible sections of the F12 popup that are open, separated by commas\n");
+        sb.append("# (gameports, state, rewind, remoteplay, av, gui). Empty = all closed.\n");
+        sb.append("# System, Drives and Optional files are always open. Clicking a section\n");
+        sb.append("# title in the popup changes it.\n");
+        line(sb, K_UI_EXPANDED, String.join(",", expandedPopupSections()));
+
         sb.append("\n# Video mode: PAL (default, 50 Hz, 312 lines) or NTSC (60 Hz, 262 lines).\n");
         sb.append("# Automatic configuration off. The change takes effect only after restarting\n");
         sb.append("# the emulator (cold restart).\n");
@@ -1768,6 +1814,10 @@ public final class AmigaConfig {
         sb.append("# savestate/Slot<N>/ next to amiga.properties. Picking a tab in the popup\n");
         sb.append("# changes it.\n");
         line(sb, K_STATE_SLOT, Integer.toString(saveStateSlot()));
+
+        sb.append("\n# Rewind: seconds of play kept in memory (default 60, 0 = off). The\n");
+        sb.append("# \"Rewind\" section of the F12 popup goes back to any second of them.\n");
+        line(sb, K_REWIND_SECONDS, Integer.toString(rewindSeconds()));
 
         sb.append("\n# Diagnostic overlays (not present in the F12 popup). Disabled by default:\n");
         sb.append("# no performance impact when false.\n");

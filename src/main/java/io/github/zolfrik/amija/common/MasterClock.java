@@ -54,6 +54,28 @@ public final class MasterClock {
      */
     private volatile int generation = 0;
     private volatile java.util.function.Consumer<Throwable> failureHandler;
+    private volatile Sampler sampler;
+
+    /**
+     * Something that takes the state of the machine now and then, on the clock thread, at
+     * the start of a frame (the rewind history).
+     */
+    public interface Sampler {
+
+        /** Called after every batch with the clocks it ran: {@code true} to take a sample. */
+        boolean due(long ranClocks);
+
+        /** {@code true} when the machine is at a point where a sample can be taken. */
+        boolean atBoundary();
+
+        /** Takes the sample; the machine is at a boundary. */
+        void sample();
+    }
+
+    /** Registers the sampler, or removes it with {@code null}. */
+    public void setSampler(Sampler sampler) {
+        this.sampler = sampler;
+    }
 
     /**
      * Registers whom to notify if the emulation thread dies of an unhandled exception.
@@ -95,6 +117,14 @@ public final class MasterClock {
         agnus.risingEdge();
         agnus.fallingEdge();
         virtualCRT.tick();
+    }
+
+    /** A whole frame is about 70000 colour clocks; this is a wide margin. */
+    private static final int STEP_GUARD = 8_000_000;
+
+    private long stepOne() {
+        singleTick();
+        return 1;
     }
 
     /**
@@ -261,6 +291,19 @@ public final class MasterClock {
             }
             totalCycles += ran;
             logCycles += ran;
+
+            // A sample is taken at a frame boundary: the machine is stepped there first, and
+            // the clocks spent count for the pacing like any others.
+            Sampler s = sampler;
+            if (s != null && s.due(ran)) {
+                long extra = 0;
+                for (int i = 0; i < STEP_GUARD && !s.atBoundary(); i++) {
+                    extra += driver == null ? stepOne() : driver.run(1);
+                }
+                totalCycles += extra;
+                logCycles += extra;
+                s.sample();
+            }
 
             // Throttling
             long expectedElapsed = (long) (totalCycles * periodNs);

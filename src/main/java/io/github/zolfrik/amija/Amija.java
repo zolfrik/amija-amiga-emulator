@@ -83,6 +83,8 @@ import io.github.zolfrik.amija.input.RemoteInputSender;
 import io.github.zolfrik.amija.memory.KickstartImage;
 import io.github.zolfrik.amija.memory.RAM;
 import io.github.zolfrik.amija.memory.ROM;
+import io.github.zolfrik.amija.state.MachineSnapshot;
+import io.github.zolfrik.amija.state.RewindHistory;
 import io.github.zolfrik.amija.state.SaveStateManager;
 
 import java.io.File;
@@ -174,6 +176,10 @@ public class Amija implements RemotePlayControl {
     private AbstractMotorola cpu;
     /** The processor, whatever drives it. */
     private io.github.zolfrik.amija.cpu.Processor processor;
+    /** The rewind history of the running machine; {@code null} without a machine. */
+    private RewindHistory rewindHistory;
+    /** What the open F12 popup shows of the rewind history; {@code null} outside it. */
+    private RewindSession rewindSession;
     /** The bus of an event-driven processor; null when the processor is clocked. */
     private io.github.zolfrik.amija.custom.EventCpuBus eventBus;
     private AbstractAgnus agnus;
@@ -1345,9 +1351,12 @@ public class Amija implements RemotePlayControl {
 
         boolean oldAuto = config.autoEnabled();
 
+        rewindSession = openRewindSession();
         ConfigDialog.Result result = ConfigDialog.show(frame, config,
                 this::takeScreenshotFile, this::updateShaderParam,
-                this::saveState, this::loadState, this, activeHardware);
+                this::saveState, this::loadState, this, activeHardware, rewindSession);
+        RewindSession rewind = rewindSession;
+        rewindSession = null;
 
         // While the popup was open a remote play session may have opened (the "Connect"
         // button acts at once) or dropped. Mounting and unmounting machines belongs here,
@@ -1391,6 +1400,22 @@ public class Amija implements RemotePlayControl {
                                 || oldChipRam != config.chipRamKb()
                                 || oldSlowRam != config.slowRamKb()
                                 || oldFastRam != config.fastRamKb()));
+                // A moment chosen on the rewind bar and a change that rebuilds the machine
+                // cannot both happen: the user picks one. The settings are saved either way.
+                boolean rewindPending = !guestMode && rewind != null && rewind.pending();
+                if (rewindPending && needsColdRestart) {
+                    String[] options = { Messages.t("rewind.conflict.rewind"),
+                            Messages.t("rewind.conflict.restart") };
+                    int choice = JOptionPane.showOptionDialog(frame,
+                            Messages.t("rewind.conflict"), Messages.t("app.title"),
+                            JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null,
+                            options, options[0]);
+                    if (choice == 0) {
+                        needsColdRestart = false;
+                    } else {
+                        rewindPending = false;
+                    }
+                }
                 if (guestMode) {
                     // A guest has no machine to restart: of the parameters above only the
                     // window's concern it, and that is the only thing to redo. The rest
@@ -1417,6 +1442,8 @@ public class Amija implements RemotePlayControl {
                             && !oldShader.equals(config.shader())) {
                         display.setShaderPreset(resolveShaderPath(config.shader()));
                     }
+                    if (rewindPending) applyRewind(rewind);
+                    if (rewindHistory != null) rewindHistory.setSeconds(config.rewindSeconds());
                     if (wasRunning) {
                         clock.resume();
                         applyFloppyChanges(oldDisks, oldEnabled, oldReadOnly, -1, deferHardware);
@@ -2016,6 +2043,143 @@ public class Amija implements RemotePlayControl {
         }
     }
 
+    // =========================================================================
+    // Rewind
+    // =========================================================================
+
+    /**
+     * Builds the rewind history of the machine just built and hands it to the clock, which
+     * samples it once per emulated second.
+     */
+    private void startRewindHistory(boolean eventDriven) {
+        if (rewindHistory != null) rewindHistory.close();
+        MachineSnapshot snapshot = MachineSnapshot.of(processor, eventBus, agnus,
+                gamePort1, gamePort2);
+        final VirtualCRT crt = virtualCRT;
+        rewindHistory = new RewindHistory(snapshot, agnus, processor, eventDriven,
+                crt::getFrameBuffer, videoMode == VideoMode.NTSC ? 60 : 50,
+                config.rewindSeconds());
+        clock.setSampler(rewindHistory);
+    }
+
+    /**
+     * The history as the popup shows it, frozen at the moment the popup stopped the machine.
+     * {@code null} when there is nothing to offer: no machine, or a remote play session.
+     */
+    private RewindSession openRewindSession() {
+        if (guestMode || remotePlayHost != null || rewindHistory == null || clock == null
+                || agnus == null) {
+            return null;
+        }
+        // The history is read and the machine possibly restored: nobody may be emulating.
+        if (!clock.pauseAndWait(500)) return null;
+        try {
+            return new RewindSession(rewindHistory, rewindHistory.entries(),
+                    agnus.getFrameCount(), rewindHistory.currentThumbnail());
+        } catch (RuntimeException e) {
+            System.err.println("[REWIND] storia non disponibile: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** Empties the history: a loaded state has no past in it. */
+    private void forgetRewindHistory() {
+        if (rewindSession != null) rewindSession.invalidate();
+        if (rewindHistory != null) rewindHistory.clear();
+    }
+
+    /** Puts the machine back in the moment chosen on the bar; the moments after it are lost. */
+    private void applyRewind(RewindSession session) {
+        try {
+            rewindHistory.restore(session.selectedEntry(), true);
+            // The audio queued so far belongs to the future just thrown away.
+            if (paula != null) paula.getAudioRingBuffer().clear();
+            System.out.println("[REWIND] tornato indietro di "
+                    + formatAgo(session.secondsBefore(session.selected())));
+        } catch (RuntimeException e) {
+            System.err.println("[REWIND] riavvolgimento fallito: " + e.getMessage());
+            JOptionPane.showMessageDialog(frame,
+                    Messages.t("rewind.fail", String.valueOf(e.getMessage())),
+                    Messages.t("app.title"), JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+
+    private static String formatAgo(double seconds) {
+        long s = Math.round(seconds);
+        return String.format("-%d:%02d", s / 60, s % 60);
+    }
+
+    /** The {@link io.github.zolfrik.amija.display.RewindControl} of one opening of the popup. */
+    private final class RewindSession implements io.github.zolfrik.amija.display.RewindControl {
+        private final RewindHistory history;
+        private final java.util.List<RewindHistory.Entry> entries;
+        private final int nowFrame;
+        private final java.awt.image.BufferedImage nowImage;
+        private int selected;
+        private boolean valid = true;
+
+        RewindSession(RewindHistory history, java.util.List<RewindHistory.Entry> entries,
+                int nowFrame, java.awt.image.BufferedImage nowImage) {
+            this.history = history;
+            this.entries = entries;
+            this.nowFrame = nowFrame;
+            this.nowImage = nowImage;
+            this.selected = entries.size();
+        }
+
+        void invalidate() {
+            valid = false;
+            selected = positions() - 1;
+        }
+
+        boolean pending() {
+            return valid && selected < positions() - 1;
+        }
+
+
+        RewindHistory.Entry selectedEntry() {
+            return entries.get(selected);
+        }
+
+        @Override
+        public int positions() {
+            return entries.size() + 1;
+        }
+
+        @Override
+        public double secondsBefore(int p) {
+            if (p >= entries.size()) return 0;
+            return entries.get(p).secondsBefore(nowFrame, history.framesPerSecond());
+        }
+
+        @Override
+        public java.awt.image.BufferedImage image(int p) {
+            return p >= entries.size() ? nowImage : entries.get(p).thumbnail();
+        }
+
+        @Override
+        public int seconds() {
+            return history.seconds();
+        }
+
+        @Override
+        public long maxSeconds() {
+            return history.maxSeconds();
+        }
+
+        @Override
+        public void select(int p) {
+            selected = Math.max(0, Math.min(p, positions() - 1));
+        }
+
+        @Override
+        public int selected() {
+            return selected;
+        }
+
+    }
+
     /**
      * Restores the machine state from the active slot, overwriting the current components
      * (machine paused). Called by the F12 "Load State" button.
@@ -2040,6 +2204,7 @@ public class Amija implements RemotePlayControl {
         try {
             SaveStateManager.load(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] caricato " + file.getAbsolutePath());
+            forgetRewindHistory();
             return ConfigDialog.LoadStateOutcome.done(
                     Messages.t("savestate.load.ok", slot));
         } catch (SaveStateManager.IncompatibleStateException e) {
@@ -2119,6 +2284,7 @@ public class Amija implements RemotePlayControl {
             if (clock != null) clock.pauseAndWait(500);
             SaveStateManager.load(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] caricato " + file.getAbsolutePath());
+            forgetRewindHistory();
             return Messages.t("savestate.load.reconfigured");
         } catch (SaveStateManager.IncompatibleStateException e) {
             return Messages.t("savestate.load.incompatible", e.getMessage());
@@ -2375,6 +2541,7 @@ public class Amija implements RemotePlayControl {
             // Power-on: RESET cascades to CIAs and floppies; the CPU starts after a random delay.
             if (eventCpu != null) eventCpu.powerOnReset(AbstractMotorola.powerOnStartDelay());
             else cpu.powerOnReset(AbstractMotorola.powerOnStartDelay());
+            startRewindHistory(eventCpu != null);
             clock.start();
 
             if (VERBOSE) {
@@ -2491,7 +2658,12 @@ public class Amija implements RemotePlayControl {
     private void shutdownMachine() {
         if (clock != null) {
             clock.stop();
+            clock.setSampler(null);
             clock = null;
+        }
+        if (rewindHistory != null) {
+            rewindHistory.close();
+            rewindHistory = null;
         }
         if (virtualCRT != null) {
             virtualCRT.stop();

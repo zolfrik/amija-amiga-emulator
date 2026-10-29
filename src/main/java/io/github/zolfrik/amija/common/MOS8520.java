@@ -990,7 +990,12 @@ public class MOS8520 {
             case 0xD:
                 if ((delay & CIASetInt1) != 0 && (icr & 0x1F) != 0) icr |= 0x80;
                 result = icr;
-                if (!irq) delay |= CIAClearInt0;
+                // The read releases /IRQ within the access itself: an INTREQ clear made right
+                // after it, as a fast processor does, must not see the line still low.
+                if (!irq) {
+                    irq = true;
+                    setIrqDriveCached(true);
+                }
                 delay &= ~(CIASetInt0 | CIASetInt1);
                 delay |= CIAClearIcr0 | CIAAckIcr0;
                 icrAck = result;

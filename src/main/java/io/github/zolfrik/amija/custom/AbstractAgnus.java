@@ -86,8 +86,10 @@ public abstract class AbstractAgnus {
     private final AbstractMotorola  cpu;
     /** The processor, whatever drives it. */
     private final Processor processor;
-    /** True when the processor has a 32-bit bus (the 68020): see DENISEID and COPEN. */
+    /** True when the processor has a 32-bit bus (the 68020): see DENISEID. */
     private final boolean wideBusCpu;
+    /** A COPEN change reaches the Copper one or two colour clocks late only on a 68000 machine. */
+    private final boolean dmaconChangeDelayed;
     private final BusRequest     cpuBusReq;
     private final BusResponse    cpuBusResp;
 
@@ -228,103 +230,71 @@ public abstract class AbstractAgnus {
     private long masterClock = 0;
 
     // --- Delayed Register Changes ---
-    // Mutable, reusable RegChange objects. The recorder is a custom min-heap over
-    // preallocated arrays instead of PriorityQueue+Comparator: no allocation or hidden
-    // growth during Copper writes.
+    // A min-heap ordered by (trigger, sequence), held in parallel arrays of primitives and
+    // enums. That keeps it machine state: a change still pending when the state is saved or
+    // snapshotted is restored with it. No allocation during Copper writes.
     private static final int REG_CHANGE_CAPACITY = 1024;
 
-    private static class RegChange {
-        long trigger;
-        long sequence;
-        AgnusReg reg;
-        int value;
-        int pc;
-
-        RegChange() { }
-
-        RegChange set(long trigger, long sequence, AgnusReg reg, int value, int pc) {
-            this.trigger = trigger;
-            this.sequence = sequence;
-            this.reg = reg;
-            this.value = value;
-            this.pc = pc;
-            return this;
-        }
-    }
-
-    private final RegChange[] changeRecorder = new RegChange[REG_CHANGE_CAPACITY];
+    private final long[] regChangeTrigger = new long[REG_CHANGE_CAPACITY];
+    private final long[] regChangeOrder = new long[REG_CHANGE_CAPACITY];
+    private final AgnusReg[] regChangeReg = new AgnusReg[REG_CHANGE_CAPACITY];
+    private final int[] regChangeValue = new int[REG_CHANGE_CAPACITY];
+    private final int[] regChangePc = new int[REG_CHANGE_CAPACITY];
     private int changeRecorderSize;
-    private final RegChange[] regChangePool = createRegChangePool();
-    private int regChangePoolTop = REG_CHANGE_CAPACITY;
     private long regChangeSequence;
 
-    private static RegChange[] createRegChangePool() {
-        RegChange[] pool = new RegChange[REG_CHANGE_CAPACITY];
-        for (int i = 0; i < pool.length; i++) {
-            pool[i] = new RegChange();
-        }
-        return pool;
-    }
-
-    private RegChange acquireRegChange() {
-        if (regChangePoolTop == 0) {
-            throw new IllegalStateException("Agnus delayed register change overflow: " + REG_CHANGE_CAPACITY);
-        }
-        RegChange rc = regChangePool[--regChangePoolTop];
-        regChangePool[regChangePoolTop] = null;
-        return rc;
-    }
-
-    private void releaseRegChange(RegChange rc) {
-        rc.reg = null;
-        regChangePool[regChangePoolTop++] = rc;
-    }
-
-    private void offerRegChange(RegChange rc) {
+    private void offerRegChange(long trigger, long sequence, AgnusReg reg, int value, int pc) {
         int idx = changeRecorderSize;
-        if (idx >= changeRecorder.length) {
-            releaseRegChange(rc);
-            throw new IllegalStateException("Agnus delayed register heap overflow: " + changeRecorder.length);
+        if (idx >= REG_CHANGE_CAPACITY) {
+            throw new IllegalStateException("Agnus delayed register heap overflow: " + REG_CHANGE_CAPACITY);
         }
         changeRecorderSize = idx + 1;
         while (idx > 0) {
             int parent = (idx - 1) >>> 1;
-            RegChange parentChange = changeRecorder[parent];
-            if (compareRegChange(parentChange, rc) <= 0) break;
-            changeRecorder[idx] = parentChange;
+            if (compareRegChange(regChangeTrigger[parent], regChangeOrder[parent], trigger, sequence) <= 0) break;
+            moveRegChange(parent, idx);
             idx = parent;
         }
-        changeRecorder[idx] = rc;
+        setRegChange(idx, trigger, sequence, reg, value, pc);
     }
 
-    private RegChange peekRegChange() {
-        return changeRecorderSize == 0 ? null : changeRecorder[0];
-    }
-
-    private RegChange pollRegChange() {
-        if (changeRecorderSize == 0) return null;
-        RegChange result = changeRecorder[0];
-        RegChange moved = changeRecorder[--changeRecorderSize];
-        changeRecorder[changeRecorderSize] = null;
-        if (changeRecorderSize > 0) {
-            int idx = 0;
-            int half = changeRecorderSize >>> 1;
-            while (idx < half) {
-                int child = (idx << 1) + 1;
-                RegChange bestChild = changeRecorder[child];
-                int right = child + 1;
-                if (right < changeRecorderSize
-                        && compareRegChange(changeRecorder[right], bestChild) < 0) {
-                    child = right;
-                    bestChild = changeRecorder[right];
-                }
-                if (compareRegChange(moved, bestChild) <= 0) break;
-                changeRecorder[idx] = bestChild;
-                idx = child;
+    /** Drops the earliest change; the caller has read it at index 0. */
+    private void removeFirstRegChange() {
+        final int last = --changeRecorderSize;
+        final long trigger = regChangeTrigger[last];
+        final long sequence = regChangeOrder[last];
+        final AgnusReg reg = regChangeReg[last];
+        final int value = regChangeValue[last];
+        final int pc = regChangePc[last];
+        regChangeReg[last] = null;
+        if (last == 0) return;
+        int idx = 0;
+        final int half = last >>> 1;
+        while (idx < half) {
+            int child = (idx << 1) + 1;
+            int right = child + 1;
+            if (right < last && compareRegChange(regChangeTrigger[right], regChangeOrder[right],
+                    regChangeTrigger[child], regChangeOrder[child]) < 0) {
+                child = right;
             }
-            changeRecorder[idx] = moved;
+            if (compareRegChange(trigger, sequence, regChangeTrigger[child], regChangeOrder[child]) <= 0) break;
+            moveRegChange(child, idx);
+            idx = child;
         }
-        return result;
+        setRegChange(idx, trigger, sequence, reg, value, pc);
+    }
+
+    private void moveRegChange(int from, int to) {
+        setRegChange(to, regChangeTrigger[from], regChangeOrder[from], regChangeReg[from],
+                regChangeValue[from], regChangePc[from]);
+    }
+
+    private void setRegChange(int i, long trigger, long sequence, AgnusReg reg, int value, int pc) {
+        regChangeTrigger[i] = trigger;
+        regChangeOrder[i] = sequence;
+        regChangeReg[i] = reg;
+        regChangeValue[i] = value;
+        regChangePc[i] = pc;
     }
 
     private boolean isRegChangeHeapEmpty() {
@@ -332,17 +302,14 @@ public abstract class AbstractAgnus {
     }
 
     private void clearRegChanges() {
-        while (changeRecorderSize > 0) {
-            RegChange rc = changeRecorder[--changeRecorderSize];
-            changeRecorder[changeRecorderSize] = null;
-            releaseRegChange(rc);
-        }
+        Arrays.fill(regChangeReg, 0, changeRecorderSize, null);
+        changeRecorderSize = 0;
         regChangeSequence = 0;
     }
 
-    private static int compareRegChange(RegChange a, RegChange b) {
-        int byTrigger = Long.compare(a.trigger, b.trigger);
-        return byTrigger != 0 ? byTrigger : Long.compare(a.sequence, b.sequence);
+    private static int compareRegChange(long triggerA, long sequenceA, long triggerB, long sequenceB) {
+        int byTrigger = Long.compare(triggerA, triggerB);
+        return byTrigger != 0 ? byTrigger : Long.compare(sequenceA, sequenceB);
     }
 
     private int syncEvent = 0;
@@ -361,7 +328,7 @@ public abstract class AbstractAgnus {
     }
 
     public void recordRegisterChange(long delay, AgnusReg reg, int value) {
-        offerRegChange(acquireRegChange().set(masterClock + delay, regChangeSequence++, reg, value, getCpuPc()));
+        offerRegChange(masterClock + delay, regChangeSequence++, reg, value, getCpuPc());
         scheduleNextRegEvent();
     }
 
@@ -369,7 +336,7 @@ public abstract class AbstractAgnus {
         if (syncEvent != 0) {
             scheduleRel(EventSlot.SLOT_REG, 1, EventID.REG_CHANGE);
         } else if (!isRegChangeHeapEmpty()) {
-            scheduleAbs(EventSlot.SLOT_REG, peekRegChange().trigger, EventID.REG_CHANGE);
+            scheduleAbs(EventSlot.SLOT_REG, regChangeTrigger[0], EventID.REG_CHANGE);
         }
     }
 
@@ -395,11 +362,12 @@ public abstract class AbstractAgnus {
             syncEvent &= ~EVFL_HSYNC;
         }
 
-        while (!isRegChangeHeapEmpty()) {
-            if (peekRegChange().trigger > until) break;
-            RegChange change = pollRegChange();
-            applyDelayedRegisterChange(change.reg, change.value, change.pc);
-            releaseRegChange(change);
+        while (!isRegChangeHeapEmpty() && regChangeTrigger[0] <= until) {
+            final AgnusReg reg = regChangeReg[0];
+            final int value = regChangeValue[0];
+            final int pc = regChangePc[0];
+            removeFirstRegChange();
+            applyDelayedRegisterChange(reg, value, pc);
         }
         scheduleNextRegEvent();
     }
@@ -715,12 +683,16 @@ public abstract class AbstractAgnus {
         // the old value) and as `spriteDmaOnDecisionCck`. Measured on the four `lc` tests of
         // the Agnus/Copper bank, which switch Copper DMA on halfway through a line: they
         // were 8 px each, i.e. 2 CCK early, always on a single line.
-        // A 68020's write costs 1, like the Copper's: written in CCK W at an even position,
-        // COPEN gives the Copper's first cycle at W+2, against W+4 for the 68000 (measured on
-        // the KS 1.3 boot of `Timing/Bcc/BRA1` and on `lc1`).
-        if (copWas != copperDmaEnabled) {
-            copperDmaChangeCck = (masterClock >> 1)
-                    + (__inCopperWrite || (eventCpuWrite && wideBusCpu) ? 0 : 1);
+        // The delay exists only on a machine whose processor is a 68000: with any other
+        // processor a COPEN change reaches the Copper at once, from the CPU and the Copper
+        // alike.
+        if (copWas != copperDmaEnabled && dmaconChangeDelayed) {
+            copperDmaChangeCck = (masterClock >> 1) + (__inCopperWrite ? 0 : 1);
+        }
+        // Without the delay a processor's write lands before the Copper's allocation of the
+        // colour clock it is made in: that allocation already sees the new COPEN.
+        if (copWas != copperDmaEnabled && !dmaconChangeDelayed && !__inCopperWrite) {
+            copperAllocEnabled = copperDmaEnabled;
         }
 
         // Notify other components if needed
@@ -1679,8 +1651,11 @@ public abstract class AbstractAgnus {
     /** Planes the current block holds (8, 4 or 2): it picks the cycle order and the modulo CCKs. */
     private int fmMaxPlane = 8;
 
-    /** The plane each CCK of the block fetches, 0-based, -1 for a free cycle. */
-    private int[] fetchSequence = FETCH_SEQUENCE_8;
+    /**
+     * Where the current block's order starts in {@link #FETCH_SEQUENCES}. An offset and not a
+     * reference to the table: the state holds no array it does not own.
+     */
+    private int fetchSequenceBase = FETCH_SEQUENCE_8;
 
     /** Planes really fetched: 0 when the planes BPLCON0 asks for do not fit the block. */
     private int fetchPlanes;
@@ -1737,14 +1712,20 @@ public abstract class AbstractAgnus {
     private static final int[] FETCH_STARTS = { 3, 2, 1, 0, 4, 3, 2, 0, 5, 4, 3, 0 };
     private static final int[] FM_MAXPLANES = { 3, 2, 1, 0, 3, 3, 2, 0, 3, 3, 3, 0 };
 
-    private static final int[] FETCH_SEQUENCE_8 = sequence(7, 3, 5, 1, 6, 2, 4, 0);
-    private static final int[] FETCH_SEQUENCE_4 = sequence(3, 1, 2, 0);
-    private static final int[] FETCH_SEQUENCE_2 = sequence(1, 0);
+    /**
+     * The plane each CCK of a block fetches, 0-based, -1 for a free cycle: three 32-entry
+     * orders, for blocks of 8, 4 and 2 planes, starting at the offsets below.
+     */
+    private static final int[] FETCH_SEQUENCES = sequences(
+            new int[] {7, 3, 5, 1, 6, 2, 4, 0}, new int[] {3, 1, 2, 0}, new int[] {1, 0});
+    private static final int FETCH_SEQUENCE_8 = 0, FETCH_SEQUENCE_4 = 32, FETCH_SEQUENCE_2 = 64;
 
-    private static int[] sequence(int... planes) {
-        final int[] s = new int[32];
+    private static int[] sequences(int[]... orders) {
+        final int[] s = new int[32 * orders.length];
         Arrays.fill(s, -1);
-        System.arraycopy(planes, 0, s, 0, planes.length);
+        for (int i = 0; i < orders.length; i++) {
+            System.arraycopy(orders[i], 0, s, 32 * i, orders[i].length);
+        }
         return s;
     }
 
@@ -1779,7 +1760,7 @@ public abstract class AbstractAgnus {
         fetchUnitMask = FETCH_UNITS[k] - 1;
         fetchStartMask = (1 << FETCH_STARTS[k]) - 1;
         fmMaxPlane = 1 << FM_MAXPLANES[k];
-        fetchSequence = fmMaxPlane == 8 ? FETCH_SEQUENCE_8
+        fetchSequenceBase = fmMaxPlane == 8 ? FETCH_SEQUENCE_8
                       : fmMaxPlane == 4 ? FETCH_SEQUENCE_4 : FETCH_SEQUENCE_2;
         int planes = requestedPlanes(seqBplcon0);
         if (planes > fmMaxPlane) {
@@ -1872,6 +1853,9 @@ public abstract class AbstractAgnus {
         this.processor = processor;
         this.cpu       = processor instanceof AbstractMotorola m ? m : null;
         this.wideBusCpu = processor != null && processor.model() == io.github.zolfrik.amija.cpu.CpuModel.M68020;
+        this.dmaconChangeDelayed = processor == null
+                || processor.model() == io.github.zolfrik.amija.cpu.CpuModel.M68000
+                || processor.model() == io.github.zolfrik.amija.cpu.CpuModel.M68000E;
         if (cpu != null) {
             // Chip-bus timed banks (A500): chip RAM + mirror $000000-$1FFFFF, slow RAM
             // $C00000-$C7FFFF (if present), $D00000-$DFFFFF (custom + mirror + dummy). Used by
@@ -2534,7 +2518,7 @@ public abstract class AbstractAgnus {
                 boolean hires = (seqBplcon0 & 0x8000) != 0;
                 boolean lastOfBlock = lastOfFetchBlock();
                 if (dmaconBplSeq) {
-                    int plane = fetchSequence[bprunCycle & fetchStartMask];
+                    int plane = FETCH_SEQUENCES[fetchSequenceBase + (bprunCycle & fetchStartMask)];
                     if (plane >= 0 && plane < fetchPlanes) {
                         // The modulo belongs to the last block of the line, which is the
                         // state the sequencer is in when it decides the slot.

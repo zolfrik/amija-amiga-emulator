@@ -60,6 +60,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JSlider;
 import javax.swing.JSpinner;
 import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
@@ -220,13 +221,15 @@ public final class ConfigDialog {
      * @param hardware            the media of the running machine, or {@code null} if there
      *                            is none: without a machine nothing is deferred and the list
      *                            marks nothing.
+     * @param rewind              the rewind history, or {@code null} when there is none to
+     *                            offer (no machine, remote play)
      */
     public static Result show(JFrame parent, AmigaConfig config,
             java.util.function.Supplier<java.io.File> onScreenshot,
             java.util.function.BiConsumer<String, Float> shaderParamUpdater,
             java.util.function.Supplier<String> onSaveState,
             java.util.function.Supplier<LoadStateOutcome> onLoadState,
-            RemotePlayControl remotePlay, DriveHardware hardware) {
+            RemotePlayControl remotePlay, DriveHardware hardware, RewindControl rewind) {
         final Result[] result = { Result.CANCEL };
 
         // Before building anything: the tooltips of this popup are meant to be read, not
@@ -342,7 +345,7 @@ public final class ConfigDialog {
         // guest, and from then on the guest decides what to plug into it and with which
         // keys. Each therefore has the drop-down of its own port and not of the other's;
         // otherwise whoever confirms the popup last would override the other's choice.
-        JPanel ports = section(Messages.t("section.gameports"));
+        JPanel ports = section(Messages.t("section.gameports"), "gameports", config);
         JoystickKeyMap[] joyKeyMaps = { config.joystickKeyMap(0), config.joystickKeyMap(1) };
 
         // The button goes in the section's trailing column, the same in which the other
@@ -673,7 +676,7 @@ public final class ConfigDialog {
         // -------------------------------------------------------------------
         // Section: Audio / Video
         // -------------------------------------------------------------------
-        JPanel av = section(Messages.t("section.av"));
+        JPanel av = section(Messages.t("section.av"), "av", config);
 
         // Rendering (first entry): software (Java2D) or OpenGL (LWJGL, ready for shaders).
         JComboBox<RendererType> rendererCombo = new JComboBox<>(RendererType.values());
@@ -817,7 +820,7 @@ public final class ConfigDialog {
         // language, interface scale and the LED panel, which is an ornament of the window and
         // not a device. Future interface entries go here rather than in "System".
         // -------------------------------------------------------------------
-        JPanel gui = section(Messages.t("section.gui"));
+        JPanel gui = section(Messages.t("section.gui"), "gui", config);
 
         JComboBox<String> langCombo = new JComboBox<>(new String[]{ "English", "Italiano" });
         langCombo.setSelectedIndex("it".equalsIgnoreCase(config.language()) ? 1 : 0);
@@ -863,6 +866,12 @@ public final class ConfigDialog {
         JPanel state = stateSection(dialog, result, config, onSaveState, onLoadState);
 
         // -------------------------------------------------------------------
+        // Section: Rewind (the bar over the last seconds of play)
+        // -------------------------------------------------------------------
+        JComboBox<Integer> rewindCombo = rewindSecondsCombo(config, rewind);
+        JPanel rewindPanel = rewindSection(rewind, rewindCombo, config);
+
+        // -------------------------------------------------------------------
         // Section: Remote play (docs/remote-play-plan.md section 9)
         // -------------------------------------------------------------------
         // It comes after the game ports because it is about them: the guest takes one. The
@@ -872,7 +881,8 @@ public final class ConfigDialog {
         // its own: what makes it necessary (a guest connecting or dropping while the popup is
         // open) is exactly what that timer watches.
         RemotePlaySection.Built remotePlaySection = remotePlay == null ? null
-                : RemotePlaySection.build(config, remotePlay, ConfigDialog::section,
+                : RemotePlaySection.build(config, remotePlay,
+                        title -> section(title, "remoteplay", config),
                         widgets(dialog, result), syncPorts);
 
         // -------------------------------------------------------------------
@@ -902,6 +912,7 @@ public final class ConfigDialog {
         // the running machine, and it follows the disk it belongs to.
         if (!guestMode) {
             content.add(state);
+            if (rewindPanel != null) content.add(rewindPanel);
         }
         // The game ports are there for the guest too, and that is the point: the port the
         // host gave it is filled by the guest. It needs one of the two rows (the other is the
@@ -1006,6 +1017,7 @@ public final class ConfigDialog {
             cfg.setLanguage(langCombo.getSelectedIndex() == 1 ? "it" : "en");
             cfg.setIntegerScaling((Integer) scalingSpinner.getValue());
             cfg.setUiScale((Double) uiScaleCombo.getSelectedItem());
+            if (rewindPanel != null) cfg.setRewindSeconds((Integer) rewindCombo.getSelectedItem());
         };
         Runnable applyConfig = () -> applyTo.accept(config);
 
@@ -1221,7 +1233,7 @@ public final class ConfigDialog {
     private static JPanel stateSection(JDialog dialog, Result[] result, AmigaConfig config,
             java.util.function.Supplier<String> onSaveState,
             java.util.function.Supplier<LoadStateOutcome> onLoadState) {
-        JPanel panel = section(Messages.t("section.state"));
+        JPanel panel = section(Messages.t("section.state"), "state", config);
 
         final int slots = SaveStateManager.SLOT_COUNT;
         StatePreview[] previews = new StatePreview[slots];
@@ -1354,6 +1366,138 @@ public final class ConfigDialog {
         return panel;
     }
 
+    /** Choices of the rewind length, in seconds; 0 = off. */
+    private static final Integer[] REWIND_OPTIONS = { 0, 30, 60, 120, 300, 600 };
+
+    /**
+     * The drop-down of the rewind length. Lengths that do not fit in the memory the history
+     * may use stay listed but cannot be chosen.
+     */
+    private static JComboBox<Integer> rewindSecondsCombo(AmigaConfig config, RewindControl rewind) {
+        long max = rewind == null ? Long.MAX_VALUE : rewind.maxSeconds();
+        JComboBox<Integer> combo = new JComboBox<>(REWIND_OPTIONS);
+        int current = config.rewindSeconds();
+        boolean listed = false;
+        for (Integer o : REWIND_OPTIONS) listed |= o == current;
+        if (!listed) combo.addItem(current);
+        combo.setSelectedItem(current);
+        combo.setMaximumSize(dim(200, 26));
+        combo.setRenderer(new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value,
+                    int index, boolean isSelected, boolean cellHasFocus) {
+                int sec = value instanceof Integer i ? i : 0;
+                boolean fits = sec <= max || sec == current;
+                Component c = super.getListCellRendererComponent(list,
+                        sec == 0 ? Messages.t("rewind.option.off") : formatLength(sec),
+                        index, isSelected && fits, cellHasFocus);
+                c.setEnabled(fits);
+                if (c instanceof JComponent jc) {
+                    jc.setToolTipText(fits ? null : Messages.t("rewind.option.toolong"));
+                }
+                return c;
+            }
+        });
+        final Object[] last = { combo.getSelectedItem() };
+        combo.addActionListener(e -> {
+            Object v = combo.getSelectedItem();
+            if (v instanceof Integer sec && sec > max && sec != current) {
+                combo.setSelectedItem(last[0]);
+                return;
+            }
+            last[0] = v;
+        });
+        return combo;
+    }
+
+    /** "45 s", "2 min", "1:30". */
+    private static String formatLength(long seconds) {
+        if (seconds < 60) return Messages.t("rewind.option.seconds", seconds);
+        if (seconds % 60 == 0) return Messages.t("rewind.option.minutes", seconds / 60);
+        return String.format("%d:%02d", seconds / 60, seconds % 60);
+    }
+
+    /** "-0:37": how far back a position is. */
+    private static String formatAgo(double seconds) {
+        long s = Math.round(seconds);
+        return String.format("-%d:%02d", s / 60, s % 60);
+    }
+
+    /**
+     * Section "Rewind": how much history to keep, the picture of the chosen moment and the
+     * bar to choose it, right end = the moment the popup opened. The choice is applied by OK.
+     * {@code null} when there is no history to offer.
+     */
+    private static JPanel rewindSection(RewindControl rewind,
+            JComboBox<Integer> combo, AmigaConfig config) {
+        if (rewind == null) return null;
+        JPanel panel = section(Messages.t("section.rewind"), "rewind", config);
+
+        long max = rewind.maxSeconds();
+        JLabel maxLabel = label(Messages.t("rewind.max",
+                formatLength(max >= 60 ? max / 60 * 60 : max)));
+        maxLabel.setForeground(new Color(0x9A, 0x9F, 0xA6));
+        JPanel lengthRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, px(8), 0));
+        lengthRow.setOpaque(false);
+        lengthRow.add(combo);
+        lengthRow.add(maxLabel);
+        addRow(panel, 0, "label.rewind.seconds", lengthRow, null);
+
+        int n = rewind.positions();
+        int last = n - 1;
+        StatePreview preview = new StatePreview(320, 255);
+        JLabel when = label(Messages.t("rewind.now"));
+        when.setHorizontalAlignment(JLabel.CENTER);
+        when.setFont(derive(when.getFont(), Font.BOLD, 13f));
+
+        JSlider bar = new JSlider(0, Math.max(0, last), last);
+        bar.setOpaque(false);
+        bar.setEnabled(n > 1);
+        JLabel oldest = label(n > 1 ? formatAgo(rewind.secondsBefore(0)) : "");
+        JLabel newest = label(Messages.t("rewind.now"));
+        tip("rewind.bar", bar, preview);
+
+
+
+        // Thumbnails are decompressed on demand; the last one shown is kept.
+        final java.awt.image.BufferedImage[] cache = { rewind.image(last) };
+        final int[] cached = { last };
+        preview.setImage(cache[0]);
+        bar.addChangeListener(e -> {
+            int p = bar.getValue();
+            if (p != cached[0]) {
+                cache[0] = rewind.image(p);
+                cached[0] = p;
+            }
+            preview.setImage(cache[0]);
+            when.setText(p == last ? Messages.t("rewind.now") : formatAgo(rewind.secondsBefore(p)));
+            rewind.select(p);
+        });
+
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.gridx = 0;
+        gc.gridwidth = 3;
+        gc.weightx = 1;
+        gc.insets = new Insets(px(4), px(4), px(2), px(4));
+        gc.anchor = GridBagConstraints.CENTER;
+        gc.gridy = 1;
+        panel.add(preview, gc);
+        gc.gridy = 2;
+        gc.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(when, gc);
+        gc.gridy = 3;
+        panel.add(bar, gc);
+
+        JPanel ends = new JPanel(new BorderLayout());
+        ends.setOpaque(false);
+        ends.add(oldest, BorderLayout.WEST);
+        ends.add(newest, BorderLayout.EAST);
+        gc.gridy = 4;
+        gc.insets = new Insets(0, px(4), px(4), px(4));
+        panel.add(ends, gc);
+        return panel;
+    }
+
     /** Informational message in the style of the popup (application title). */
     private static void message(JDialog parent, String text) {
         JOptionPane.showMessageDialog(parent, text, Messages.t("app.title"),
@@ -1406,7 +1550,11 @@ public final class ConfigDialog {
         private String emptyText = "";
 
         StatePreview() {
-            Dimension size = dim(W, H);
+            this(W, H);
+        }
+
+        StatePreview(int width, int height) {
+            Dimension size = dim(width, height);
             setPreferredSize(size);
             setMinimumSize(size);
             setMaximumSize(size);
@@ -1525,6 +1673,153 @@ public final class ConfigDialog {
                 dialog.dispose();
             }
         };
+    }
+
+    /**
+     * A section that closes down to its title: a click on the title opens or closes it. Every
+     * section except System, Drives (or the three per-type sections that replace it in Expert
+     * mode) and Optional files is built this way. They start closed, and whether each one is
+     * open is kept in the configuration under {@code id}.
+     */
+    private static JPanel section(String title, String id, AmigaConfig config) {
+        return new CollapsibleSection(title, id, config);
+    }
+
+    /**
+     * The panel of a collapsible section. The rows the callers add go into an inner body,
+     * so that closing the section is hiding that body: the rows keep the visibility their
+     * own section gives them (Auto mode, remote play) and get it back when it reopens.
+     */
+    private static final class CollapsibleSection extends JPanel {
+        private final JPanel body = new JPanel(new GridBagLayout());
+        private final ArrowTitledBorder titleBorder;
+        private final String title;
+        private final boolean ready;
+
+        CollapsibleSection(String title, String id, AmigaConfig config) {
+            super(new BorderLayout());
+            this.title = title;
+            setBackground(PANEL_BG);
+            setAlignmentX(Component.LEFT_ALIGNMENT);
+            titleBorder = new ArrowTitledBorder(
+                    BorderFactory.createLineBorder(new Color(0x45, 0x49, 0x50), px(1)), title);
+            titleBorder.setTitleColor(ACCENT);
+            titleBorder.setTitleFont(derive(getFont(), Font.BOLD, 13f));
+            // The padding belongs to the body, so a closed section is only its title.
+            setBorder(BorderFactory.createCompoundBorder(pad(0, 0, 12, 0), titleBorder));
+            body.setOpaque(false);
+            body.setBorder(pad(8, 10, 10, 10));
+            super.addImpl(body, BorderLayout.CENTER, -1);
+            ready = true;
+            setExpanded(config.expandedPopupSections().contains(id));
+
+            java.awt.event.MouseAdapter mouse = new java.awt.event.MouseAdapter() {
+                @Override
+                public void mousePressed(java.awt.event.MouseEvent e) {
+                    if (!onTitle(e)) return;
+                    boolean open = !body.isVisible();
+                    setExpanded(open);
+                    config.setPopupSectionExpanded(id, open);
+                    try {
+                        config.save();
+                    } catch (IOException ex) {
+                        System.err.println("[CONFIG] Cannot save the open popup sections: "
+                                + ex.getMessage());
+                    }
+                    if (open) {
+                        // Bring the opened rows into view once the layout has made room.
+                        javax.swing.SwingUtilities.invokeLater(() -> scrollRectToVisible(
+                                new Rectangle(0, 0, getWidth(), getHeight())));
+                    }
+                }
+
+                @Override
+                public void mouseMoved(java.awt.event.MouseEvent e) {
+                    setCursor(onTitle(e)
+                            ? java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+                            : java.awt.Cursor.getDefaultCursor());
+                }
+            };
+            addMouseListener(mouse);
+            addMouseMotionListener(mouse);
+        }
+
+        /** The title strip is the top part of the border, above the body. */
+        private boolean onTitle(java.awt.event.MouseEvent e) {
+            return e.getY() < getInsets().top;
+        }
+
+        private void setExpanded(boolean open) {
+            body.setVisible(open);
+            titleBorder.open = open;
+            titleBorder.setTitle(titleBorder.arrowGap(this) + title);
+            revalidate();
+            repaint();
+        }
+
+        @Override
+        protected void addImpl(Component comp, Object constraints, int index) {
+            if (ready) {
+                body.add(comp, constraints, index);
+            } else {
+                super.addImpl(comp, constraints, index);
+            }
+        }
+    }
+
+    /**
+     * Title border of a collapsible section: the title is preceded by a triangle, pointing
+     * right when the section is closed and down when it is open. The triangle is drawn, not
+     * a character, so both directions have the same size whatever the font.
+     */
+    private static final class ArrowTitledBorder extends TitledBorder {
+        boolean open;
+
+        ArrowTitledBorder(javax.swing.border.Border border, String title) {
+            super(border, title);
+        }
+
+        /** Side of the square the triangle fits in. */
+        private int arrowSize(Component c) {
+            return Math.max(px(6), Math.round(c.getFontMetrics(getTitleFont()).getAscent() * 0.85f));
+        }
+
+        /** Spaces in front of the title, wide enough for the triangle and a gap after it. */
+        String arrowGap(Component c) {
+            java.awt.FontMetrics fm = c.getFontMetrics(getTitleFont());
+            int needed = arrowSize(c) + px(6);
+            int space = Math.max(1, fm.charWidth(' '));
+            return " ".repeat((needed + space - 1) / space);
+        }
+
+        @Override
+        public void paintBorder(Component c, Graphics g, int x, int y, int width, int height) {
+            super.paintBorder(c, g, x, y, width, height);
+            java.awt.FontMetrics fm = c.getFontMetrics(getTitleFont());
+            Insets line = getBorder().getBorderInsets(c);
+            // Where the title text starts with the default leading justification.
+            int left = x + line.left + EDGE_SPACING + TEXT_INSET_H;
+            int s = arrowSize(c);
+            int cy = y + fm.getHeight() / 2;
+            java.awt.Polygon tri = new java.awt.Polygon();
+            if (open) {
+                int h = Math.round(s * 0.8f);
+                tri.addPoint(left, cy - h / 2);
+                tri.addPoint(left + s, cy - h / 2);
+                tri.addPoint(left + s / 2, cy - h / 2 + h);
+            } else {
+                int w = Math.round(s * 0.8f);
+                tri.addPoint(left + (s - w) / 2, cy - s / 2);
+                tri.addPoint(left + (s - w) / 2, cy - s / 2 + s);
+                tri.addPoint(left + (s - w) / 2 + w, cy);
+            }
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING,
+                    java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setColor(getTitleColor());
+            g2.fillPolygon(tri);
+            g2.dispose();
+        }
     }
 
     private static JPanel section(String title) {

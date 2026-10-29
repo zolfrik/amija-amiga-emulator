@@ -639,8 +639,18 @@ public abstract class AbstractDenise {
                 bplcon3 = value;
                 break;
             case 0x10C: // BPLCON4 (ECS)
-                // On Lisa it xors the bitplane colour index and selects the sprite banks.
-                if (isAGA) colChanges.insert(pixel + CON_DELAY_PX, address, value);
+                // On Lisa it xors the bitplane colour index (high byte) and selects the sprite
+                // colour banks (low byte). The two halves reach the output at different
+                // instants: the xor one hires pixel before the BPLCON stage, the sprite banks
+                // four before the xor (the sprite colour is resolved earlier in the pipe).
+                if (isAGA) {
+                    if (((bplcon4 ^ value) & 0xFF00) != 0) {
+                        colChanges.insert(pixel + BPLAM_DELAY_PX, address, value);
+                    }
+                    if (((bplcon4 ^ value) & 0x00FF) != 0) {
+                        colChanges.insert(pixel + SPRITE_BANK_DELAY_PX, COLCHANGE_SPRBANK, value);
+                    }
+                }
                 bplcon4 = value;
                 break;
 
@@ -1357,6 +1367,18 @@ public abstract class AbstractDenise {
      */
     /** Colour-change key for the KILLEHB bit of a BPLCON2 write: not a register address. */
     static final int COLCHANGE_KILLEHB = 0x105;
+
+    /** Colour-change key for the sprite colour banks of a BPLCON4 write (Lisa). */
+    static final int COLCHANGE_SPRBANK = 0x107;
+
+    /** Delay of the bitplane colour xor of BPLCON4 on Lisa, in sub-pixels. */
+    private static final int BPLAM_DELAY_PX = 3;
+
+    /**
+     * Delay of the sprite colour banks of BPLCON4 on Lisa, in sub-pixels: they reach the
+     * sprite colour one hires pixel before the write's own pixel.
+     */
+    private static final int SPRITE_BANK_DELAY_PX = -1;
 
     static boolean isEHB(int bplcon0) {
         final int planes = deniseBpu(bplcon0);

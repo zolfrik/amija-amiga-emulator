@@ -44,10 +44,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>an array of primitives (of any dimension: 1D, 2D, ...);</li>
  *   <li>an {@code enum} (saved as its ordinal) or an array of {@code enum}.</li>
  * </ul>
- * Every other field type (references to other components, Swing/AWT objects, the audio line,
- * the 68000's {@code decodeTable}, the {@code BusOp} pools, {@code DiskImage}, the host input
- * adapters, the per-line recorders...) is <b>ignored by construction</b>: an object reference
- * is never followed. Unlike Java serialisation, this keeps threads, native resources and
+ * A {@code transient} field is not state whatever its type (e.g. the write tracking of
+ * {@code RAM}). Every other field type (references to other components, Swing/AWT objects,
+ * the audio line, the 68000's {@code decodeTable}, the {@code BusOp} pools, {@code DiskImage},
+ * the host input adapters, the per-line recorders...) is <b>ignored by construction</b>: an
+ * object reference is never followed. Unlike Java serialisation, this keeps threads, native resources and
  * transient graphs out of the snapshot.
  *
  * <p>The format is <b>self-describing</b> (every value carries a type tag and every field its
@@ -115,7 +116,7 @@ public final class ReflectiveState {
     // Field selection
     // =========================================================================
 
-    private static List<Field> stateFields(Class<?> cls) {
+    static List<Field> stateFields(Class<?> cls) {
         List<Field> cached = FIELD_CACHE.get(cls);
         if (cached != null) return cached;
         List<Field> out = new ArrayList<>();
@@ -123,6 +124,7 @@ public final class ReflectiveState {
             for (Field f : c.getDeclaredFields()) {
                 if (Modifier.isStatic(f.getModifiers())) continue;
                 if (f.isSynthetic()) continue;              // e.g. this$0 of inner classes
+                if (Modifier.isTransient(f.getModifiers())) continue; // declared not state
                 if (!isSerializable(f.getType())) continue; // per-type rule
                 f.setAccessible(true);
                 out.add(f);

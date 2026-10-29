@@ -21,6 +21,7 @@
 package io.github.zolfrik.amija.custom;
 
 import static io.github.zolfrik.amija.custom.AbstractDenise.COLCHANGE_KILLEHB;
+import static io.github.zolfrik.amija.custom.AbstractDenise.COLCHANGE_SPRBANK;
 import static io.github.zolfrik.amija.custom.AbstractDenise.amigaToRGB;
 import static io.github.zolfrik.amija.custom.AbstractDenise.deniseBpu;
 import static io.github.zolfrik.amija.custom.AbstractDenise.deniseSpecials;
@@ -1281,6 +1282,7 @@ final class DeniseLineRenderer {
             // BRDSPRT (BPLCON3 bit 1) with ECSENA: the sprites also show in the border and
             // before the line's first BPL1DAT.
             borderSprite = (initialBplcon3 & 0x0002) != 0 && (initialBplcon0 & 0x0001) != 0;
+            collectSpriteBankChanges();
             for (int pair = 0; pair < 4; pair++) drawSpritePairAga(pair);
         } else {
             for (int pair = 0; pair < 4; pair++) drawSpritePair(pair);
@@ -1593,10 +1595,47 @@ final class DeniseLineRenderer {
         if ((ssraW[x] | ssrbW[x]) == 0) recordSprStateEvt(hpos + 1, x | SPR_EVT_ARMEDS);
     }
 
+    // Lisa: the sprite colour bank changes of the line (BPLCON4 low byte), by pixel.
+    private int[] sprBankPos = new int[64], sprBankVal = new int[64];
+    private int sprBankCount;
+
+    private void collectSpriteBankChanges() {
+        sprBankCount = 0;
+        for (int i = 0; i < colChanges.size(); i++) {
+            RegChange c = colChanges.elements[i];
+            if (c.reg != COLCHANGE_SPRBANK) continue;
+            if (sprBankCount == sprBankPos.length) {
+                sprBankPos = java.util.Arrays.copyOf(sprBankPos, sprBankCount * 2);
+                sprBankVal = java.util.Arrays.copyOf(sprBankVal, sprBankCount * 2);
+            }
+            sprBankPos[sprBankCount] = colChanges.keys[i];
+            sprBankVal[sprBankCount] = c.value & 0xFF;
+            sprBankCount++;
+        }
+    }
+
+    /** The BPLCON4 sprite bank byte in effect at pixel {@code hpos}. */
+    private int spriteBankAt(int hpos) {
+        int bank = initialBplcon4 & 0xFF;
+        for (int k = 0; k < sprBankCount && sprBankPos[k] <= hpos; k++) bank = sprBankVal[k];
+        return bank;
+    }
+
+    private int spriteBaseAt(int x, int hpos) {
+        if (sprBankCount == 0) return spriteBase[x];
+        final int bank = spriteBankAt(hpos);
+        return ((x & 1) == 0 ? (bank & 0xF0) : (bank & 0x0F) << 4) + (x & 6) * 2;
+    }
+
+    private int attachedSpriteBaseAt(int hpos) {
+        if (sprBankCount == 0) return attachedSpriteBase;
+        return (spriteBankAt(hpos) & 0x0F) << 4;
+    }
+
     private void drawSpritePixelAga(int hpos, int x) {
         final int col = (int) ((ssraW[x] >>> 63) & 1) | (int) ((ssrbW[x] >>> 62) & 2);
         if (col != 0) {
-            emitSpritePixel(hpos, spriteBase[x] | col, Z_SP[x] | SPRITE_EMIT_SINGLE);
+            emitSpritePixel(hpos, spriteBaseAt(x, hpos) | col, Z_SP[x] | SPRITE_EMIT_SINGLE);
             spritePixelsThisFrame[x]++;
             spritesOnLineMask |= (1 << x);
         }
@@ -1606,7 +1645,7 @@ final class DeniseLineRenderer {
         final int col = (int) ((ssraW[x - 1] >>> 63) & 1) | (int) ((ssrbW[x - 1] >>> 62) & 2)
                       | (int) ((ssraW[x] >>> 61) & 4) | (int) ((ssrbW[x] >>> 60) & 8);
         if (col != 0) {
-            emitSpritePixel(hpos, attachedSpriteBase | col, Z_SP[x & ~1] | SPRITE_EMIT_SINGLE);
+            emitSpritePixel(hpos, attachedSpriteBaseAt(hpos) | col, Z_SP[x & ~1] | SPRITE_EMIT_SINGLE);
             spritePixelsThisFrame[x - 1]++;
             spritePixelsThisFrame[x]++;
             spritesOnLineMask |= (1 << (x - 1)) | (1 << x);
@@ -2137,6 +2176,11 @@ final class DeniseLineRenderer {
         int xor = initialBplcon4 >>> 8;
         int colIdx = 0;
         while (colIdx < colChanges.size()) {
+            // The sprite bank changes were applied when the sprites were drawn.
+            if (colChanges.elements[colIdx].reg == COLCHANGE_SPRBANK) {
+                colIdx++;
+                continue;
+            }
             int trigger = colChanges.keys[colIdx];
             if (mode == AGA_HAM) hold = colorizeHamAga(pixel, trigger, hold, agaPlanes(curBplcon0), xor);
             else                 colorizeNormalAga(pixel, trigger, mode == AGA_EHB, xor);
@@ -2299,7 +2343,7 @@ final class DeniseLineRenderer {
     boolean isPlayfieldAt(int rawX) {
         return !lineIsVBorder && rawX >= 0 && rawX < bBuffer.length
                 && bBuffer[rawX] == (byte) 0xFF
-                && (mBuffer[rawX] & 0x3F) != 0;
+                && (mBuffer[rawX] & (isAGA ? 0xFF : 0x3F)) != 0;
     }
 
     long spritePixelCountLastFrame(int idx) {

@@ -54,6 +54,22 @@ public final class RAM {
      */
     private final String label;
 
+    /** Size of the pages whose writes are tracked for in-memory snapshots: 4 KB. */
+    private static final int PAGE_SHIFT = 12;
+    private static final int PAGE_SIZE = 1 << PAGE_SHIFT;
+
+    /**
+     * One flag per page, set by every write: the pages that differ from the copy held by
+     * {@link #trackingOwner}. Not machine state.
+     */
+    private final transient byte[] written;
+
+    /**
+     * The snapshot whose copy matches this RAM outside the written pages, {@code null} when
+     * none does.
+     */
+    private transient Object trackingOwner;
+
 
     // =========================================================================
     // Costruttori
@@ -79,6 +95,7 @@ public final class RAM {
             throw new IllegalArgumentException("RAM size must be > 0, got: " + sizeBytes);
         }
         this.mem   = new byte[sizeBytes];
+        this.written = new byte[(sizeBytes + PAGE_SIZE - 1) >>> PAGE_SHIFT];
         this.size  = sizeBytes;
         this.label = (label != null && !label.isBlank()) ? label : "RAM";
     }
@@ -146,6 +163,7 @@ public final class RAM {
      */
     public void writeByte(int address, int value) {
         if (address < 0 || address >= size) throwOob(address);
+        written[address >>> PAGE_SHIFT] = 1;
         mem[address] = (byte)(value & 0xFF);
     }
 
@@ -158,6 +176,8 @@ public final class RAM {
     public void writeWord(int address, int value) {
         // Single bounds check (see readWord).
         if (address < 0 || address >= size - 1) throwOob(address);
+        written[address >>> PAGE_SHIFT] = 1;
+        written[(address + 1) >>> PAGE_SHIFT] = 1;
         mem[address]     = (byte)((value >>> 8) & 0xFF);
         mem[address + 1] = (byte)( value        & 0xFF);
     }
@@ -171,6 +191,8 @@ public final class RAM {
     public void writeLong(int address, int value) {
         // Single bounds check (see readLong).
         if (address < 0 || address >= size - 3) throwOob(address);
+        written[address >>> PAGE_SHIFT] = 1;
+        written[(address + 3) >>> PAGE_SHIFT] = 1;
         mem[address]     = (byte)((value >>> 24) & 0xFF);
         mem[address + 1] = (byte)((value >>> 16) & 0xFF);
         mem[address + 2] = (byte)((value >>>  8) & 0xFF);
@@ -199,6 +221,9 @@ public final class RAM {
             throw new IndexOutOfBoundsException(
                     "Invalid range: off=" + off + " len=" + len + " src.length=" + src.length);
         checkBlock(address, len);
+        if (len > 0) {
+            Arrays.fill(written, address >>> PAGE_SHIFT, ((address + len - 1) >>> PAGE_SHIFT) + 1, (byte) 1);
+        }
         System.arraycopy(src, off, mem, address, len);
     }
 
@@ -238,6 +263,7 @@ public final class RAM {
      * @param value fill byte (only bits 7-0)
      */
     public void fill(int value) {
+        trackingOwner = null;
         Arrays.fill(mem, (byte)(value & 0xFF));
     }
 
@@ -245,6 +271,7 @@ public final class RAM {
      * Clears the whole RAM (same as {@code fill(0)}). Called during the system reset.
      */
     public void clear() {
+        trackingOwner = null;
         Arrays.fill(mem, (byte)0);
     }
 
@@ -338,6 +365,78 @@ public final class RAM {
 
     /** Returns the size of the RAM in bytes. */
     public int size()          { return size; }
+
+    // =========================================================================
+    // In-memory snapshots
+    // =========================================================================
+
+    /**
+     * Brings {@code copy} up to date with this RAM. Only the pages written since
+     * {@code owner}'s last capture or restore are copied; all of them when another owner, a
+     * fill or {@link #invalidateTracking()} came in between.
+     */
+    public void captureInto(byte[] copy, Object owner) {
+        sync(mem, copy, owner, null);
+    }
+
+    /**
+     * {@link #captureInto(byte[], Object)} that also says which pages it copied:
+     * {@code copied[p]} becomes 1 for every page copied and 0 for the others. A full copy
+     * marks them all.
+     */
+    public void captureInto(byte[] copy, Object owner, byte[] copied) {
+        if (copied.length != written.length) {
+            throw new IllegalArgumentException("[RAM:" + label + "] " + copied.length
+                    + " page flags, " + written.length + " pages");
+        }
+        sync(mem, copy, owner, copied);
+    }
+
+    /** Puts {@code copy} back into this RAM, by the same rule as {@link #captureInto}. */
+    public void restoreFrom(byte[] copy, Object owner) {
+        sync(copy, mem, owner, null);
+    }
+
+    /** Number of tracked pages. */
+    public int pageCount() {
+        return written.length;
+    }
+
+    /** Size in bytes of a tracked page. */
+    public static int pageSize() {
+        return PAGE_SIZE;
+    }
+
+    /**
+     * Forgets which pages were written: the next capture or restore copies everything. For
+     * whoever writes the memory without going through this class (a save state load).
+     */
+    public void invalidateTracking() {
+        trackingOwner = null;
+    }
+
+    private void sync(byte[] from, byte[] to, Object owner, byte[] copied) {
+        if (from.length != size || to.length != size) {
+            throw new IllegalArgumentException("[RAM:" + label + "] snapshot copy of "
+                    + Math.min(from.length, to.length) + " bytes, size " + size);
+        }
+        if (trackingOwner != owner) {
+            System.arraycopy(from, 0, to, 0, size);
+            Arrays.fill(written, (byte) 0);
+            if (copied != null) Arrays.fill(copied, (byte) 1);
+            trackingOwner = owner;
+            return;
+        }
+        for (int p = 0; p < written.length; p++) {
+            byte w = written[p];
+            if (copied != null) copied[p] = w;
+            if (w != 0) {
+                written[p] = 0;
+                int start = p << PAGE_SHIFT;
+                System.arraycopy(from, start, to, start, Math.min(PAGE_SIZE, size - start));
+            }
+        }
+    }
 
     /** Returns the descriptive label of this instance. */
     public String getLabel()   { return label; }

@@ -295,6 +295,8 @@ public final class SaveStateManager {
                             Messages.t("savestate.err.component", i, cls));
                 }
                 ReflectiveState.read(in, r);
+                // The memory was rewritten behind its write tracking.
+                if (r instanceof RAM ram) ram.invalidateTracking();
             }
             // Gary's Regions are not in the slot (they are objects): they are derived again
             // from the boards' state just restored. See buildRoots().
@@ -371,7 +373,7 @@ public final class SaveStateManager {
     // Building the list of roots (identical in save and load)
     // =========================================================================
 
-    private static List<Object> buildRoots(Processor cpu, EventCpuBus eventBus,
+    static List<Object> buildRoots(Processor cpu, EventCpuBus eventBus,
             AbstractAgnus agnus, GamePort port1, GamePort port2) {
         List<Object> roots = new ArrayList<>();
         add(roots, cpu);
@@ -471,7 +473,7 @@ public final class SaveStateManager {
      * machine paused (no other thread touches Agnus). An event-driven processor is stepped
      * through its bus, an instruction at a time.
      */
-    private static void advanceToBoundary(AbstractAgnus agnus, Processor cpu, EventCpuBus eventBus) {
+    static void advanceToBoundary(AbstractAgnus agnus, Processor cpu, EventCpuBus eventBus) {
         final int GUARD = 8_000_000; // wide margin: a whole frame is ~70k colour clocks
         if (eventBus != null) {
             final io.github.zolfrik.amija.common.ClockDriver driver = eventBus.driver((EventCpu) cpu);
@@ -514,7 +516,7 @@ public final class SaveStateManager {
     // Reflection: reading a field (private too, in superclasses too)
     // =========================================================================
 
-    private static Object field(Object owner, String name) {
+    static Object field(Object owner, String name) {
         for (Class<?> c = owner.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
             try {
                 Field f = c.getDeclaredField(name);
