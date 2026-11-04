@@ -40,34 +40,21 @@
   <p class="lead">A cycle-exact Amiga emulator in Java.</p>
   <hr class="rule">
 
-  <p>AmiJa emulates an Amiga at the level of the individual bus cycle: all
-  components advance together on the same 7.09 MHz master clock, and DMA slots
-  are arbitrated exactly as the real chipset does.</p>
-
   <h2>Features</h2>
   <ul>
     <li>OCS, ECS and AGA chipsets, PAL and NTSC - AGA on an emulated A1200 board</li>
     <li>68000, 68010 and 68020 processors</li>
-    <li>an automatic mode that builds the right machine around whatever you load:
-      a stock OCS Amiga for floppy games, an expanded one for hard disks and
-      WHDLoad, an A1200 for AGA software</li>
-    <li>floppy drives DF0-DF3 with reading <i>and</i> writing, ADF and IPF images,
+    <li>an automatic mode that builds the right machine around whatever you load</li>
+    <li>floppy drives DF0-DF3, ADF and IPF images,
       and multi-disk sets in a <code>.zip</code></li>
     <li>hard disk support (<code>.hdf</code>, Zorro II autoconfig) and WHDLoad
       <code>.lha</code> auto-run</li>
-    <li>save / load state, five slots with a thumbnail each</li>
-    <li>audio, real joysticks (via GLFW), mouse, and full keyboard mapping</li>
-    <li>software renderer or an OpenGL backend with RetroArch CRT shaders - the
-      <code>.glslp</code> presets are included, <code>.slangp</code> ones are
-      supported and installed by you</li>
-    <li>remote play: a second player joins over the network and takes one of the
-      two game ports, without needing a Kickstart or a copy of the game</li>
+    <li>save / load state</li>
+    <li>audio, real joysticks, mouse, and full keyboard mapping</li>
+    <li>software renderer or an OpenGL backend with RetroArch CRT shaders</li>
+    <li>remote play: a second player joins over the network without needing a 
+       Kickstart or a copy of the game</li>
   </ul>
-
-  <h2>Requirements</h2>
-  <p>The Windows and Linux archives bring their own Java runtime. To run the
-  <b>jar</b> you need a <b>JDK 26</b> or newer. Either way you will also need a
-  reasonably fast CPU.</p>
 
   <h2>License</h2>
   <p>AmiJa is free software, licensed under the <b>GNU General Public License,
@@ -75,9 +62,6 @@
   <a href="https://github.com/zolfrik/amija-amiga-emulator/blob/master/LICENSE" target="_blank" rel="noopener">LICENSE</a>.
   You may use, study, modify and redistribute it; any distributed derivative
   work must in turn be released under the same license, with its source code.</p>
-  <p>Third-party components bundled with the emulator (LWJGL, FlatLaf, the shader
-  packs, the <code>virtualhd.device</code> boot ROM) keep their own licenses: see
-  <a href="https://github.com/zolfrik/amija-amiga-emulator/blob/master/THIRD-PARTY-NOTICES.md" target="_blank" rel="noopener">THIRD-PARTY-NOTICES.md</a>.</p>
   <p>AmiJa is an independent reimplementation and is not affiliated with, nor
   endorsed by, Commodore, Amiga Corporation, Cloanto or Hyperion. <i>Amiga</i> is
   a trademark of its respective owner.</p>
@@ -86,25 +70,17 @@
   <p>AmiJa would not have been possible without the projects below.</p>
   <ul>
     <li><a href="https://github.com/SingleStepTests/m68000" target="_blank" rel="noopener"><b>TomHarte-style JSON tests for the Motorola 68000</b></a>
-      - per-instruction test vectors covering registers, flags, bus activity and
-      cycle counts. The ground truth the CPU core was built against.</li>
+      - per-instruction test vectors.</li>
     <li><a href="https://github.com/naTmeg/ScriptedAmigaEmulator" target="_blank" rel="noopener"><b>Scripted Amiga Emulator</b></a>
-      by Rupert Hausberger - a complete Amiga in readable JavaScript, easy to
-      instrument. Invaluable for comparing execution traces step by step.</li>
+      by Rupert Hausberger - a complete Amiga in JavaScript.</li>
     <li><a href="https://github.com/dirkwhoffmann/vamiga" target="_blank" rel="noopener"><b>vAmiga</b></a>
-      by Dirk W. Hoffmann - a meticulously written and documented chipset model;
-      its clarity about <i>how</i> the Copper, the Blitter and the DMA arbiter
-      actually behave is a reference in its own right.</li>
+      by Dirk W. Hoffmann - Amiga emulator.</li>
     <li><a href="https://github.com/dirkwhoffmann/vAmigaTS" target="_blank" rel="noopener"><b>vAmiga Test Suite</b></a>
-      - the corpus of test programs that turns "it looks right" into a pass or a
-      fail, and caught more regressions here than any other single thing.</li>
+      - collection of test programs for vAmiga.</li>
     <li><a href="https://github.com/tonioni/WinUAE" target="_blank" rel="noopener"><b>WinUAE</b></a>
-      by Toni Wilen - the outcome of decades of reverse engineering, and the
-      arbiter consulted whenever a timing question had no other answer.</li>
+      by Toni Wilen - the reference Amiga emulator.</li>
   </ul>
-  <p>None of their code is part of AmiJa: this is an independent implementation,
-  and any remaining inaccuracy is entirely its own. Thanks to their authors for
-  doing the hard work in the open.</p>
+  <p>None of their code is part of AmiJa.</p>
 </template>
 
 <!-- ============================================================ Screenshots -->
