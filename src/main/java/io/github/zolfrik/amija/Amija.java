@@ -756,7 +756,7 @@ public class Amija implements RemotePlayControl {
         }
         remotePlayGuest.setInputSource(remoteInputSender::snapshot);
 
-        joystickAdapter = new AmigaJoystickKeyAdapter();
+        joystickAdapter = new AmigaJoystickKeyAdapter(frame);
         keyAdapter = new AmigaKeyAdapter(remoteInputSender, frame);
         mouseAdapter = new AmigaMouseAdapter(remoteInputSender, frame,
                 display != null ? display.getVideoScale() : 1);
@@ -2458,7 +2458,7 @@ public class Amija implements RemotePlayControl {
             // Input adapters (recreated at every start: they bind the new ports/keyboard).
             // The target port and the enabled state of mouse/keyboard joystick are set right
             // after by applyPortAssignments (likewise for the real joystick).
-            joystickAdapter = new AmigaJoystickKeyAdapter();
+            joystickAdapter = new AmigaJoystickKeyAdapter(frame);
             keyAdapter = new AmigaKeyAdapter(keyboard, frame);
             // The scale factor comes from the display, not from the config: it is the one
             // really applied to the window (already normalised to >= 1). It brings the mouse
@@ -2747,6 +2747,7 @@ public class Amija implements RemotePlayControl {
             if (joystickAdapter != null) inputComponent.removeKeyListener(joystickAdapter);
         }
         if (keyAdapter != null) keyAdapter.dispose(); // stops the shift poller
+        if (joystickAdapter != null) joystickAdapter.dispose(); // removes its focus listener
         // The real joystick service (GLFW) stays alive between boots (idle): detaching the
         // ports is enough, they are reattached at the next boot.
         joystickService.setPorts(java.util.List.of());

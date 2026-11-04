@@ -362,6 +362,9 @@ public final class RemotePlayGuest implements AutoCloseable {
     }
 
     private void mediaLoop() {
+        // Pause state last shown on screen. Redrawn from this thread, the one that delivers
+        // the frames, so the display never has two writers.
+        boolean pauseShown = false;
         while (alive) {
             MediaLink.Received received;
             try {
@@ -372,6 +375,13 @@ public final class RemotePlayGuest implements AutoCloseable {
                             e.getMessage());
                 }
                 return;
+            }
+            boolean paused = hostPaused;
+            if (paused != pauseShown) {
+                // No frame arrives during a pause: present the last one again, so the
+                // overlays drawn with it show the new state.
+                pauseShown = paused;
+                receiver.redeliverLast(sink);
             }
             if (received == null) {
                 if (!hostPaused

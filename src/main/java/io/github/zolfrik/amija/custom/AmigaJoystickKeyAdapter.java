@@ -24,8 +24,12 @@ import io.github.zolfrik.amija.input.GamePortControls;
 import io.github.zolfrik.amija.input.JoystickAction;
 import io.github.zolfrik.amija.input.JoystickKeyMap;
 
+import java.awt.Window;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
+import java.awt.event.WindowFocusListener;
 
 /**
  * Emulates an Amiga joystick through the host keyboard, independently for the two game
@@ -48,15 +52,56 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
     private static final class PortState {
         volatile GamePortControls port;
         volatile JoystickKeyMap keyMap;
-        boolean up, down, left, right;
+        boolean up, down, left, right, fire;
     }
 
     private final PortState[] states = new PortState[PORTS];
 
+    /** Window whose focus loss releases the joysticks; null without a window. */
+    private final Window focusWindow;
+    private final WindowFocusListener focusListener;
+
     public AmigaJoystickKeyAdapter() {
+        this(null);
+    }
+
+    /**
+     * @param focusWindow window the adapter is registered on: when it loses the focus,
+     *                    directions and fire are released on every port, because the
+     *                    key-ups now go to another window. {@code null} in headless use.
+     */
+    public AmigaJoystickKeyAdapter(Window focusWindow) {
         for (int i = 0; i < PORTS; i++) {
             states[i] = new PortState();
             states[i].keyMap = JoystickKeyMap.defaults(i);
+        }
+        this.focusWindow = focusWindow;
+        if (focusWindow != null) {
+            focusListener = new WindowAdapter() {
+                @Override
+                public void windowLostFocus(WindowEvent e) {
+                    releaseAll();
+                }
+            };
+            focusWindow.addWindowFocusListener(focusListener);
+        } else {
+            focusListener = null;
+        }
+    }
+
+    /** Releases directions and fire on every configured port. */
+    public void releaseAll() {
+        for (PortState s : states) {
+            if (s.up || s.down || s.left || s.right || s.fire) {
+                release(s);
+            }
+        }
+    }
+
+    /** Removes the focus listener. To be called when the adapter is dropped. */
+    public void dispose() {
+        if (focusListener != null) {
+            focusWindow.removeWindowFocusListener(focusListener);
         }
     }
 
@@ -115,6 +160,7 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
             if (action == null) continue;
             handled = true;
             if (action == JoystickAction.FIRE) {
+                s.fire = pressed;
                 p.pressJoystickFire(pressed);
             } else {
                 switch (action) {
@@ -133,7 +179,7 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
 
     /** Releases directions and fire on the currently configured port, if any. */
     private void release(PortState s) {
-        s.up = s.down = s.left = s.right = false;
+        s.up = s.down = s.left = s.right = s.fire = false;
         GamePortControls p = s.port;
         if (p != null) {
             p.setJoystickAxes(0, 0);

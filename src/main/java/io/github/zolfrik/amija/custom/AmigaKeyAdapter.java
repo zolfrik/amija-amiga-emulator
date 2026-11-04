@@ -26,6 +26,9 @@ import io.github.zolfrik.amija.input.AmigaKeyTarget;
 import java.awt.Window;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
+import java.awt.event.WindowFocusListener;
 import java.util.HashMap;
 import java.util.Map;
 import javax.swing.Timer;
@@ -56,6 +59,9 @@ public class AmigaKeyAdapter extends KeyAdapter {
 
     /** True if the two shifts are driven by the physical poller instead of AWT. */
     private final boolean shiftPollerActive;
+
+    /** Releases every held key when the window loses the focus; null without a window. */
+    private final WindowFocusListener focusListener;
 
     /** EDT timer sampling the physical state of the two shifts (~120 Hz). */
     private Timer shiftPoller;
@@ -252,13 +258,44 @@ public class AmigaKeyAdapter extends KeyAdapter {
             shiftPoller.setCoalesce(true);
             shiftPoller.start();
         }
+        // A key released while another window has the focus sends its key-up there, not
+        // here: without this the Amiga would keep it pressed forever (alt-tab, a dialog, the
+        // other emulator window in remote play).
+        if (focusWindow != null) {
+            focusListener = new WindowAdapter() {
+                @Override
+                public void windowLostFocus(WindowEvent e) {
+                    releaseAll();
+                }
+            };
+            focusWindow.addWindowFocusListener(focusListener);
+        } else {
+            focusListener = null;
+        }
     }
 
     /**
-     * Stops the shift poller. To be called when the adapter is removed (e.g. emulator
+     * Releases on the Amiga every key this adapter still holds pressed. The two shifts of
+     * the physical poller are left to it: it reads them as up as soon as the focus is gone.
+     */
+    public void releaseAll() {
+        altGrCtrlSuppressed = false;
+        if (pressedKeys.isEmpty()) return;
+        java.util.List<Integer> held = new java.util.ArrayList<>(pressedKeys.values());
+        pressedKeys.clear();
+        for (int amigaKey : held) {
+            keyboard.releaseKey(amigaKey);
+        }
+    }
+
+    /**
+     * Stops the shift poller and the focus listener. To be called when the adapter is removed (e.g. emulator
      * restart) so no orphan EDT timers are left.
      */
     public void dispose() {
+        if (focusListener != null) {
+            focusWindow.removeWindowFocusListener(focusListener);
+        }
         if (shiftPoller != null) {
             shiftPoller.stop();
             shiftPoller = null;

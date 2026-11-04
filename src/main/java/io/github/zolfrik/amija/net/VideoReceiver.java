@@ -165,6 +165,27 @@ public final class VideoReceiver implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Delivers the last frame received in full again, unchanged.
+     *
+     * <p>The display composes its overlays (the NET light among them) only when a frame
+     * arrives. While the host is paused none arrives, so a change of state that must be seen
+     * on screen is shown by presenting the same image again. Not counted as a delivery.
+     *
+     * @return {@code false} if no frame has been received yet
+     */
+    public boolean redeliverLast(FrameSink sink) {
+        if (lastGoodFrameId < 0 || sink == null) {
+            return false;
+        }
+        int[] last = ring.get(lastGoodFrameId);
+        if (last == null) {
+            return false;
+        }
+        sink.onFrame(last, width, height, info, lastGoodFrameId);
+        return true;
+    }
+
     /** The number the guest puts in the ACK: the last frame received <b>in full</b>. */
     public long ackFrameId() {
         return lastGoodFrameId;
