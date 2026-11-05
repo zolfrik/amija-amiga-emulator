@@ -181,7 +181,7 @@ Copy-Item (Join-Path $Root 'floppysounds') $Pkg -Recurse
 # Stessa cautela di src/assembly/dist.xml.
 New-Item -ItemType Directory -Path (Join-Path $Pkg 'whdload') | Out-Null
 Copy-Item (Join-Path $Root 'whdload\readme.txt') (Join-Path $Pkg 'whdload')
-foreach ($f in @('LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md', 'USER_MANUAL.txt')) {
+foreach ($f in @('LICENSE', 'README.md', 'CHANGELOG.md', 'THIRD-PARTY-NOTICES.md', 'USER_MANUAL.txt')) {
     Copy-Item (Join-Path $Root $f) $Pkg
 }
 # Il logo che README.md mostra in testa: stesso percorso relativo che ha nel

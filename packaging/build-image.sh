@@ -170,7 +170,7 @@ cp -R "$ROOT/floppysounds"  "$PKG/"
 # Stessa cautela di src/assembly/dist.xml.
 mkdir -p "$PKG/whdload"
 cp "$ROOT/whdload/readme.txt" "$PKG/whdload/"
-for f in LICENSE README.md THIRD-PARTY-NOTICES.md USER_MANUAL.txt; do
+for f in LICENSE README.md CHANGELOG.md THIRD-PARTY-NOTICES.md USER_MANUAL.txt; do
     cp "$ROOT/$f" "$PKG/"
 done
 # Il logo che README.md mostra in testa: stesso percorso relativo che ha nel

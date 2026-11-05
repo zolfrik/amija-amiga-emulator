@@ -191,6 +191,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Serve solo CHANGELOG.md, da cui si prende la sezione della versione.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: staging
@@ -217,6 +222,20 @@ jobs:
           # remote git della cartella corrente, non lo trova e fallisce.
           GH_REPO: ${{ github.repository }}
         run: |
+          # La sezione "## [<ver>]" di CHANGELOG.md, senza il titolo, fino alla
+          # sezione successiva o ai link in fondo. Senza sezione la build si
+          # ferma: una release senza le sue novita' e' un errore.
+          VER="${GITHUB_REF_NAME#v}"
+          CHANGES="$(awk -v ver="$VER" '
+            index($0, "## [" ver "]") == 1 { on = 1; next }
+            on && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            on { print }
+          ' CHANGELOG.md | sed -e '/./,$!d')"
+          if [ -z "$CHANGES" ]; then
+            echo "::error::CHANGELOG.md non ha una sezione per la versione $VER"
+            exit 1
+          fi
+
           NOTES="$(cat <<'NOTES'
           ## Which file to download
 
@@ -232,8 +251,9 @@ jobs:
 
           If you already have JDK 26: `AmiJa-<ver>.zip` (no runtime) or just `AmiJa.jar`.
 
-          **You need your own Kickstart ROM** (not included, it is copyrighted). Amiga
-          Forever or a dump of your own machine both work.
+          **Workbench, hard disks, WHDLoad and AGA software need your own Kickstart ROM**
+          (not included, it is copyrighted): Amiga Forever or a dump of your own machine
+          both work. Floppy games that boot on their own also run on AmiJa's built-in ROM.
 
           **Windows:** the executable is not signed, so SmartScreen may say "Windows
           protected your PC". Click *More info* → *Run anyway*, or unblock the zip before
@@ -246,7 +266,9 @@ jobs:
           NOTES
           )"
           # Il segnaposto <ver> diventa la versione del tag (v0.5.0 -> 0.5.0).
-          NOTES="${NOTES//<ver>/${GITHUB_REF_NAME#v}}"
+          NOTES="${NOTES//<ver>/$VER}"
+          # Prima le novita' della versione, poi la guida ai download.
+          NOTES="$(printf '## What is new\n\n%s\n\n%s' "$CHANGES" "$NOTES")"
 
           # Creare un tag dalla pagina "Releases" di GitHub crea ANCHE la release:
           # in quel caso "gh release create" fallirebbe a build gia' fatta, dopo una

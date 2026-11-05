@@ -8,73 +8,42 @@
   A cycle-exact Amiga emulator in Java.
 </p>
 
-<p align="center">
-  <a href="https://zolfrik.github.io/amija-amiga-emulator/"><b>Website</b></a> ·
-  <a href="https://github.com/zolfrik/amija-amiga-emulator/releases">Download</a> ·
-  <a href="https://www.youtube.com/playlist?list=PLdkiRBBNki2g">Videos</a>
-</p>
-
 ---
-
-AmiJa emulates an Amiga at the level of the individual bus cycle: all
-components advance together on the same 7.09 MHz master clock, and DMA slots are
-arbitrated exactly as the real chipset does.
 
 **Features**
 
-- OCS, ECS and AGA chipsets, PAL and NTSC — AGA on an emulated A1200 board
+- OCS, ECS and AGA chipsets, PAL and NTSC - AGA on an emulated A1200 board
 - 68000, 68010 and 68020 processors
-- an automatic mode that builds the right machine around whatever you load:
-  a stock OCS Amiga for floppy games, an expanded one for hard disks and
-  WHDLoad, an A1200 for AGA software
-- floppy drives DF0–DF3 with reading *and* writing, ADF and IPF images, and
-  multi-disk sets in a `.zip`
-- hard disk support (`.hdf`, Zorro II autoconfig) and WHDLoad `.lha` auto-run
-- save / load state, five slots with a thumbnail each
-- audio, real joysticks (via GLFW), mouse, and full keyboard mapping
-- software renderer or an OpenGL backend with RetroArch CRT shaders — the
-  `.glslp` presets are included, `.slangp` ones are supported and installed by you
-- remote play: a second player joins over the network and takes one of the two
-  game ports, without needing a Kickstart or a copy of the game
+- automatic mode: the machine is configured from the media you load
+- floppy drives DF0-DF3, ADF and IPF images, multi-disk sets in a .zip
+- hard disk images (.hdf, Zorro II AutoConfig) and WHDLoad .lha auto-run
+- five save-state slots and rewind
+- audio, real joysticks, mouse and full keyboard mapping, with low input and audio latency
+- software renderer or OpenGL backend with RetroArch shaders (.glslp, .slangp)
+- remote play: a second player joins over the network without a Kickstart or a copy of the game, and spectators can watch
+- command line for frontends: media files and any setting as `key=value`
 
-## Download
-
-Each release on the
-[Releases page](https://github.com/zolfrik/amija-amiga-emulator/releases) comes
-in these forms:
-
-| System      | Archive                          | What is inside                                                           |
-| ----------- | -------------------------------- | ------------------------------------------------------------------------ |
-| Windows x64 | `AmiJa-<ver>-windows-x64.zip`    | `AmiJa.exe` and its own Java runtime: nothing else to install            |
-| Linux x64   | `AmiJa-<ver>-linux-x64.tar.gz`   | the `bin/AmiJa` launcher and its own Java runtime                        |
-| Linux ARM64 | `AmiJa-<ver>-linux-arm64.tar.gz` | the same, for ARM64                                                      |
-| any         | `AmiJa-<ver>.zip`                | the portable `AmiJa.jar` with the same folders, for a JDK you already have |
-
-Unpack the archive into a folder you can write to — not *Program Files* or
-`/opt` — because AmiJa keeps its configuration, save states and screenshots
-next to itself.
+See [CHANGELOG.md](CHANGELOG.md) for the changes in each release.
 
 ## Requirements
 
 The Windows and Linux archives bring their own Java runtime. To run the
-**jar** you need a **JDK 26** or newer. Either way you will also need a
-reasonably fast CPU.
+**jar** you need a **JDK 26** or newer.
 
 ## Running
 
 Start `AmiJa.exe` (Windows) or `bin/AmiJa` (Linux). With the portable package,
-or a jar you built yourself (see below):
+or the jar:
 
 ```bash
 java -jar AmiJa.jar
 ```
 
-On a first start no Kickstart ROM is configured, so AmiJa boots its own: a small
-firmware written for this project, which ships with the emulator. It is not a full 
-Kickstart — it has no AmigaDOS. Disks that hand over to `dos.library`, hard-disk 
-installs, and WHDLoad all still need a real Kickstart.
+Without a configured Kickstart, AmiJa boots its own built-in firmware. It has
+no AmigaDOS: Workbench, hard disk installs and WHDLoad require a real
+Kickstart. Press F12 to configure it.
 
-The full guide to every setting and every key is in
+Every setting, key and command-line option is documented in
 [USER_MANUAL.txt](USER_MANUAL.txt).
 
 ## Building
@@ -88,30 +57,15 @@ produces two things:
 - `target/AmiJa.jar` — a single executable jar with the code, the resources and
   all the dependencies inside;
 - `target/AmiJa-<version>.zip` — the ready-to-run package: that jar, the
-  documents, and the folders AmiJa reads from its home
-  (`shaders/`, `blurs/`, `floppysounds/`, and the `whdload/` placeholder).
-  Unzip it anywhere and run the jar inside; `amiga.properties` is created on the
-  first start.
+  documents, and the folders AmiJa reads from its home.
 
-To build one of the self-contained archives from the [Download](#download)
-section instead — launcher, bundled Java runtime and all — run the packaging
+To build one of the self-contained archives run the packaging
 script for your system:
 
 ```bash
 packaging/build-image.sh                      # Linux
 powershell -File packaging\build-image.ps1    # Windows
 ```
-
-## User-supplied files
-
-| Contents                                                                                                                                                                | Path                               | Feature                                                                                                   |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Kickstart ROM images (1.3 and 3.1; the A1200 release of 3.1 for AGA software)                                                                                           | configured into `amiga.properties` | AmigaDOS disks, hard disks, WHDLoad, AGA — floppy games with a self-loading boot block run on the built-in ROM |
-| the WHDLoad loader (`C/`, `S/`) from <https://www.whdload.de/>, plus the `.RTB` relocation tables in `Devs/Kickstarts/` for installs that emulate a different Kickstart | `whdload/WHDLoad_files/`           | running `.lha` WHDLoad archives                                                                           |
-
-**AmiJa can fetch WHDLoad for you.** Press **F12**, then *Optional files* →
-*Download…*: the assistant downloads WHDLoad and the `.RTB` tables from their
-official sites and unpacks them where they belong.
 
 ## License
 
@@ -132,23 +86,10 @@ trademark of its respective owner.
 
 AmiJa would not have been possible without the projects below.
 
-- **[TomHarte-style JSON tests for the Motorola 68000](https://github.com/SingleStepTests/m68000)**
-  — per-instruction test vectors covering registers, flags, bus activity and
-  cycle counts. The ground truth the CPU core was built against.
-- **[Scripted Amiga Emulator](https://github.com/naTmeg/ScriptedAmigaEmulator)**
-  by Rupert Hausberger — a complete Amiga in readable JavaScript, easy to
-  instrument. Invaluable for comparing execution traces step by step.
-- **[vAmiga](https://github.com/dirkwhoffmann/vamiga)** by Dirk W. Hoffmann —
-  a meticulously written and documented chipset model; its clarity about *how*
-  the Copper, the Blitter and the DMA arbiter actually behave is a reference
-  in its own right.
-- **[vAmiga Test Suite](https://github.com/dirkwhoffmann/vAmigaTS)** — the
-  corpus of test programs that turns "it looks right" into a pass or a fail,
-  and caught more regressions here than any other single thing.
-- **[WinUAE](https://github.com/tonioni/WinUAE)** by Toni Wilen — the outcome
-  of decades of reverse engineering, and the arbiter consulted whenever a
-  timing question had no other answer.
+- **[TomHarte-style JSON tests for the Motorola 68000](https://github.com/SingleStepTests/m68000)** - per-instruction test vectors.
+- **[Scripted Amiga Emulator](https://github.com/naTmeg/ScriptedAmigaEmulator)** - a complete Amiga in JavaScript.
+- **[vAmiga](https://github.com/dirkwhoffmann/vamiga)** by Dirk W. Hoffmann - Amiga emulator.
+- **[vAmiga Test Suite](https://github.com/dirkwhoffmann/vAmigaTS)** - collection of test programs for vAmiga.
+- **[WinUAE](https://github.com/tonioni/WinUAE)** - the reference Amiga emulator.
 
-None of their code is part of AmiJa: this is an independent implementation, and
-any remaining inaccuracy is entirely its own. Thanks to their authors for doing
-the hard work in the open.
+None of their code is part of AmiJa.

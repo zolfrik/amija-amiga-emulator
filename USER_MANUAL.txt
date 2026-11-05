@@ -18,30 +18,32 @@ CONTENTS
     1.  About AmiJa
     2.  Getting started
         2.1   Files and folders
-        2.2   Keyboard and mouse at a glance
+        2.2   Keyboard and mouse
     3.  The F12 popup
-        3.1   How to read this chapter
+        3.1   Conventions
         3.2   System
         3.3   Drives (automatic mode)
         3.4   Floppy drives (expert mode)
         3.5   Hard disks (expert mode)
         3.6   WHDLoad (expert mode)
         3.7   Saved state
-        3.8   Game ports
-        3.9   Remote play
-        3.10  Audio / Video
-        3.11  Optional files
-        3.12  Sub-dialogs ("..." buttons)
-        3.13  The button bar
+        3.8   Rewind
+        3.9   Game ports
+        3.10  Remote play
+        3.11  Audio / Video
+        3.12  GUI
+        3.13  Optional files
+        3.14  Sub-dialogs
+        3.15  Button bar
     4.  Properties available only in amiga.properties
-        4.1   File-browser memory
+        4.1   File browser folders
         4.2   Automatic-mode profiles
         4.3   Remote play
         4.4   Diagnostic overlays
         4.5   Blitter
-        4.6   WHDLoad parameters (WHDLoad.prefs)
-    5.  Alphabetical property index
-    6.  Command line (for frontends)
+        4.6   WHDLoad parameters
+    5.  Property index
+    6.  Command line
     License
 
 
@@ -49,1301 +51,743 @@ CONTENTS
  1.  ABOUT AMIJA
 ===============================================================================
 
-  AmiJa is an Amiga emulator written entirely in Java. It reproduces the
-  machine at the cycle level: the CPU, the custom chips (Agnus, Denise, Paula),
-  the two CIAs and the floppy drives all advance on the same 7.09 MHz master
-  clock as the real hardware, so DMA arbitration, blitter timing, copper waits
-  and disk bitstreams behave the way they do on a real Amiga.
+  AmiJa is a cycle-exact Amiga emulator written in Java. CPU, custom chips,
+  CIAs and floppy drives run on a common 7.09 MHz master clock.
 
-  What you get:
+    *  OCS, ECS and AGA chipsets (AGA on an emulated A1200), PAL and NTSC
+    *  68000, 68010 and 68020 processors
+    *  Chip, Slow and Fast RAM; up to four floppy drives
+    *  ADF, IPF and ZIP disk images
+    *  Hard disk images (.hdf) on a Zorro II AutoConfig controller
+    *  WHDLoad archives (.lha, .lzh) started directly
+    *  Software or OpenGL rendering with RetroArch shaders (.glslp, .slangp)
+    *  Five save-state slots, rewind, screenshots, real joysticks, drive sounds
+    *  Remote play for a second player and spectators
+    *  Automatic mode: the machine is configured from the loaded media
 
-    *  OCS, ECS and AGA chipsets, PAL and NTSC video - AGA on an emulated
-       A1200 board
-    *  68000, 68010 or 68020 processor
-    *  Chip / Slow / Fast RAM configurations, up to four floppy drives
-    *  ADF, IPF (copy-protected originals) and ZIP disk sets
-    *  Hard disk images (.hdf) through a Zorro II AutoConfig controller
-    *  WHDLoad archives (.lha) started automatically, with no manual install
-    *  Software or OpenGL rendering, with RetroArch CRT shaders (.glslp
-       and .slangp)
-    *  Save states, screenshots, real joysticks, floppy drive sounds
-    *  Remote play: a second player joins over the network and takes a game
-       port, without needing a Kickstart or a copy of the game
-    *  An automatic mode that builds the machine around whatever you load, so
-       there is nothing to configure before playing
-
-  Everything is driven from one configuration file, amiga.properties, which can
-  be edited by hand or - more comfortably - from the popup that opens with F12
-  while the emulator is running. This manual describes both.
+  The configuration is stored in amiga.properties and can be edited by hand
+  or from the F12 popup.
 
 
 ===============================================================================
  2.  GETTING STARTED
 ===============================================================================
 
-  With no Kickstart configured AmiJa still starts: it falls back to a built-in
-  ROM of its own - original firmware written for this project and free to
-  redistribute, which is why it can be shipped at all. It boots floppy games
-  whose boot block loads the game by itself, and that is a good part of the
-  classic library.
+  Without a Kickstart, AmiJa uses its own built-in ROM. It boots floppy games
+  that load themselves from the boot block, but provides no AmigaDOS:
+  Workbench, hard disks and WHDLoad require a real Kickstart. Kickstart is
+  copyrighted and not included; it is available with Amiga Forever
+  (amigaforever.com) or can be dumped from an Amiga you own.
 
-  It is not a full Kickstart, though. It has no AmigaDOS, so anything that
-  relies on dos.library - Workbench disks, hard-disk installs, WHDLoad - needs
-  a real ROM. That one AmiJa cannot supply: Kickstart is still under copyright.
-  Two lawful ways to get it are to buy Amiga Forever from Cloanto
-  (amigaforever.com), which includes every version, or to dump the chip out of
-  an Amiga you own.
-
-  Once you have the file, press F12 and drop it into "Kickstart 1.3". If you
-  also play hard-disk, WHDLoad or AGA games, add a Kickstart 3.1 in the box
-  below it - preferably the A1200 release, see 3.2. AmiJa picks whichever the
-  game needs. Press OK and the machine boots.
+  Press F12, set "Kickstart 1.3" and, for hard disk, WHDLoad and AGA software,
+  "Kickstart 3.1" (preferably the A1200 release 40.68). Press OK to boot.
 
   ---------------------------------------------------------------------------
   2.1   FILES AND FOLDERS
   ---------------------------------------------------------------------------
 
-  Everything is resolved relative to AmiJa's HOME: the folder that holds the
-  program itself - AmiJa.exe, bin/AmiJa or AmiJa.jar, depending on how you got
-  it. It does not matter which directory you start it from, or whether you
-  launch it from a shortcut or a menu entry.
+  All paths are relative to the AmiJa home: the folder containing AmiJa.exe,
+  bin/AmiJa or AmiJa.jar. When started from an IDE or Maven, the working
+  directory is used instead. The home folder must be writable; do not install
+  under Program Files or /opt.
 
-  (Started some other way, with no such folder to speak of - from an IDE, or
-  from "mvn exec" - AmiJa falls back to the working directory instead.)
-
-  Because AmiJa keeps everything next to itself, its home must be a folder you
-  can WRITE to. Extract the archive into your own space rather than into
-  Program Files or /opt, or nothing will be saved.
-
-    amiga.properties     the configuration file. Searched in the home folder
-                         first, then on the classpath; if it is missing
-                         altogether a default one is created.
-    shaders/             RetroArch shader presets (*.glslp, *.slangp) offered
-                         in the Shader drop-down, subfolders included.
-    blurs/               the companion shader pack, used by presets that ask
-                         for a blur pass.
+    amiga.properties     configuration; created with defaults if missing
+    shaders/             shader presets (*.glslp, *.slangp), subfolders included
     shaders/shaders_slang/
-                         the layout a downloaded slang pack expects, with the
-                         few shared include files it needs; see
-                         shaders/Mega_Bezel_Packs/readme.txt.
-    screenshots/         PNG files written by "Take Screenshot".
-    savestate/           Slot1/ ... Slot5/, one folder per save-state slot,
-                         each holding state.a5s and state.png (a thumbnail of
-                         the saved screen).
-    whdload-saves/       persistent WHDSaves: volume for WHDLoad games.
-    floppysounds/        the drive samples behind the mechanical noise. Ships
-                         filled; replace them with your own if you like, or
-                         empty the folder to silence the drives.
-
-  One more folder holds material AmiJa is not allowed to ship, so it arrives
-  empty and the features that read it stay quietly switched off until you fill
-  it. The "Optional files" section of the popup (3.11) downloads it for you
-  from its official site:
-
-    whdload/             the WHDLoad system files, in WHDLoad_files/, plus the
-                         relocation tables (.RTB) some installs need.
+                         slang layout and shared include files; see
+                         shaders/Mega_Bezel_Packs/readme.txt
+    blurs/               blur passes used by some presets
+    screenshots/         screenshots (PNG)
+    savestate/           Slot1/ ... Slot5/, each with state.a5s and state.png
+    whdload-saves/       persistent WHDLoad saves (WHDSaves: volume)
+    floppysounds/        drive sound samples; replaceable, empty to silence
+    whdload/             WHDLoad system files and .RTB tables; shipped empty,
+                         filled by the download assistant (3.13)
 
   ---------------------------------------------------------------------------
-  2.2   KEYBOARD AND MOUSE AT A GLANCE
+  2.2   KEYBOARD AND MOUSE
   ---------------------------------------------------------------------------
 
-    F12                     opens the configuration popup and pauses the
-                            machine. (Because F12 is taken, the Amiga HELP key
-                            lives on Home - see below.)
-    Left / Right Alt        the two Amiga keys. Windows keys work as well.
-    Ctrl + Amiga + Amiga    the Amiga hard reset, exactly as on real hardware:
-                            hold all three, the machine reboots when you let go.
-    Page Up / Page Down     left / right Amiga Alt (these give @ # [ ] { } on
-                            the Italian keymap).
-    Home                    the Amiga HELP key.
+    F12                     open the configuration popup (pauses emulation)
+    Left / Right Alt        left / right Amiga keys (Windows keys also work)
+    Page Up / Page Down     left / right Amiga Alt
+    Home                    Amiga HELP
+    Ctrl + Amiga + Amiga    hard reset (on release)
 
-    Left mouse button       clicking in the window captures the mouse: the host
-                            pointer disappears and drives the Amiga pointer
-                            without ever hitting the edge of the screen.
-    Middle mouse button     releases the capture (losing window focus releases
-                            it too).
-    Right mouse button      the Amiga right button.
+    Left mouse button       capture the mouse
+    Middle mouse button     release the mouse (also released on focus loss)
+    Right mouse button      Amiga right button
 
-    Drag and drop           dropping a disk image onto the window inserts it.
-                            The window is divided into four quadrants, one per
-                            drive: drop on the top-left for DF0, top-right for
-                            DF1, and so on. The path is remembered in the
-                            configuration, so the popup shows it afterwards.
+    Drag and drop           insert a disk image. The window is split into four
+                            quadrants: top-left DF0, top-right DF1, bottom-left
+                            DF2, bottom-right DF3.
+
+  Keys held down are released automatically when the window loses focus.
 
 
 ===============================================================================
  3.  THE F12 POPUP
 ===============================================================================
 
-  Pressing F12 pauses emulation, releases the mouse and opens the configuration
-  window: a column of sections, followed by a bar of action buttons.
+  F12 pauses emulation, releases the mouse and opens the configuration popup.
+  Sections, in order:
 
-  You never see all of them at once, because two of the sections are two ways
-  of saying the same thing. With "Expert mode" off - the way AmiJa starts - the
-  media you load live in a single "Drives" list (3.3) and the machine is built
-  around them. Tick "Expert mode" and that list is replaced by the three
-  sections that set each kind of drive by hand: Floppy drives (3.4), Hard disks
-  (3.5) and WHDLoad (3.6).
+    System (3.2)
+    Drives (3.3)                               automatic mode
+    Floppy drives, Hard disks, WHDLoad         expert mode (3.4 - 3.6)
+    Saved state (3.7)
+    Rewind (3.8)
+    Game ports (3.9)
+    Remote play (3.10)
+    Audio / Video (3.11)
+    GUI (3.12)
+    Optional files (3.13)                      hidden once all is installed
 
-  So the popup shows, in this order:
+  Saved state, Rewind, Game ports, Remote play, Audio / Video and GUI are
+  collapsible and closed by default; the open ones are remembered in
+  ui.popup.expanded.
 
-    System (3.2)          the machine: ROM, processor, chipset, memory, video
-                          standard
-    Drives (3.3)          ... in automatic mode
-      or Floppy drives, Hard disks, WHDLoad (3.4 - 3.6) in expert mode
-    Saved state (3.7)     the save slot, with a thumbnail of what is in it
-    Game ports (3.8)      what is plugged into the two Amiga ports
-    Remote play (3.9)     hosting a second player, or joining one
-    Audio / Video (3.10)  renderer, shader, window, LEDs, drive sounds
-    GUI                   language and interface scale, described under 3.2
-    Optional files (3.11) the downloader for the files AmiJa may not ship;
-                          it disappears once everything is installed
-
-  A machine you are only watching has less to configure: joining someone else's
-  session (3.9) hides System, the drives and the save slot, because on that
-  computer there is no emulated Amiga to set up - what is left is your own
-  picture, sound and controls.
+  When joining or watching a remote session, System, the drive sections,
+  Saved state and Rewind are hidden.
 
   ---------------------------------------------------------------------------
-  3.1   HOW TO READ THIS CHAPTER
+  3.1   CONVENTIONS
   ---------------------------------------------------------------------------
 
-  Every control is listed with the amiga.properties key it writes, the values it
-  accepts, and when the change becomes effective:
+  Each setting lists its amiga.properties key, its values and when it takes
+  effect:
 
-    LIVE       applied immediately when you press OK, machine keeps running.
-    RESTART    needs the emulated machine to be rebuilt. You do not have to do
-               it by hand: pressing OK after changing one of these settings
-               performs the cold restart for you (the alternative is to press
-               the Restart button).
-    RELAUNCH   needs the whole application to restart. AmiJa relaunches itself
-               automatically; only the interface scale is in this class,
-               because the look and feel reads it once at start-up.
-    BOOT       read when the machine is built, so it applies at the next
-               Restart (or at the next launch).
+    LIVE       applied on OK; the machine keeps running.
+    RESTART    the machine is rebuilt automatically on OK.
+    RELAUNCH   AmiJa restarts itself on OK.
+    BOOT       applied at the next Restart or launch.
 
-  Two keys - ESC cancels the popup, ENTER confirms it. Note that the file
-  browsers behind the "..." buttons save the directory you last visited
-  immediately, even if you then press Cancel.
+  ESC cancels, ENTER confirms. File browsers save the last folder immediately,
+  even if the popup is cancelled.
+
+  If the configuration cannot start (for example a 68020-only Kickstart on a
+  68000, or Kickstart 1.x with a hard disk or WHDLoad), AmiJa reports the
+  conflict and asks for a correction instead of booting.
 
   ---------------------------------------------------------------------------
   3.2   SYSTEM
   ---------------------------------------------------------------------------
 
-  The last two entries of this section - Language and Interface scale - live in
-  a box of their own at the bottom of the popup, labelled "GUI": they are the
-  settings that describe AmiJa itself rather than the machine it emulates.
+  Expert mode                                                   auto.enabled
+     Unticked (default): automatic mode. The machine is configured from the
+     loaded media using one of three profiles (4.2):
 
-  +-------------------------------------------------------------------------+
-  |  [ ] Expert mode                                           auto.enabled  |
-  +-------------------------------------------------------------------------+
-     The switch between the two ways of using AmiJa, and the first thing to
-     understand about this popup.
+       Floppy            Kickstart 1.3, OCS, 68000, 512 KB Chip + 512 KB Slow
+       Hard disk/WHDLoad Kickstart 3.1, ECS, 68010, 2 MB Chip + 8 MB Fast
+       AGA               Kickstart 3.1, A1200 (AGA, 68020, 2 MB Chip);
+                         8 MB Fast with hard disk or WHDLoad
 
-     Left OFF - the default - you supply the games and AmiJa builds the machine
-     around them. Load a floppy image and you get a stock Amiga with Kickstart
-     1.3; load a hard disk image or a WHDLoad archive and you get the expanded
-     machine those need, with Kickstart 3.1, 2 MB of Chip RAM, 8 MB of Fast RAM,
-     the ECS chipset and a 68020 processor. Load software that needs AGA and
-     you get an A1200: Kickstart 3.1, the AGA chipset, 2 MB of Chip RAM and a
-     68020, plus 8 MB of Fast RAM when it comes as a hard disk or a WHDLoad
-     archive. AmiJa knows a title needs AGA when its WHDLoad slave says so, or
-     when the word "AGA" stands on its own in the file name - "(AGA)",
-     "_AGA.lha" - the way the collections write it.
+     The AGA profile is used when the WHDLoad slave requires AGA or a file
+     name contains the word "AGA" (e.g. "(AGA)", "_AGA.lha"). A WHDLoad slave
+     that requires a 68020 gets one in any profile. A file name containing
+     "NTSC" or "(USA)" selects NTSC; otherwise PAL. In automatic mode the
+     machine rows show the deduced values and are read-only.
 
-     Even the video standard follows the file: a name containing "NTSC" or
-     "(USA)" - the convention TOSEC, No-Intro and WHDLoad use - selects NTSC,
-     everything else PAL. The memory, chipset, processor and video rows below
-     then show what was deduced and cannot be edited.
+     Ticked: every setting is manual and the Drives list is replaced by
+     sections 3.4 - 3.6. Manual settings are preserved while automatic mode
+     is active.
 
-     Ticked, nothing is deduced: every setting is yours, as on a real Amiga,
-     and the drive list is replaced by the three per-kind sections (3.4 - 3.6).
+     Note: ticking the box writes auto.enabled=false.
+     Values: true / false (default true)                        Applies: BOOT
 
-     Your manual choices are not lost while the automatic mode is on. They stay
-     in the file exactly as you left them and come back into force the moment
-     you tick this box. The values the automatic mode uses are themselves
-     properties you can change - see 4.2.
+  Kickstart 1.3 / Kickstart 3.1          auto.kickstart13.path / .kickstart31.path
+     ROMs used by automatic mode: 1.3 for floppy, 3.1 for hard disk, WHDLoad
+     and AGA. For 3.1, use the A1200 release (40.68): some AGA WHDLoad slaves
+     reject 40.63. If one is empty, the other is used, then kickstart.path,
+     then the built-in ROM.
+     Values: absolute path or empty                             Applies: BOOT
 
-     Note the polarity: the box is called "Expert mode", the property is called
-     auto.enabled, and they are opposites. Ticking the box writes false.
-     Values . . . . . true / false (default true = automatic)
-     Applies . . . . . BOOT
+  Kickstart                                                   kickstart.path
+     ROM used in expert mode. Any power-of-two image up to 512 KB. Headers,
+     appended data and duplicated halves are normalised; CDTV extended ROMs
+     and ReKick images are rejected with an explanation.
+     Values: absolute path                                      Applies: BOOT
 
-  +-------------------------------------------------------------------------+
-  |  Kickstart 1.3 (.rom):                            auto.kickstart13.path  |
-  |  Kickstart 3.1 (.rom):                            auto.kickstart31.path  |
-  +-------------------------------------------------------------------------+
-     The two ROMs the automatic mode chooses between: the 1.3 for plain floppy
-     games, which is what almost all of them expect, and the 3.1 for anything
-     involving a hard disk or WHDLoad, where a 1.x Kickstart usually is not
-     enough, and for AGA software. You set them once and never think about
-     them again.
+  Processor                                                        cpu.model
+     68000; 68010 (vector base register, loop mode, MOVEC/MOVES/RTD;
+     MOVE from SR is privileged, which stops a few 68000 games); 68020
+     (32-bit, the A1200 processor, much faster).
+     Values: 68000E / 68010E / 68020 (68000 and 68010 also accepted)
+                                                             Applies: RESTART
 
-     For the 3.1 box prefer the A1200 release (40.68) to the one for the
-     other models (40.63). It is the ROM an A1200 shipped with, and some AGA
-     games started through WHDLoad check the version and stop on the other.
+  Chipset                                                            chipset
+     OCS: original chipset. ECS: enhanced Agnus/Denise (BEAMCON0, DIWHIGH,
+     BPLCON3, super-hires, productivity modes). AGA: builds a full A1200
+     (Alice, Lisa, Gayle; 8 bitplanes, 24-bit palette, HAM8); requires
+     Kickstart 3.1, 2 MB Chip RAM and the 68020.
+     Values: OCS / ECS / AGA                                 Applies: RESTART
 
-     Only one of the two is required. If the profile AmiJa wants is empty it
-     falls back to the other, and then to the expert-mode kickstart.path below
-     - so a configuration carried over from an older AmiJa, which only had that
-     one key, still boots. With both empty the built-in ROM takes over (2).
+  Chip RAM                                                        chipram.kb
+     Values: 256 / 512 / 1024 / 2048 (KB)                       Applies: BOOT
 
-     The "..." buttons open a browser filtered on *.rom, which remembers its
-     folder in chooser.rom.lastDirectory.
-     Values . . . . . absolute path or empty      Applies . . . BOOT
+  Slow RAM                                                        slowram.kb
+     Trapdoor expansion at $C00000. Not available on the A1200 (AGA).
+     Values: 0 / 512 / 1024 / 1536 / 1792 (KB)                  Applies: BOOT
 
-  +-------------------------------------------------------------------------+
-  |  Kickstart (.rom):                                        kickstart.path |
-  +-------------------------------------------------------------------------+
-     The single ROM used in expert mode, mapped at $FC0000-$FFFFFF. A 256 KB
-     image is the usual case (Kickstart 1.3 rev 34.5 is the reference; 2.0/3.1
-     images work for hard-disk and WHDLoad setups), but any power-of-two image
-     up to 512 KB is accepted and mirrored into the socket as the real hardware
-     would. Real dumps carrying loader headers, appended tails or duplicated
-     halves are normalised on the way in; a file that turns out to be a CDTV
-     extended ROM, or an image meant to be relocated into RAM by ReKick, is
-     refused with an explanation of what it actually is.
-     Values . . . . . absolute path      Applies . . . BOOT
+  Fast RAM                                                        fastram.kb
+     Zorro II AutoConfig memory, no chip-bus contention.
+     Values: 0 / 512 / 1024 / 2048 / 4096 / 8192 (KB)           Applies: BOOT
 
-  +-------------------------------------------------------------------------+
-  |  Processor:                                                   cpu.model  |
-  +-------------------------------------------------------------------------+
-     The classic 68000, or its drop-in successor the 68010: a little faster on
-     some instructions, with a movable vector table, a loop mode that runs a
-     one-instruction DBcc loop without fetching it again, and MOVEC, MOVES and
-     RTD. MOVE from SR is privileged on the 68010, so a few old games written
-     for the 68000 stop there. The 68020 is the processor of the A1200, with a
-     32-bit bus and four clocks per colour clock: much faster, and what
-     WHDLoad and hard disk software expect.
-     Values . . . . . 68000 / 68010 / 68020
-                                        Applies . . . RESTART (automatic on OK)
-     In amiga.properties the three are written 68000E, 68010E and 68020; the
-     older clocked cores, 68000 and 68010, are still accepted there.
-
-  +-------------------------------------------------------------------------+
-  |  Chipset:                                                       chipset  |
-  +-------------------------------------------------------------------------+
-     Custom chip generation. OCS is the original chipset; ECS adds the enhanced
-     Agnus/Denise and their extra registers (BEAMCON0, DIWHIGH, BPLCON3,
-     super-hires, productivity modes) and is what ECS-only titles expect.
-
-     AGA is the chipset of the A1200: Alice and Lisa, with up to 8 bitplanes,
-     256 colours from a 24-bit palette, HAM8 and wider sprites. Choosing it
-     builds the whole A1200 board, not just the chips: Gayle takes Gary's
-     place in decoding the address space. Pair it with Kickstart 3.1, 2 MB of
-     Chip RAM and the 68020 - a 1.x Kickstart does not know the AGA chips.
-     Values . . . . . OCS / ECS / AGA   Applies . . . RESTART (automatic on OK)
-
-  +-------------------------------------------------------------------------+
-  |  Chip RAM:                                                chipram.kb  |
-  +-------------------------------------------------------------------------+
-     Memory shared by CPU and custom chips, from $000000 upwards. 512 KB is the
-     stock amount; 1 MB or 2 MB is what most WHDLoad titles ask for, and 2 MB
-     is what an A1200 has.
-     Values . . . . . 256 / 512 / 1024 / 2048 (KB)
-     Applies . . . . . BOOT
-
-  +-------------------------------------------------------------------------+
-  |  Slow RAM:                                                   slowram.kb  |
-  +-------------------------------------------------------------------------+
-     The classic "trapdoor" expansion at $C00000, seen by the system as slow
-     Fast RAM. 512 KB gives you the familiar 1 MB Amiga. The A1200 has no
-     such slot, so with the AGA chipset leave it at 0.
-     Values . . . . . 0 / 512 / 1024 / 1536 / 1792 (KB), 0 = none
-     Applies . . . . . BOOT
-
-  +-------------------------------------------------------------------------+
-  |  Fast RAM:                                                   fastram.kb  |
-  +-------------------------------------------------------------------------+
-     True Fast RAM on a Zorro II AutoConfig board - no chip-bus contention, so
-     the CPU runs at full speed there. Required by many hard-disk and WHDLoad
-     installations.
-     Values . . . . . 0 / 512 / 1024 / 2048 / 4096 / 8192 (KB), 0 = none
-     Applies . . . . . BOOT
-
-  +-------------------------------------------------------------------------+
-  |  Language:                                                  ui.language  |
-  +-------------------------------------------------------------------------+
-     Language of the emulator's own interface (menus, dialogs, messages). It
-     has no effect on the emulated Amiga, whose keymap and language come from
-     the Kickstart and from Workbench.
-     Values . . . . . English -> en, Italiano -> it
-     Applies . . . . . BOOT
-
-  +-------------------------------------------------------------------------+
-  |  Interface scale:                                              ui.scale  |
-  +-------------------------------------------------------------------------+
-     Size of AmiJa's own windows - this popup, the dialogs, the file browser.
-     1 is the native size, 1.5 makes everything half as big again, 2 doubles
-     it. Useful on a high-resolution screen, where a native-size popup can be
-     uncomfortably small.
-
-     Unlike "Integer scaling" (3.10) this one accepts fractional values: the
-     interface is not an emulated picture, so a soft edge in a dialog costs
-     nothing. Text does not blur either - the font is redrawn at the larger
-     size, not stretched.
-
-     It never touches the emulated window, which keeps the size set by the
-     integer scaling factor. The two settings are completely independent.
-
-     AmiJa reads this once, when it starts, so changing it relaunches the
-     application. It does not read the scale factor of your desktop: if you
-     want a bigger interface, ask for it here.
-
-     The popup will not grow past the screen: if the chosen scale would make it
-     taller than the desktop, it stops there and its content scrolls.
-     Values . . . . . 1, 1.25, 1.5, 1.75, 2, 2.5, 3 (shown as a percentage in
-                      the popup; any value from 1 to 4 is accepted in the file)
-     Applies . . . . . RELAUNCH
-
-  +-------------------------------------------------------------------------+
-  |  Video mode:                                                 video.mode  |
-  +-------------------------------------------------------------------------+
-     Television standard of the emulated machine: PAL (50 Hz, 312 lines) or
-     NTSC (60 Hz, 262 lines). It sets the colour clock, the number of raster
-     lines per frame and the Agnus ID the Kickstart reads.
-     Values . . . . . PAL / NTSC        Applies . . . RESTART (automatic on OK)
+  Video mode                                                      video.mode
+     PAL (50 Hz, 312 lines) or NTSC (60 Hz, 262 lines).
+     Values: PAL / NTSC                                      Applies: RESTART
 
   ---------------------------------------------------------------------------
   3.3   DRIVES (AUTOMATIC MODE)
   ---------------------------------------------------------------------------
 
-  With "Expert mode" off, everything you load lives in one list. There is no
-  drive to pick and no format to declare: you add files, AmiJa works out what
-  each one is and where it belongs, and the machine is built to match.
+  A single list of media. Each added file is assigned automatically:
 
-  +-------------------------------------------------------------------------+
-  |  Drive 1:                        "..."                                   |
-  |  Drive 2:                        "..."                                   |
-  +-------------------------------------------------------------------------+
-     One row per file, plus an empty one at the bottom waiting for the next.
-     Pick a file - or drag it onto the window - and the row renames itself to
-     where the file ended up:
+    DF0: - DF3:           floppy images (.adf, .ipf, .zip), in order added;
+                          DF0 boots
+    Hard drive master     first .hdf
+    Hard drive slave      second .hdf
+    WHDLoad               .lha or .lzh archive
 
-       DF0: ... DF3:          floppy images (.adf, .ipf, .zip), in the order
-                              you added them. DF0 is the one the Amiga boots
-                              from
-       Hard drive master:     the first .hdf image
-       Hard drive slave:      the second
-       WHDLoad:               a .lha or .lzh game archive
+  Limits: four floppies, two hard disks, one WHDLoad archive; a hard disk and
+  a WHDLoad archive cannot be combined. Unsupported or excess files are
+  rejected with the reason. Entries marked with an asterisk need hardware the
+  running machine does not have and are mounted at the next start.
 
-     The limits are the machine's own: four floppy drives, two hard disks, and
-     a WHDLoad archive that cannot sit next to a hard disk image because both
-     want to be the boot volume. A file that does not fit is refused with the
-     reason; a file of a kind AmiJa does not recognise is refused as such.
-
-     The small button at the end of a row removes that entry. The browser
-     remembers its folder in chooser.media.lastDirectory.
-
-     Underneath, these rows write exactly the same properties expert mode does
-     - drive.dfN.disk, hd.master.disk, whdload.file and the rest. The two modes
-     describe one machine; they differ in who decides the layout.
-     Applies . . . . . LIVE for floppies, BOOT for hard disks and WHDLoad
+  The rows write the same keys as expert mode (drive.dfN.disk,
+  hd.master.disk, whdload.file, ...).
+  Applies: LIVE for floppies in existing drives, BOOT otherwise
 
   ---------------------------------------------------------------------------
   3.4   FLOPPY DRIVES (EXPERT MODE)
   ---------------------------------------------------------------------------
 
-  One row per drive, DF0 to DF3. Each row has four controls: the connection
-  checkbox, the disk path, and three small buttons - browse, write protect and
-  eject. The path field and the buttons are greyed out while the drive is not
-  connected.
+  DFn connected                                            drive.dfN.enabled
+     Drive present. DF0 and DF1 are connected by default.
+     Values: true / false                                       Applies: LIVE
 
-  +-------------------------------------------------------------------------+
-  |  [x] DFn connected                                 drive.dfN.enabled     |
-  +-------------------------------------------------------------------------+
-     Whether the drive physically exists. A disconnected drive reports no ID
-     to the system and holds no disk. DF0 and DF1 are connected by default.
-     Values . . . . . true / false      Applies . . . LIVE
+  Disk path                                                   drive.dfN.disk
+     .adf   sector image
+     .ipf   flux-level image of an original disk, copy protection included
+     .zip   compressed image; a multi-disk archive fills DF0 and the next
+            free drives (<archive>.zip!<n>); always write-protected
 
-  +-------------------------------------------------------------------------+
-  |  <path>                          "..."               drive.dfN.disk     |
-  +-------------------------------------------------------------------------+
-     Absolute path of the image inserted in the drive; empty means no disk.
-     Accepted formats:
+     Changing a disk on a running machine ejects the old one and inserts the
+     new one about 1.5 s later, so the Kickstart detects the change.
+     Values: absolute path or empty                             Applies: LIVE
 
-       .adf   plain sector image, the common case
-       .ipf   flux-level image of an original disk, including copy protection
-              (Rob Northen Copylock, variable density, long tracks, ...)
-       .zip   a compressed disk image; if the archive contains several disks
-              it is treated as a set - the first one goes into DF0 and the
-              others fill the free connected drives automatically, addressed
-              as <archive>.zip!<n>. Disks from a ZIP are always write
-              protected.
+  Padlock                                                 drive.dfN.readonly
+     Closed: write-protected. Open: writes are saved to the image file.
+     Values: true / false                                       Applies: LIVE
 
-     Applies . . . . . LIVE. Replacing a disk in a running machine ejects the
-     old one, waits about a second and a half so the Kickstart notices the
-     change, and then inserts the new one - exactly like swapping disks for
-     real. The browser remembers its directory in chooser.floppy.lastDirectory.
-
-  +-------------------------------------------------------------------------+
-  |  padlock button                                    drive.dfN.readonly    |
-  +-------------------------------------------------------------------------+
-     Write protection. Closed padlock = the disk is mounted read-only and the
-     emulated machine sees the write-protect tab closed; open padlock = writes
-     go back into the image file. Keep it closed for anything you care about.
-     Values . . . . . true / false      Applies . . . LIVE
-
-  +-------------------------------------------------------------------------+
-  |  eject button                                                           |
-  +-------------------------------------------------------------------------+
-     Clears the path field. The disk is actually ejected when you press OK.
+  Eject
+     Clears the path; the disk is ejected on OK.
 
   ---------------------------------------------------------------------------
   3.5   HARD DISKS (EXPERT MODE)
   ---------------------------------------------------------------------------
 
-  Two units, master and slave, mounted through a Zorro II AutoConfig controller
-  whose boot ROM carries the filesystem (OFS/FFS). This is how games installed
-  on an .hdf image are booted.
+  Master and slave units on a Zorro II AutoConfig controller whose boot ROM
+  provides OFS/FFS.
 
-  +-------------------------------------------------------------------------+
-  |  [x] Master (.hdf)                                  hd.master.enabled    |
-  |  [x] Slave  (.hdf)                                  hd.slave.enabled     |
-  +-------------------------------------------------------------------------+
-     Whether the unit is present.
-     Values . . . . . true / false      Applies . . . BOOT
+  Master / Slave                         hd.master.enabled / hd.slave.enabled
+     Values: true / false                                       Applies: BOOT
 
-  +-------------------------------------------------------------------------+
-  |  <path>                          "..."              hd.master.disk       |
-  |                                                     hd.slave.disk        |
-  +-------------------------------------------------------------------------+
-     Absolute path of the .hdf image; empty means no disk. The browser
-     remembers its directory in chooser.hdf.lastDirectory.
-     Applies . . . . . BOOT
+  Image path                                   hd.master.disk / hd.slave.disk
+     Values: absolute path to .hdf or empty                     Applies: BOOT
 
-  +-------------------------------------------------------------------------+
-  |  padlock button                                     hd.master.readonly   |
-  |                                                     hd.slave.readonly    |
-  +-------------------------------------------------------------------------+
-     Mount the image read-only. Unlike floppies, hard disks default to
-     writable - saved games and preferences need it.
-     Values . . . . . true / false      Applies . . . BOOT
+  Padlock                              hd.master.readonly / hd.slave.readonly
+     Hard disks are writable by default.
+     Values: true / false                                       Applies: BOOT
 
   ---------------------------------------------------------------------------
   3.6   WHDLOAD (EXPERT MODE)
   ---------------------------------------------------------------------------
 
-  +-------------------------------------------------------------------------+
-  |  [x] Auto-run WHDLoad archive (.lha)                 whdload.enabled     |
-  |  <path>                          "..."               whdload.file        |
-  +-------------------------------------------------------------------------+
-     Point AmiJa at a WHDLoad archive and it does the rest: the .lha/.lzh is
-     extracted, packed on the fly into a bootable FFS hard disk together with
-     the WHDLoad system, and started - no installation, no Workbench setup.
-     This is the same approach as the WHDLoad support in RetroArch/PUAE.
-
-     Saved games are kept outside the throw-away disk, in whdload-saves/, so
-     they survive across sessions. The WHDLoad preferences themselves
-     (SplashDelay, ButtonWait, NoFilter and friends) are not in this popup;
-     they live in the whdload.prefs.* section of amiga.properties - see 4.6.
-
-     A word on requirements: most WHDLoad titles want more memory than a stock
-     Amiga. If a game refuses to start, raise Chip RAM to 1 MB and give it a few
-     megabytes of Fast RAM.
-
-     Values . . . . . true / false, absolute path to .lha or .lzh
-     Applies . . . . . BOOT
-     The browser remembers its directory in chooser.whdload.lastDirectory.
+  Auto-run WHDLoad archive                   whdload.enabled / whdload.file
+     The archive is extracted into a bootable FFS hard disk together with the
+     WHDLoad system files and started. Requires the WHDLoad files (3.13).
+     Saved games are kept in whdload-saves/. WHDLoad options are set in
+     whdload.prefs.* (4.6). Most titles need 1 MB or more of Chip RAM and
+     some Fast RAM.
+     Values: true / false; absolute path to .lha or .lzh        Applies: BOOT
 
   ---------------------------------------------------------------------------
   3.7   SAVED STATE
   ---------------------------------------------------------------------------
 
-  There are five slots, one per tab - "Slot 1" to "Slot 5" - living in
-  savestate/Slot1/ ... savestate/Slot5/. Each tab shows what is in its slot: a
-  thumbnail of the screen as it was, and the date it was taken, or "No state
-  saved yet" if that slot has never been used. A tab whose slot is taken carries
-  a dot in its title, so you can see at a glance which ones are full.
+  Five slots, one tab each (savestate/Slot1/ ... Slot5/). Each tab shows a
+  thumbnail and the save date; a dot in the tab title marks a used slot. The
+  selected tab is stored in savestate.slot.
 
-  The tab you open is the slot the three buttons act on, and AmiJa remembers it
-  in savestate.slot for the next run.
+    Save State     save the machine to the selected slot (overwrites it)
+    Load State     restore the selected slot
+    Clear Slot     delete the selected slot (after confirmation)
 
-     Save State        Freezes the whole machine into the open slot - memory,
-                       chips, CPU, the disks that were inserted - so you can
-                       come back to this exact moment. It replaces whatever was
-                       in that slot, picture and all.
-
-     Load State        Puts the machine back to the state in the open slot and
-                       throws away what is running now.
-
-     Clear Slot        Empties the open slot, thumbnail included, after asking.
-                       It cannot be undone.
-
-  A state saved by an earlier AmiJa, when there was a single slot
-  (savestate/state1.a5s), is moved into Slot 1 the first time this version
-  starts.
-
-  Every slot also carries the machine setup it was saved with. That is what makes
-  it survive your changing things afterwards: load a state taken on a different
-  configuration and AmiJa puts that configuration back, rebuilds the machine
-  and then restores the state, telling you it has done so. A state written by
-  an older AmiJa whose format no longer matches is refused with the reason,
-  rather than restored half-way.
+  Each slot stores the configuration it was saved with. Loading a slot saved
+  with different hardware or media restores that configuration and rebuilds
+  the machine first. States from an incompatible version are rejected.
+  A legacy savestate/state1.a5s is migrated to Slot 1 automatically.
 
   ---------------------------------------------------------------------------
-  3.8   GAME PORTS
+  3.8   REWIND
   ---------------------------------------------------------------------------
 
-  +-------------------------------------------------------------------------+
-  |  Port 0:                                          input.port0.device     |
-  |  Port 1:                                          input.port1.device     |
-  +-------------------------------------------------------------------------+
-     What is plugged into each of the two Amiga game ports. Port 0 is the mouse
-     port (JOY0DAT), the one Workbench and point-and-click games want; Port 1
-     is the joystick port (JOY1DAT), which is what nearly every game reads.
+  History to keep                                             rewind.seconds
+     AmiJa keeps one snapshot per second of play, in memory. Lengths that
+     exceed the memory available for the history are disabled; the maximum
+     is shown next to the list.
+     Values: 0 (off) / 30 / 60 / 120 / 300 / 600 (default 60)  Applies: LIVE
 
-       Mouse . . . . . . . . the host mouse                  -> mouse
-       Joystick (real) . . . a physical joystick or gamepad,
-                             read through GLFW               -> joystick-real
-       Joystick (keyboard) . a joystick emulated on the host
-                             keyboard                        -> joystick-keyboard
-       Empty . . . . . . . . nothing connected               -> none
-
-     Choosing "Joystick (keyboard)" makes a "..." button appear next to the
-     drop-down, which opens the key mapping for that port (see 3.12.1). Both
-     ports can use the keyboard at the same time, because each one has its own
-     set of keys.
-
-     During a remote-play session (3.9) you can only set the port that is
-     yours; the other one belongs to the player at the other end, and the
-     section says so in place of the drop-down.
-     Applies . . . . . LIVE
+  Rewind bar
+     Drag left to choose a moment; the preview shows the screen at that
+     point. OK resumes from there and discards what followed; Cancel leaves
+     the game unchanged. If settings requiring a restart were also changed,
+     AmiJa asks whether to rewind or restart.
 
   ---------------------------------------------------------------------------
-  3.9   REMOTE PLAY
+  3.9   GAME PORTS
   ---------------------------------------------------------------------------
 
-  Two people, two computers, one Amiga. The machine runs on the host's
-  computer, which sends the picture and the sound over the network; the guest's
-  computer emulates nothing at all - it shows what arrives and sends back the
-  controls, which drive one of the two game ports of the host's machine.
+  Port 0 / Port 1                     input.port0.device / input.port1.device
+     Port 0 is the mouse port, Port 1 the joystick port.
 
-  The consequence worth stating first: the guest needs neither a Kickstart nor
-  a copy of the game. Whoever owns the disk hosts, and the other one just
-  joins.
+       Mouse                 host mouse                       mouse
+       Joystick (real)       physical joystick or gamepad     joystick-real
+       Joystick (keyboard)   keyboard-emulated joystick       joystick-keyboard
+       Empty                 nothing connected                none
 
-  The delay is paid by the guest alone - the host plays exactly as if nobody
-  were connected. On a local network it adds about one frame and is not
-  perceptible. Over a decent Internet connection within the same country it is
-  around three frames: fine for a sports game or a two-player beat-'em-up,
-  noticeable in a game of pure reflexes. On a poor link it is like playing with
-  a bad joypad.
+     "Joystick (keyboard)" shows a "..." button for the key mapping (3.14.1).
+     During a remote session only your own port can be set.
+     Applies: LIVE
 
-  A session is one guest at a time. The Amiga has two game ports and the host
-  is using one of them.
+  ---------------------------------------------------------------------------
+  3.10   REMOTE PLAY
+  ---------------------------------------------------------------------------
 
-  +-------------------------------------------------------------------------+
-  |  Mode:               Off / Host / Join                                   |
-  +-------------------------------------------------------------------------+
-     Which side of the session you are on, and the only control always visible
-     here: choosing one reveals that role's rows and hides the other's. It is
-     not saved in amiga.properties - AmiJa always starts with no session, which
-     is the only safe default for something that opens a listening port.
+  The host runs the emulation and streams video and audio; the guest sends
+  back the controls for one game port. The guest needs no Kickstart and no
+  copy of the game. Spectators receive video and audio only.
+
+  Latency affects the guest only: about one frame on a local network, about
+  three frames over a good Internet connection. One guest per session.
+
+  Mode: Off / Host / Join / Watch
+     Not saved; AmiJa always starts with no session.
 
   HOSTING
-  ..........................................................................
 
-  Set Mode to "Host" and the rows below appear.
+  Port                                                       remoteplay.port
+     TCP and UDP port.
+     Values: 1-65535 (default 7788)                  Applies: on start hosting
 
-  +-------------------------------------------------------------------------+
-  |  Port:                                                  remoteplay.port  |
-  |  [x] Open the port on the router (UPnP)                 remoteplay.upnp  |
-  +-------------------------------------------------------------------------+
-     The port the other player connects to, used for both TCP (the session
-     itself) and UDP (picture, sound and controls). One number for both, so
-     there is a single thing to pass on and a single pair of rules for the
-     router.
+  Open the port on the router (UPnP)                         remoteplay.upnp
+     Requests port forwarding from the router and removes it when hosting
+     stops. Not used when "Local network only" is set.
+     Values: true / false (default true)             Applies: on start hosting
 
-     UPnP asks the router to forward that port by itself, and withdraws the
-     forwarding when you stop hosting. Nothing is asked of the router while
-     "Local network only" is on, since nobody from outside would be admitted
-     anyway.
-     Values . . . . . 1-65535 (default 7788) / true / false (default true)
-     Applies . . . . . when you start hosting
+  Local network only                                     remoteplay.lan.only
+     Rejects connections from outside the local network.
+     Values: true / false (default true)             Applies: on start hosting
 
-  +-------------------------------------------------------------------------+
-  |  Security:  [x] Local network only                  remoteplay.lan.only  |
-  +-------------------------------------------------------------------------+
-     Refuses guests from outside your own network. On by default, deliberately:
-     a port listening on the open Internet is something you turn on knowingly,
-     not something you end up with because you once tried this feature at home.
-     Values . . . . . true / false (default true)
-     Applies . . . . . when you start hosting
+  Start hosting / Stop hosting
+     Starts or ends the session. The local game is not affected.
 
-  +-------------------------------------------------------------------------+
-  |  Session:            [ Start hosting ]                                   |
-  +-------------------------------------------------------------------------+
-     Opens the port and waits. Your machine carries on exactly as it was -
-     hosting adds a guest, it does not change how you play - and the popup
-     stays open so you can read what happens next. The same button then reads
-     "Stop hosting", which closes the session and tells the guest why.
+  Address / Internet / Join code / Spectator code
+     Information to give to the other players. "Internet" appears once the
+     router confirms the forwarding, or shows why it failed. The join code
+     is the session password: regenerated each time, never saved, never sent
+     in clear, and used to derive the encryption keys. The spectator code
+     allows watching only and can be shared freely. Codes are
+     case-insensitive; O/0 and I/1 are equivalent.
 
-  +-------------------------------------------------------------------------+
-  |  Address:            192.168.1.20:7788               [ Copy ]            |
-  |  Internet:           93.45.12.7:7788                 [ Copy ]            |
-  |  Join code:          K7M2-Q4XZ                       [ Copy ]            |
-  +-------------------------------------------------------------------------+
-     What to pass to the other player, filled in once you are listening.
+  Guest uses                                           remoteplay.guest.port
+     Game port assigned to the guest. The guest chooses the device.
+     Values: 0 / 1 (default 1)                       Applies: next connection
 
-     "Address" is where to reach you on your own network. "Internet" is where
-     to reach you from outside, and appears only once the router has confirmed
-     the forwarding; when that could not be done, the line carries the reason
-     instead of an address nobody could use - see the troubleshooting list
-     below.
+  Share the keyboard                               remoteplay.guest.keyboard
+     Values: true / false (default true)             Applies: next connection
 
-     The join code is the password of this session. It is generated afresh
-     every time you start hosting, it is never stored in amiga.properties, and
-     it never travels over the network in the clear: both ends prove they know
-     it, and the keys that encrypt the session are derived from it. Eight
-     characters written to be read out loud - case is ignored, and O/0 and I/1
-     count as the same character.
+  The guest may reset                            remoteplay.guest.allowreset
+     Allows Ctrl+Amiga+Amiga from the guest.
+     Values: true / false (default false)            Applies: next connection
 
-  +-------------------------------------------------------------------------+
-  |  Guest uses:  Port 1                            remoteplay.guest.port    |
-  |  [x] Share the keyboard                     remoteplay.guest.keyboard    |
-  |  [ ] The guest may reset                  remoteplay.guest.allowreset    |
-  +-------------------------------------------------------------------------+
-     What the guest is allowed to do on your machine. All three are decided
-     here and enforced here, so they hold whatever the other end sends.
+  Spectators                                       remoteplay.spectators.max
+     Maximum number of spectators besides the guest. Each costs about as much
+     upload as the guest (0.5 - 2.5 Mbit/s, up to 5). Under load, spectators
+     receive fewer frames first.
+     Values: 0 - 16 (default 4; 0 = none)            Applies: next connection
 
-     "Guest uses" hands over one of the two game ports - Port 1, the joystick
-     one, by default, which leaves you Port 0 if you play with the mouse. You
-     choose the port and only the port: what gets plugged into it, mouse or
-     joystick or which keys, is the guest's own choice, made in the popup on
-     their computer and changeable mid-game.
+  Audio                                                remoteplay.audio.mode
+       Compressed (355 kbit/s)     IMA-ADPCM         adpcm
+       Uncompressed (1.4 Mbit/s)   16-bit PCM        pcm16
+       Off                         no audio          off
+     The audio filter is applied by the host.
+     Values: adpcm / pcm16 / off (default adpcm)     Applies: next connection
 
-     "Share the keyboard" lets the guest type on your machine. They still
-     cannot open your popup, and F12 on their computer opens their own.
+  JOINING AND WATCHING
 
-     "The guest may reset" allows CTRL+Amiga+Amiga from the other end to reboot
-     YOUR machine. Off by default, and worth leaving off.
-     Values . . . . . 0 / 1 (default 1), true / false, true / false
-     Applies . . . . . at the next guest connection
+  Host address / Join code                              remoteplay.last.host
+     The host's address:port and the join code (to play) or spectator code
+     (to watch). The address is remembered; the code is not.
 
-  +-------------------------------------------------------------------------+
-  |  Audio:      Compressed (355 kbit/s)          remoteplay.audio.mode      |
-  +-------------------------------------------------------------------------+
-     What the guest hears, and how much bandwidth it costs.
+  Connect / Disconnect
+     Connects while the popup stays open; the Status line reports progress.
+     On OK this computer stops emulating and becomes a remote display.
+     Disconnect restores the local machine.
 
-       Compressed (355 kbit/s)     IMA-ADPCM        -> adpcm
-       Uncompressed (1.4 Mbit/s)   plain 16-bit PCM -> pcm16
-       Off                         no sound sent    -> off
+  Status
+     Connection state, traffic counters and the reason for the last failure.
 
-     Compressed is the default and is indistinguishable by ear; it matters
-     because the picture itself only costs between 0 and 5 Mbit/s, so
-     uncompressed sound would be a third of the whole stream. Uncompressed is
-     bit-exact and makes sense on a local network.
-
-     The audio filter - the one the power LED shows - is applied by the host.
-     The guest's own setting has no effect on what they hear.
-     Values . . . . . adpcm / pcm16 / off (default adpcm)
-     Applies . . . . . at the next guest connection
-
-  JOINING
-  ..........................................................................
-
-  Set Mode to "Join" instead, and give the two things the host read out to you.
-
-  +-------------------------------------------------------------------------+
-  |  Host address:       192.168.1.20:7788          remoteplay.last.host     |
-  |  Join code:          K7M2-Q4XZ                                           |
-  +-------------------------------------------------------------------------+
-     The address in the form address:port, and the code. The address you last
-     used is remembered for next time; the code never is.
-
-  +-------------------------------------------------------------------------+
-  |  Session:            [ Connect ]                                         |
-  +-------------------------------------------------------------------------+
-     Starts connecting and leaves the popup open, so a failure has somewhere to
-     be explained: watch the Status line. The session really does open at this
-     point - the picture starts arriving behind the popup - but your machine is
-     still your machine.
-
-     It stops being one when you confirm with OK. From then on this computer
-     emulates nothing: it shows what arrives and sends back your controls, and
-     the popup, if you open it again, offers only what still applies here -
-     your picture, your sound, your controls. "Disconnect" puts your own Amiga
-     back.
-
-  +-------------------------------------------------------------------------+
-  |  Status:             Guest connected - 1500 frames sent, 2 skipped       |
-  +-------------------------------------------------------------------------+
-     Always visible, in both modes, and refreshing on its own while the popup
-     is open: whether anyone is connected, how an attempt is going, and why the
-     last one failed.
-
-  WHEN IT DOES NOT WORK
-  ..........................................................................
-
-  The Status and Internet lines are written to be read literally. The cases you
-  are most likely to meet:
+  TROUBLESHOOTING
 
     "Your provider does not give you a public address (CGNAT)"
-        Your connection shares one address between many customers, which is
-        common on mobile and on some fibre contracts. Nothing can reach you
-        from the Internet, and no setting fixes it. Let the other player host.
-
+        The host cannot be reached from the Internet. Swap host and guest.
     "No router answered" / "The router refused to open the port"
-        UPnP is off in the router, or not offered. Turn it on, or forward the
-        port to this computer by hand.
-
+        Enable UPnP on the router or forward the port manually.
     "port opened by the router. If nobody can get in, it is the firewall"
-        The forwarding is in place, so what is left is the computer's own
-        firewall. Windows asks for permission the first time AmiJa listens; if
-        that was refused, incoming traffic is dropped no matter how right the
-        router is.
-
+        Allow AmiJa through the host's firewall.
     "nothing is listening on that port" / "that address does not exist"
-        As a guest: check the address and port you were given, and that the
-        host has actually pressed "Start hosting".
-
+        Check the address and that hosting has started.
     "no answer - address, port or firewall"
-        The address exists but nothing came back. Over the Internet this is
-        usually the host's firewall or a missing forwarding.
-
+        Usually the host's firewall or a missing forwarding.
     "the host only accepts players on its own local network"
-        The host still has "Local network only" ticked.
-
+        The host has "Local network only" enabled.
+    "every spectator place is taken" / "the host does not accept spectators"
+        Spectator limit reached, or set to 0.
     "wrong join code"
-        The code is regenerated every time hosting starts, so an old one will
-        not do. Have it read out again.
-
+        Codes change at every start; ask for the current one.
     "the two machines run different versions of AmiJa"
-        Both ends must run the same version.
+        Both sides must run the same version.
 
   ---------------------------------------------------------------------------
-  3.10   AUDIO / VIDEO
+  3.11   AUDIO / VIDEO
   ---------------------------------------------------------------------------
 
-  +-------------------------------------------------------------------------+
-  |  Rendering:                                             video.renderer   |
-  +-------------------------------------------------------------------------+
-     How the emulated framebuffer reaches the screen. Software uses Java2D and
-     is the default; OpenGL presents the frame through the GPU inside the same
-     window and is what makes shaders available. On this hardware the software
-     path is at least as fast, so pick OpenGL when you want a CRT look rather
-     than for speed.
-     Values . . . . . Software -> software, OpenGL -> opengl
-     Applies . . . . . RESTART (automatic on OK)
+  Rendering                                                   video.renderer
+     Software (Java2D, default) or OpenGL (required for shaders). OpenGL is
+     not faster; choose it for shaders.
+     Values: software / opengl                               Applies: RESTART
 
-  +-------------------------------------------------------------------------+
-  |  Shader:                                                  video.shader   |
-  +-------------------------------------------------------------------------+
-     RetroArch shader preset applied to the picture - scanlines, aperture
-     grille, curvature, and so on. The drop-down lists the *.glslp and *.slangp
-     files found in the shaders/ folder and its subfolders, plus "None" for a
-     clean passthrough. Available only with the OpenGL renderer.
+  Shader                                                        video.shader
+     RetroArch preset from shaders/ (*.glslp, *.slangp), or None. OpenGL
+     only. Slang presets are supported but not shipped; see
+     shaders/Mega_Bezel_Packs/readme.txt. The "..." button opens the
+     parameters of the active shader (3.14.2).
+     Values: path inside shaders/ without extension, or none    Applies: LIVE
 
-     The presets that come with AmiJa are the .glslp ones. Slang presets
-     (.slangp, the format RetroArch uses today) are supported and translated as
-     they are loaded, but none is shipped: you install those yourself, and
-     shaders/Mega_Bezel_Packs/readme.txt explains where they go.
+  Window mode                                               video.windowMode
+     Values: windowed / fullscreen / borderless-windowed     Applies: RESTART
 
-     The "..." button next to it opens the shader's own parameters (3.12.2).
-     It is enabled only for the shader that is currently applied, so that what
-     you tweak is what you see.
-     Values . . . . . preset path inside shaders/, without extension
-                      (subfolders separated by "/"), or none
-     Applies . . . . . LIVE
+  Monitor                                                      video.monitor
+     0 = primary. A missing monitor falls back to the primary one.
+     Values: 0, 1, 2, ...                                    Applies: RESTART
 
-  +-------------------------------------------------------------------------+
-  |  Window mode:                                         video.windowMode   |
-  +-------------------------------------------------------------------------+
-     Windowed . . . . . . . . . . normal resizable window     -> windowed
-     Fullscreen . . . . . . . . . exclusive full screen       -> fullscreen
-     Borderless windowed  . . . . a window without decoration
-                                  covering the whole screen   -> borderless-windowed
-     Applies . . . . . RESTART (automatic on OK)
+  Integer scaling                                       video.integerScaling
+     Integer magnification of the emulated picture. The window cannot exceed
+     the screen: PAL with overscan at 2x (1448x1152) does not fit 1920x1080.
+     Values: 1, 2, 3, ...                                    Applies: RESTART
 
-  +-------------------------------------------------------------------------+
-  |  Monitor:                                                video.monitor   |
-  +-------------------------------------------------------------------------+
-     Which screen the emulator opens on: 0 is the primary one, 1, 2, ... the
-     other connected monitors. A configured index that no longer exists falls
-     back to the primary screen, and stays selectable so it is not lost when
-     you unplug a monitor.
-     Values . . . . . 0, 1, 2, ...      Applies . . . RESTART (automatic on OK)
+  Enable overscan                                     video.overscan.enabled
+     Shows the full video area including borders.
+       on     PAL 724x576     NTSC 724x480
+       off    PAL 640x512     NTSC 640x400
+     Values: true / false                                    Applies: RESTART
 
-  +-------------------------------------------------------------------------+
-  |  Integer scaling:                                video.integerScaling    |
-  +-------------------------------------------------------------------------+
-     Whole-number magnification of the emulated picture: 1 is the native size,
-     2 doubles it, 3 triples it. Integer factors keep pixels square and
-     identical, which is why there is no 1.5 here - each Amiga pixel becomes an
-     exact block of screen pixels, with no interpolation and nothing blurred.
+  Show power/drive LED panel                                    leds.visible
+     Power (also audio filter state), floppy and hard disk LEDs.
+     Values: true / false                                       Applies: BOOT
 
-     It magnifies the emulated window and nothing else. To make the popup and
-     the other AmiJa windows bigger, use "Interface scale" (3.2) instead; the
-     two are independent and either can be left at 1.
-
-     A window cannot be larger than the screen: Windows will not allow it, and
-     neither will most desktops. PAL with overscan at 2x asks for 1448x1152, so
-     on a 1920x1080 screen it does not fit and the picture ends up cropped at
-     the bottom. If that happens, either turn overscan off (640x512, so 1280x1024
-     at 2x) or go back to 1.
-     Values . . . . . 1, 2, 3, ...      Applies . . . RESTART (automatic on OK)
-
-  +-------------------------------------------------------------------------+
-  |  [x] Enable overscan                            video.overscan.enabled   |
-  +-------------------------------------------------------------------------+
-     Show the whole video area the Amiga generates, borders included, instead
-     of cropping to the standard active area. Some games draw right into the
-     overscan region; others leave it empty. Window size follows:
-
-       overscan on    PAL 724x576     NTSC 724x480
-       overscan off   PAL 640x512     NTSC 640x400
-
-     Values . . . . . true / false      Applies . . . RESTART (automatic on OK)
-
-  +-------------------------------------------------------------------------+
-  |  [x] Show power/drive LED panel                        leds.visible      |
-  +-------------------------------------------------------------------------+
-     The strip of LEDs under the picture: power (which on the Amiga also
-     signals the audio filter state), the four floppy drives and the hard
-     disks, each lighting up on access just like the real machine.
-     Values . . . . . true / false      Applies . . . BOOT
-
-  +-------------------------------------------------------------------------+
-  |  Floppy sound volume (0 = mute):               floppy.sound.volume       |
-  +-------------------------------------------------------------------------+
-     Volume of the mechanical drive sounds - the seek clicks, the motor, the
-     insertion clunk. 0 is silence, 1 is the quietest audible level, and each
-     step adds about 6 dB up to 10. It does not affect the Amiga's own audio.
-     The samples themselves live in floppysounds/ and can be replaced with
-     your own - see the readme.txt in that folder.
-     Values . . . . . 0 to 10           Applies . . . LIVE
+  Floppy sound volume                                    floppy.sound.volume
+     Mechanical drive sounds; about 6 dB per step. 0 = mute.
+     Values: 0 - 10                                             Applies: LIVE
 
   ---------------------------------------------------------------------------
-  3.11   OPTIONAL FILES
+  3.12   GUI
   ---------------------------------------------------------------------------
 
-  +-------------------------------------------------------------------------+
-  |  WHDLoad, relocation tables                    [ Download... ]           |
-  +-------------------------------------------------------------------------+
-     Two packages AmiJa is not allowed to redistribute, and an assistant that
-     fetches them for you:
+  Language                                                       ui.language
+     Language of the AmiJa interface only.
+     Values: en / it                                            Applies: BOOT
 
-       WHDLoad               the loader itself, required before any .lha game
-                             archive can be started, unpacked into whdload/
-       Relocation tables     the .RTB files WHDLoad installs need when they
-                             emulate a different Kickstart
-
-     AmiJa redistributes nothing: each file travels from the rights holder's
-     own server to your disk, exactly as if you had clicked the link in a
-     browser, and remains subject to its own licence. The assistant checks that
-     what arrived is what was expected before unpacking it, and says so if the
-     archive upstream has changed since it was last verified.
-
-     The whole section disappears from the popup once both are installed -
-     there would be nothing left to offer. It is also what the WHDLoad section
-     points you at when you try to start an archive without the loader.
+  Interface scale                                                   ui.scale
+     Size of the popup and dialogs, independent of the emulated window. The
+     desktop scale factor is not used. The popup scrolls if taller than the
+     screen.
+     Values: 1, 1.25, 1.5, 1.75, 2, 2.5, 3 (any 1 - 4 in the file)
+                                                            Applies: RELAUNCH
 
   ---------------------------------------------------------------------------
-  3.12   SUB-DIALOGS ("..." BUTTONS)
+  3.13   OPTIONAL FILES
   ---------------------------------------------------------------------------
 
-  3.12.1   KEYBOARD JOYSTICK KEYS
-  ..........................................................................
+  Downloads, on request, two packages AmiJa cannot redistribute, directly
+  from their official sources:
 
-     Opened by the "..." next to a port set to "Joystick (keyboard)". One row
-     per function - Up, Down, Right, Left, Fire: click the button showing the
-     current key, then press the key you want. ESC cancels the capture, which
-     is why ESC itself cannot be assigned.
+    WHDLoad              required to start .lha/.lzh archives
+    Relocation tables    .RTB files for WHDLoad Kickstart emulation
 
-     A key can only serve one function, on either port, so the two joysticks
-     never fight over the same key; if you pick one that is taken, the dialog
-     tells you which function and which port already owns it. "Reset to
-     defaults" restores that port's original keys.
-
-       Port 0 defaults    W A S D + right Ctrl
-       Port 1 defaults    arrow keys + left Ctrl
-
-     Properties . . . input.port0.joystick.up
-                      input.port0.joystick.down
-                      input.port0.joystick.right
-                      input.port0.joystick.left
-                      input.port0.joystick.fire
-                      input.port1.joystick.up   ... and the same five for port 1
-
-     A value is the name of the java.awt.event.KeyEvent VK_ constant without
-     the prefix - W, UP, SPACE, NUMPAD5 - and for keys that exist twice on the
-     keyboard the position is appended: CONTROL:LEFT, CONTROL:RIGHT,
-     SHIFT:LEFT, and so on.
-     Applies . . . . . LIVE
-
-  3.12.2   SHADER PARAMETERS
-  ..........................................................................
-
-     Opened by the "..." next to the Shader drop-down. Every "#pragma
-     parameter" the preset declares - curvature, scanline weight, mask
-     strength, brightness - gets a slider. Moving it changes the picture
-     immediately, so you can dial the look in while watching it.
-
-     On close the values are written next to the preset as <preset>.params, so
-     they are still there next time. A preset that declares no parameters
-     simply says so.
+  Downloads are verified before unpacking. The section is hidden once both
+  packages are installed. See THIRD-PARTY-NOTICES.md, section 5.
 
   ---------------------------------------------------------------------------
-  3.13   THE BUTTON BAR
+  3.14   SUB-DIALOGS
   ---------------------------------------------------------------------------
 
-     About             Which AmiJa this is: version, author and the address of
-                       the project page. It changes nothing.
+  3.14.1   KEYBOARD JOYSTICK KEYS
 
-     Take Screenshot   Saves the game window - not the popup - as
-                       screenshots/screenshot_<date>_<time>.png. Works with
-                       both renderers.
+     One row per direction and Fire. Click a button and press the new key;
+     ESC cancels (and cannot be assigned). A key can serve only one function
+     across both ports. "Reset to defaults" restores the port's keys.
 
-     Soft Reset        Saves the configuration and resets the CPU, leaving
-                       memory contents alone - the equivalent of the reset
-                       vector, not of a power cycle.
+       Port 0    W A S D, right Ctrl
+       Port 1    arrow keys, left Ctrl
 
-     Restart           Saves the configuration and rebuilds the whole machine
-                       from scratch, as if you had turned it off and on again.
-                       This is how ROM, RAM, chipset, hard disk and WHDLoad
-                       changes are applied.
+     Keys: input.portN.joystick.up / down / right / left / fire
+     Values: KeyEvent VK_ name without prefix (W, UP, SPACE, NUMPAD5); for
+     duplicated keys append the side (CONTROL:LEFT, SHIFT:RIGHT).
+     Applies: LIVE
 
-     Quit              Closes the emulator, writing any pending hard-disk
-                       changes out to their image files first. Configuration
-                       edits not confirmed with OK are discarded.
+  3.14.2   SHADER PARAMETERS
 
-     Cancel  (ESC)     Closes the popup and resumes emulation, discarding your
-                       edits.
+     One slider per "#pragma parameter" of the preset, applied immediately.
+     Values are saved as <preset>.params next to the preset.
 
-     OK      (ENTER)   Saves amiga.properties and applies everything: input and
-                       floppy changes take effect immediately, and if you
-                       touched a setting that needs a rebuilt machine or a new
-                       window, the restart is performed for you.
+  ---------------------------------------------------------------------------
+  3.15   BUTTON BAR
+  ---------------------------------------------------------------------------
+
+    About             version, author and project page
+    Take Screenshot   saves the emulated picture to
+                      screenshots/screenshot_<date>_<time>.png
+    Soft Reset        saves the configuration and resets the CPU; memory is
+                      preserved
+    Restart           saves the configuration and rebuilds the machine (cold
+                      start)
+    Quit              writes pending hard disk changes and exits; unconfirmed
+                      edits are discarded
+    Cancel (ESC)      closes the popup and discards edits
+    OK (ENTER)        saves and applies; restarts the machine if needed
 
 
 ===============================================================================
  4.  PROPERTIES AVAILABLE ONLY IN amiga.properties
 ===============================================================================
 
-  These settings have no control in the F12 popup - edit amiga.properties with
-  a text editor while the emulator is closed, or the next save will overwrite
-  your changes. Values in Windows paths keep their backslashes escaped
-  (C:\\Amiga\\...) as in any Java properties file.
+  Edit with the emulator closed, or the next save overwrites the changes.
+  Escape backslashes in Windows paths (C:\\Amiga\\...).
 
   ---------------------------------------------------------------------------
-  4.1   FILE-BROWSER MEMORY
+  4.1   FILE BROWSER FOLDERS
   ---------------------------------------------------------------------------
 
-     chooser.media.lastDirectory      last folder used by the Drives list
-     chooser.floppy.lastDirectory     ... by the disk browser
-     chooser.rom.lastDirectory        ... by the Kickstart browser
-     chooser.hdf.lastDirectory        ... by the hard disk browser
-     chooser.whdload.lastDirectory    ... by the WHDLoad browser
+    chooser.media.lastDirectory       Drives list
+    chooser.floppy.lastDirectory      floppy browser
+    chooser.rom.lastDirectory         Kickstart browser
+    chooser.hdf.lastDirectory         hard disk browser
+    chooser.whdload.lastDirectory     WHDLoad browser
 
-     Housekeeping, maintained by AmiJa itself: each "..." browser reopens where
-     you left it. They are written as soon as you pick a file, even if you then
-     cancel the popup. Setting them by hand simply decides where the browsers
-     start; an empty value means "no preference".
-     Values . . . . . absolute path or empty
+  Maintained by AmiJa. Values: absolute path or empty.
 
   ---------------------------------------------------------------------------
   4.2   AUTOMATIC-MODE PROFILES
   ---------------------------------------------------------------------------
 
-  What the automatic mode (3.2) builds when it recognises what you loaded.
-  There are three profiles - plain floppy, the expanded machine a hard disk or
-  WHDLoad needs, and the A1200 for AGA software - and these properties are the
-  machine each one produces. Editing them keeps the automation and changes its
-  result.
+  Hardware built by each automatic-mode profile (3.2).
 
-     Property                    Default   Applies to
-     ----------------------------------------------------------------------
-     auto.floppy.chipram.kb      512       a floppy-only setup: the stock
-     auto.floppy.slowram.kb      512       Amiga with the trapdoor expansion,
-     auto.floppy.fastram.kb      0         which is what floppy games expect
-     auto.floppy.chipset         OCS
-     auto.floppy.cpu             68000E
+    Property                 Floppy        Hard disk/WHDLoad    AGA
+    ------------------------------------------------------------------------
+    auto.*.chipram.kb        512           2048                 2048
+    auto.*.slowram.kb        512           512                  0
+    auto.*.fastram.kb        0             8192                 8192 (1)
+    auto.*.chipset           OCS           ECS                  AGA
+    auto.*.cpu               68000E        68010E               68020
 
-     auto.hd.chipram.kb          2048      a hard disk or WHDLoad archive:
-     auto.hd.slowram.kb          512       the expanded machine those
-     auto.hd.fastram.kb          8192      installs ask for
-     auto.hd.chipset             ECS
-     auto.hd.cpu                 68020
+    Prefixes: auto.floppy., auto.hd., auto.aga.
+    (1) Only with a hard disk or WHDLoad archive.
 
-     auto.aga.chipram.kb         2048      software that needs AGA, from
-     auto.aga.slowram.kb         0         floppy, hard disk or WHDLoad: an
-     auto.aga.fastram.kb         8192      A1200. The Fast RAM is added only
-     auto.aga.chipset            AGA       with a hard disk or WHDLoad; from
-     auto.aga.cpu                68020     floppy it is a stock A1200
+  Values as in 3.2. Applies: BOOT
 
-     The values accepted are the same as the corresponding System settings
-     (3.2). Applies . . . BOOT
-
-  Three more things the automatic mode decides are not properties, because
-  they are read from what you loaded. The profile itself: AGA when the WHDLoad
-  slave declares it or a file name contains the word "AGA" on its own, the
-  expanded one when a hard disk or WHDLoad archive is active, floppy
-  otherwise. The ROM comes from the two Kickstart paths of the System
-  section: 1.3 for the floppy profile, 3.1 for the other two. The video
-  standard is read
-  from the file name: it is NTSC when the name of an active file contains
-  "NTSC" or "(USA)", and PAL otherwise. Only the name is examined, not the
-  folders above it, so a directory called "USA dumps" does not drag everything
-  it holds to 60 Hz.
+  Profile selection: AGA when the WHDLoad slave requires it or a file name
+  contains "AGA" as a word; hard disk when a hard disk or WHDLoad archive is
+  active; floppy otherwise. A slave requiring a 68020 always gets one. Video
+  mode: NTSC when an active file name contains "NTSC" or "(USA)" (file name
+  only, not folders), PAL otherwise.
 
   ---------------------------------------------------------------------------
   4.3   REMOTE PLAY
   ---------------------------------------------------------------------------
 
-  The rest of the remote-play settings are in the popup (3.9). These two are
-  not:
+    remoteplay.bind
+        Local IP address to listen on when hosting; empty = all interfaces.
+        Applies: on start hosting
 
-     remoteplay.bind
-        Which network interface to listen on when hosting - an IP address of
-        this computer. Empty, the default, means all of them, which is what
-        you want unless the machine has several networks and you mean to offer
-        the session on one only.
-        Values . . . . . local IP address or empty      Applies . . . when you
-                                                        start hosting
-
-     remoteplay.last.host
-        The address you last joined, so the "Host address" field is already
-        filled in next time. Housekeeping, maintained by AmiJa. The join code
-        that goes with it is deliberately NOT saved: it is a session secret and
-        the host generates a new one every time.
-        Values . . . . . address:port or empty
+    remoteplay.last.host
+        Last address joined. Maintained by AmiJa.
 
   ---------------------------------------------------------------------------
   4.4   DIAGNOSTIC OVERLAYS
   ---------------------------------------------------------------------------
 
-     overlay.fps.enabled
-        Real frames per second in the bottom-left corner - the emulator's own
-        speed, so you can tell whether it is keeping up with real time.
-        Values . . . . . true / false (default false)      Applies . . . BOOT
+    overlay.fps.enabled             host frames per second (bottom left)
+    overlay.framecounter.enabled    emulated frame counter (bottom centre)
 
-     overlay.framecounter.enabled
-        Emulated frame counter at the bottom centre. It counts Amiga frames
-        regardless of how fast the emulator is running, which makes it a stable
-        reference when you want to note down when something happens.
-        Values . . . . . true / false (default false)      Applies . . . BOOT
-
-     Both are off by default and cost nothing when off.
+  Values: true / false (default false)                          Applies: BOOT
 
   ---------------------------------------------------------------------------
   4.5   BLITTER
   ---------------------------------------------------------------------------
 
-     blitter.immediate
-        When true, the blitter finishes every operation the instant BLTSIZE is
-        written: no bus cycles are consumed and BBUSY is never seen high. This
-        is deliberately not cycle-exact - it is a speed switch for games that
-        sit in a loop polling the blitter, and it can break anything that
-        relies on blitter timing. Leave it false unless you have a reason.
-        Values . . . . . true / false (default false)      Applies . . . BOOT
+    blitter.immediate
+        Completes every blit instantly on BLTSIZE write. Not cycle-exact;
+        may break software that depends on blitter timing.
+        Values: true / false (default false)                    Applies: BOOT
 
   ---------------------------------------------------------------------------
-  4.6   WHDLOAD PARAMETERS (WHDLoad.prefs)
+  4.6   WHDLOAD PARAMETERS
   ---------------------------------------------------------------------------
 
-  This section generates the S:WHDLoad.prefs file of the hard disk AmiJa builds
-  for a WHDLoad archive. Do not edit that generated file - it is rewritten on
-  every launch; change these properties instead. Command-line arguments and the
-  slave's ToolTypes still take precedence over anything set here.
+  These keys generate S:WHDLoad.prefs on the WHDLoad hard disk; the file
+  itself is rewritten at every launch. Slave ToolTypes take precedence.
+  Flags (true/false) emit or omit the keyword; values are written as
+  Keyword=value, and an empty value is omitted.
 
-  Two kinds of entry. A flag is true/false: true emits the corresponding
-  WHDLoad keyword, false omits it. A value is written as Keyword=value, and an
-  empty value is left out entirely, letting WHDLoad use its own default.
-
-    Property                        Default     What it does
+    Property                        Default     Meaning
     ----------------------------------------------------------------------
-    whdload.prefs.buttonWait        false       Wait for a button press before
-                                                starting (false = go straight in)
-    whdload.prefs.configDelay       0           Time allowed to pick options in
-                                                the splash window (1/50 s)
-    whdload.prefs.splashDelay       250         How long the splash window stays
-                                                up (1/50 s; 250 = 5 seconds).
-                                                Set 0 to skip it
-    whdload.prefs.readDelay         0           Delay after a disk read (1/50 s)
-    whdload.prefs.writeDelay        0           Delay after a disk write (1/50 s)
-    whdload.prefs.coreDumpPath      T:          Where coredumps are written
-    whdload.prefs.savePath          WHDSaves:   Base directory for saved games
-                                                (the persistent volume)
-    whdload.prefs.noNetwork         true        Do not connect to the internet
-    whdload.prefs.noWriteCache      true        Disable the disk write cache
-    whdload.prefs.noWriteInfo       false       Do not write .info files next to
-                                                saved games
-    whdload.prefs.chipNoCache       false       Make Chip memory non-cacheable
-    whdload.prefs.fullChip          false       Save and restore the whole Chip
-                                                memory
-    whdload.prefs.noFlushMem        false       Do not free memory before loading
-    whdload.prefs.noMemReverse      false       Do not allocate memory in reverse
-                                                order
-    whdload.prefs.preload           false       Buffer many data files up front
-                                                at startup
-    whdload.prefs.logBuffer         (empty)     Size of the logging buffer, e.g.
-                                                $40000
-    whdload.prefs.ntsc              false       Force NTSC
-    whdload.prefs.pal               false       Force PAL
-    whdload.prefs.noFilter          false       Disable the Amiga audio filter
-    whdload.prefs.noAutoVec         false       Ignore unwanted autovector
-                                                interrupts
-    whdload.prefs.mmu               false       Use the MMU (68030 and above)
-    whdload.prefs.quitKey           (empty)     Quit key, as a rawkey code
-                                                (e.g. $5a)
-    whdload.prefs.restartKey        (empty)     Restart key, rawkey code
-    whdload.prefs.freezeKey         (empty)     Freeze key, rawkey code
-    whdload.prefs.debugKey          (empty)     Debug key, rawkey code
-    whdload.prefs.expert            false       Enable expert mode
-    whdload.prefs.executeStartup    (empty)     Command run before the game, e.g.
-                                                Execute S:WHDLoad-Startup
-    whdload.prefs.executeCleanup    (empty)     Command run after the game
+    whdload.prefs.buttonWait        false       wait for a button to start
+    whdload.prefs.configDelay       0           options window time (1/50 s)
+    whdload.prefs.splashDelay       250         splash time (1/50 s); 0 = off
+    whdload.prefs.readDelay         0           delay after disk read (1/50 s)
+    whdload.prefs.writeDelay        0           delay after disk write (1/50 s)
+    whdload.prefs.coreDumpPath      T:          coredump directory
+    whdload.prefs.savePath          WHDSaves:   saved games directory
+    whdload.prefs.noNetwork         true        no network access
+    whdload.prefs.noWriteCache      true        disable write cache
+    whdload.prefs.noWriteInfo       false       no .info files for saves
+    whdload.prefs.chipNoCache       false       Chip memory non-cacheable
+    whdload.prefs.fullChip          false       save/restore all Chip memory
+    whdload.prefs.noFlushMem        false       do not flush memory first
+    whdload.prefs.noMemReverse      false       no reverse allocation
+    whdload.prefs.preload           false       preload data files
+    whdload.prefs.logBuffer         (empty)     log buffer size, e.g. $40000
+    whdload.prefs.ntsc              false       force NTSC
+    whdload.prefs.pal               false       force PAL
+    whdload.prefs.noFilter          false       disable audio filter
+    whdload.prefs.noAutoVec         false       ignore autovector interrupts
+    whdload.prefs.mmu               false       use the MMU (68030+)
+    whdload.prefs.quitKey           (empty)     quit rawkey, e.g. $5a
+    whdload.prefs.restartKey        (empty)     restart rawkey
+    whdload.prefs.freezeKey         (empty)     freeze rawkey
+    whdload.prefs.debugKey          (empty)     debug rawkey
+    whdload.prefs.expert            false       WHDLoad expert mode
+    whdload.prefs.executeStartup    (empty)     command run before the game
+    whdload.prefs.executeCleanup    (empty)     command run after the game
 
-    All of them apply at BOOT - the prefs file is generated while the WHDLoad
-    hard disk is being built.
+  Applies: BOOT
 
 
 ===============================================================================
- 5.  ALPHABETICAL PROPERTY INDEX
+ 5.  PROPERTY INDEX
 ===============================================================================
 
-  Key                            Where                        Applies
+  Key                            Section                      Applies
   ---------------------------------------------------------------------------
-  auto.aga.chipram.kb            file only (4.2)              BOOT
-  auto.aga.chipset               file only (4.2)              BOOT
-  auto.aga.cpu                   file only (4.2)              BOOT
-  auto.aga.fastram.kb            file only (4.2)              BOOT
-  auto.aga.slowram.kb            file only (4.2)              BOOT
+  auto.aga.*                     4.2                          BOOT
   auto.enabled                   System (3.2)                 BOOT
-  auto.floppy.chipram.kb         file only (4.2)              BOOT
-  auto.floppy.chipset            file only (4.2)              BOOT
-  auto.floppy.cpu                file only (4.2)              BOOT
-  auto.floppy.fastram.kb         file only (4.2)              BOOT
-  auto.floppy.slowram.kb         file only (4.2)              BOOT
-  auto.hd.chipram.kb             file only (4.2)              BOOT
-  auto.hd.chipset                file only (4.2)              BOOT
-  auto.hd.cpu                    file only (4.2)              BOOT
-  auto.hd.fastram.kb             file only (4.2)              BOOT
-  auto.hd.slowram.kb             file only (4.2)              BOOT
+  auto.floppy.*                  4.2                          BOOT
+  auto.hd.*                      4.2                          BOOT
   auto.kickstart13.path          System (3.2)                 BOOT
   auto.kickstart31.path          System (3.2)                 BOOT
-  blitter.immediate              file only (4.5)              BOOT
+  blitter.immediate              4.5                          BOOT
   chipram.kb                     System (3.2)                 BOOT
   chipset                        System (3.2)                 RESTART
-  chooser.floppy.lastDirectory   file only (4.1)              -
-  chooser.hdf.lastDirectory      file only (4.1)              -
-  chooser.media.lastDirectory    file only (4.1)              -
-  chooser.rom.lastDirectory      file only (4.1)              -
-  chooser.whdload.lastDirectory  file only (4.1)              -
+  chooser.*.lastDirectory        4.1                          -
   cpu.model                      System (3.2)                 RESTART
   drive.df0..3.disk              Drives (3.3) / Floppy (3.4)  LIVE
   drive.df0..3.enabled           Floppy drives (3.4)          LIVE
   drive.df0..3.readonly          Floppy drives (3.4)          LIVE
   fastram.kb                     System (3.2)                 BOOT
-  floppy.sound.volume            Audio / Video (3.10)         LIVE
+  floppy.sound.volume            Audio / Video (3.11)         LIVE
   hd.master.disk                 Drives (3.3) / Hard d. (3.5) BOOT
   hd.master.enabled              Hard disks (3.5)             BOOT
   hd.master.readonly             Hard disks (3.5)             BOOT
   hd.slave.disk                  Drives (3.3) / Hard d. (3.5) BOOT
   hd.slave.enabled               Hard disks (3.5)             BOOT
   hd.slave.readonly              Hard disks (3.5)             BOOT
-  input.port0.device             Game ports (3.8)             LIVE
-  input.port0.joystick.*         Joystick keys (3.12.1)       LIVE
-  input.port1.device             Game ports (3.8)             LIVE
-  input.port1.joystick.*         Joystick keys (3.12.1)       LIVE
+  input.port0.device             Game ports (3.9)             LIVE
+  input.port0.joystick.*         Joystick keys (3.14.1)       LIVE
+  input.port1.device             Game ports (3.9)             LIVE
+  input.port1.joystick.*         Joystick keys (3.14.1)       LIVE
   kickstart.path                 System (3.2)                 BOOT
-  leds.visible                   Audio / Video (3.10)         BOOT
-  overlay.fps.enabled            file only (4.4)              BOOT
-  overlay.framecounter.enabled   file only (4.4)              BOOT
-  remoteplay.audio.mode          Remote play (3.9)            next guest
-  remoteplay.bind                file only (4.3)              on hosting
-  remoteplay.guest.allowreset    Remote play (3.9)            next guest
-  remoteplay.guest.keyboard      Remote play (3.9)            next guest
-  remoteplay.guest.port          Remote play (3.9)            next guest
-  remoteplay.lan.only            Remote play (3.9)            on hosting
-  remoteplay.last.host           file only (4.3)              -
-  remoteplay.port                Remote play (3.9)            on hosting
-  remoteplay.upnp                Remote play (3.9)            on hosting
+  leds.visible                   Audio / Video (3.11)         BOOT
+  overlay.fps.enabled            4.4                          BOOT
+  overlay.framecounter.enabled   4.4                          BOOT
+  remoteplay.audio.mode          Remote play (3.10)           next connection
+  remoteplay.bind                4.3                          on hosting
+  remoteplay.guest.allowreset    Remote play (3.10)           next connection
+  remoteplay.guest.keyboard      Remote play (3.10)           next connection
+  remoteplay.guest.port          Remote play (3.10)           next connection
+  remoteplay.lan.only            Remote play (3.10)           on hosting
+  remoteplay.last.host           Remote play (3.10)           -
+  remoteplay.port                Remote play (3.10)           on hosting
+  remoteplay.spectators.max      Remote play (3.10)           next connection
+  remoteplay.upnp                Remote play (3.10)           on hosting
+  rewind.seconds                 Rewind (3.8)                 LIVE
   savestate.slot                 Saved state (3.7)            LIVE
   slowram.kb                     System (3.2)                 BOOT
-  ui.language                    System (3.2)                 BOOT
-  ui.scale                       System (3.2)                 RELAUNCH
-  video.integerScaling           Audio / Video (3.10)         RESTART
+  ui.language                    GUI (3.12)                   BOOT
+  ui.popup.expanded              F12 popup (3)                -
+  ui.scale                       GUI (3.12)                   RELAUNCH
+  video.integerScaling           Audio / Video (3.11)         RESTART
   video.mode                     System (3.2)                 RESTART
-  video.monitor                  Audio / Video (3.10)         RESTART
-  video.overscan.enabled         Audio / Video (3.10)         RESTART
-  video.renderer                 Audio / Video (3.10)         RESTART
-  video.shader                   Audio / Video (3.10)         LIVE
-  video.windowMode               Audio / Video (3.10)         RESTART
+  video.monitor                  Audio / Video (3.11)         RESTART
+  video.overscan.enabled         Audio / Video (3.11)         RESTART
+  video.renderer                 Audio / Video (3.11)         RESTART
+  video.shader                   Audio / Video (3.11)         LIVE
+  video.windowMode               Audio / Video (3.11)         RESTART
   whdload.enabled                WHDLoad (3.6)                BOOT
   whdload.file                   Drives (3.3) / WHDLoad (3.6) BOOT
-  whdload.prefs.*                file only (4.6)              BOOT
-
+  whdload.prefs.*                4.6                          BOOT
 
 
 ===============================================================================
- 6.  COMMAND LINE (FOR FRONTENDS)
+ 6.  COMMAND LINE
 ===============================================================================
-
-  Every property of amiga.properties can be set when AmiJa is launched, so
-  that a game launcher or any other frontend can start it with the machine
-  and the media it wants, without editing the file:
 
       AmiJa [options] [file ...] [key=value ...]
-
       java -jar AmiJa.jar [options] [file ...] [key=value ...]
 
-  file              A disk to insert: floppy (.adf, .ipf, .zip), hard disk
-                    (.hdf) or WHDLoad archive (.lha, .lzh). The files are
-                    placed exactly as in the "Drives" list of the F12 popup
-                    (3.3): floppies go to DF0, DF1, DF2, DF3 in the order
-                    given, hard disks to master then slave. When at least
-                    one file is given, the files are the whole set: every
-                    drive they do not fill is emptied, whatever
-                    amiga.properties says. At most four floppies, two hard
-                    disks and one WHDLoad archive; a hard disk and WHDLoad
-                    cannot be given together. A file that does not exist
-                    stops the launch.
+  file              Media to load: floppy (.adf, .ipf, .zip), hard disk
+                    (.hdf) or WHDLoad archive (.lha, .lzh), assigned as in
+                    the Drives list (3.3). When files are given, they replace
+                    all configured media. Same limits as 3.3. A missing file
+                    aborts the launch.
 
-  key=value         Sets the property for this session. The key is any name
-                    from chapter 5; the value is written exactly as in the
-                    file. It wins over what the files decided, so
-                    drive.df0.readonly=true write-protects the first disk. Quote the whole argument when the value contains
-                    spaces. An empty value clears the property
-                    (drive.df0.disk= empties DF0). When a key appears twice,
-                    the last one wins.
+  key=value         Sets any property from chapter 5 for this session; it
+                    overrides what the files determine. An empty value clears
+                    the property. The last occurrence wins. Quote arguments
+                    containing spaces.
 
-  --config FILE     Reads FILE instead of amiga.properties, and saves to it.
-                    If FILE does not exist it is created with the defaults.
-  --home DIR        The application home: where shaders/, savestate/,
-                    screenshots/, whdload/ and the default amiga.properties
-                    are looked for.
-  --print-config    Prints the resulting configuration (the file, plus the
-                    values given on the command line) and exits. Only the
-                    configuration goes to standard output, so it can be read
-                    as a properties file; this is also the full list of keys.
-  --help, -h        Prints a short help and exits.
+  --config FILE     use FILE instead of amiga.properties (created if missing)
+  --home DIR        set the application home
+  --print-config    print the resulting configuration and exit
+  --help, -h        print help and exit
 
-  Files and values given on the command line are NOT written to amiga.properties: when
-  the configuration is saved (OK in the F12 popup, or a file browser
-  remembering its folder), each of them is saved with the value the file had
-  before. Only a property you change yourself in the F12 popup during the
-  session is saved with the new value.
+  Command-line values are not saved to amiga.properties; only settings
+  changed in the F12 popup during the session are. Unknown keys or
+  malformed arguments exit with status 2 and a message on standard error.
+  All values take effect immediately.
 
-  An unknown key or a malformed argument stops AmiJa before it opens a
-  window, with exit status 2 and the reason on standard error.
+  In automatic mode Kickstart, memory, chipset and processor follow the
+  media; pass auto.enabled=false to set them explicitly.
 
   Examples:
 
       AmiJa "C:\Games\Turrican II (Disk 1).adf" "C:\Games\Turrican II (Disk 2).adf"
-
       AmiJa /games/Lotus2.lha video.windowMode=fullscreen
-
-      AmiJa --config C:\Frontend\amija-a1200.properties auto.enabled=false
+      AmiJa --config C:\Frontend\a1200.properties auto.enabled=false
             chipset=AGA cpu.model=68020
 
-  In automatic mode (auto.enabled=true, the default) the Kickstart, memory,
-  chipset and processor follow the media; to impose them, pass
-  auto.enabled=false together with the keys of section 3.2.
-
-  The "Delay" of each value in chapter 5 does not apply here: everything on
-  the command line is in force from the first instant.
 
 ===============================================================================
 
@@ -1352,20 +796,15 @@ LICENSE
 -------
 
     AmiJa is free software, licensed under the GNU General Public License,
-    version 3 or (at your option) any later version. The full text is in the
-    file LICENSE. You may use, study, modify and redistribute it; any
-    distributed derivative work must in turn be released under the same
-    license, with its source code.
+    version 3 or later. See LICENSE for the full text.
 
-    Third-party components bundled with the emulator - LWJGL, FlatLaf, the
-    RetroArch shader packs in shaders/ and blurs/, and the virtualhd.device
-    boot ROM -
-    keep their own licenses. THIRD-PARTY-NOTICES.md records each of them,
-    and explains why Kickstart ROMs, disk images and WHDLoad system files
-    are NOT included and must be supplied by you.
+    Third-party components (LWJGL, FlatLaf, the shaders in shaders/ and
+    blurs/, the virtualhd.device boot ROM) keep their own licences; see
+    THIRD-PARTY-NOTICES.md. Kickstart ROMs, disk images and WHDLoad system
+    files are not included and must be supplied by the user.
 
-    AmiJa is an independent reimplementation. It is not affiliated with, nor
-    endorsed by, Commodore, Amiga Corporation, Cloanto or Hyperion.
+    AmiJa is not affiliated with or endorsed by Commodore, Amiga
+    Corporation, Cloanto or Hyperion.
 
 
 ===============================================================================
