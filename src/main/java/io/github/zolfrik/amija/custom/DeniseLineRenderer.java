@@ -2279,6 +2279,12 @@ final class DeniseLineRenderer {
     // Reset and outputs
     // =========================================================================
 
+    /** COLOR00 at power-on, as the Denise model sets it (see AbstractDenise#reset). */
+    void setPowerOnColor0(int value) {
+        palette[0] = value;
+        paletteLineStart[0] = value;
+    }
+
     /** Power-on state of the rendering side. {@code hardware}: see {@link AbstractDenise#reset(boolean)}. */
     void reset(boolean hardware) {
         initialBplcon0 = initialBplcon2 = 0;

@@ -1144,6 +1144,9 @@ public abstract class AbstractAgnus {
     /** See {@link #getDisplayRowShift()}: latched at the start of vsync, once per frame. */
     private int displayRowShift = 0;
 
+    /** See {@link #isDisplayInterlaced()}: latched with {@link #displayRowShift}. */
+    private boolean displayInterlaced = false;
+
     /**
      * Maximum number of lines per frame. PAL: 312 (lines 0-311), NTSC: 262 (lines 0-261).
      */
@@ -3035,6 +3038,7 @@ public abstract class AbstractAgnus {
             // The framebuffer row counts from vsync; the crop constants are set for the
             // LONG frame, where vsync starts at VSYNC_START_VPOS_PAL_LONG.
             displayRowShift = VSYNC_START_VPOS_PAL_LONG - startVpos;
+            displayInterlaced = denise != null && (denise.getBplcon0() & 0x0004) != 0;
         } else if (vsyncActive && vpos == endVpos) {
             vsyncActive = false;
         }
@@ -3052,6 +3056,16 @@ public abstract class AbstractAgnus {
      */
     public int getDisplayRowShift() {
         return displayRowShift;
+    }
+
+    /**
+     * Whether the frame is laid out as an interlaced field: LACE as it stands at the start of
+     * vsync, held for the whole frame like {@link #getDisplayRowShift()}. A Copper that clears
+     * LACE for a single line (a blank line drawn with BPLCON0 = $0200) does not move that line
+     * to another framebuffer row.
+     */
+    public boolean isDisplayInterlaced() {
+        return displayInterlaced;
     }
 
     /** Computes the TOD pulses of the line that starts. */
@@ -5119,6 +5133,7 @@ public abstract class AbstractAgnus {
     // Custom register writes
     // =========================================================================
 
+
     public void writeCustomRegister(int regAddr, int value) {
         regAddr &= 0x1FE;
 
@@ -5409,6 +5424,7 @@ public abstract class AbstractAgnus {
         }
         vsyncActive = false;
         displayRowShift = 0;
+        displayInterlaced = false;
         syncsStopped = false;
         updateLineLength(false);             // LOL: always restart from a short line
         vposFrozen = false; frozenVpos = 0; frozenHpos = 0;

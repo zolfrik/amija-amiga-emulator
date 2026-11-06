@@ -193,9 +193,10 @@ public final class LhaExtractor {
      *
      * <p>Windows silently drops trailing dots and spaces from every name component (e.g. the
      * Amiga file {@code ruptile.} would become {@code ruptile}): a game opening
-     * {@code ruptile.} would no longer find it. On AmigaDOS those characters are legal. To
-     * keep them, every problematic trailing character is percent-encoded ({@code .}=%2E,
-     * space=%20), harmless for Windows, and the original Amiga name is recorded in
+     * {@code ruptile.} would no longer find it, and refuses its reserved characters
+     * ({@code ?}, {@code *}, ...). On AmigaDOS those characters are legal. To keep them, every
+     * problematic character is percent-encoded ({@code .}=%2E, space=%20, {@code ?}=%3F),
+     * harmless for Windows, and the original Amiga name is recorded in
      * {@link #nameOverrides}, so {@link FfsBuilder} can write it back exactly in the FFS
      * file system.
      */
@@ -214,14 +215,22 @@ public final class LhaExtractor {
         return encodedPath.toString();
     }
 
-    /** Percent-encodes only the trailing dots/spaces of a name component. */
+    /**
+     * Percent-encodes what Windows cannot store in a name component: the trailing dots and
+     * spaces, and anywhere the characters it reserves ({@code < > : " | ? *}, control
+     * characters), all legal in an AmigaDOS name.
+     */
     private static String windowsSafeLeaf(String leaf) {
         int end = leaf.length();
         while (end > 0 && (leaf.charAt(end - 1) == '.' || leaf.charAt(end - 1) == ' ')) end--;
-        if (end == leaf.length()) return leaf;
-        StringBuilder sb = new StringBuilder(leaf.substring(0, end));
-        for (int i = end; i < leaf.length(); i++) {
-            sb.append('%').append(String.format("%02X", leaf.charAt(i) & 0xFF));
+        StringBuilder sb = new StringBuilder(leaf.length());
+        for (int i = 0; i < leaf.length(); i++) {
+            char c = leaf.charAt(i);
+            if (i >= end || c < 0x20 || "<>:\"|?*".indexOf(c) >= 0) {
+                sb.append('%').append(String.format("%02X", c & 0xFF));
+            } else {
+                sb.append(c);
+            }
         }
         return sb.toString();
     }

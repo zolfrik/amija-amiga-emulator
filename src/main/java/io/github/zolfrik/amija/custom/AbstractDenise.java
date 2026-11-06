@@ -156,6 +156,7 @@ public abstract class AbstractDenise {
         this.deniseId = id;
         this.isECS    = (id != 0xFFFF);
         this.isAGA    = (id & 0xFF) == 0xF8;
+        powerOnPalette();
         renderer.setEcs(isECS);
         renderer.setAga(isAGA);
     }
@@ -427,6 +428,17 @@ public abstract class AbstractDenise {
     public void reset() { reset(true); }
 
     /**
+     * The colour registers at power-on: all black, except COLOR00 of an ECS Denise, which
+     * comes up white. Until the Kickstart writes its first colour the screen shows it.
+     */
+    private void powerOnPalette() {
+        Arrays.fill(palette, 0);
+        Arrays.fill(paletteAga, 0);
+        if (isECS && !isAGA) palette[0] = 0xFFF;
+        renderer.setPowerOnColor0(palette[0]);
+    }
+
+    /**
      * Denise reset. {@code hardware} separates power-on from the reset the CPU's RESET
      * instruction brings to the peripherals: the <b>colour registers</b> are not on that line
      * and survive a software reset, as on the hardware. Measured on the demo `Jesus On E's`,
@@ -443,10 +455,6 @@ public abstract class AbstractDenise {
         bplcon4 = 0x0011;
         hstrt = 0; hstop = 0;
         clxcon = 0;
-        if (hardware) {
-            Arrays.fill(palette,  0);
-            Arrays.fill(paletteAga, 0);
-        }
         Arrays.fill(bpldat,   0);
         Arrays.fill(bpldatPipe, 0);
         Arrays.fill(shiftReg, 0);
@@ -474,6 +482,7 @@ public abstract class AbstractDenise {
         for (int i = 0; i < 4; i++) sprChanges[i].clear();
         sync();
         renderer.reset(hardware);
+        if (hardware) powerOnPalette();
     }
 
     // =========================================================================
@@ -1541,7 +1550,6 @@ public abstract class AbstractDenise {
 
     public boolean isHires()                { return hires; }   // (bplcon0 & 0x8000)!=0, cached
     /** LACE (BPLCON0 bit 2): the display alternates two fields offset by half a line. */
-    public boolean isInterlaced()           { return (bplcon0 & 0x0004) != 0; }
     public int[] getRgbLine()               { sync(); return renderer.rgbLine(); }
     /**
      * RGB of the LIVE COLOR00 (border), through the same LUT as {@link #amigaToRGB}. Used by

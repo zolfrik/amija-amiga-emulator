@@ -623,7 +623,10 @@ public final class VirtualCRT {
         // Outside interlace there is no interleaving (lines are doubled), so the shift
         // carries the offset: the case the references were measured on (lof1/lof2/
         // vhpos4/vhpos5, the whole vAmigaTS bank is non-interlaced).
-        if (denise.isInterlaced()) {
+        //
+        // Whether the frame is interlaced is decided once per frame, with the shift: a line
+        // that clears LACE alone would otherwise land one row off on the short field.
+        if (agnus.isDisplayInterlaced()) {
             return vpos;
         }
         return vpos + agnus.getDisplayRowShift();
