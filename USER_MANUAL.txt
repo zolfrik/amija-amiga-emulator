@@ -487,11 +487,6 @@ CONTENTS
      Expert mode shows Colour, Compression, Sound and Position as well.
      Values: true / false (default false)                       Applies: LIVE
 
-  Output: Start / Stop
-     Starts or stops sending. The output never starts by itself: press Start
-     every time AmiJa is launched. On a failure it keeps retrying every
-     2 seconds and the Status line says why.
-
   MiSTer address                                                 mister.host
      The MiSTer's IP address. Empty: searched on all the PC's networks each
      time the output starts, preferring a direct cable. "Search" lists the
@@ -539,6 +534,11 @@ CONTENTS
 
   Status
      Whether the MiSTer is receiving the picture and, if not, why.
+
+  Output: Start / Stop
+     Starts or stops sending. The output never starts by itself: press Start
+     every time AmiJa is launched. On a failure it keeps retrying every
+     2 seconds and the Status line says why.
 
   ---------------------------------------------------------------------------
   3.12   AUDIO / VIDEO
