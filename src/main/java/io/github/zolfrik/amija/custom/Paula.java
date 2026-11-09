@@ -22,7 +22,9 @@ package io.github.zolfrik.amija.custom;
 
 import io.github.zolfrik.amija.custom.AbstractAgnus.EventID;
 import io.github.zolfrik.amija.custom.AbstractAgnus.EventSlot;
+import io.github.zolfrik.amija.custom.audio.AmigaAudioFilter;
 import io.github.zolfrik.amija.custom.audio.AudioRingBuffer;
+import io.github.zolfrik.amija.custom.audio.BlepMixer;
 import io.github.zolfrik.amija.custom.audio.JavaSoundAudioOutput;
 import io.github.zolfrik.amija.input.GamePort;
 import io.github.zolfrik.amija.input.GamePortDevice;
@@ -44,7 +46,11 @@ public final class Paula {
     private IntSupplier dmaconSupplier;
     private Runnable iplChangedCallback;
 
-    public void setAgnus(AbstractAgnus agnus) { this.agnus = agnus; }
+    public void setAgnus(AbstractAgnus agnus) {
+        this.agnus = agnus;
+        audioOutput.setFilterModel(agnus != null && agnus.isAGA()
+                ? AmigaAudioFilter.Model.A1200 : AmigaAudioFilter.Model.A500);
+    }
     public void setDmaconSupplier(IntSupplier s) { this.dmaconSupplier = s; }
     public void setIplChangedCallback(Runnable callback) { this.iplChangedCallback = callback; }
 
@@ -185,13 +191,17 @@ public final class Paula {
     private final JavaSoundAudioOutput audioOutput = new JavaSoundAudioOutput(audioRingBuffer);
     { audioOutput.setCorrectionSupplier(this::getSampleRateCorrection); }
     private double outputSamplePhase;
+    /** Master cycles between the exact instant of the pending output sample and its event. */
+    private double outputSampleLag;
     private int activeAudioMask;
     /** Cycles accumulated and not yet applied to the period counters (see {@link #tick(int)}). */
     private int pendingAudioCycles;
     /** min(periodCounter) over the active channels; -1 = to be recomputed. */
     private int audioMinCounter = -1;
-    /** Master cycles since the last output sample: the divisor of the integration. */
-    private int mixIntervalCycles;
+    /** Band-limits the channels' output edges into output samples (output state only). */
+    private final BlepMixer blep = new BlepMixer();
+    /** Pending cycles past which an idle Paula syncs anyway, so the count cannot overflow. */
+    private static final int IDLE_SYNC_CYCLES = 1 << 30;
     private static final boolean AUDIO_VERIFY =
             Boolean.getBoolean("amiga.audioverify");
 
@@ -299,12 +309,12 @@ public final class Paula {
         Arrays.fill(audVOL, 0); Arrays.fill(audDAT, 0);
         for (AudioChannel ch : audioChannels) ch.reset();
         outputSamplePhase = 0;
+        outputSampleLag = 0;
         sampleRateCorrection = 0;
         asrCounter = 0;
         activeAudioMask = 0;
         pendingAudioCycles = 0;
         audioMinCounter = -1;
-        mixIntervalCycles = 0;
         audioRingBuffer.clear();
     }
 
@@ -319,15 +329,18 @@ public final class Paula {
      * {@link #activeAudioMask} makes this method almost free when there is no audio.
      */
     public void tick(int cycles) {
-        // Length of the integration interval of the next output sample. It is ALWAYS
-        // counted, even with no channel active: a channel that stops halfway through the
-        // interval has accumulated only its own part, and the divisor must stay the whole
-        // interval for the average to come out right (the rest is zero).
-        mixIntervalCycles += cycles;
+        blep.advance(cycles);
         if (activeAudioMask == 0) {
-            // No channel active: nothing to accumulate (the counters are already aligned).
-            pendingAudioCycles = 0;
+            // No channel active: no counter runs. The cycles are still kept, so that the next
+            // sync places at the right instant a level that changed when the last channel
+            // stopped.
+            int idle = pendingAudioCycles + cycles;
             audioMinCounter = -1;
+            if (idle >= IDLE_SYNC_CYCLES) {
+                syncAudioChannels();
+            } else {
+                pendingAudioCycles = idle;
+            }
             return;
         }
         int min = audioMinCounter;
@@ -355,8 +368,16 @@ public final class Paula {
         audioMinCounter = -1;
     }
 
-    /** Applies {@code cycles} master cycles to the period counters of the active channels. */
+    /**
+     * Applies {@code cycles} master cycles to the period counters of the active channels.
+     * Every channel's output span starts where the previous sync left it: a level that
+     * differs from the recorded one changed there, at the mutation that followed that sync.
+     */
     private void applyAudioCycles(int cycles) {
+        long start = blep.now() - cycles;
+        for (AudioChannel ch : audioChannels) {
+            blep.beginSpan(ch.index, start, ch.level());
+        }
         int mask = activeAudioMask;
         while (mask != 0) {
             int chan = Integer.numberOfTrailingZeros(mask);
@@ -396,9 +417,7 @@ public final class Paula {
         int pending = pendingAudioCycles;
         pendingAudioCycles = 0;
         audioMinCounter = -1;
-        if (pending != 0 && activeAudioMask != 0) {
-            applyAudioCycles(pending);
-        }
+        applyAudioCycles(pending);
     }
 
     /**
@@ -406,7 +425,7 @@ public final class Paula {
      * sample and schedules the next.
      */
     public void serviceAudioSampleEvent() {
-        // The cycles tick() holds back are already counted in mixIntervalCycles but not yet
+        // The cycles tick() holds back are already counted in the mixer's clock but not yet
         // in the channels' accumulators: without this sync the numerator would cover less
         // time than the denominator and the level would come out low.
         syncAudioChannels();
@@ -431,6 +450,8 @@ public final class Paula {
         long k = (long) Math.ceil((PAL_SYSTEM_CLOCK - outputSamplePhase) / rate);
         if (k < 1) k = 1;
         outputSamplePhase += rate * k - PAL_SYSTEM_CLOCK;
+        // The accumulator crossed the clock outputSamplePhase / rate cycles before the event.
+        outputSampleLag = outputSamplePhase / rate;
         agnus.scheduleRel(EventSlot.SLOT_CH0, k, EventID.AUDIO_MIX);
     }
 
@@ -1453,36 +1474,18 @@ public final class Paula {
     }
 
     /**
-     * Produces one output sample as the <b>time-weighted average</b> of each channel's
-     * output over the interval just elapsed, rather than its instantaneous value: every
-     * step of the emulation accumulates {@code sample * vol * dt}, and the sum is divided by
-     * the time accumulated.
-     *
-     * <p>Reading the instantaneous value amounts to nearest-neighbour resampling: the edges
-     * of Paula's output, which fall on a 7.09 MHz grid, move by up to 22.7 us to land on
-     * the 44.1 kHz grid. That jitter is broadband noise with very strong lines next to the
-     * fundamental. Measured on a 500 Hz sine generated the way Amiga Test Kit generates it:
-     * <b>SNR 20.8 dB</b> with instantaneous sampling against the <b>28.8 dB</b> of the ideal
-     * reference, which the integration reaches exactly.
-     *
-     * <p>The residual at 28.8 dB is the images of Paula's 8-bit staircase (15.5 and 16.5 kHz
-     * for this signal), which the Amiga's fixed filter attenuates downstream. The
-     * measurement lives in {@code PaulaAudioQualityTest}.
+     * Produces one output sample per side from the band-limited output of its channels (see
+     * {@link BlepMixer}): every edge of a channel's staircase enters as a band-limited step at
+     * the master cycle where it happened, so nothing above half the output rate folds back
+     * into the audible band. Reading the channels' instantaneous value instead would move
+     * each edge by up to one output period, which is broadband noise.
      */
     private void mixAudioSample() {
-        int interval = mixIntervalCycles;
-        mixIntervalCycles = 0;
-
-        double left = 0.0;
-        double right = 0.0;
-
-        for (AudioChannel ch : audioChannels) {
-            double sample = ch.takeAverageSample(interval);
-            if (ch.index == 0 || ch.index == 3) left += sample;
-            else                                right += sample;
-        }
-
-        audioRingBuffer.write((float) (left * 0.5), (float) (right * 0.5));
+        int rate = audioOutput.outputRate();
+        double lag = outputSampleLag;
+        float left = blep.output(0, rate, lag) + blep.output(3, rate, lag);
+        float right = blep.output(1, rate, lag) + blep.output(2, rate, lag);
+        audioRingBuffer.write(left * 0.5f, right * 0.5f);
     }
 
     // =========================================================================
@@ -1775,8 +1778,6 @@ public final class Paula {
         private int mixVolume;
         private float mixVolumeScale;
         private int currentSample;
-        /** Integral of {@code currentSample * mixVolumeScale} over the interval's cycles. */
-        private double sampleAccum;
         /**
          * Master cycles left before {@link #processDmaWord()}: the one-CCK delay with which a
          * word delivered by the DMA is processed (see {@link #receiveDmaWord}). 0 = nothing
@@ -1813,7 +1814,6 @@ public final class Paula {
             periodCounter = periodClocks;
             latchMixVolume();
             currentSample = 0;
-            sampleAccum = 0.0;
             dmaWordDelay = 0;
             reloadRequestDelay = 0;
             refreshActiveMask();
@@ -1983,15 +1983,15 @@ public final class Paula {
                 // since the table's words alternate. When idle, they would be boundaries
                 // requesting refill interrupts from a channel that is not playing.
                 //
-                // The output is still integrated: the sample stays, and dropping it from
-                // the active mask would count it as zero.
-                sampleAccum += currentSample * (double) mixVolumeScale * cycles;
+                // The output still holds: the sample stays, and dropping it from the active
+                // mask would count it as zero.
+                hold(cycles);
                 return;
             }
             int remaining = cycles;
             while (remaining >= periodCounter) {
                 int step = periodCounter;
-                sampleAccum += currentSample * (double) mixVolumeScale * step;
+                hold(step);
                 remaining -= step;
                 // The boundary decides first and latches the volume after: a channel in
                 // interrupt mode that stops here for want of a refill keeps the volume
@@ -2005,7 +2005,7 @@ public final class Paula {
                     remaining = skipRepeatedWords(remaining);
                 }
             }
-            sampleAccum += currentSample * (double) mixVolumeScale * remaining;
+            hold(remaining);
             periodCounter -= remaining;
         }
 
@@ -2029,13 +2029,12 @@ public final class Paula {
         }
 
         /**
-         * Plays in one step the whole words of {@code remaining} cycles, from a word
-         * boundary (low byte just out, counter rearmed) of a channel that
-         * {@link #repeatsLastWord() repeats its last word}: every word outputs the high byte
-         * of AUDxDAT for one period and the low byte for the next, and leaves the channel in
-         * the state it found it in. The integral is exact: every term of the accumulator is
-         * an integer multiple of 2^-13 (sample x volume x cycles / 8192), so the sum does not
-         * depend on how it is split. Returns the cycles left, fewer than two periods.
+         * Plays the whole words of {@code remaining} cycles without stepping the channel,
+         * from a word boundary (low byte just out, counter rearmed) of a channel that
+         * {@link #repeatsLastWord() repeats its last word}: every word holds the byte on the
+         * output for one period and the high byte of AUDxDAT for the next, then puts out the
+         * low byte, and leaves the channel in the state it found it in. Returns the cycles
+         * left, fewer than two periods.
          */
         private int skipRepeatedWords(int remaining) {
             final int wordCycles = 2 * periodClocks;
@@ -2044,28 +2043,29 @@ public final class Paula {
             final int hi = (byte) (word >>> 8);
             final int lo = (byte) word;
             if (AUDIO_VERIFY) {
-                double expected = sampleAccum + (hi + lo) * (double) mixVolumeScale
-                        * ((long) periodClocks * words);
                 int left = remaining;
                 while (left >= wordCycles) {
                     for (int b = 0; b < 2; b++) {
-                        sampleAccum += currentSample * (double) mixVolumeScale * periodClocks;
+                        hold(periodClocks);
                         left -= periodClocks;
                         advanceSampleByte();
                         latchMixVolume();
                     }
                 }
-                if (sampleAccum != expected || currentSample != lo || currentWord != word
+                if (currentSample != lo || currentWord != word
                         || bytePhase != 0 || currentWordValid || !repeatsLastWord()) {
                     System.out.printf("[PAULA] audioverify: closed form of channel %d differs"
-                            + " (accum %s/%s sample %d/%d)%n",
-                            index, sampleAccum, expected, currentSample, lo);
+                            + " (sample %d/%d)%n", index, currentSample, lo);
                 }
                 return left;
             }
-            sampleAccum += (hi + lo) * (double) mixVolumeScale * ((long) periodClocks * words);
+            final float vol = mixVolumeScale;
+            for (int w = 0; w < words; w++) {
+                blep.hold(index, currentSample * vol, periodClocks);
+                blep.hold(index, hi * vol, periodClocks);
+                currentSample = lo;
+            }
             currentWord = word;
-            currentSample = lo;
             return remaining - words * wordCycles;
         }
 
@@ -2097,15 +2097,14 @@ public final class Paula {
             return mixVolume;
         }
 
-        /**
-         * Average of the output over the interval just closed, and reset of the
-         * accumulator. {@code intervalCycles} is the FULL length of the interval: the part
-         * where the channel was inactive is not in the accumulator and counts as zero.
-         */
-        private double takeAverageSample(int intervalCycles) {
-            double accum = sampleAccum;
-            sampleAccum = 0.0;
-            return intervalCycles > 0 ? accum / intervalCycles : 0.0;
+        /** What the channel puts out now. */
+        private float level() {
+            return currentSample * mixVolumeScale;
+        }
+
+        /** The channel holds its current output for {@code cycles} master cycles. */
+        private void hold(int cycles) {
+            blep.hold(index, currentSample * mixVolumeScale, cycles);
         }
 
         /**

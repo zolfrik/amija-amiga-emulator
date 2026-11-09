@@ -52,15 +52,15 @@ public final class JavaSoundAudioOutput implements Runnable {
     private static final long RAISE_INTERVAL_NS = 2_000_000_000L;
     private static volatile int learnedTargetFrames = AudioRingBuffer.TARGET_MIN_FRAMES;
 
-    // The A500's analogue chain, one per side (see A500AudioFilter): a single pole would be
-    // darker than the real filter and have the wrong slope above the cut-off.
+    // The machine's analogue chain, one per side (see AmigaAudioFilter): a single pole would
+    // be darker than the real filter and have the wrong slope above the cut-off.
     private final AudioRingBuffer ringBuffer;
     private volatile int outputRate = OUTPUT_RATE;
     // Read side of the ring: the local line and an external consumer may take turns, so the
     // read, the filters and the scratch buffers are used under this lock.
     private final Object consumerLock = new Object();
-    private A500AudioFilter filterLeft = new A500AudioFilter(OUTPUT_RATE);
-    private A500AudioFilter filterRight = new A500AudioFilter(OUTPUT_RATE);
+    private AmigaAudioFilter filterLeft = new AmigaAudioFilter(AmigaAudioFilter.Model.A500, OUTPUT_RATE);
+    private AmigaAudioFilter filterRight = new AmigaAudioFilter(AmigaAudioFilter.Model.A500, OUTPUT_RATE);
     private final float[] tmpL = new float[MAX_RENDER_FRAMES];
     private final float[] tmpR = new float[MAX_RENDER_FRAMES];
 
@@ -139,8 +139,8 @@ public final class JavaSoundAudioOutput implements Runnable {
         stop();
         synchronized (consumerLock) {
             outputRate = hz;
-            filterLeft = new A500AudioFilter(hz);
-            filterRight = new A500AudioFilter(hz);
+            filterLeft = new AmigaAudioFilter(filterLeft.model(), hz);
+            filterRight = new AmigaAudioFilter(filterRight.model(), hz);
             ringBuffer.clear();
         }
         if (wasRunning) {
@@ -207,8 +207,8 @@ public final class JavaSoundAudioOutput implements Runnable {
     /** Filters {@code frames} samples of the scratch buffers and writes them as S16LE. */
     private void convert(byte[] pcm, int frames) {
         boolean led = ledFilterEnabled;
-        A500AudioFilter fl = filterLeft;
-        A500AudioFilter fr = filterRight;
+        AmigaAudioFilter fl = filterLeft;
+        AmigaAudioFilter fr = filterRight;
         for (int i = 0; i < frames; i++) {
             float l = fl.process(tmpL[i], led);
             float r = fr.process(tmpR[i], led);
@@ -264,6 +264,21 @@ public final class JavaSoundAudioOutput implements Runnable {
             }
             thread = null;
         }
+    }
+
+    /** Selects the output stage of the emulated machine; the filters start from rest. */
+    public void setFilterModel(AmigaAudioFilter.Model model) {
+        synchronized (consumerLock) {
+            if (filterLeft.model() == model) {
+                return;
+            }
+            filterLeft = new AmigaAudioFilter(model, outputRate);
+            filterRight = new AmigaAudioFilter(model, outputRate);
+        }
+    }
+
+    public AmigaAudioFilter.Model filterModel() {
+        return filterLeft.model();
     }
 
     public void setLedFilterEnabled(boolean enabled) {
