@@ -67,7 +67,7 @@ public record MisterSettings(InetAddress host, InetAddress bind, int mtu,
                 case "lz4" -> LZ4;
                 case "lz4delta" -> LZ4_DELTA;
                 default -> throw new IllegalArgumentException(
-                        "compressione sconosciuta: " + s + " (raw, lz4, lz4delta)");
+                        "unknown compression: " + s + " (raw, lz4, lz4delta)");
             };
         }
     }
@@ -87,7 +87,7 @@ public record MisterSettings(InetAddress host, InetAddress bind, int mtu,
                 case "mister" -> MISTER;
                 case "pc" -> PC;
                 default -> throw new IllegalArgumentException(
-                        "comandi sconosciuti: " + s + " (mister, pc)");
+                        "unknown controls: " + s + " (mister, pc)");
             };
         }
     }
@@ -102,7 +102,7 @@ public record MisterSettings(InetAddress host, InetAddress bind, int mtu,
                 case "565" -> RGB565;
                 case "888" -> BGR888;
                 default -> throw new IllegalArgumentException(
-                        "colore sconosciuto: " + s + " (auto, 565, 888)");
+                        "unknown colour: " + s + " (auto, 565, 888)");
             };
         }
 
@@ -119,10 +119,10 @@ public record MisterSettings(InetAddress host, InetAddress bind, int mtu,
         GroovyProtocol.chunkSize(mtu);
         if (compression == null || color == null || geometry == null || inputs == null) {
             throw new IllegalArgumentException(
-                    "compression, color, geometry e inputs sono obbligatori");
+                    "compression, color, geometry and inputs are required");
         }
         if (audioLeadMs < AUDIO_LEAD_MIN_MS || audioLeadMs > AUDIO_LEAD_MAX_MS) {
-            throw new IllegalArgumentException("anticipo audio fuori intervallo: " + audioLeadMs
+            throw new IllegalArgumentException("audio lead out of range: " + audioLeadMs
                     + " ms (" + AUDIO_LEAD_MIN_MS + "-" + AUDIO_LEAD_MAX_MS + ")");
         }
     }
@@ -136,7 +136,7 @@ public record MisterSettings(InetAddress host, InetAddress bind, int mtu,
         try {
             return Integer.parseInt(v);
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(prefix + key + " non numerico: " + v, e);
+            throw new IllegalArgumentException(prefix + key + " is not a number: " + v, e);
         }
     }
 
@@ -144,7 +144,7 @@ public record MisterSettings(InetAddress host, InetAddress bind, int mtu,
         return switch (v.toLowerCase(Locale.ROOT)) {
             case "true", "on", "1" -> true;
             case "false", "off", "0" -> false;
-            default -> throw new IllegalArgumentException(key + " non valido: " + v
+            default -> throw new IllegalArgumentException(key + " is not valid: " + v
                     + " (true, false)");
         };
     }
@@ -202,7 +202,7 @@ public record MisterSettings(InetAddress host, InetAddress bind, int mtu,
                     audio == null || parseBoolean(prefix + "audio", audio), audioLead,
                     inputs == null ? Inputs.PC : Inputs.parse(inputs));
         } catch (UnknownHostException e) {
-            throw new IllegalArgumentException("indirizzo sconosciuto: " + e.getMessage(), e);
+            throw new IllegalArgumentException("unknown address: " + e.getMessage(), e);
         }
     }
 }

@@ -454,7 +454,7 @@ public final class MisterOutput implements ExternalPacer {
             in.register();
         } catch (IOException e) {
             if (!inputsReported) {
-                System.err.println("[MISTER] comandi del MiSTer non disponibili: " + message(e));
+                System.err.println("[MISTER] controls from the MiSTer unavailable: " + message(e));
                 inputsReported = true;
             }
         }
@@ -580,8 +580,8 @@ public final class MisterOutput implements ExternalPacer {
             if (found == null) {
                 Fault f = new Fault(Problem.NOT_FOUND, null);
                 if (!f.equals(fault)) {
-                    System.err.println("[MISTER] nessun MiSTer risponde sulla rete; nuovo tentativo"
-                            + " ogni " + TimeUnit.NANOSECONDS.toSeconds(RETRY_NS) + " s");
+                    System.err.println("[MISTER] no MiSTer answers on the network; retrying"
+                            + " every " + TimeUnit.NANOSECONDS.toSeconds(RETRY_NS) + " s");
                 }
                 fault = f;
                 return false;
@@ -635,9 +635,9 @@ public final class MisterOutput implements ExternalPacer {
         frameNumber = 0;
         connected = true;
         fault = null;
-        System.out.println("[MISTER] collegato a " + mister.getHostAddress()
-                + (settings.host() == null ? " (trovato in rete)" : "")
-                + (bind != null ? " da " + bind.getHostAddress() : "") + ", " + rgb + ", "
+        System.out.println("[MISTER] connected to " + mister.getHostAddress()
+                + (settings.host() == null ? " (found on the network)" : "")
+                + (bind != null ? " from " + bind.getHostAddress() : "") + ", " + rgb + ", "
                 + settings.compression());
         return true;
     }
@@ -667,7 +667,7 @@ public final class MisterOutput implements ExternalPacer {
         if (!f.equals(fault)) {
             System.err.println("[MISTER] " + f.problem()
                     + (f.detail() != null ? " (" + f.detail() + ")" : "")
-                    + " con " + host.getHostAddress() + "; nuovo tentativo ogni "
+                    + " with " + host.getHostAddress() + "; retrying every "
                     + TimeUnit.NANOSECONDS.toSeconds(RETRY_NS) + " s");
         }
         fault = f;
@@ -675,7 +675,7 @@ public final class MisterOutput implements ExternalPacer {
 
     private void drop(Fault f) {
         if (client != null) {
-            System.err.println("[MISTER] collegamento perso: " + f.problem()
+            System.err.println("[MISTER] link lost: " + f.problem()
                     + (f.detail() != null ? " (" + f.detail() + ")" : ""));
         }
         closeClient();
@@ -824,8 +824,8 @@ public final class MisterOutput implements ExternalPacer {
             client.switchres(m);
             modeline = m;
             System.out.printf(java.util.Locale.ROOT,
-                    "[MISTER] modo: %s %s, %dx%d, %.3f MHz, %.3f Hz%n",
-                    f.ntsc ? "NTSC" : "PAL", laceState ? "interlacciato" : "progressivo",
+                    "[MISTER] mode: %s %s, %dx%d, %.3f MHz, %.3f Hz%n",
+                    f.ntsc ? "NTSC" : "PAL", laceState ? "interlaced" : "progressive",
                     m.hActive(), m.vActive(), m.pclockMHz(), m.blitRateHz());
             int size = m.blitBytes(rgb);
             for (int i = 0; i < 2; i++) {
@@ -1067,8 +1067,8 @@ public final class MisterOutput implements ExternalPacer {
         if (!a.audio()) {
             if (!audioOffReported) {
                 audioOffReported = true;
-                System.out.println("[MISTER] audio spento nel menu del core Groovy"
-                        + " (Audio > Audio: On): l'audio resta sul PC");
+                System.out.println("[MISTER] audio off in the Groovy core menu"
+                        + " (Audio > Audio: On): the sound stays on the PC");
             }
             audioPacing.reset();
             return;
@@ -1168,8 +1168,8 @@ public final class MisterOutput implements ExternalPacer {
         if (!deaf) {
             deaf = true;
             deafSpells++;
-            System.err.println("[MISTER] il MiSTer non ha letto per " + waitedNs / 1_000_000
-                    + " ms: si riparte da frame interi");
+            System.err.println("[MISTER] the MiSTer did not read for " + waitedNs / 1_000_000
+                    + " ms: sending full frames again");
         }
     }
 
@@ -1188,7 +1188,7 @@ public final class MisterOutput implements ExternalPacer {
             videoRestarts++;
             modeline = null;
             // The next frame sends the modeline again and a full frame.
-            System.err.println("[MISTER] video del MiSTer fermo: modo video reimpostato");
+            System.err.println("[MISTER] MiSTer video stalled: video mode sent again");
         }
     }
 

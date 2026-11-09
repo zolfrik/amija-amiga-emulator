@@ -66,11 +66,11 @@ public record GroovyModeline(double pclockMHz, int hActive, int hBegin, int hEnd
 
         public Geometry {
             if (Math.abs(hShift) > H_SHIFT_MAX) {
-                throw new IllegalArgumentException("hshift fuori da +-" + H_SHIFT_MAX + ": "
+                throw new IllegalArgumentException("hshift outside +-" + H_SHIFT_MAX + ": "
                         + hShift);
             }
             if (Math.abs(vShift) > V_SHIFT_MAX) {
-                throw new IllegalArgumentException("vshift fuori da +-" + V_SHIFT_MAX + ": "
+                throw new IllegalArgumentException("vshift outside +-" + V_SHIFT_MAX + ": "
                         + vShift);
             }
         }
