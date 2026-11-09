@@ -162,7 +162,7 @@ public final class KickstartImage {
     /** Variant working on bytes already in memory. {@code source} may be null. */
     public static KickstartImage of(byte[] raw, Path source) throws IOException {
         if (raw == null || raw.length == 0) {
-            throw new UnsupportedRomException("il file è vuoto");
+            throw new UnsupportedRomException("the file is empty");
         }
 
         StringBuilder note = new StringBuilder();
@@ -173,17 +173,17 @@ public final class KickstartImage {
             byte[] key = findRomKey(source);
             if (key == null) {
                 throw new UnsupportedRomException(
-                        "immagine cifrata Cloanto: serve il file '" + ROM_KEY_FILE
-                        + "' accanto alla ROM o nella cartella dell'applicazione");
+                        "Cloanto encrypted image: the file '" + ROM_KEY_FILE
+                        + "' is needed next to the ROM or in the application folder");
             }
             work = decrypt(work, CLOANTO_MAGIC.length(), key);
-            note.append("decifrata con ").append(ROM_KEY_FILE).append("; ");
+            note.append("decrypted with ").append(ROM_KEY_FILE).append("; ");
         }
 
         // 2. Loader headers prepended to the real image.
         int start = findImageStart(work);
         if (start > 0) {
-            note.append("scartati ").append(start).append(" byte di header; ");
+            note.append("dropped ").append(start).append(" bytes of header; ");
         }
         int available = work.length - start;
 
@@ -192,11 +192,11 @@ public final class KickstartImage {
         int size = Math.min(largestPowerOfTwoAtMost(available), MAX_SIZE);
         if (size < MIN_SIZE) {
             throw new UnsupportedRomException(
-                    "dimensione utile " + available + " byte: troppo piccola per una ROM Amiga");
+                    "usable size " + available + " bytes: too small for an Amiga ROM");
         }
         if (size != available) {
-            note.append("troncata da ").append(available).append(" a ").append(size)
-                .append(" byte; ");
+            note.append("truncated from ").append(available).append(" to ").append(size)
+                .append(" bytes; ");
         }
         byte[] image = Arrays.copyOfRange(work, start, start + size);
 
@@ -207,15 +207,15 @@ public final class KickstartImage {
             collapsed++;
         }
         if (collapsed > 0) {
-            note.append("overdump: metà identiche collassate a ").append(image.length)
-                .append(" byte; ");
+            note.append("overdump: identical halves collapsed to ").append(image.length)
+                .append(" bytes; ");
         }
 
         // 5. Signature. Without the identification byte it is not an Amiga ROM: freezer
         //    cartridges and the halves of an interleaved dump end up here.
         if ((image[0] & 0xFF) != ROM_ID) {
             throw new UnsupportedRomException(String.format(
-                    "non è una ROM Amiga: l'immagine dovrebbe iniziare con $11, trovato $%08X",
+                    "not an Amiga ROM: the image should start with $11, found $%08X",
                     readLong(image, 0)));
         }
 
@@ -225,8 +225,8 @@ public final class KickstartImage {
         int resetPc = readLong(image, 4) & 0xFFFFFF;
         if ((resetPc & 1) != 0) {
             throw new UnsupportedRomException(String.format(
-                    "vettore di reset dispari ($%06X): l'immagine non è avviabile "
-                    + "(spesso è metà di un dump interlacciato)", resetPc));
+                    "odd reset vector ($%06X): the image cannot boot "
+                    + "(often half of an interleaved dump)", resetPc));
         }
         boolean marker = readWord(image, 2) == JMP_ABS_L;
         String id = readIdentifier(image);
@@ -399,7 +399,7 @@ public final class KickstartImage {
         StringBuilder sb = new StringBuilder();
         sb.append(size() / 1024).append(" KB @ $").append(String.format("%06X", mapBase()));
         if (identifier != null) sb.append(", ").append(identifier);
-        sb.append(checksumValid ? ", checksum ok" : ", CHECKSUM ERRATO");
+        sb.append(checksumValid ? ", checksum ok" : ", CHECKSUM WRONG");
         if (!normalizationNote.isEmpty()) sb.append(" [").append(normalizationNote).append(']');
         return sb.toString();
     }

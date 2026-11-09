@@ -757,7 +757,7 @@ public final class FloppyDrive {
                 min = Integer.parseInt(mm[0].trim());
                 max = mm.length > 1 ? Integer.parseInt(mm[1].trim()) : min;
             } catch (NumberFormatException e) {
-                System.err.println("[DISK] amiga.diskjitter non valido: " + p + ", uso 1:3");
+                System.err.println("[DISK] invalid amiga.diskjitter: " + p + ", using 1:3");
                 min = 1; max = 3;
             }
         }
@@ -815,8 +815,8 @@ public final class FloppyDrive {
             // the program's own (some games' user disks) cannot be represented. Reported
             // once, so the loss is not silent.
             customFormatWarned = true;
-            System.err.printf("[%s] traccia %d scritta in un formato non AmigaDOS: "
-                    + "non e' rappresentabile in un file .adf e non viene salvata%n",
+            System.err.printf("[%s] track %d written in a non-AmigaDOS format: "
+                    + "it cannot be stored in an .adf file and is not saved%n",
                     id, physicalTrack);
         }
     }

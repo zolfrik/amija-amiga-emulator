@@ -96,7 +96,7 @@ public final class FrameCodec {
             case MODE_PALETTE -> "P/palette";
             case MODE_XOR -> "X/xor";
             case MODE_RGB -> "R/rgb";
-            default -> "sconosciuto(0x" + Integer.toHexString(mode & 0xFF) + ")";
+            default -> "unknown(0x" + Integer.toHexString(mode & 0xFF) + ")";
         };
     }
 
@@ -133,7 +133,7 @@ public final class FrameCodec {
 
     static void checkGeometry(int width, int height) {
         if (width <= 0 || height <= 0 || (long) width * height > Integer.MAX_VALUE / 4) {
-            throw new IllegalArgumentException("geometria non valida: " + width + "x" + height);
+            throw new IllegalArgumentException("invalid geometry: " + width + "x" + height);
         }
     }
 }

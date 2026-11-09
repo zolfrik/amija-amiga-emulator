@@ -146,15 +146,15 @@ public final class FrameEncoder implements AutoCloseable {
      */
     public int encode(int[] frame, int[] reference, int forcedMode) {
         if (closed) {
-            throw new IllegalStateException("encoder chiuso");
+            throw new IllegalStateException("encoder closed");
         }
         if (frame == null || frame.length < pixelCount) {
-            throw new IllegalArgumentException("frame di " + (frame == null ? "null" : frame.length)
-                    + " pixel, attesi " + pixelCount);
+            throw new IllegalArgumentException("frame of " + (frame == null ? "null" : frame.length)
+                    + " pixels, expected " + pixelCount);
         }
         if (reference != null && reference.length < pixelCount) {
-            throw new IllegalArgumentException("riferimento di " + reference.length
-                    + " pixel, attesi " + pixelCount);
+            throw new IllegalArgumentException("reference of " + reference.length
+                    + " pixels, expected " + pixelCount);
         }
 
         paletteBytes = -1;
@@ -175,7 +175,7 @@ public final class FrameEncoder implements AutoCloseable {
         boolean wantXor = forcedMode == FrameCodec.MODE_AUTO || forcedMode == FrameCodec.MODE_XOR;
         boolean wantPal = forcedMode == FrameCodec.MODE_AUTO || forcedMode == FrameCodec.MODE_PALETTE;
         if (!wantXor && !wantPal) {
-            throw new IllegalArgumentException("modo sconosciuto: " + FrameCodec.modeName(forcedMode));
+            throw new IllegalArgumentException("unknown mode: " + FrameCodec.modeName(forcedMode));
         }
 
         if (!scanDirtyPixels(frame, reference, wantXor, wantPal)) {
@@ -512,12 +512,12 @@ public final class FrameEncoder implements AutoCloseable {
         int n = 1;
         while (!deflater.finished()) {
             if (n == dest.length) {
-                throw new IllegalStateException("buffer di uscita insufficiente: "
-                        + dest.length + " byte per un corpo di " + len);
+                throw new IllegalStateException("output buffer too small: "
+                        + dest.length + " bytes for a body of " + len);
             }
             int k = deflater.deflate(dest, n, dest.length - n);
             if (k == 0 && !deflater.finished()) {
-                throw new IllegalStateException("Deflate bloccato dopo " + n + " byte");
+                throw new IllegalStateException("Deflate stuck after " + n + " bytes");
             }
             n += k;
         }

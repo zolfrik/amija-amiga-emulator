@@ -74,7 +74,7 @@ public final class BuiltinRom {
         if (cached != null) return cached.clone();
         try (InputStream in = BuiltinRom.class.getResourceAsStream(RESOURCE)) {
             if (in == null) {
-                throw new IOException("ROM AmiJa non presente nel jar (" + RESOURCE + ")");
+                throw new IOException("AmiJa ROM missing from the jar (" + RESOURCE + ")");
             }
             cached = in.readAllBytes();
         }

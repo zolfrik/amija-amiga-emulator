@@ -100,7 +100,7 @@ public final class FragmentReassembler {
      */
     public Slot accept(byte[] plain, int length) throws ProtocolException {
         if (length < RemotePlayProtocol.FRAGMENT_HEADER) {
-            throw new ProtocolException("frammento di " + length + " byte: manca l'intestazione");
+            throw new ProtocolException("fragment of " + length + " bytes: the header is missing");
         }
         long frameId = ((plain[0] & 0xFFL)) | ((plain[1] & 0xFFL) << 8)
                 | ((plain[2] & 0xFFL) << 16) | ((plain[3] & 0xFFL) << 24);
@@ -109,23 +109,23 @@ public final class FragmentReassembler {
         int dataLength = length - RemotePlayProtocol.FRAGMENT_HEADER;
 
         if (fragCount < 1 || fragCount > RemotePlayProtocol.MAX_FRAGMENTS) {
-            throw new ProtocolException("fragCount " + fragCount + " fuori da [1, "
+            throw new ProtocolException("fragCount " + fragCount + " outside [1, "
                     + RemotePlayProtocol.MAX_FRAGMENTS + "]");
         }
         if (fragIdx >= fragCount) {
-            throw new ProtocolException("fragIdx " + fragIdx + " oltre fragCount " + fragCount);
+            throw new ProtocolException("fragIdx " + fragIdx + " beyond fragCount " + fragCount);
         }
         if (dataLength > RemotePlayProtocol.FRAGMENT_DATA) {
-            throw new ProtocolException("frammento di " + dataLength + " byte, massimo "
+            throw new ProtocolException("fragment of " + dataLength + " bytes, maximum "
                     + RemotePlayProtocol.FRAGMENT_DATA);
         }
         boolean last = fragIdx == fragCount - 1;
         if (!last && dataLength != RemotePlayProtocol.FRAGMENT_DATA) {
-            throw new ProtocolException("frammento intermedio di " + dataLength
-                    + " byte: devono essere esattamente " + RemotePlayProtocol.FRAGMENT_DATA);
+            throw new ProtocolException("middle fragment of " + dataLength
+                    + " bytes: must be exactly " + RemotePlayProtocol.FRAGMENT_DATA);
         }
         if (last && dataLength < 1) {
-            throw new ProtocolException("ultimo frammento vuoto");
+            throw new ProtocolException("empty last fragment");
         }
 
         Slot slot = slots[(int) Math.floorMod(frameId, slots.length)];
@@ -135,8 +135,8 @@ public final class FragmentReassembler {
             }
             slot.reset(frameId, fragCount);
         } else if (slot.fragCount != fragCount) {
-            throw new ProtocolException("fragCount incoerente per il frame " + frameId
-                    + ": " + slot.fragCount + " poi " + fragCount);
+            throw new ProtocolException("inconsistent fragCount for frame " + frameId
+                    + ": " + slot.fragCount + " then " + fragCount);
         }
         if (slot.have[fragIdx]) {
             duplicates++;

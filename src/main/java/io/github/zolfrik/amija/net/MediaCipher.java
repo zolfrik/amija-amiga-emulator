@@ -99,7 +99,7 @@ public interface MediaCipher {
 
         AesGcm(byte[] keyBytes, byte[] noncePrefix, int direction) {
             if (noncePrefix.length != SessionCrypto.NONCE_PREFIX_BYTES) {
-                throw new IllegalArgumentException("prefisso di nonce di lunghezza sbagliata");
+                throw new IllegalArgumentException("nonce prefix of the wrong length");
             }
             this.key = new SecretKeySpec(keyBytes, "AES");
             this.direction = direction;
@@ -107,7 +107,7 @@ public interface MediaCipher {
                 this.sealCipher = Cipher.getInstance("AES/GCM/NoPadding");
                 this.openCipher = Cipher.getInstance("AES/GCM/NoPadding");
             } catch (GeneralSecurityException e) {
-                throw new IllegalStateException("AES/GCM non disponibile in questa JVM", e);
+                throw new IllegalStateException("AES/GCM not available in this JVM", e);
             }
             System.arraycopy(noncePrefix, 0, sealNonce, 0, noncePrefix.length);
             System.arraycopy(noncePrefix, 0, openNonce, 0, noncePrefix.length);
@@ -129,7 +129,7 @@ public interface MediaCipher {
         public int seal(int type, int seq, byte[] plain, int off, int len, byte[] dst)
                 throws ProtocolException {
             if (exhausted) {
-                throw new ProtocolException("sequenza esaurita: la sessione va rinegoziata");
+                throw new ProtocolException("sequence exhausted: the session must be renegotiated");
             }
             if (seq == -1) {
                 // 0xFFFFFFFF is the last representable value: beyond it would wrap, and
@@ -146,7 +146,7 @@ public interface MediaCipher {
                         RemotePlayProtocol.DATAGRAM_HEADER);
                 return RemotePlayProtocol.DATAGRAM_HEADER + n;
             } catch (GeneralSecurityException e) {
-                throw new ProtocolException("cifratura fallita", e);
+                throw new ProtocolException("encryption failed", e);
             }
         }
 
@@ -155,7 +155,7 @@ public interface MediaCipher {
             RemotePlayProtocol.checkHeader(src, length);
             int sealed = length - RemotePlayProtocol.DATAGRAM_HEADER;
             if (sealed < RemotePlayProtocol.GCM_TAG) {
-                throw new ProtocolException("payload di " + sealed + " byte: manca il tag");
+                throw new ProtocolException("payload of " + sealed + " bytes: the tag is missing");
             }
             writeSeq(openNonce, RemotePlayProtocol.headerSeq(src));
             try {
@@ -166,7 +166,7 @@ public interface MediaCipher {
             } catch (GeneralSecurityException e) {
                 // "Wrong tag" is not told apart from "wrong key": the message must say what to
                 // do (discard), not help whoever is trying to guess.
-                throw new ProtocolException("pacchetto non autentico: scartato");
+                throw new ProtocolException("packet not authentic: dropped");
             }
         }
 

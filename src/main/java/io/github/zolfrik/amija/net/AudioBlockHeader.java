@@ -63,7 +63,7 @@ public record AudioBlockHeader(long sampleIndex, int format, int frames) {
         return switch (format) {
             case FORMAT_PCM16 -> "PCM S16";
             case FORMAT_ADPCM -> "IMA-ADPCM";
-            default -> "sconosciuto(" + format + ")";
+            default -> "unknown(" + format + ")";
         };
     }
 
@@ -94,24 +94,24 @@ public record AudioBlockHeader(long sampleIndex, int format, int frames) {
             int frames = b.getShort() & 0xFFFF;
 
             if (format != FORMAT_PCM16 && format != FORMAT_ADPCM) {
-                throw new ProtocolException("formato audio sconosciuto: " + format);
+                throw new ProtocolException("unknown audio format: " + format);
             }
             if (frames < 1 || frames > MAX_FRAMES) {
-                throw new ProtocolException("blocco audio di " + frames
-                        + " campioni, massimo " + MAX_FRAMES);
+                throw new ProtocolException("audio block of " + frames
+                        + " samples, maximum " + MAX_FRAMES);
             }
             if (sampleIndex < 0) {
-                throw new ProtocolException("indice di campione negativo: " + sampleIndex);
+                throw new ProtocolException("negative sample index: " + sampleIndex);
             }
             AudioBlockHeader h = new AudioBlockHeader(sampleIndex, format, frames);
             if (blobLength - SIZE != h.payloadBytes()) {
-                throw new ProtocolException("blocco audio con " + (blobLength - SIZE)
-                        + " byte di payload, attesi " + h.payloadBytes() + " per " + frames
-                        + " campioni in " + formatName(format));
+                throw new ProtocolException("audio block with " + (blobLength - SIZE)
+                        + " bytes of payload, expected " + h.payloadBytes() + " for " + frames
+                        + " samples in " + formatName(format));
             }
             return h;
         } catch (BufferUnderflowException e) {
-            throw new ProtocolException("blocco audio troncato nell'intestazione", e);
+            throw new ProtocolException("audio block truncated in the header", e);
         }
     }
 }

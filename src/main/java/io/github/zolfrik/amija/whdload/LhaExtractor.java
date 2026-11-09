@@ -182,7 +182,7 @@ public final class LhaExtractor {
     private static Path resolveInside(Path base, String relPath) throws IOException {
         Path resolved = base.resolve(relPath).normalize();
         if (!resolved.startsWith(base)) {
-            throw new IOException("voce dell'archivio fuori dalla cartella di destinazione: "
+            throw new IOException("archive entry outside the destination folder: "
                     + relPath);
         }
         return resolved;
@@ -411,7 +411,7 @@ public final class LhaExtractor {
             case "-lh5-": dicbit = 13; break;
             case "-lh6-": dicbit = 15; break;
             case "-lh7-": dicbit = 16; break;
-            default: throw new UnsupportedOperationException("Metodo LHA non supportato: " + h.method);
+            default: throw new UnsupportedOperationException("Unsupported LHA method: " + h.method);
         }
         return new Lh5Decoder(archive, h.dataStart, (int) h.origSize, dicbit).decode();
     }
@@ -419,12 +419,12 @@ public final class LhaExtractor {
     /** The declared sizes must fit inside the archive that declares them. */
     private void checkPayload(Header h) throws IOException {
         if (h.origSize < 0 || h.origSize > MAX_ENTRY_BYTES) {
-            throw new IOException("voce di " + h.origSize + " byte dichiarati in '"
-                    + h.name + "': fuori scala, l'archivio e' corrotto");
+            throw new IOException("entry of " + h.origSize + " bytes declared in '"
+                    + h.name + "': out of scale, the archive is corrupt");
         }
         if (h.dataStart < 0 || h.dataStart > archive.length) {
-            throw new IOException("voce '" + h.name + "': i dati iniziano fuori "
-                    + "dall'archivio, che e' troncato");
+            throw new IOException("entry '" + h.name + "': the data starts outside "
+                    + "the archive, which is truncated");
         }
         // For the stored methods the payload is as long as the original, and that is what
         // decode() copies; for the others it is payloadSize. NOT compSize: at level 1 that
@@ -435,9 +435,9 @@ public final class LhaExtractor {
         long needed = h.method.equals("-lh0-") || h.method.equals("-lhd-")
                 || h.method.equals("-lz4-") ? h.origSize : h.payloadSize;
         if (needed < 0 || h.dataStart + needed > archive.length) {
-            throw new IOException("voce '" + h.name + "': dichiara " + needed
-                    + " byte di dati ma dopo l'inizio ne restano "
-                    + (archive.length - h.dataStart) + ": archivio troncato");
+            throw new IOException("entry '" + h.name + "': declares " + needed
+                    + " bytes of data but after its start only "
+                    + (archive.length - h.dataStart) + " remain: truncated archive");
         }
     }
 

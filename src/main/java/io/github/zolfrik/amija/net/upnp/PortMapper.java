@@ -203,8 +203,8 @@ public final class PortMapper implements AutoCloseable {
         }
         if (igd == null) {
             state = State.NO_GATEWAY;
-            detail = "nessun router UPnP ha risposto";
-            RemotePlaySettings.say("UPnP: nessun router ha risposto");
+            detail = "no UPnP router answered";
+            RemotePlaySettings.say("UPnP: no router answered");
             return;
         }
         gateway = igd;
@@ -219,15 +219,15 @@ public final class PortMapper implements AutoCloseable {
                 // problem with the same cure: host from the other side.
                 state = State.CARRIER_NAT;
                 detail = external;
-                RemotePlaySettings.say("UPnP: il router ha un indirizzo non pubblico (%s):"
-                        + " da Internet non si arriva, meglio ospitare dall'altra parte",
+                RemotePlaySettings.say("UPnP: the router has a non-public address (%s):"
+                        + " unreachable from the Internet, better to host from the other side",
                         external);
                 return;
             }
         } catch (IOException e) {
             // Not fatal: some routers open ports and do not tell their address. Carry on
             // without it, and the status line will show the LAN only.
-            RemotePlaySettings.log("UPnP: indirizzo esterno non disponibile: %s", e.getMessage());
+            RemotePlaySettings.log("UPnP: external address unavailable: %s", e.getMessage());
         }
 
         if (!map(igd)) {
@@ -235,8 +235,8 @@ public final class PortMapper implements AutoCloseable {
         }
         state = State.MAPPED;
         detail = null;
-        RemotePlaySettings.say("UPnP: porta %d aperta (TCP+UDP)%s", port,
-                external == null ? "" : ", indirizzo pubblico " + external + ":" + port);
+        RemotePlaySettings.say("UPnP: port %d open (TCP+UDP)%s", port,
+                external == null ? "" : ", public address " + external + ":" + port);
         renewLoop(igd);
         removeMapping(igd);
     }
@@ -269,7 +269,7 @@ public final class PortMapper implements AutoCloseable {
     private boolean refused(IOException e) {
         state = State.REFUSED;
         detail = e.getMessage();
-        RemotePlaySettings.say("UPnP: il router ha rifiutato di aprire la porta %d (%s)",
+        RemotePlaySettings.say("UPnP: the router refused to open port %d (%s)",
                 port, e.getMessage());
         return false;
     }
@@ -294,7 +294,7 @@ public final class PortMapper implements AutoCloseable {
             if (!map(igd)) {
                 return;   // the router changed its mind: the state says so, nothing to withdraw
             }
-            RemotePlaySettings.log("UPnP: mappatura della porta %d rinnovata", port);
+            RemotePlaySettings.log("UPnP: mapping of port %d renewed", port);
         }
     }
 
@@ -303,11 +303,11 @@ public final class PortMapper implements AutoCloseable {
             try {
                 igd.deletePortMapping(protocol, port);
             } catch (IOException e) {
-                RemotePlaySettings.log("UPnP: rimozione %s fallita: %s", protocol,
+                RemotePlaySettings.log("UPnP: removal of %s failed: %s", protocol,
                         e.getMessage());
             }
         }
-        RemotePlaySettings.log("UPnP: mappatura della porta %d ritirata", port);
+        RemotePlaySettings.log("UPnP: mapping of port %d withdrawn", port);
     }
 
     /** The first gateway that answers and can map. */
@@ -325,7 +325,7 @@ public final class PortMapper implements AutoCloseable {
             } catch (IOException e) {
                 // Any UPnP device (a printer, a smart TV) answers the M-SEARCH and cannot map
                 // anything. Not an error: try the next.
-                RemotePlaySettings.log("UPnP: %s non e' un gateway utile (%s)",
+                RemotePlaySettings.log("UPnP: %s is not a usable gateway (%s)",
                         candidate.descriptionUrl(), e.getMessage());
             }
         }

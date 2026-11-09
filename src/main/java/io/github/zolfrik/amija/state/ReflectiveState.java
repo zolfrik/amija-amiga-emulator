@@ -89,7 +89,7 @@ public final class ReflectiveState {
             try {
                 encode(out, f.getType(), f.get(root));
             } catch (IllegalAccessException e) {
-                throw new IOException("save: campo non accessibile " + f, e);
+                throw new IOException("save: field not accessible " + f, e);
             }
         }
     }
@@ -107,7 +107,7 @@ public final class ReflectiveState {
             try {
                 assign(root, f, val);
             } catch (IllegalAccessException e) {
-                throw new IOException("load: campo non scrivibile " + f, e);
+                throw new IOException("load: field not writable " + f, e);
             }
         }
     }
@@ -161,7 +161,7 @@ public final class ReflectiveState {
         else if (type == double.class) { o.writeByte(T_DOUBLE); o.writeDouble((Double) v); }
         else if (type.isEnum()) { o.writeByte(T_ENUM); o.writeInt(v == null ? -1 : ((Enum<?>) v).ordinal()); }
         else if (type.isArray()) { encodeArray(o, type.getComponentType(), v); }
-        else throw new IOException("tipo non serializzabile: " + type);
+        else throw new IOException("type not serialisable: " + type);
     }
 
     private static void encodeArray(DataOutputStream o, Class<?> ct, Object arr) throws IOException {
@@ -215,8 +215,8 @@ public final class ReflectiveState {
 
     private static int checkedLength(int n) throws IOException {
         if (n < -1 || n > MAX_ARRAY_ELEMENTS) {
-            throw new IOException("array di " + n + " elementi nello slot: fuori scala "
-                    + "(massimo " + MAX_ARRAY_ELEMENTS + "). Lo slot e' corrotto o troncato.");
+            throw new IOException("array of " + n + " elements in the slot: out of scale "
+                    + "(maximum " + MAX_ARRAY_ELEMENTS + "). The slot is corrupt or truncated.");
         }
         return n;
     }
@@ -246,7 +246,7 @@ public final class ReflectiveState {
                 for (int i = 0; i < n; i++) a[i] = decode(in);
                 return a;
             }
-            default: throw new IOException("tag di tipo sconosciuto: " + (char) tag);
+            default: throw new IOException("unknown type tag: " + (char) tag);
         }
     }
 
@@ -260,7 +260,7 @@ public final class ReflectiveState {
             case T_LONG: { long[] a = new long[n]; for (int i = 0; i < n; i++) a[i] = in.readLong(); return a; }
             case T_FLOAT: { float[] a = new float[n]; for (int i = 0; i < n; i++) a[i] = in.readFloat(); return a; }
             case T_DOUBLE: { double[] a = new double[n]; for (int i = 0; i < n; i++) a[i] = in.readDouble(); return a; }
-            default: throw new IOException("kind array sconosciuto: " + (char) kind);
+            default: throw new IOException("unknown array kind: " + (char) kind);
         }
     }
 

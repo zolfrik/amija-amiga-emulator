@@ -116,8 +116,8 @@ public final class VideoReceiver implements AutoCloseable {
 
         int blobLength = slot.length();
         if (blobLength < VideoFrameHeader.SIZE) {
-            throw new ProtocolException("blob di " + blobLength
-                    + " byte: piu' corto della sua intestazione");
+            throw new ProtocolException("blob of " + blobLength
+                    + " bytes: shorter than its header");
         }
         ByteBuffer b = RemotePlayProtocol.wrap(slot.data(), 0, VideoFrameHeader.SIZE);
         VideoFrameHeader header = VideoFrameHeader.readFrom(b, width, height, blobLength);
@@ -147,7 +147,7 @@ public final class VideoReceiver implements AutoCloseable {
             // decode() is all-or-nothing: 'dst' was not touched, so the slot stays what it was
             // and no reference was dirtied.
             framesRejected++;
-            throw new ProtocolException("frame " + frameId + " non decodificabile", e);
+            throw new ProtocolException("frame " + frameId + " not decodable", e);
         }
         decodeNanos += System.nanoTime() - t0;
 

@@ -106,19 +106,19 @@ public record VideoFrameHeader(
             int payloadLength = b.getInt();
 
             if (codec != RemotePlayProtocol.CODEC_AJV1) {
-                throw new ProtocolException("codec video sconosciuto: " + codec);
+                throw new ProtocolException("unknown video codec: " + codec);
             }
             if ((flags & ~0x07) != 0) {
-                throw new ProtocolException("flag di frame non riconosciuti: 0x"
+                throw new ProtocolException("unrecognised frame flags: 0x"
                         + Integer.toHexString(flags));
             }
             if (width != expectedWidth || height != expectedHeight) {
-                throw new ProtocolException("geometria " + width + "x" + height
-                        + " diversa da quella concordata " + expectedWidth + "x" + expectedHeight);
+                throw new ProtocolException("geometry " + width + "x" + height
+                        + " differs from the agreed " + expectedWidth + "x" + expectedHeight);
             }
             if (payloadLength < 0 || payloadLength != blobLength - SIZE) {
-                throw new ProtocolException("payload dichiarato " + payloadLength
-                        + " byte, nel blob ce ne sono " + (blobLength - SIZE));
+                throw new ProtocolException("declared payload " + payloadLength
+                        + " bytes, the blob holds " + (blobLength - SIZE));
             }
             // The visible window sizes no buffer, but it leaves here and ends up in FrameInfo,
             // i.e. in the local presentation chain, which uses it to centre the image. They are
@@ -130,14 +130,14 @@ public record VideoFrameHeader(
                     || visX > width || visY > height
                     || visW > width || visH > height
                     || visX + visW > width || visY + visH > height) {
-                throw new ProtocolException("finestra visibile " + visW + "x" + visH + " a ("
-                        + visX + "," + visY + ") fuori dal raster " + width + "x" + height);
+                throw new ProtocolException("visible window " + visW + "x" + visH + " a ("
+                        + visX + "," + visY + ") outside the raster " + width + "x" + height);
             }
             return new VideoFrameHeader(refFrameId, codec,
                     (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0,
                     width, height, visX, visY, visW, visH, frameCount, payloadLength);
         } catch (BufferUnderflowException e) {
-            throw new ProtocolException("blob di frame troncato nell'intestazione", e);
+            throw new ProtocolException("frame blob truncated in the header", e);
         }
     }
 

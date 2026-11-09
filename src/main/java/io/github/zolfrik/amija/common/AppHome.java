@@ -105,7 +105,7 @@ public final class AppHome {
         try {
             return Paths.get(value.trim());
         } catch (RuntimeException e) {
-            System.err.println("[HOME] " + PROPERTY + " non è un percorso valido: " + value);
+            System.err.println("[HOME] " + PROPERTY + " is not a valid path: " + value);
             return null;
         }
     }

@@ -191,7 +191,7 @@ public final class Gary {
         public Region(int start, int end, Target target, String chipSelect, RegionRules rules, int physicalSize) {
             if (start < 0 || end < start) {
                 throw new IllegalArgumentException(
-                    "Intervallo non valido: start=" + hx(start) + " end=" + hx(end));
+                    "Invalid range: start=" + hx(start) + " end=" + hx(end));
             }
             this.start        = start;
             this.end          = end;
@@ -734,8 +734,8 @@ public final class Gary {
     public void setRomSize(int size) {
         if (size <= 0 || (size & (size - 1)) != 0 || size > 512 * 1024) {
             throw new IllegalArgumentException(
-                "Dimensione ROM non valida: " + size
-                + " (serve una potenza di due fino a 512K)");
+                "Invalid ROM size: " + size
+                + " (a power of two up to 512K is required)");
         }
         this.romSize = size;
         // The ROM is anchored at the end of the space: 256 KB -> $FC0000, 512 KB -> $F80000.
@@ -766,7 +766,7 @@ public final class Gary {
     public void setChipRamSize(int size) {
         if (size <= 0 || (size & (size - 1)) != 0) {
             throw new IllegalArgumentException(
-                "Dimensione Chip RAM non valida: " + size + " (deve essere una potenza di due)");
+                "Invalid Chip RAM size: " + size + " (must be a power of two)");
         }
         for (Region r : regions) {
             if (r.target == Target.CHIP_RAM) {

@@ -200,7 +200,7 @@ public final class SlangChain implements RenderChain {
         int major = glGetInteger(GL_MAJOR_VERSION);
         int minor = glGetInteger(GL_MINOR_VERSION);
         if (major < 3 || (major == 3 && minor < 3)) {
-            throw new IOException("I preset .slangp richiedono OpenGL 3.3+, qui c'è "
+            throw new IOException(".slangp presets need OpenGL 3.3+, this machine has "
                     + major + "." + minor);
         }
         boolean gl43 = major > 4 || (major == 4 && minor >= 3);
@@ -209,8 +209,8 @@ public final class SlangChain implements RenderChain {
             // Mega Bezel included) use swizzles on scalars (`float f; f.x`), a Cg leftover the
             // drivers accept only from GLSL 4.x up. Below that, simple presets pass and large
             // ones do not.
-            System.err.println("[GL] OpenGL " + major + "." + minor + ": i preset .slangp"
-                    + " complessi vogliono la 4.3, qui alcuni non compileranno.");
+            System.err.println("[GL] OpenGL " + major + "." + minor + ": the more"
+                    + " complex .slangp presets need 4.3, some will not compile here.");
         }
         int version = gl43 ? 430 : 330;
 
@@ -245,8 +245,8 @@ public final class SlangChain implements RenderChain {
             for (String sampler : p.src.samplers()) {
                 TexBind b = chain.textureSemantic(sampler);
                 if (b == null) {
-                    System.err.println("[GL] Sampler senza semantica in "
-                            + p.spec.shader.getFileName() + ": " + sampler + " (legato a nero)");
+                    System.err.println("[GL] Sampler without semantics in "
+                            + p.spec.shader.getFileName() + ": " + sampler + " (bound to black)");
                     b = new TexBind(sampler, TexOf.NONE, 0);
                 }
                 p.texBinds.add(b);
@@ -324,7 +324,7 @@ public final class SlangChain implements RenderChain {
                 case "R32G32B32A32_SFLOAT" -> fmt = GL_RGBA32F;
                 case "A2B10G10R10_UNORM_PACK32" -> fmt = GL_RGB10_A2;
                 case "R8G8B8A8_UNORM" -> fmt = GL_RGBA8;
-                default -> System.err.println("[GL] #pragma format non gestito: " + pragma);
+                default -> System.err.println("[GL] unhandled #pragma format: " + pragma);
             }
         }
         if (p.spec.srgbFramebuffer) {
@@ -606,8 +606,8 @@ public final class SlangChain implements RenderChain {
             if (unit >= maxTexUnits) {
                 if (!unitOverflowLogged) {
                     unitOverflowLogged = true;
-                    System.err.println("[GL] Troppi sampler in " + p.spec.shader.getFileName()
-                            + ": oltre " + maxTexUnits + " ignorati");
+                    System.err.println("[GL] Too many samplers in " + p.spec.shader.getFileName()
+                            + ": beyond " + maxTexUnits + " ignored");
                 }
                 break;
             }
@@ -868,7 +868,7 @@ public final class SlangChain implements RenderChain {
                     System.err.println("[GL] LUT illeggibile: " + ts.path);
                 }
             } catch (IOException e) {
-                System.err.println("[GL] LUT non caricata (" + ts.path + "): " + e.getMessage());
+                System.err.println("[GL] LUT not loaded (" + ts.path + "): " + e.getMessage());
             }
             if (tex == 0) {
                 tex = blackTex;
@@ -923,7 +923,7 @@ public final class SlangChain implements RenderChain {
         if (glGetProgrami(prog, GL_LINK_STATUS) == GL_FALSE) {
             String log = glGetProgramInfoLog(prog);
             glDeleteProgram(prog);
-            throw new IOException("Link fallito (" + src.file() + "): " + log);
+            throw new IOException("Link failed (" + src.file() + "): " + log);
         }
         return prog;
     }
@@ -935,7 +935,7 @@ public final class SlangChain implements RenderChain {
         if (glGetShaderi(sh, GL_COMPILE_STATUS) == GL_FALSE) {
             String log = glGetShaderInfoLog(sh);
             glDeleteShader(sh);
-            throw new IOException("Compilazione fallita (" + label + "): " + log);
+            throw new IOException("Compilation failed (" + label + "): " + log);
         }
         return sh;
     }

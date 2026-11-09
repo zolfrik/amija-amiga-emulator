@@ -301,10 +301,10 @@ public final class WhdLoadManager {
      */
     public Path prepare(String lhaPath) throws IOException {
         if (!isAvailable()) {
-            throw new IOException("Risorse WHDLoad assenti in " + resourceDir.toAbsolutePath()
-                    + " (cartella WHDLoad_files mancante): servono almeno C/WHDLoad e le"
-                    + " tabelle Devs/Kickstarts/*.RTB. Si possono scaricare dai siti"
-                    + " ufficiali con F12 > File opzionali, oppure installare a mano.");
+            throw new IOException("WHDLoad resources missing in " + resourceDir.toAbsolutePath()
+                    + " (WHDLoad_files folder missing): at least C/WHDLoad and the"
+                    + " Devs/Kickstarts/*.RTB tables are needed. They can be downloaded from the official"
+                    + " sites with F12 > Optional files, or installed by hand.");
         }
         Path lha = Paths.get(lhaPath);
         if (!Files.isRegularFile(lha)) {
@@ -340,7 +340,7 @@ public final class WhdLoadManager {
         // 3. Work out how the game is to be launched.
         Launch launch = findLaunch(entries, work);
         if (launch == null) {
-            throw new IOException("Nessun file .slave trovato nell'archivio " + lhaPath);
+            throw new IOException("No .slave file found in archive " + lhaPath);
         }
         // AmigaDOS FFS limits file/folder names to 30 characters and FfsBuilder (writeName)
         // truncates them accordingly. The Startup-Sequence MUST refer to the same truncated
@@ -396,7 +396,7 @@ public final class WhdLoadManager {
         } finally {
             deleteRecursive(empty);
         }
-        System.out.println("[WHDLOAD] Volume salvataggi creato: " + savesHdf
+        System.out.println("[WHDLOAD] Saves volume created: " + savesHdf
                 + " (volume " + SAVES_VOLUME + ")");
         return savesHdf;
     }
@@ -425,7 +425,7 @@ public final class WhdLoadManager {
                     if (Files.exists(target)) continue;                // already copied
                     Files.createDirectories(destKickstarts);
                     Files.copy(rom, target);
-                    System.out.println("[WHDLOAD] Kickstart fornito: " + rom.getFileName() + " -> Devs/Kickstarts/" + name);
+                    System.out.println("[WHDLOAD] Kickstart provided: " + rom.getFileName() + " -> Devs/Kickstarts/" + name);
                 }
             }
         }

@@ -110,8 +110,8 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
         int roles = (host != null ? 1 : 0) + (join != null ? 1 : 0) + (watch != null ? 1 : 0);
         if (roles > 1) {
             throw new IllegalArgumentException(
-                    "amija.remoteplay.host, .join e .watch si escludono: "
-                    + "una macchina o ospita, o gioca, o guarda");
+                    "amija.remoteplay.host, .join and .watch exclude each other: "
+                    + "a machine either hosts, plays or watches");
         }
         boolean spectator = watch != null;
         if (spectator) {
@@ -134,8 +134,8 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
             int port = colon > 0 ? parsePort(join.substring(colon + 1)) : DEFAULT_PORT;
             if (joinCode == null || !JoinCode.isWellFormed(joinCode)) {
                 throw new IllegalArgumentException(
-                        "amija.remoteplay.joincode mancante o malformato: per unirsi serve"
-                        + " il codice mostrato dall'host");
+                        "amija.remoteplay.joincode missing or malformed: joining needs"
+                        + " the code shown by the host");
             }
             return new RemotePlaySettings(Mode.GUEST, address, port, joinCode, bind,
                     guestPort, keyboard, allowReset, audio, 0, null, spectator);
@@ -180,7 +180,7 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
             case "pcm16", "pcm" -> AudioBlockHeader.FORMAT_PCM16;
             case "off", "none" -> 0;
             default -> throw new IllegalArgumentException(
-                    "amija.remoteplay.audio vuole adpcm, pcm16 oppure off, non: " + v);
+                    "amija.remoteplay.audio takes adpcm, pcm16 or off, not: " + v);
         };
     }
 
@@ -193,11 +193,11 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
         try {
             p = Integer.parseInt(v);
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("amija.remoteplay.guestport non numerico: " + v, e);
+            throw new IllegalArgumentException("amija.remoteplay.guestport is not a number: " + v, e);
         }
         if (p != 0 && p != 1) {
             throw new IllegalArgumentException(
-                    "amija.remoteplay.guestport deve essere 0 o 1, non " + p);
+                    "amija.remoteplay.guestport must be 0 or 1, not " + p);
         }
         return p;
     }
@@ -211,10 +211,10 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
         try {
             n = Integer.parseInt(v);
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(key + " non numerico: " + v, e);
+            throw new IllegalArgumentException(key + " is not a number: " + v, e);
         }
         if (n < min || n > max) {
-            throw new IllegalArgumentException(key + " fuori da " + min + ".." + max + ": " + n);
+            throw new IllegalArgumentException(key + " outside " + min + ".." + max + ": " + n);
         }
         return n;
     }
@@ -227,7 +227,7 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
         if (v.equalsIgnoreCase("true") || v.equalsIgnoreCase("false")) {
             return Boolean.parseBoolean(v);
         }
-        throw new IllegalArgumentException(key + " vuole true o false, non: " + v);
+        throw new IllegalArgumentException(key + " takes true or false, not: " + v);
     }
 
     private static int parsePort(String text) {
@@ -235,11 +235,11 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
         try {
             port = Integer.parseInt(text.trim());
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("porta non numerica: " + text, e);
+            throw new IllegalArgumentException("port is not a number: " + text, e);
         }
         // 0 is legitimate and useful: "pick a free one", which is what the tests do.
         if (port < 0 || port > 65535) {
-            throw new IllegalArgumentException("porta fuori range: " + port);
+            throw new IllegalArgumentException("port out of range: " + port);
         }
         return port;
     }

@@ -137,8 +137,8 @@ public final class FeedbackPacket {
      */
     public void readFrom(byte[] src, int length) throws ProtocolException {
         if (length != SIZE) {
-            throw new ProtocolException("pacchetto di feedback di " + length
-                    + " byte, attesi " + SIZE);
+            throw new ProtocolException("feedback packet of " + length
+                    + " bytes, expected " + SIZE);
         }
         ByteBuffer b = RemotePlayProtocol.wrap(src, 0, SIZE);
         seq = b.getInt();
@@ -155,18 +155,18 @@ public final class FeedbackPacket {
         b.get(keys, 0, KEY_BYTES);
 
         if (joyX < -1 || joyX > 1 || joyY < -1 || joyY > 1) {
-            throw new ProtocolException("assi del joystick fuori da [-1, +1]: "
+            throw new ProtocolException("joystick axes outside [-1, +1]: "
                     + joyX + ", " + joyY);
         }
         if ((buttons & ~BUTTON_MASK) != 0) {
-            throw new ProtocolException("bit di pulsante non definiti: 0x"
+            throw new ProtocolException("undefined button bits: 0x"
                     + Integer.toHexString(buttons));
         }
         if (portDevice > DEVICE_MAX) {
-            throw new ProtocolException("periferica di porta sconosciuta: " + portDevice);
+            throw new ProtocolException("unknown port device: " + portDevice);
         }
         if (reserved16 != 0) {
-            throw new ProtocolException("campo riservato non nullo");
+            throw new ProtocolException("reserved field not zero");
         }
     }
 

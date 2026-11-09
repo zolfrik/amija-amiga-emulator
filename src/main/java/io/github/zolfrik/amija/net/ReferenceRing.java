@@ -64,7 +64,7 @@ public final class ReferenceRing {
 
     public ReferenceRing(int pixelCount, int slots) {
         if (slots < 1 || slots > 64) {
-            throw new IllegalArgumentException("anello di " + slots + " posti");
+            throw new IllegalArgumentException("ring of " + slots + " slots");
         }
         this.slots = slots;
         this.pixelCount = pixelCount;

@@ -80,8 +80,8 @@ public final class AudioReceiver {
         }
         int blobLength = slot.length();
         if (blobLength < AudioBlockHeader.SIZE) {
-            throw new ProtocolException("blocco audio di " + blobLength
-                    + " byte: piu' corto della sua intestazione");
+            throw new ProtocolException("audio block of " + blobLength
+                    + " bytes: shorter than its header");
         }
         ByteBuffer b = RemotePlayProtocol.wrap(slot.data(), 0, AudioBlockHeader.SIZE);
         AudioBlockHeader header = AudioBlockHeader.readFrom(b, blobLength);
@@ -99,7 +99,7 @@ public final class AudioReceiver {
                 ImaAdpcm.decode(slot.data(), AudioBlockHeader.SIZE,
                         blobLength - AudioBlockHeader.SIZE, frames, pcm, 0);
             } catch (CodecException e) {
-                throw new ProtocolException("blocco ADPCM non decodificabile", e);
+                throw new ProtocolException("undecodable ADPCM block", e);
             }
         } else {
             System.arraycopy(slot.data(), AudioBlockHeader.SIZE, pcm, 0, frames * 4);

@@ -155,13 +155,13 @@ public final class GlfwJoystickService {
         errorCallback = GLFWErrorCallback.createPrint(System.err);
         glfwSetErrorCallback(errorCallback);
         if (!glfwInit()) {
-            System.err.println("[JOYSTICK] glfwInit fallita: joystick reale non disponibile");
+            System.err.println("[JOYSTICK] glfwInit failed: real joystick unavailable");
             running = false;
             if (errorCallback != null) { errorCallback.free(); errorCallback = null; }
             return;
         }
         gamepadState = GLFWGamepadState.malloc();
-        System.out.println("[JOYSTICK] Servizio joystick GLFW avviato");
+        System.out.println("[JOYSTICK] GLFW joystick service started");
         try {
             while (running) {
                 glfwPollEvents(); // handles hot plugging/unplugging
@@ -176,7 +176,7 @@ public final class GlfwJoystickService {
             if (gamepadState != null) { gamepadState.free(); gamepadState = null; }
             glfwTerminate();
             if (errorCallback != null) { errorCallback.free(); errorCallback = null; }
-            System.out.println("[JOYSTICK] Servizio joystick GLFW terminato");
+            System.out.println("[JOYSTICK] GLFW joystick service stopped");
         }
     }
 

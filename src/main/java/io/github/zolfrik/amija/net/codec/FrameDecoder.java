@@ -95,30 +95,30 @@ public final class FrameDecoder implements AutoCloseable {
     public void decode(byte[] src, int off, int len, int[] reference, int[] dst)
             throws CodecException {
         if (closed) {
-            throw new IllegalStateException("decoder chiuso");
+            throw new IllegalStateException("decoder closed");
         }
         if (dst == null || dst.length < pixelCount) {
-            throw new IllegalArgumentException("destinazione di "
-                    + (dst == null ? "null" : dst.length) + " pixel, attesi " + pixelCount);
+            throw new IllegalArgumentException("destination of "
+                    + (dst == null ? "null" : dst.length) + " pixels, expected " + pixelCount);
         }
         if (reference != null && reference.length < pixelCount) {
-            throw new IllegalArgumentException("riferimento di " + reference.length
-                    + " pixel, attesi " + pixelCount);
+            throw new IllegalArgumentException("reference of " + reference.length
+                    + " pixels, expected " + pixelCount);
         }
         if (src == null || off < 0 || len < 1 || off > src.length - len) {
-            throw new CodecException("payload assente o fuori dai limiti");
+            throw new CodecException("payload missing or out of bounds");
         }
 
         mode = src[off] & 0xFF;
         if (mode != FrameCodec.MODE_PALETTE && mode != FrameCodec.MODE_XOR
                 && mode != FrameCodec.MODE_RGB) {
-            throw new CodecException("modo video sconosciuto: 0x" + Integer.toHexString(mode));
+            throw new CodecException("unknown video mode: 0x" + Integer.toHexString(mode));
         }
 
         int bodyLength = inflate(src, off + 1, len - 1);
         if (bodyLength < bitmapBytes) {
-            throw new CodecException("corpo di " + bodyLength
-                    + " byte: non contiene nemmeno la bitmap dei tile (" + bitmapBytes + ")");
+            throw new CodecException("body of " + bodyLength
+                    + " bytes: does not even hold the tile bitmap (" + bitmapBytes + ")");
         }
         readBitmap();
 
@@ -130,21 +130,21 @@ public final class FrameDecoder implements AutoCloseable {
         int bytesPerPixel;
         if (mode == FrameCodec.MODE_PALETTE) {
             if (bodyLength < bitmapBytes + 3) {
-                throw new CodecException("corpo troncato prima dell'intestazione di palette");
+                throw new CodecException("body truncated before the palette header");
             }
             int flag = body[p] & 0xFF;
             if (flag > 1) {
-                throw new CodecException("flag 'indexed' non valido: " + flag);
+                throw new CodecException("invalid 'indexed' flag: " + flag);
             }
             indexed = flag == 1;
             paletteCount = (body[p + 1] & 0xFF) | ((body[p + 2] & 0xFF) << 8);
             p += 3;
             if (!indexed && paletteCount != 0) {
-                throw new CodecException("palette dichiarata (" + paletteCount
-                        + ") con pixel a 12 bit grezzi");
+                throw new CodecException("palette declared (" + paletteCount
+                        + ") with raw 12-bit pixels");
             }
             if (paletteCount > FrameCodec.MAX_PALETTE) {
-                throw new CodecException("palette di " + paletteCount + " voci, massimo "
+                throw new CodecException("palette of " + paletteCount + " entries, maximum "
                         + FrameCodec.MAX_PALETTE);
             }
             bytesPerPixel = indexed ? 1 : 2;
@@ -155,8 +155,8 @@ public final class FrameDecoder implements AutoCloseable {
         long expected = (long) p + (long) bytesPerPixel * dirtyPixels
                 + (indexed ? 2L * paletteCount : 0L);
         if (expected != bodyLength) {
-            throw new CodecException("corpo di " + bodyLength + " byte, attesi " + expected
-                    + " per " + dirtyPixels + " pixel sporchi in modo "
+            throw new CodecException("body of " + bodyLength + " bytes, expected " + expected
+                    + " for " + dirtyPixels + " dirty pixels in mode "
                     + FrameCodec.modeName(mode));
         }
 
@@ -174,8 +174,8 @@ public final class FrameDecoder implements AutoCloseable {
             // an error dragging on into the following frames instead of stopping here.
             for (int i = 0; i < dirtyPixels; i++) {
                 if ((body[p + i] & 0xFF) >= paletteCount) {
-                    throw new CodecException("indice di palette " + (body[p + i] & 0xFF)
-                            + " fuori dalle " + paletteCount + " voci dichiarate");
+                    throw new CodecException("palette index " + (body[p + i] & 0xFF)
+                            + " outside the " + paletteCount + " declared entries");
                 }
             }
         }
@@ -226,20 +226,20 @@ public final class FrameDecoder implements AutoCloseable {
         int total = 0;
         while (!inflater.finished()) {
             if (total == body.length) {
-                throw new CodecException("corpo oltre il tetto di " + body.length + " byte");
+                throw new CodecException("body beyond the limit of " + body.length + " bytes");
             }
             int n;
             try {
                 n = inflater.inflate(body, total, body.length - total);
             } catch (DataFormatException e) {
-                throw new CodecException("stream Deflate non valido", e);
+                throw new CodecException("invalid Deflate stream", e);
             }
             if (n == 0) {
                 if (inflater.needsInput() || inflater.needsDictionary()) {
-                    throw new CodecException("stream Deflate troncato dopo " + total + " byte");
+                    throw new CodecException("Deflate stream truncated after " + total + " bytes");
                 }
                 if (!inflater.finished()) {
-                    throw new CodecException("stream Deflate bloccato dopo " + total + " byte");
+                    throw new CodecException("Deflate stream stuck after " + total + " bytes");
                 }
             }
             total += n;

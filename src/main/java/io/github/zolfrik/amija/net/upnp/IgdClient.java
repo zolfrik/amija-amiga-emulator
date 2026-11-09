@@ -123,11 +123,11 @@ public final class IgdClient {
                     // A URLBase that leads elsewhere is not a different port: it is another
                     // device. Stay on the one that answered.
                     RemotePlaySettings.log(
-                            "URLBase %s non e' lo stesso apparecchio di %s: ignorato",
+                            "URLBase %s is not the same device as %s: ignored",
                             candidate, deviceUrl);
                 }
             } catch (IllegalArgumentException e) {
-                RemotePlaySettings.log("URLBase non valido, si usa LOCATION: %s", urlBase);
+                RemotePlaySettings.log("invalid URLBase, using LOCATION: %s", urlBase);
             }
         }
 
@@ -145,7 +145,7 @@ public final class IgdClient {
                 try {
                     url = base.resolve(control.trim());
                 } catch (IllegalArgumentException e) {
-                    RemotePlaySettings.log("controlURL non valido, ignorato: %s", control);
+                    RemotePlaySettings.log("invalid controlURL, ignored: %s", control);
                     continue;
                 }
                 if (!sameDevice(deviceUrl, url)) {
@@ -153,14 +153,14 @@ public final class IgdClient {
                     // absolute it must still stay on the device that answered, or the XML
                     // would choose whom AmiJa talks SOAP to.
                     RemotePlaySettings.log(
-                            "controlURL %s fuori dall'apparecchio %s: ignorato", url, deviceUrl);
+                            "controlURL %s outside device %s: ignored", url, deviceUrl);
                     continue;
                 }
                 RemotePlaySettings.log("IGD %s -> %s", type, url);
                 return new IgdClient(http, url, type, gateway.localAddress());
             }
         }
-        throw new IOException("il dispositivo non espone WANIPConnection ne' WANPPPConnection");
+        throw new IOException("the device exposes neither WANIPConnection nor WANPPPConnection");
     }
 
     /** The address of this machine on the router's network: the one to have mapped. */
@@ -179,7 +179,7 @@ public final class IgdClient {
         Document response = invoke("GetExternalIPAddress", "");
         String address = firstValue(response, "NewExternalIPAddress");
         if (address == null || address.isBlank()) {
-            throw new IOException("il router non ha dichiarato nessun indirizzo esterno");
+            throw new IOException("the router declared no external address");
         }
         return address.trim();
     }
@@ -236,7 +236,7 @@ public final class IgdClient {
             response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IOException("interrotto durante " + action, e);
+            throw new IOException("interrupted during " + action, e);
         }
         byte[] body = read(response.body());
         Document document = parse(body);
@@ -312,13 +312,13 @@ public final class IgdClient {
             HttpResponse<InputStream> response =
                     http.send(request, HttpResponse.BodyHandlers.ofInputStream());
             if (response.statusCode() != 200) {
-                throw new IOException("descrizione non disponibile: HTTP "
+                throw new IOException("description unavailable: HTTP "
                         + response.statusCode());
             }
             return read(response.body());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IOException("interrotto leggendo la descrizione", e);
+            throw new IOException("interrupted while reading the description", e);
         }
     }
 
@@ -327,7 +327,7 @@ public final class IgdClient {
         try (InputStream stream = in) {
             byte[] body = stream.readNBytes(MAX_BODY_BYTES + 1);
             if (body.length > MAX_BODY_BYTES) {
-                throw new IOException("risposta oltre " + MAX_BODY_BYTES + " byte");
+                throw new IOException("response over " + MAX_BODY_BYTES + " bytes");
             }
             return body;
         }
@@ -376,7 +376,7 @@ public final class IgdClient {
             });
             return builder.parse(new ByteArrayInputStream(xml));
         } catch (ParserConfigurationException | SAXException e) {
-            throw new IOException("XML non interpretabile: " + e.getMessage(), e);
+            throw new IOException("XML not parseable: " + e.getMessage(), e);
         }
     }
 
@@ -439,8 +439,8 @@ public final class IgdClient {
         private final int code;
 
         UpnpException(String action, int code, String description) {
-            super(action + " rifiutata dal router: "
-                    + (code > 0 ? "errore " + code : "errore sconosciuto")
+            super(action + " refused by the router: "
+                    + (code > 0 ? "error " + code : "unknown error")
                     + (description == null || description.isBlank() ? "" : " (" + description + ")"));
             this.code = code;
         }

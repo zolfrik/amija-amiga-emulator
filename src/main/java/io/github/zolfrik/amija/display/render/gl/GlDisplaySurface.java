@@ -358,7 +358,7 @@ public final class GlDisplaySurface {
                 } catch (Throwable t) {
                     if (!renderErrorLogged) {
                         renderErrorLogged = true;
-                        System.err.println("[GL] Errore di rendering: " + t);
+                        System.err.println("[GL] Rendering error: " + t);
                     }
                 }
                 // Waits for a new frame (or a short timeout, for canvas resizes). A frame handed
@@ -523,7 +523,7 @@ public final class GlDisplaySurface {
                 chain.render(origTex, origW, origH, vx, vy, vw, vh, frameCounter);
                 drew = true;
             } catch (Throwable t) {
-                System.err.println("[GL] Errore esecuzione shader, passthrough: " + t);
+                System.err.println("[GL] Shader execution error, passthrough: " + t);
                 chain.dispose();
                 chain = null;
             }
@@ -745,10 +745,10 @@ public final class GlDisplaySurface {
         }
         try {
             chain = RenderChain.build(p);
-            System.out.println("[GL] Shader attivo: " + p);
+            System.out.println("[GL] Active shader: " + p);
         } catch (Throwable t) {
             chain = null;
-            System.err.println("[GL] Shader '" + p + "' non caricato (passthrough): " + t.getMessage());
+            System.err.println("[GL] Shader '" + p + "' not loaded (passthrough): " + t.getMessage());
         }
     }
 

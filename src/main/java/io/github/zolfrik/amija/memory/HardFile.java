@@ -100,7 +100,7 @@ public final class HardFile {
         Path p = Paths.get(filePath);
         byte[] bytes = Files.readAllBytes(p);
         if (bytes.length < 2 * BSIZE) {
-            throw new IOException("File .hdf troppo piccolo: " + bytes.length + " byte");
+            throw new IOException(".hdf file too small: " + bytes.length + " bytes");
         }
         HardFile hf = new HardFile(p, bytes, readOnly);
         hf.parse();
@@ -286,7 +286,7 @@ public final class HardFile {
             Files.write(path, data);
             modified = false;
         } catch (IOException e) {
-            System.err.println("[HDF] Salvataggio fallito di " + path + ": " + e.getMessage());
+            System.err.println("[HDF] Save failed for " + path + ": " + e.getMessage());
         }
     }
 

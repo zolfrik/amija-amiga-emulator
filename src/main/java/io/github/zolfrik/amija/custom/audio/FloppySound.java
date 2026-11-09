@@ -172,7 +172,7 @@ public final class FloppySound {
                 }
             } catch (Throwable t) {
                 // No audio device, missing resources, etc.: the feature is silently inactive.
-                System.out.println("[FLOPPYSND] disabilitato (init fallita): " + t);
+                System.out.println("[FLOPPYSND] disabled (init failed): " + t);
                 ok = false;
             }
         }

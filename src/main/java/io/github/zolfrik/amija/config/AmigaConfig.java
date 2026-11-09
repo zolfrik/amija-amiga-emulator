@@ -375,8 +375,8 @@ public final class AmigaConfig {
                 // editor: not valid UTF-8. It is read again as Latin-1, which accepts any
                 // byte, so the configuration is not lost; the first save brings it back to
                 // UTF-8.
-                System.err.println("[CONFIG] " + homeFile + " non e' UTF-8 valido, "
-                        + "rileggo in ISO-8859-1 (sara' riscritto in UTF-8 al salvataggio)");
+                System.err.println("[CONFIG] " + homeFile + " is not valid UTF-8, "
+                        + "reading it as ISO-8859-1 (it will be rewritten as UTF-8 on save)");
                 try (InputStream in = Files.newInputStream(homeFile)) {
                     Properties p = new Properties();
                     p.load(in);

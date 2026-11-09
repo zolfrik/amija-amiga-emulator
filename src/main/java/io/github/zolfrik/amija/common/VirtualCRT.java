@@ -381,7 +381,7 @@ public final class VirtualCRT {
             double renderMsPerSec = renderNanos / 1_000_000.0;
             double pct = 100.0 * renderNanos / elapsed;
             double msPerFrame = renderFrames > 0 ? renderMsPerSec / renderFrames : 0;
-            System.out.printf("[RENDER] %.1f ms/s (%.1f%% del tempo) frames=%d (%.2f ms/frame)%n",
+            System.out.printf("[RENDER] %.1f ms/s (%.1f%% of the time) frames=%d (%.2f ms/frame)%n",
                     renderMsPerSec, pct, renderFrames, msPerFrame);
             renderNanos = 0;
             renderFrames = 0;

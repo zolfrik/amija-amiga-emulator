@@ -258,7 +258,7 @@ final class SpectatorBroadcast implements AutoCloseable {
                         (p, n) -> peer.media.send(RemotePlayProtocol.TYPE_VIDEO, p, 0, n));
                 bytes += length;
             } catch (IOException e) {
-                peer.fail("invio video interrotto: " + e.getMessage());
+                peer.fail("video sending interrupted: " + e.getMessage());
             }
         }
         ring.store(frameId, pixels);
@@ -334,7 +334,7 @@ final class SpectatorBroadcast implements AutoCloseable {
                     try {
                         peer.media.send(RemotePlayProtocol.TYPE_AUDIO, p, 0, n);
                     } catch (IOException e) {
-                        peer.fail("invio audio interrotto: " + e.getMessage());
+                        peer.fail("audio sending interrupted: " + e.getMessage());
                     }
                 }
             });
@@ -474,14 +474,14 @@ final class SpectatorBroadcast implements AutoCloseable {
         @Override
         public void onDatagram(MediaLink.Received received, byte[] plain) {
             if (received.type() != RemotePlayProtocol.TYPE_SPECTATOR) {
-                RemotePlaySettings.log("datagramma di tipo %d da uno spettatore ignorato",
+                RemotePlaySettings.log("datagram of type %d from a spectator ignored",
                         received.type());
                 return;
             }
             try {
                 incoming.readFrom(plain, received.length());
             } catch (ProtocolException e) {
-                RemotePlaySettings.log("rapporto dello spettatore scartato: %s", e.getMessage());
+                RemotePlaySettings.log("spectator report dropped: %s", e.getMessage());
                 return;
             }
             lastFeedbackNanos = System.nanoTime();
@@ -505,7 +505,7 @@ final class SpectatorBroadcast implements AutoCloseable {
         @Override
         public void checkTimeout(long nowNanos) {
             if (alive && nowNanos - lastFeedbackNanos > SESSION_TIMEOUT_MS * 1_000_000L) {
-                fail("lo spettatore non risponde da " + SESSION_TIMEOUT_MS + " ms");
+                fail("the spectator has not answered for " + SESSION_TIMEOUT_MS + " ms");
             }
         }
 
@@ -514,7 +514,7 @@ final class SpectatorBroadcast implements AutoCloseable {
                 control.send(paused ? RemotePlayProtocol.CTRL_PAUSED
                         : RemotePlayProtocol.CTRL_RESUMED);
             } catch (IOException e) {
-                fail("invio di PAUSED/RESUMED fallito: " + e.getMessage());
+                fail("sending PAUSED/RESUMED failed: " + e.getMessage());
             }
         }
 
@@ -533,31 +533,31 @@ final class SpectatorBroadcast implements AutoCloseable {
                                 control.send(RemotePlayProtocol.CTRL_PONG);
                         case RemotePlayProtocol.CTRL_PONG -> { }
                         case RemotePlayProtocol.CTRL_BYE -> {
-                            RemotePlaySettings.say("uno spettatore se n'e' andato (%s)",
+                            RemotePlaySettings.say("a spectator left (%s)",
                                     remoteAddress());
                             stop(-1);
                             return;
                         }
                         default -> RemotePlaySettings.log(
-                                "messaggio di controllo inatteso da uno spettatore: %d", m.type());
+                                "unexpected control message from a spectator: %d", m.type());
                     }
                 }
             } catch (EOFException e) {
                 if (alive) {
-                    RemotePlaySettings.say("uno spettatore ha chiuso il collegamento (%s)",
+                    RemotePlaySettings.say("a spectator closed the connection (%s)",
                             remoteAddress());
                     stop(-1);
                 }
             } catch (IOException e) {
                 if (alive) {
-                    fail("canale di controllo interrotto: " + e.getMessage());
+                    fail("control channel interrupted: " + e.getMessage());
                 }
             }
         }
 
         void fail(String reason) {
             if (alive) {
-                RemotePlaySettings.say("spettatore %s scollegato: %s", remoteAddress(), reason);
+                RemotePlaySettings.say("spectator %s disconnected: %s", remoteAddress(), reason);
             }
             stop(-1);
         }

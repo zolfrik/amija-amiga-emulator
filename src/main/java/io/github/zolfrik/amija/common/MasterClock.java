@@ -161,7 +161,7 @@ public final class MasterClock {
         // failure is passed to whoever registered with setFailureHandler.
         clockThread.setUncaughtExceptionHandler((t, e) -> {
             running = false;
-            System.err.println("[CLOCK] Emulazione interrotta da un errore non gestito:");
+            System.err.println("[CLOCK] Emulation stopped by an unhandled error:");
             e.printStackTrace();
             java.util.function.Consumer<Throwable> handler = failureHandler;
             if (handler != null) {

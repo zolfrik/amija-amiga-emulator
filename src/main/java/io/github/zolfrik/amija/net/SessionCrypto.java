@@ -89,8 +89,8 @@ public final class SessionCrypto {
     /** Derives the session material from the join code and the salt chosen by the host. */
     public static SessionCrypto derive(String joinCode, byte[] salt) {
         if (salt == null || salt.length != SALT_BYTES) {
-            throw new IllegalArgumentException("salt di " + (salt == null ? "null" : salt.length)
-                    + " byte, attesi " + SALT_BYTES);
+            throw new IllegalArgumentException("salt of " + (salt == null ? "null" : salt.length)
+                    + " bytes, expected " + SALT_BYTES);
         }
         try {
             SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
@@ -100,7 +100,7 @@ public final class SessionCrypto {
             spec.clearPassword();
             return new SessionCrypto(key);
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("PBKDF2 non disponibile in questa JVM", e);
+            throw new IllegalStateException("PBKDF2 not available in this JVM", e);
         }
     }
 
@@ -146,7 +146,7 @@ public final class SessionCrypto {
     private static byte[] hmac(byte[] key, byte[] label, byte[] nonce, byte[] nonce2, int proto) {
         if (nonce == null || nonce.length != NONCE_BYTES
                 || nonce2 == null || nonce2.length != NONCE_BYTES) {
-            throw new IllegalArgumentException("nonce di lunghezza sbagliata");
+            throw new IllegalArgumentException("nonce of the wrong length");
         }
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
@@ -158,7 +158,7 @@ public final class SessionCrypto {
                                     (byte) (proto >>> 16), (byte) (proto >>> 24) });
             return mac.doFinal();
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("HMAC-SHA256 non disponibile in questa JVM", e);
+            throw new IllegalStateException("HMAC-SHA256 not available in this JVM", e);
         }
     }
 
@@ -188,7 +188,7 @@ public final class SessionCrypto {
             }
             return out;
         } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("HMAC-SHA256 non disponibile in questa JVM", e);
+            throw new IllegalStateException("HMAC-SHA256 not available in this JVM", e);
         }
     }
 

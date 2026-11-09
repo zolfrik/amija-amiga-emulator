@@ -191,7 +191,7 @@ public final class SlangSource {
             cur.append(line).append('\n');
         }
         if (vert.length() == 0 || frag.length() == 0) {
-            throw new IOException("Shader senza '#pragma stage vertex/fragment': " + slang);
+            throw new IOException("Shader without '#pragma stage vertex/fragment': " + slang);
         }
 
         String commonGl = rewrite(common.toString(), Stage.COMMON);
@@ -233,7 +233,7 @@ public final class SlangSource {
 
     private static void expand(Path file, StringBuilder sb, Deque<Path> stack) throws IOException {
         if (stack.contains(file)) {
-            throw new IOException("Ciclo di #include su " + file);
+            throw new IOException("#include loop on " + file);
         }
         stack.push(file);
         try {
@@ -245,7 +245,7 @@ public final class SlangSource {
                 }
                 Path inc = file.getParent().resolve(m.group(1).replace('\\', '/')).normalize();
                 if (!Files.isRegularFile(inc)) {
-                    System.err.println("[GL] #include assente, ignorato: " + inc);
+                    System.err.println("[GL] #include missing, ignored: " + inc);
                     sb.append("// [AmiJa] include assente: ").append(inc).append('\n');
                     continue;
                 }
@@ -319,7 +319,7 @@ public final class SlangSource {
             String blockName = m.group(1);
             int open = m.end() - 1;
             int close = matchBrace(clean, open);
-            if (close < 0) throw new IOException("Blocco uniform '" + blockName + "' non chiuso");
+            if (close < 0) throw new IOException("Uniform block '" + blockName + "' not closed");
             if (out.containsKey(blockName)) continue;   // same block in both stages
             out.put(blockName, layoutStd140(blockName, clean.substring(open + 1, close)));
         }
@@ -338,7 +338,7 @@ public final class SlangSource {
             String type = d.substring(0, sp).trim();
             int[] as = alignSize(type);
             if (as == null) {
-                System.err.println("[GL] Tipo non gestito nel blocco " + blockName + ": " + d);
+                System.err.println("[GL] Unhandled type in block " + blockName + ": " + d);
                 continue;
             }
             for (String nm : d.substring(sp + 1).split(",")) {

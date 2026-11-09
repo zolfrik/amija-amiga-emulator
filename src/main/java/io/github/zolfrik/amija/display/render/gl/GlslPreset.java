@@ -109,7 +109,7 @@ public final class GlslPreset {
         Path baseDir = glslp.toAbsolutePath().getParent();
         int count = parseInt(map.get("shaders"), 0);
         if (count <= 0) {
-            throw new IOException("Preset senza pass (shaders=" + map.get("shaders") + "): " + glslp);
+            throw new IOException("Preset without passes (shaders=" + map.get("shaders") + "): " + glslp);
         }
 
         List<PassSpec> passes = new ArrayList<>(count);
@@ -117,7 +117,7 @@ public final class GlslPreset {
             PassSpec p = new PassSpec();
             String shaderRel = map.get("shader" + k);
             if (shaderRel == null || shaderRel.isEmpty()) {
-                throw new IOException("Pass " + k + " senza 'shader" + k + "': " + glslp);
+                throw new IOException("Pass " + k + " without 'shader" + k + "': " + glslp);
             }
             p.shader = resolve(baseDir, shaderRel);
             p.filterLinear = parseBool(map.get("filter_linear" + k), true);

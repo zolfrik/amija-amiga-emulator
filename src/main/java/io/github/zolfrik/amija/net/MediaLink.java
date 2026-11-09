@@ -127,7 +127,7 @@ public final class MediaLink implements AutoCloseable {
             return false;
         }
         if (length > RemotePlayProtocol.MAX_PLAINTEXT) {
-            throw new ProtocolException("payload di " + length + " byte, massimo "
+            throw new ProtocolException("payload of " + length + " bytes, maximum "
                     + RemotePlayProtocol.MAX_PLAINTEXT);
         }
         int total = cipher.seal(type, txSeq++, plain, off, length, txBuffer);

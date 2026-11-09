@@ -98,8 +98,8 @@ public final class ControlChannel implements AutoCloseable {
             throws IOException {
         int total = 1 + length;
         if (total > RemotePlayProtocol.MAX_CONTROL_MESSAGE) {
-            throw new ProtocolException("messaggio di controllo di " + total
-                    + " byte, massimo " + RemotePlayProtocol.MAX_CONTROL_MESSAGE);
+            throw new ProtocolException("control message of " + total
+                    + " bytes, maximum " + RemotePlayProtocol.MAX_CONTROL_MESSAGE);
         }
         txBuffer[0] = (byte) total;
         txBuffer[1] = (byte) (total >>> 8);
@@ -121,11 +121,11 @@ public final class ControlChannel implements AutoCloseable {
     public Message receive() throws IOException {
         int total = (readByte() & 0xFF) | ((readByte() & 0xFF) << 8);
         if (total < 1) {
-            throw new ProtocolException("messaggio di controllo vuoto");
+            throw new ProtocolException("empty control message");
         }
         if (total > RemotePlayProtocol.MAX_CONTROL_MESSAGE) {
-            throw new ProtocolException("messaggio di controllo di " + total
-                    + " byte, massimo " + RemotePlayProtocol.MAX_CONTROL_MESSAGE);
+            throw new ProtocolException("control message of " + total
+                    + " bytes, maximum " + RemotePlayProtocol.MAX_CONTROL_MESSAGE);
         }
         int type = readByte() & 0xFF;
         int length = total - 1;
@@ -142,8 +142,8 @@ public final class ControlChannel implements AutoCloseable {
     public Message expect(int type) throws IOException {
         Message m = receive();
         if (m.type() != type) {
-            throw new ProtocolException("atteso il messaggio di tipo " + type
-                    + ", ricevuto " + m.type());
+            throw new ProtocolException("expected a message of type " + type
+                    + ", received " + m.type());
         }
         return m;
     }
@@ -215,7 +215,7 @@ public final class ControlChannel implements AutoCloseable {
     private int readByte() throws IOException {
         int b = in.read();
         if (b < 0) {
-            throw new EOFException("canale di controllo chiuso dal peer");
+            throw new EOFException("control channel closed by the peer");
         }
         return b;
     }
@@ -225,7 +225,7 @@ public final class ControlChannel implements AutoCloseable {
         while (read < length) {
             int n = in.read(dst, read, length - read);
             if (n < 0) {
-                throw new EOFException("canale di controllo chiuso a meta' messaggio");
+                throw new EOFException("control channel closed mid-message");
             }
             read += n;
         }

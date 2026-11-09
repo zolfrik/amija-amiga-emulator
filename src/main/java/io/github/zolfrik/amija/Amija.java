@@ -369,13 +369,13 @@ public class Amija implements RemotePlayControl, MisterControl {
             UIManager.setLookAndFeel(new FlatDarkLaf());
             return;
         } catch (UnsupportedLookAndFeelException e) {
-            System.err.println("[UI] FlatLaf non disponibile, ripiego sul Look and Feel "
-                    + "di sistema (l'interfaccia non sara' scalata): " + e.getMessage());
+            System.err.println("[UI] FlatLaf unavailable, falling back to the system Look and Feel "
+                    + "(the interface will not be scaled): " + e.getMessage());
         }
         try {
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
         } catch (ReflectiveOperationException | UnsupportedLookAndFeelException e) {
-            System.err.println("[UI] Look and Feel di sistema non disponibile: " + e.getMessage());
+            System.err.println("[UI] System Look and Feel unavailable: " + e.getMessage());
         }
     }
 
@@ -447,7 +447,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         try {
             return RemotePlaySettings.fromSystemProperties();
         } catch (IllegalArgumentException e) {
-            System.err.println("[NET] configurazione del gioco a distanza non valida: "
+            System.err.println("[NET] invalid remote play configuration: "
                     + e.getMessage());
             return RemotePlaySettings.off();
         }
@@ -477,7 +477,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             openRouterPort(remotePlayHost.port());
             virtualCRT.setRemotePlayHost(remotePlayHost);
         } catch (IOException e) {
-            System.err.println("[NET] impossibile ospitare sulla porta " + settings.port()
+            System.err.println("[NET] cannot host on port " + settings.port()
                     + ": " + e.getMessage());
             remotePlayHost = null;
         }
@@ -498,7 +498,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         try {
             settings = MisterSettings.fromSystemProperties();
         } catch (IllegalArgumentException e) {
-            System.err.println("[MISTER] configurazione non valida: " + e.getMessage());
+            System.err.println("[MISTER] invalid configuration: " + e.getMessage());
             return;
         }
         if (settings == null) {
@@ -506,7 +506,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         }
         String refusal = launchMister(settings);
         if (refusal != null) {
-            System.err.println("[MISTER] uscita sul MiSTer non avviata: " + refusal);
+            System.err.println("[MISTER] MiSTer output not started: " + refusal);
         }
     }
 
@@ -1785,7 +1785,7 @@ public class Amija implements RemotePlayControl, MisterControl {
                 if (!(deferHardware ? drive.isConnected() : newEnabled[i])) {
                     // Drive disconnected: no disk inside.
                     if (drive.isDiskInserted()) {
-                        System.out.println("[CONFIG] DF" + i + ": espulsione (drive scollegato)");
+                        System.out.println("[CONFIG] DF" + i + ": ejected (drive disconnected)");
                         drive.ejectDisk();
                     }
                     continue;
@@ -1796,17 +1796,17 @@ public class Amija implements RemotePlayControl, MisterControl {
                 if (oldPath.equals(newPath) && !readOnlyChanged) continue; // no change for this drive
                 try {
                     if (drive.isDiskInserted()) {
-                        System.out.println("[CONFIG] DF" + i + ": espulsione disco corrente...");
+                        System.out.println("[CONFIG] DF" + i + ": ejecting the current disk...");
                         drive.ejectDisk();
                         Thread.sleep(1500);
                     }
                     if (!newPath.isEmpty()) {
-                        System.out.println("[CONFIG] DF" + i + ": inserimento " + newPath);
+                        System.out.println("[CONFIG] DF" + i + ": inserting " + newPath);
                         drive.loadAdf(newPath, newReadOnly[i]);
                     }
                 } catch (Exception e) {
                     System.err.println("[CONFIG] DF" + i
-                            + ": errore applicazione disco: " + e.getMessage());
+                            + ": error applying the disk: " + e.getMessage());
                 }
             }
         }, "config-floppy-apply");
@@ -1850,7 +1850,7 @@ public class Amija implements RemotePlayControl, MisterControl {
                 entries = DiskImage.listZipDiskEntries(DiskImage.pathOf(df0));
                 order   = DiskImage.zipDiskOrder(DiskImage.pathOf(df0));
             } catch (IOException e) {
-                System.err.println("[CONFIG] ZIP non leggibile (" + df0 + "): " + e.getMessage());
+                System.err.println("[CONFIG] ZIP not readable (" + df0 + "): " + e.getMessage());
             }
         }
 
@@ -1868,7 +1868,7 @@ public class Amija implements RemotePlayControl, MisterControl {
                 int entry = order[i];
                 config.setDriveDisk(i, DiskImage.zipEntrySpec(df0, entry));
                 config.setDriveReadOnly(i, true);
-                System.out.println("[CONFIG] DF" + i + ": disco " + entry + " dello zip -> "
+                System.out.println("[CONFIG] DF" + i + ": disk " + entry + " of the zip -> "
                         + entries.get(entry));
             }
         }
@@ -2156,9 +2156,9 @@ public class Amija implements RemotePlayControl, MisterControl {
                     .start();
             System.exit(0); // the shutdown hook switches the current machine off
         } catch (IOException ex) {
-            System.err.println("[UI] Riavvio del processo non riuscito, eseguo un cold "
-                    + "restart (il nuovo integer scaling sara' effettivo al prossimo "
-                    + "riavvio manuale): " + ex.getMessage());
+            System.err.println("[UI] Process relaunch failed, doing a cold "
+                    + "restart (the new integer scaling takes effect at the next "
+                    + "manual relaunch): " + ex.getMessage());
         }
     }
 
@@ -2216,7 +2216,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             System.out.println("[SHOT] " + file.getAbsolutePath());
             return file;
         } catch (IOException e) {
-            System.err.println("[SHOT] Salvataggio screenshot fallito: " + e.getMessage());
+            System.err.println("[SHOT] Screenshot save failed: " + e.getMessage());
             return null;
         }
     }
@@ -2242,11 +2242,11 @@ public class Amija implements RemotePlayControl, MisterControl {
         try {
             File file = SaveStateManager.slotFile(slot);
             SaveStateManager.save(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
-            System.out.println("[STATE] salvato " + file.getAbsolutePath());
+            System.out.println("[STATE] saved " + file.getAbsolutePath());
             saveStateScreenshot(slot);
             return Messages.t("savestate.save.ok", slot, file.getAbsolutePath());
         } catch (Exception e) {
-            System.err.println("[STATE] salvataggio fallito: " + e.getMessage());
+            System.err.println("[STATE] save failed: " + e.getMessage());
             return Messages.t("savestate.save.fail", String.valueOf(e.getMessage()));
         }
     }
@@ -2264,7 +2264,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             display.saveScreenshot(shot);
             System.out.println("[STATE] screenshot " + shot.getAbsolutePath());
         } catch (Exception e) {
-            System.err.println("[STATE] screenshot dello slot fallito: " + e.getMessage());
+            System.err.println("[STATE] slot screenshot failed: " + e.getMessage());
         }
     }
 
@@ -2302,7 +2302,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             return new RewindSession(rewindHistory, rewindHistory.entries(),
                     agnus.getFrameCount(), rewindHistory.currentThumbnail());
         } catch (RuntimeException e) {
-            System.err.println("[REWIND] storia non disponibile: " + e.getMessage());
+            System.err.println("[REWIND] history unavailable: " + e.getMessage());
             return null;
         }
     }
@@ -2319,10 +2319,10 @@ public class Amija implements RemotePlayControl, MisterControl {
             rewindHistory.restore(session.selectedEntry(), true);
             // The audio queued so far belongs to the future just thrown away.
             if (paula != null) paula.getAudioRingBuffer().clear();
-            System.out.println("[REWIND] tornato indietro di "
+            System.out.println("[REWIND] went back by "
                     + formatAgo(session.secondsBefore(session.selected())));
         } catch (RuntimeException e) {
-            System.err.println("[REWIND] riavvolgimento fallito: " + e.getMessage());
+            System.err.println("[REWIND] rewind failed: " + e.getMessage());
             JOptionPane.showMessageDialog(frame,
                     Messages.t("rewind.fail", String.valueOf(e.getMessage())),
                     Messages.t("app.title"), JOptionPane.ERROR_MESSAGE);
@@ -2428,7 +2428,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         }
         try {
             SaveStateManager.load(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
-            System.out.println("[STATE] caricato " + file.getAbsolutePath());
+            System.out.println("[STATE] loaded " + file.getAbsolutePath());
             forgetRewindHistory();
             return ConfigDialog.LoadStateOutcome.done(
                     Messages.t("savestate.load.ok", slot));
@@ -2443,14 +2443,14 @@ public class Amija implements RemotePlayControl, MisterControl {
                                     Messages.t("savestate.err.missing",
                                             String.join("\n", missing))));
                 }
-                System.out.println("[STATE] macchina diversa da quella dello slot ("
-                        + e.getMessage() + "): la ricostruisco e ritento");
+                System.out.println("[STATE] machine differs from the slot's ("
+                        + e.getMessage() + "): rebuilding it and retrying");
                 return ConfigDialog.LoadStateOutcome.restart();
             }
             return ConfigDialog.LoadStateOutcome.done(
                     Messages.t("savestate.load.incompatible", e.getMessage()));
         } catch (Exception e) {
-            System.err.println("[STATE] caricamento fallito: " + e.getMessage());
+            System.err.println("[STATE] load failed: " + e.getMessage());
             return ConfigDialog.LoadStateOutcome.done(
                     Messages.t("savestate.load.fail", String.valueOf(e.getMessage())));
         }
@@ -2499,7 +2499,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             Properties saved = SaveStateManager.readInfo(file).config();
             config.restoreMachineSettings(saved);
             saveConfig();
-            System.out.println("[STATE] configurazione dello slot ripristinata, riavvio la macchina");
+            System.out.println("[STATE] slot configuration restored, restarting the machine");
             coldRestart();
             if (processor == null || agnus == null) {
                 return Messages.t("savestate.load.fail", Messages.t("savestate.nomachine"));
@@ -2508,13 +2508,13 @@ public class Amija implements RemotePlayControl, MisterControl {
             // just marked as paused) before the components are overwritten under it.
             if (clock != null) clock.pauseAndWait(500);
             SaveStateManager.load(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
-            System.out.println("[STATE] caricato " + file.getAbsolutePath());
+            System.out.println("[STATE] loaded " + file.getAbsolutePath());
             forgetRewindHistory();
             return Messages.t("savestate.load.reconfigured");
         } catch (SaveStateManager.IncompatibleStateException e) {
             return Messages.t("savestate.load.incompatible", e.getMessage());
         } catch (Exception e) {
-            System.err.println("[STATE] caricamento dopo il riavvio fallito: " + e.getMessage());
+            System.err.println("[STATE] load after the restart failed: " + e.getMessage());
             return Messages.t("savestate.load.fail", String.valueOf(e.getMessage()));
         }
     }
@@ -2591,8 +2591,8 @@ public class Amija implements RemotePlayControl, MisterControl {
             ROM kickstart;
             if (usingBuiltinRom(kickstartPath)) {
                 byte[] builtin = BuiltinRom.load();
-                System.out.println("[ROM] " + BuiltinRom.version() + " integrata ("
-                        + builtin.length + " byte)");
+                System.out.println("[ROM] " + BuiltinRom.version() + " built in ("
+                        + builtin.length + " bytes)");
                 kickstart = new ROM(builtin);
             } else {
                 KickstartImage romImage = KickstartImage.load(Paths.get(kickstartPath));
@@ -2731,7 +2731,7 @@ public class Amija implements RemotePlayControl, MisterControl {
                     try {
                         dfs[i].loadAdf(diskPath, config.driveReadOnly(i));
                     } catch (IOException ioe) {
-                        System.err.println("[CONFIG] Impossibile caricare il disco DF" + i
+                        System.err.println("[CONFIG] Cannot load the disk in DF" + i
                                 + " (" + diskPath + "): " + ioe.getMessage());
                     }
                 }
@@ -2779,7 +2779,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             clock.start();
 
             if (VERBOSE) {
-                System.out.println("[INIT] Macchina avviata.");
+                System.out.println("[INIT] Machine started.");
             }
         } catch (IOException e) {
             error(Messages.t("error.boot", e.getMessage()));
@@ -2859,7 +2859,7 @@ public class Amija implements RemotePlayControl, MisterControl {
                 // A single HD LED for WHDLoad: boot and saves are the same logical unit.
                 hdLedSources.add(() -> hd.ledActive() || savesHd.ledActive());
             } catch (IOException ioe) {
-                System.err.println("[WHDLOAD] Avvio WHDLoad fallito (" + config.whdloadFile()
+                System.err.println("[WHDLOAD] WHDLoad start failed (" + config.whdloadFile()
                         + "): " + ioe.getMessage());
             }
         }
@@ -2876,12 +2876,12 @@ public class Amija implements RemotePlayControl, MisterControl {
                 controllers.add(hd);
                 hdLedSources.add(hd::ledActive); // master (unit 0) first, slave (unit 1) after
                 partitionBase += hf.numPartitions();
-                System.out.println("[HDF] " + AmigaConfig.HD_UNITS[unit] + ": montato " + diskPath
+                System.out.println("[HDF] " + AmigaConfig.HD_UNITS[unit] + ": mounted " + diskPath
                         + " (" + hf.numPartitions() + " part., "
                         + hf.cylinders() + "/" + hf.heads() + "/" + hf.sectors() + " C/H/S"
-                        + (hf.readOnly() ? ", sola lettura" : "") + ")");
+                        + (hf.readOnly() ? ", read-only" : "") + ")");
             } catch (IOException ioe) {
-                System.err.println("[HDF] Impossibile montare l'hard disk " + AmigaConfig.HD_UNITS[unit]
+                System.err.println("[HDF] Cannot mount hard disk " + AmigaConfig.HD_UNITS[unit]
                         + " (" + diskPath + "): " + ioe.getMessage());
             }
         }
@@ -3028,7 +3028,7 @@ public class Amija implements RemotePlayControl, MisterControl {
                 welcomeShown = true;
                 info(Messages.t("welcome.title"), Messages.t("welcome.builtinrom"));
             }
-            System.out.println("[CONFIG] nessun Kickstart utilizzabile: uso la ROM AmiJa integrata");
+            System.out.println("[CONFIG] no usable Kickstart: using the built-in AmiJa ROM");
             return true;
         }
 

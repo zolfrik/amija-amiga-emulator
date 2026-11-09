@@ -149,7 +149,7 @@ public final class ShaderParams {
             p.setProperty(e.getKey(), Float.toString(e.getValue()));
         }
         try (OutputStream out = Files.newOutputStream(sidecar(glslp))) {
-            p.store(out, "Override parametri shader per " + glslp.getFileName());
+            p.store(out, "Shader parameter overrides for " + glslp.getFileName());
         }
     }
 

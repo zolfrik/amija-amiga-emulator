@@ -105,7 +105,7 @@ public final class NetAudioPlayer implements AudioReceiver.PcmSink {
             line.open(format, AudioBlockHeader.FRAMES_PER_BLOCK * 4 * 8);
             line.start();
         } catch (LineUnavailableException | IllegalArgumentException e) {
-            RemotePlaySettings.say("nessuna uscita audio disponibile: si gioca in silenzio"
+            RemotePlaySettings.say("no audio output available: playing without sound"
                     + " (%s)", e.getMessage());
             line = null;
             return false;

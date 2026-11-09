@@ -396,12 +396,12 @@ public final class HdController implements AutoConfigDevice {
     private static byte[] loadExprom() {
         try (InputStream in = HdController.class.getResourceAsStream("/hd/exprom.bin")) {
             if (in == null) {
-                System.err.println("[HDF] Risorsa /hd/exprom.bin non trovata: hard disk disabilitato");
+                System.err.println("[HDF] Resource /hd/exprom.bin not found: hard disk disabled");
                 return new byte[0];
             }
             return in.readAllBytes();
         } catch (IOException e) {
-            System.err.println("[HDF] Lettura di /hd/exprom.bin fallita: " + e.getMessage());
+            System.err.println("[HDF] Reading /hd/exprom.bin failed: " + e.getMessage());
             return new byte[0];
         }
     }

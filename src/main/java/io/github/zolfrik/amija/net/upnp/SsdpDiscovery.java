@@ -141,7 +141,7 @@ public final class SsdpDiscovery {
         } catch (IOException e) {
             // An interface that cannot send multicast is not a failure: it is the normal case
             // of a disabled virtual adapter. Try the next.
-            RemotePlaySettings.log("SSDP da %s non praticabile: %s", local.getHostAddress(), e.getMessage());
+            RemotePlaySettings.log("SSDP from %s not usable: %s", local.getHostAddress(), e.getMessage());
         }
     }
 
@@ -168,7 +168,7 @@ public final class SsdpDiscovery {
                     found.putIfAbsent(url, new Gateway(url, local));
                 }
             } catch (URISyntaxException e) {
-                RemotePlaySettings.log("LOCATION non interpretabile: %s", location);
+                RemotePlaySettings.log("LOCATION not parseable: %s", location);
             }
         }
     }
@@ -201,7 +201,7 @@ public final class SsdpDiscovery {
         String scheme = url.getScheme();
         if (scheme == null
                 || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
-            RemotePlaySettings.log("LOCATION con schema non ammesso, ignorato: %s", url);
+            RemotePlaySettings.log("LOCATION with a scheme not allowed, ignored: %s", url);
             return false;
         }
         String host = url.getHost();
@@ -210,7 +210,7 @@ public final class SsdpDiscovery {
         }
         if (!sameHost(host, responder)) {
             RemotePlaySettings.log(
-                    "LOCATION %s non punta a chi ha risposto (%s): ignorato",
+                    "LOCATION %s does not point to the responder (%s): ignored",
                     url, responder.getHostAddress());
             return false;
         }
@@ -302,7 +302,7 @@ public final class SsdpDiscovery {
                 }
             }
         } catch (IOException e) {
-            RemotePlaySettings.log("elenco delle interfacce non disponibile: %s", e.getMessage());
+            RemotePlaySettings.log("interface list unavailable: %s", e.getMessage());
         }
         return addresses;
     }

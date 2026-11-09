@@ -410,8 +410,8 @@ public class AmigaDisplay {
         try {
             return new GlDisplaySurface(frameWidth, frameHeight);
         } catch (Throwable t) {
-            System.err.println("[GL] Backend OpenGL non disponibile, uso il rendering "
-                    + "software: " + t);
+            System.err.println("[GL] OpenGL backend unavailable, using "
+                    + "software rendering: " + t);
             return null;
         }
     }
@@ -1218,7 +1218,7 @@ public class AmigaDisplay {
             File file = new File(dir, "dump_" + timestamp + ".png");
             ImageIO.write(captureForScreenshot(), "png", file);
         } catch (IOException e) {
-            System.err.println("Errore durante il salvataggio del dump: " + e.getMessage());
+            System.err.println("Error while saving the dump: " + e.getMessage());
         }
     }
 
@@ -1675,7 +1675,7 @@ public class AmigaDisplay {
                 ok = true;
             }
         } catch (Exception ex) {
-            System.err.println("[DND] Errore ricezione file: " + ex.getMessage());
+            System.err.println("[DND] Error receiving the file: " + ex.getMessage());
         }
         e.dropComplete(ok);
         endDragOverlay();
@@ -1709,18 +1709,18 @@ public class AmigaDisplay {
         Thread t = new Thread(() -> {
             try {
                 if (drive.isDiskInserted()) {
-                    System.out.println("[DND] " + id + ": espulsione disco corrente...");
+                    System.out.println("[DND] " + id + ": ejecting the current disk...");
                     drive.ejectDisk();
                     Thread.sleep(1500);
                 }
-                System.out.println("[DND] " + id + ": inserimento " + file.getName());
+                System.out.println("[DND] " + id + ": inserting " + file.getName());
                 drive.loadAdf(file.getAbsolutePath(), false);
-                System.out.println("[DND] " + id + ": disco inserito.");
+                System.out.println("[DND] " + id + ": disk inserted.");
                 // Align the configuration (F12 popup) with the disk just inserted.
                 ObjIntConsumer<String> l = diskDropListener;
                 if (l != null) l.accept(file.getAbsolutePath(), driveIndex);
             } catch (Exception e) {
-                System.err.println("[DND] Errore inserimento disco: " + e.getMessage());
+                System.err.println("[DND] Error inserting the disk: " + e.getMessage());
             }
         }, "disk-drop");
         t.setDaemon(true);

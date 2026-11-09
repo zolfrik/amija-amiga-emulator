@@ -123,7 +123,7 @@ public class NetImpairment {
         try {
             return Double.parseDouble(v.trim());
         } catch (NumberFormatException e) {
-            System.err.println("[NET] valore non numerico per " + name + ": " + v);
+            System.err.println("[NET] non-numeric value for " + name + ": " + v);
             return fallback;
         }
     }
@@ -152,7 +152,7 @@ public class NetImpairment {
                         return t;
                     })
                     : null;
-            System.out.printf("[NET] impairment simulato: perdita %.1f%%, ritardo %d ms"
+            System.out.printf("[NET] simulated impairment: loss %.1f%%, delay %d ms"
                     + " (+jitter %d ms)%n", lossProbability * 100, this.latencyMs, this.jitterMs);
         }
 
@@ -212,7 +212,7 @@ public class NetImpairment {
             if (scheduler != null) {
                 scheduler.shutdownNow();
             }
-            System.out.printf("[NET] impairment: %d datagrammi buttati, %d ritardati%n",
+            System.out.printf("[NET] impairment: %d datagrams dropped, %d delayed%n",
                     dropped, delayed);
         }
     }

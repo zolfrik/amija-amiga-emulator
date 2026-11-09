@@ -83,7 +83,7 @@ public final class ShaderCatalog {
                 }
             });
         } catch (IOException e) {
-            System.err.println("[GL] Scansione di " + root + " fallita: " + e.getMessage());
+            System.err.println("[GL] Scan of " + root + " failed: " + e.getMessage());
         }
         out.sort(String.CASE_INSENSITIVE_ORDER);
         return out;

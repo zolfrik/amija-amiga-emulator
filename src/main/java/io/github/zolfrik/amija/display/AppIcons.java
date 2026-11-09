@@ -59,7 +59,7 @@ public final class AppIcons {
                 } catch (Exception e) {
                     // Icon missing or unreadable: not a fatal error, carry on with the
                     // remaining resolutions.
-                    System.err.println("[ICON] Impossibile caricare " + path + ": " + e);
+                    System.err.println("[ICON] Cannot load " + path + ": " + e);
                 }
             }
             icons = Collections.unmodifiableList(loaded);

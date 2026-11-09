@@ -140,14 +140,14 @@ public final class SlangPreset {
 
         int count = intOf(map, "shaders", 0);
         if (count <= 0) {
-            throw new IOException("Preset senza pass (shaders=" + valueOf(map, "shaders") + "): " + root);
+            throw new IOException("Preset without passes (shaders=" + valueOf(map, "shaders") + "): " + root);
         }
 
         List<PassSpec> passes = new ArrayList<>(count);
         for (int k = 0; k < count; k++) {
             Entry shader = map.get("shader" + k);
             if (shader == null || shader.value().isEmpty()) {
-                throw new IOException("Pass " + k + " senza 'shader" + k + "': " + root);
+                throw new IOException("Pass " + k + " without 'shader" + k + "': " + root);
             }
             PassSpec p = new PassSpec();
             p.shader = resolve(shader.dir(), shader.value(), wildcards);
@@ -203,11 +203,11 @@ public final class SlangPreset {
                               Map<String, String> wildcards) throws IOException {
         Path abs = preset.toAbsolutePath().normalize();
         if (stack.contains(abs)) {
-            System.err.println("[GL] Ciclo di #reference ignorato: " + abs);
+            System.err.println("[GL] #reference loop ignored: " + abs);
             return;
         }
         if (!Files.isRegularFile(abs)) {
-            throw new IOException("Preset non trovato: " + abs);
+            throw new IOException("Preset not found: " + abs);
         }
         stack.push(abs);
         try {
@@ -224,7 +224,7 @@ public final class SlangPreset {
                 Path target = resolve(dir, arg, wildcards);
                 if (!Files.isRegularFile(target)) {
                     // References with unresolvable wildcards are optional.
-                    System.err.println("[GL] #reference saltata (assente): " + target);
+                    System.err.println("[GL] #reference skipped (missing): " + target);
                     continue;
                 }
                 merge(target, map, stack, wildcards);
@@ -300,7 +300,7 @@ public final class SlangPreset {
             // On Windows illegal characters (quotes, ':') are an unchecked exception: without
             // this it escapes from the EDT and closes the parameters popup.
             throw new IOException(
-                    "Percorso non valido nel preset " + baseDir + ": \"" + rel + '"', e);
+                    "Invalid path in preset " + baseDir + ": \"" + rel + '"', e);
         }
     }
 

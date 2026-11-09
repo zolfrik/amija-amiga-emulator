@@ -248,7 +248,7 @@ public final class RemotePlayHost implements AutoCloseable {
                           int audioFormat, boolean lanOnly, int maxSpectators,
                           String spectatorCode) throws IOException {
         if (maxSpectators < 0) {
-            throw new IllegalArgumentException("posti per spettatori negativi: " + maxSpectators);
+            throw new IllegalArgumentException("negative spectator places: " + maxSpectators);
         }
         this.width = width;
         this.height = height;
@@ -262,7 +262,7 @@ public final class RemotePlayHost implements AutoCloseable {
             if (spectatorCode.equals(this.joinCode)) {
                 // One code for both roles would let every spectator play.
                 throw new IllegalArgumentException(
-                        "il codice degli spettatori deve essere diverso da quello dell'ospite");
+                        "the spectator code must differ from the guest's");
             }
             this.spectatorCode = spectatorCode;
         } else {
@@ -300,8 +300,8 @@ public final class RemotePlayHost implements AutoCloseable {
                     if (port != 0 || attempt + 1 >= EPHEMERAL_ATTEMPTS) {
                         int busy = candidate.getLocalPort();
                         candidate.close();
-                        throw new IOException("porta " + busy
-                                + " libera in TCP ma occupata in UDP", e);
+                        throw new IOException("port " + busy
+                                + " free on TCP but busy on UDP", e);
                     }
                     discarded.add(candidate);
                 }
@@ -352,10 +352,10 @@ public final class RemotePlayHost implements AutoCloseable {
         mediaThread.setDaemon(true);
         mediaThread.start();
         if (spectatorCode == null) {
-            RemotePlaySettings.say("in ascolto su %d (TCP+UDP), join code %s", port, joinCode);
+            RemotePlaySettings.say("listening on %d (TCP+UDP), join code %s", port, joinCode);
         } else {
-            RemotePlaySettings.say("in ascolto su %d (TCP+UDP), join code %s, codice spettatori"
-                    + " %s (%d posti)", port, joinCode, spectatorCode, maxSpectators);
+            RemotePlaySettings.say("listening on %d (TCP+UDP), join code %s, spectator code"
+                    + " %s (%d places)", port, joinCode, spectatorCode, maxSpectators);
         }
     }
 
@@ -472,7 +472,7 @@ public final class RemotePlayHost implements AutoCloseable {
             s.audioSender.sendBlock(pcm, frames,
                     (p, n) -> s.media.send(RemotePlayProtocol.TYPE_AUDIO, p, 0, n));
         } catch (IOException e) {
-            s.fail("invio audio interrotto: " + e.getMessage());
+            s.fail("audio sending interrupted: " + e.getMessage());
         }
     }
 
@@ -559,7 +559,7 @@ public final class RemotePlayHost implements AutoCloseable {
             s.control.send(paused ? RemotePlayProtocol.CTRL_PAUSED
                     : RemotePlayProtocol.CTRL_RESUMED);
         } catch (IOException e) {
-            s.fail("invio di PAUSED/RESUMED fallito: " + e.getMessage());
+            s.fail("sending PAUSED/RESUMED failed: " + e.getMessage());
         }
     }
 
@@ -632,7 +632,7 @@ public final class RemotePlayHost implements AutoCloseable {
                 continue;
             } catch (IOException e) {
                 if (running) {
-                    RemotePlaySettings.say("accettazione interrotta: %s", e.getMessage());
+                    RemotePlaySettings.say("accept interrupted: %s", e.getMessage());
                 }
                 return;
             }
@@ -647,7 +647,7 @@ public final class RemotePlayHost implements AutoCloseable {
                     // the code.
                     Handshake.reject(channel, RemotePlayProtocol.REJECT_LAN_ONLY);
                     closeAside(channel);
-                    RemotePlaySettings.say("rifiutato %s: solo rete locale",
+                    RemotePlaySettings.say("refused %s: local network only",
                             socket.getRemoteSocketAddress());
                     continue;
                 }
@@ -658,7 +658,7 @@ public final class RemotePlayHost implements AutoCloseable {
                     // to make the host spend the ~60 ms of PBKDF2 the attempt costs.
                     Handshake.reject(channel, RemotePlayProtocol.REJECT_AUTH);
                     closeAside(channel);
-                    RemotePlaySettings.say("rifiutato %s: troppi codici errati, riprovi fra %d ms",
+                    RemotePlaySettings.say("refused %s: too many wrong codes, retry in %d ms",
                             socket.getRemoteSocketAddress(), wait);
                     continue;
                 }
@@ -670,7 +670,7 @@ public final class RemotePlayHost implements AutoCloseable {
                     // taken there is no point in waiting for it.
                     Handshake.reject(channel, RemotePlayProtocol.REJECT_BUSY);
                     closeAside(channel);
-                    RemotePlaySettings.say("rifiutato %s: c'e' gia' un ospite",
+                    RemotePlaySettings.say("refused %s: a guest is already connected",
                             socket.getRemoteSocketAddress());
                     continue;
                 }
@@ -681,7 +681,7 @@ public final class RemotePlayHost implements AutoCloseable {
                 slotTaken = false;   // delivered: the slot is now theirs
             } catch (java.util.concurrent.RejectedExecutionException e) {
                 // Every handshake thread is busy: refused at once, with the reason.
-                RemotePlaySettings.say("rifiutato %s: troppi collegamenti in corso",
+                RemotePlaySettings.say("refused %s: too many connections in progress",
                         socket.getRemoteSocketAddress());
                 if (slotTaken) {
                     guestSlot.set(false);
@@ -690,7 +690,7 @@ public final class RemotePlayHost implements AutoCloseable {
                 Handshake.reject(channel, RemotePlayProtocol.REJECT_BUSY);
                 closeAside(channel);
             } catch (IOException e) {
-                RemotePlaySettings.say("connessione da %s non accolta: %s",
+                RemotePlaySettings.say("connection from %s not accepted: %s",
                         socket.getRemoteSocketAddress(), e.getMessage());
                 // closeGracefully and not close: if the failure was a REJECT, that message is
                 // still queued and an abrupt close would wipe it out.
@@ -776,13 +776,13 @@ public final class RemotePlayHost implements AutoCloseable {
             throttle.recordSuccess(peer);
         } catch (Handshake.RejectingException e) {
             rejectReason = e.reason();
-            RemotePlaySettings.say("handshake rifiutato con %s: %s",
+            RemotePlaySettings.say("handshake refused with %s: %s",
                     channel.socket().getRemoteSocketAddress(), e.getMessage());
         } catch (IOException e) {
-            RemotePlaySettings.say("handshake fallito con %s: %s",
+            RemotePlaySettings.say("handshake failed with %s: %s",
                     channel.socket().getRemoteSocketAddress(), e.getMessage());
         } catch (RuntimeException e) {
-            RemotePlaySettings.say("handshake interrotto con %s: %s",
+            RemotePlaySettings.say("handshake interrupted with %s: %s",
                     channel.socket().getRemoteSocketAddress(), e);
         } finally {
             if (closing.compareAndSet(false, true)) {
@@ -846,7 +846,7 @@ public final class RemotePlayHost implements AutoCloseable {
             if (!closing.compareAndSet(false, true)) {
                 return;   // the handshake got to the end first
             }
-            RemotePlaySettings.say("handshake con %s oltre %d ms: chiudo",
+            RemotePlaySettings.say("handshake with %s over %d ms: closing",
                     channel.socket().getRemoteSocketAddress(), HANDSHAKE_BUDGET_MS);
             // The channel only. The place is returned by handshake(), the only one that knows
             // whether a session took charge of it: see the comment there.
@@ -889,7 +889,7 @@ public final class RemotePlayHost implements AutoCloseable {
         } catch (IOException e) {
             // Without the list of interfaces locality cannot be proved, and in doubt the peer
             // is refused: it is a security option, not an optimisation.
-            RemotePlaySettings.log("interfacce non elencabili: %s", e.getMessage());
+            RemotePlaySettings.log("interfaces cannot be listed: %s", e.getMessage());
         }
         return false;
     }
@@ -927,14 +927,14 @@ public final class RemotePlayHost implements AutoCloseable {
         if (role == RemotePlayProtocol.ROLE_SPECTATOR) {
             if (maxSpectators == 0) {
                 throw new Handshake.RejectingException(RemotePlayProtocol.REJECT_NO_SPECTATORS,
-                        "spettatori non ammessi");
+                        "spectators not allowed");
             }
             while (true) {
                 int taken = spectatorSlots.get();
                 if (taken >= maxSpectators) {
                     throw new Handshake.RejectingException(
                             RemotePlayProtocol.REJECT_SPECTATORS_FULL,
-                            "posti per spettatori esauriti (" + maxSpectators + ")");
+                            "no spectator places left (" + maxSpectators + ")");
                 }
                 if (spectatorSlots.compareAndSet(taken, taken + 1)) {
                     break;
@@ -948,7 +948,7 @@ public final class RemotePlayHost implements AutoCloseable {
         if (held[0] != RemotePlayProtocol.ROLE_PLAYER) {
             if (!guestSlot.compareAndSet(false, true)) {
                 throw new Handshake.RejectingException(RemotePlayProtocol.REJECT_BUSY,
-                        "c'e' gia' un ospite");
+                        "a guest is already connected");
             }
             held[0] = RemotePlayProtocol.ROLE_PLAYER;
         }
@@ -974,7 +974,7 @@ public final class RemotePlayHost implements AutoCloseable {
                 spectatorSlots.decrementAndGet();
             }
         });
-        RemotePlaySettings.say("spettatore collegato da %s (AmiJa %s), %d su %d",
+        RemotePlaySettings.say("spectator connected from %s (AmiJa %s), %d of %d",
                 channel.socket().getRemoteSocketAddress(), negotiated.peerAppVersion(),
                 broadcast.count(), maxSpectators);
     }
@@ -990,7 +990,7 @@ public final class RemotePlayHost implements AutoCloseable {
             // not come and gives up after ten seconds.
             sendPauseState(s, true);
         }
-        RemotePlaySettings.say("ospite collegato da %s (AmiJa %s), generazione %d",
+        RemotePlaySettings.say("guest connected from %s (AmiJa %s), generation %d",
                 channel.socket().getRemoteSocketAddress(), negotiated.peerAppVersion(), gen);
     }
 
@@ -1023,7 +1023,7 @@ public final class RemotePlayHost implements AutoCloseable {
                 got = false;
             } catch (IOException e) {
                 if (running) {
-                    RemotePlaySettings.say("ricezione media interrotta: %s", e.getMessage());
+                    RemotePlaySettings.say("media reception interrupted: %s", e.getMessage());
                 }
                 return;
             }
@@ -1070,7 +1070,7 @@ public final class RemotePlayHost implements AutoCloseable {
                 }
             }
         }
-        RemotePlaySettings.log("datagramma da %s senza destinatario", from);
+        RemotePlaySettings.log("datagram from %s without a recipient", from);
     }
 
     /**
@@ -1102,8 +1102,8 @@ public final class RemotePlayHost implements AutoCloseable {
             playerHealthyPeriods = 0;
             int divisor = Math.min(MAX_SPECTATOR_DIVISOR, b.frameDivisor() * 2);
             if (divisor != b.frameDivisor()) {
-                RemotePlaySettings.log("collegamento dell'ospite in difficolta': agli spettatori"
-                        + " un frame ogni %d", divisor);
+                RemotePlaySettings.log("guest connection struggling: spectators get"
+                        + " one frame every %d", divisor);
             }
             b.setFrameDivisor(divisor);
         } else if (b.frameDivisor() > 1 && ++playerHealthyPeriods >= PLAYER_HEALTHY_PERIODS) {
@@ -1192,7 +1192,7 @@ public final class RemotePlayHost implements AutoCloseable {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch (IOException e) {
-                fail("invio video interrotto: " + e.getMessage());
+                fail("video sending interrupted: " + e.getMessage());
             } finally {
                 videoSender.close();
             }
@@ -1211,13 +1211,13 @@ public final class RemotePlayHost implements AutoCloseable {
         public void onDatagram(MediaLink.Received received, byte[] plain) {
             if (received.type() != RemotePlayProtocol.TYPE_FEEDBACK) {
                 // The host -> guest direction has nothing to do here: a peer error.
-                RemotePlaySettings.log("datagramma di tipo %d ignorato", received.type());
+                RemotePlaySettings.log("datagram of type %d ignored", received.type());
                 return;
             }
             try {
                 incoming.readFrom(plain, received.length());
             } catch (ProtocolException e) {
-                RemotePlaySettings.log("feedback scartato: %s", e.getMessage());
+                RemotePlaySettings.log("feedback dropped: %s", e.getMessage());
                 return;
             }
             lastFeedbackNanos = System.nanoTime();
@@ -1241,7 +1241,7 @@ public final class RemotePlayHost implements AutoCloseable {
         @Override
         public void checkTimeout(long nowNanos) {
             if (alive && nowNanos - lastFeedbackNanos > SESSION_TIMEOUT_MS * 1_000_000L) {
-                fail("l'ospite non risponde da " + SESSION_TIMEOUT_MS + " ms");
+                fail("the guest has not answered for " + SESSION_TIMEOUT_MS + " ms");
             }
         }
 
@@ -1261,22 +1261,22 @@ public final class RemotePlayHost implements AutoCloseable {
                                 control.send(RemotePlayProtocol.CTRL_PONG);
                         case RemotePlayProtocol.CTRL_PONG -> { }
                         case RemotePlayProtocol.CTRL_BYE -> {
-                            RemotePlaySettings.say("l'ospite si e' disconnesso");
+                            RemotePlaySettings.say("the guest disconnected");
                             stop(-1);
                             return;
                         }
                         default -> RemotePlaySettings.log(
-                                "messaggio di controllo inatteso: %d", m.type());
+                                "unexpected control message: %d", m.type());
                     }
                 }
             } catch (EOFException e) {
                 if (alive) {
-                    RemotePlaySettings.say("l'ospite ha chiuso il collegamento");
+                    RemotePlaySettings.say("the guest closed the connection");
                     stop(-1);
                 }
             } catch (IOException e) {
                 if (alive && running) {
-                    fail("canale di controllo interrotto: " + e.getMessage());
+                    fail("control channel interrupted: " + e.getMessage());
                 }
             }
         }
@@ -1289,7 +1289,7 @@ public final class RemotePlayHost implements AutoCloseable {
 
         void fail(String reason) {
             if (alive) {
-                RemotePlaySettings.say("sessione chiusa: %s", reason);
+                RemotePlaySettings.say("session closed: %s", reason);
             }
             stop(-1);
         }

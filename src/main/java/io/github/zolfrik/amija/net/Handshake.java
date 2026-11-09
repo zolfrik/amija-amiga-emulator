@@ -153,7 +153,7 @@ public final class Handshake {
         private final int reason;
 
         public RejectedException(int reason) {
-            super("connessione rifiutata: " + RemotePlayProtocol.rejectReason(reason));
+            super("connection refused: " + RemotePlayProtocol.rejectReason(reason));
             this.reason = reason;
         }
 
@@ -211,7 +211,7 @@ public final class Handshake {
         return accept(ch, role -> {
             if (role != RemotePlayProtocol.ROLE_PLAYER) {
                 throw new RejectingException(RemotePlayProtocol.REJECT_NO_SPECTATORS,
-                        "ruolo " + role + " non accettato");
+                        "role " + role + " not accepted");
             }
             return new Admission(joinCode, offer);
         });
@@ -238,25 +238,25 @@ public final class Handshake {
                 // for a problem solved by updating the emulator. Checked before anything else
                 // is read, because another version lays the HELLO out differently.
                 throw new RejectingException(RemotePlayProtocol.REJECT_PROTOCOL,
-                        "protocollo " + proto + ", questo host parla il "
+                        "protocol " + proto + ", this host speaks "
                         + RemotePlayProtocol.VERSION);
             }
             role = hb.get() & 0xFF;
             int versionLength = hb.get() & 0xFF;
             if (versionLength > MAX_APP_VERSION) {
-                throw new ProtocolException("appVersion di " + versionLength
-                        + " byte, massimo " + MAX_APP_VERSION);
+                throw new ProtocolException("appVersion of " + versionLength
+                        + " bytes, maximum " + MAX_APP_VERSION);
             }
             byte[] v = new byte[versionLength];
             hb.get(v);
             peerVersion = new String(v, StandardCharsets.UTF_8);
             hb.get(nonce);
         } catch (java.nio.BufferUnderflowException e) {
-            throw new ProtocolException("HELLO troncato", e);
+            throw new ProtocolException("HELLO truncated", e);
         }
         if (role != RemotePlayProtocol.ROLE_PLAYER && role != RemotePlayProtocol.ROLE_SPECTATOR) {
             throw new RejectingException(RemotePlayProtocol.REJECT_PROTOCOL,
-                    "ruolo sconosciuto: " + role);
+                    "unknown role: " + role);
         }
         // The place is taken here, with the role known and nothing computed yet: a refusal for
         // lack of room costs the host no derivation.
@@ -275,7 +275,7 @@ public final class Handshake {
         ControlChannel.Message auth = ch.expect(RemotePlayProtocol.CTRL_AUTH);
         if (auth.length() != SessionCrypto.TAG_BYTES) {
             throw new RejectingException(RemotePlayProtocol.REJECT_AUTH,
-                    "AUTH di " + auth.length() + " byte, attesi "
+                    "AUTH of " + auth.length() + " bytes, expected "
                     + SessionCrypto.TAG_BYTES);
         }
         byte[] received = new byte[SessionCrypto.TAG_BYTES];
@@ -286,7 +286,7 @@ public final class Handshake {
         if (!SessionCrypto.tagsMatch(expected, received)) {
             crypto.destroy();
             throw new RejectingException(RemotePlayProtocol.REJECT_AUTH,
-                    "autenticazione fallita: join code errato");
+                    "authentication failed: wrong join code");
         }
 
         byte[] hostTag = crypto.hostTag(nonce, nonce2, RemotePlayProtocol.VERSION);
@@ -357,7 +357,7 @@ public final class Handshake {
 
         ControlChannel.Message challenge = expectOrReject(ch, RemotePlayProtocol.CTRL_CHALLENGE);
         if (challenge.length() != SessionCrypto.SALT_BYTES + SessionCrypto.NONCE_BYTES) {
-            throw new ProtocolException("CHALLENGE di " + challenge.length() + " byte");
+            throw new ProtocolException("CHALLENGE of " + challenge.length() + " bytes");
         }
         byte[] salt = new byte[SessionCrypto.SALT_BYTES];
         byte[] nonce2 = new byte[SessionCrypto.NONCE_BYTES];
@@ -372,7 +372,7 @@ public final class Handshake {
         ControlChannel.Message welcome = expectOrReject(ch, RemotePlayProtocol.CTRL_WELCOME);
         if (welcome.length() != WELCOME_SIZE) {
             crypto.destroy();
-            throw new ProtocolException("WELCOME di " + welcome.length() + " byte, attesi "
+            throw new ProtocolException("WELCOME of " + welcome.length() + " bytes, expected "
                     + WELCOME_SIZE);
         }
         ByteBuffer wb = welcome.body();
@@ -394,28 +394,28 @@ public final class Handshake {
         if (!SessionCrypto.tagsMatch(expected, hostTag)) {
             crypto.destroy();
             // Whoever is on the other side does not know the join code: no input is sent to it.
-            throw new ProtocolException("l'host non ha dimostrato di conoscere il codice");
+            throw new ProtocolException("the host did not prove it knows the code");
         }
         if (grantedRole != role) {
             crypto.destroy();
-            throw new ProtocolException("l'host ha ammesso il ruolo " + grantedRole
-                    + " invece del " + role);
+            throw new ProtocolException("the host granted role " + grantedRole
+                    + " instead of " + role);
         }
         if (audioFormat != 0 && audioFormat != AudioBlockHeader.FORMAT_PCM16
                 && audioFormat != AudioBlockHeader.FORMAT_ADPCM) {
             crypto.destroy();
-            throw new ProtocolException("formato audio sconosciuto nel WELCOME: " + audioFormat);
+            throw new ProtocolException("unknown audio format in WELCOME: " + audioFormat);
         }
         if (width < 1 || height < 1 || guestGamePort > 1 || audioChannels > 2) {
             crypto.destroy();
-            throw new ProtocolException("parametri di sessione fuori range: " + width + "x"
-                    + height + ", porta " + guestGamePort + ", " + audioChannels + " canali");
+            throw new ProtocolException("session parameters out of range: " + width + "x"
+                    + height + ", port " + guestGamePort + ", " + audioChannels + " channels");
         }
         if (width > MAX_RASTER_SIDE || height > MAX_RASTER_SIDE
                 || (long) width * height > MAX_RASTER_PIXELS) {
             crypto.destroy();
-            throw new ProtocolException("geometria " + width + "x" + height
-                    + " oltre il tetto di " + MAX_RASTER_SIDE + " per lato e "
+            throw new ProtocolException("geometry " + width + "x" + height
+                    + " beyond the limit of " + MAX_RASTER_SIDE + " per side and "
                     + MAX_RASTER_PIXELS + " pixel");
         }
 
@@ -438,8 +438,8 @@ public final class Handshake {
             throw new RejectedException(m.length() >= 1 ? m.data()[0] & 0xFF : 0);
         }
         if (m.type() != type) {
-            throw new ProtocolException("atteso il messaggio di tipo " + type
-                    + ", ricevuto " + m.type());
+            throw new ProtocolException("expected a message of type " + type
+                    + ", received " + m.type());
         }
         return m;
     }

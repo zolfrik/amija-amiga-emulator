@@ -174,10 +174,10 @@ public final class SaveStateManager {
                 Files.move(shot.toPath(), slotScreenshot(1).toPath(),
                         StandardCopyOption.REPLACE_EXISTING);
             }
-            System.out.println("[STATE] stato preesistente spostato nello Slot 1");
+            System.out.println("[STATE] existing state moved to Slot 1");
         } catch (IOException e) {
-            System.err.println("[STATE] impossibile spostare lo stato preesistente"
-                    + " nello Slot 1: " + e.getMessage());
+            System.err.println("[STATE] cannot move the existing state"
+                    + " to Slot 1: " + e.getMessage());
         }
     }
 

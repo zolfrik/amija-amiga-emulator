@@ -303,7 +303,7 @@ public final class DiskImage implements AutoCloseable {
                 }
             }
         }
-        throw new IOException("ZIP: nessun file .adf o .ipf all'indice " + wanted
+        throw new IOException("ZIP: no .adf or .ipf file at index " + wanted
                 + " in " + path.getFileName());
     }
 
@@ -338,8 +338,8 @@ public final class DiskImage implements AutoCloseable {
         if (format == Format.ADF) {
             if      (raw.length == ADF_DD_SIZE) sectorsPerTrack = SECTORS_PER_TRACK_DD;
             else if (raw.length == ADF_HD_SIZE) sectorsPerTrack = SECTORS_PER_TRACK_HD;
-            else throw new IOException("ADF: dimensione non valida: " + raw.length
-                    + " (attesi " + ADF_DD_SIZE + " o " + ADF_HD_SIZE + " byte)");
+            else throw new IOException("ADF: invalid size: " + raw.length
+                    + " (expected " + ADF_DD_SIZE + " or " + ADF_HD_SIZE + " bytes)");
             sectorData   = raw;
             ipfMfmTracks = null;
             ipfTrackBits = null;
@@ -382,8 +382,8 @@ public final class DiskImage implements AutoCloseable {
         checkNotClosed();
         if (physicalTrack < 0) {
             throw new IllegalArgumentException(
-                    "physicalTrack fuori range: " + physicalTrack
-                    + " (atteso >= 0)");
+                    "physicalTrack out of range: " + physicalTrack
+                    + " (expected >= 0)");
         }
         if (physicalTrack >= PHYSICAL_TRACKS || !hasTrackData(physicalTrack)) {
             return blankMfmTrack();
@@ -456,7 +456,7 @@ public final class DiskImage implements AutoCloseable {
     public void readSector(int physicalTrack, int sectorIndex, byte[] out, int off) {
         checkNotClosed();
         if (format != Format.ADF)
-            throw new UnsupportedOperationException("readSector non disponibile per IPF");
+            throw new UnsupportedOperationException("readSector not available for IPF");
         validateAddress(physicalTrack, sectorIndex);
         if (out == null) throw new NullPointerException("out");
         if (off < 0 || off + SECTOR_SIZE > out.length)
@@ -477,7 +477,7 @@ public final class DiskImage implements AutoCloseable {
         checkWritable();
         validateAddress(physicalTrack, sectorIndex);
         if (data.length != SECTOR_SIZE)
-            throw new IllegalArgumentException("writeSector: attesi " + SECTOR_SIZE + " byte");
+            throw new IllegalArgumentException("writeSector: expected " + SECTOR_SIZE + " bytes");
         int offset = (physicalTrack * sectorsPerTrack + sectorIndex) * SECTOR_SIZE;
         System.arraycopy(data, 0, sectorData, offset, SECTOR_SIZE);
         markDirty(physicalTrack);
@@ -491,7 +491,7 @@ public final class DiskImage implements AutoCloseable {
         validateTrack(physicalTrack);
         int expected = sectorsPerTrack * SECTOR_SIZE;
         if (sectors.length != expected)
-            throw new IllegalArgumentException("writeTrack: attesi " + expected + " byte");
+            throw new IllegalArgumentException("writeTrack: expected " + expected + " bytes");
         System.arraycopy(sectors, 0, sectorData, physicalTrack * expected, expected);
         markDirty(physicalTrack);
     }
@@ -786,19 +786,19 @@ public final class DiskImage implements AutoCloseable {
     // =========================================================================
 
     private void checkNotClosed() {
-        if (closed) throw new IllegalStateException("DiskImage è stata chiusa");
+        if (closed) throw new IllegalStateException("DiskImage has been closed");
     }
 
     private void checkWritable() {
         checkNotClosed();
         if (readOnly) throw new IllegalStateException(
-                "DiskImage in sola lettura (formato " + format + ")");
+                "DiskImage is read-only (format " + format + ")");
     }
 
     private void validateTrack(int physicalTrack) {
         if (physicalTrack < 0 || physicalTrack >= PHYSICAL_TRACKS)
             throw new IllegalArgumentException(
-                    "physicalTrack fuori range: " + physicalTrack
+                    "physicalTrack out of range: " + physicalTrack
                     + " (0–" + (PHYSICAL_TRACKS - 1) + ")");
     }
 
@@ -950,7 +950,7 @@ public final class DiskImage implements AutoCloseable {
      */
     private static IpfTracks parseIpf(byte[] raw) throws IOException {
         if (!isIpfMagic(raw))
-            throw new IOException("IPF: magic 'CAPS' non trovato");
+            throw new IOException("IPF: magic 'CAPS' not found");
 
         IpfTracks out = new IpfTracks();
         ByteBuffer buf = ByteBuffer.wrap(raw).order(ByteOrder.BIG_ENDIAN);

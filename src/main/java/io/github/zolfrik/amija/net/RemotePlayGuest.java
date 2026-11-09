@@ -173,17 +173,17 @@ public final class RemotePlayGuest implements AutoCloseable {
         };
 
         if (session.isSpectator()) {
-            RemotePlaySettings.say("collegato a %s:%d come spettatore — video %dx%d, audio %s",
+            RemotePlaySettings.say("connected to %s:%d as a spectator — video %dx%d, audio %s",
                     host, session.mediaPort(), session.width(), session.height(),
-                    audioReceiver == null ? "spento"
+                    audioReceiver == null ? "off"
                             : AudioBlockHeader.formatName(session.audioFormat()));
         } else {
-            RemotePlaySettings.say("collegato a %s:%d — video %dx%d, audio %s, game port %d,"
-                    + " tastiera %s",
+            RemotePlaySettings.say("connected to %s:%d — video %dx%d, audio %s, game port %d,"
+                    + " keyboard %s",
                     host, session.mediaPort(), session.width(), session.height(),
-                    audioReceiver == null ? "spento"
+                    audioReceiver == null ? "off"
                             : AudioBlockHeader.formatName(session.audioFormat()),
-                    session.guestGamePort(), session.keyboardShared() ? "condivisa" : "solo host");
+                    session.guestGamePort(), session.keyboardShared() ? "shared" : "host only");
         }
 
         mediaThread = thread(this::mediaLoop, "amija-remoteplay-media");
@@ -371,7 +371,7 @@ public final class RemotePlayGuest implements AutoCloseable {
                 received = media.receive(plain);
             } catch (IOException e) {
                 if (alive) {
-                    fail(EndCause.ERROR, "ricezione media interrotta: " + e.getMessage(),
+                    fail(EndCause.ERROR, "media reception interrupted: " + e.getMessage(),
                             e.getMessage());
                 }
                 return;
@@ -386,7 +386,7 @@ public final class RemotePlayGuest implements AutoCloseable {
             if (received == null) {
                 if (!hostPaused
                         && System.nanoTime() - lastVideoNanos > SESSION_TIMEOUT_MS * 1_000_000L) {
-                    fail(EndCause.TIMEOUT, "nessun video da " + SESSION_TIMEOUT_MS + " ms", null);
+                    fail(EndCause.TIMEOUT, "no video for " + SESSION_TIMEOUT_MS + " ms", null);
                     return;
                 }
                 continue;
@@ -398,7 +398,7 @@ public final class RemotePlayGuest implements AutoCloseable {
                     } catch (ProtocolException e) {
                         // A dropped audio block costs 23 ms of silence, and the absolute index
                         // makes the next one restart in phase by itself.
-                        RemotePlaySettings.log("blocco audio scartato: %s", e.getMessage());
+                        RemotePlaySettings.log("audio block dropped: %s", e.getMessage());
                     }
                 }
                 continue;
@@ -413,7 +413,7 @@ public final class RemotePlayGuest implements AutoCloseable {
                 // The frame was not ACKed, so the host will compress the next one against an
                 // older reference: the screen has seen nothing wrong and the system has
                 // already caught up by itself. Carry on.
-                RemotePlaySettings.log("frame scartato: %s", e.getMessage());
+                RemotePlaySettings.log("frame dropped: %s", e.getMessage());
             }
         }
     }
@@ -451,7 +451,7 @@ public final class RemotePlayGuest implements AutoCloseable {
                         FeedbackPacket.SIZE);
             } catch (IOException e) {
                 if (alive) {
-                    fail(EndCause.ERROR, "invio del feedback interrotto: " + e.getMessage(),
+                    fail(EndCause.ERROR, "feedback sending interrupted: " + e.getMessage(),
                             e.getMessage());
                 }
                 return;
@@ -483,7 +483,7 @@ public final class RemotePlayGuest implements AutoCloseable {
                         SpectatorFeedback.SIZE);
             } catch (IOException e) {
                 if (alive) {
-                    fail(EndCause.ERROR, "invio del rapporto interrotto: " + e.getMessage(),
+                    fail(EndCause.ERROR, "report sending interrupted: " + e.getMessage(),
                             e.getMessage());
                 }
                 return;
@@ -511,33 +511,33 @@ public final class RemotePlayGuest implements AutoCloseable {
                 switch (m.type()) {
                     case RemotePlayProtocol.CTRL_PAUSED -> {
                         hostPaused = true;
-                        RemotePlaySettings.say("l'host ha messo in pausa");
+                        RemotePlaySettings.say("the host paused");
                     }
                     case RemotePlayProtocol.CTRL_RESUMED -> {
                         hostPaused = false;
                         lastVideoNanos = System.nanoTime();
-                        RemotePlaySettings.say("l'host ha ripreso");
+                        RemotePlaySettings.say("the host resumed");
                     }
                     case RemotePlayProtocol.CTRL_PING ->
                             control.send(RemotePlayProtocol.CTRL_PONG);
                     case RemotePlayProtocol.CTRL_PONG -> { }
                     case RemotePlayProtocol.CTRL_BYE -> {
-                        RemotePlaySettings.say("l'host ha chiuso la sessione");
+                        RemotePlaySettings.say("the host closed the session");
                         end(EndCause.HOST_CLOSED, null);
                         return;
                     }
                     default -> RemotePlaySettings.log(
-                            "messaggio di controllo inatteso: %d", m.type());
+                            "unexpected control message: %d", m.type());
                 }
             }
         } catch (EOFException e) {
             if (alive) {
-                RemotePlaySettings.say("l'host ha chiuso il collegamento");
+                RemotePlaySettings.say("the host closed the connection");
                 end(EndCause.HOST_CLOSED, null);
             }
         } catch (IOException e) {
             if (alive) {
-                fail(EndCause.ERROR, "canale di controllo interrotto: " + e.getMessage(),
+                fail(EndCause.ERROR, "control channel interrupted: " + e.getMessage(),
                         e.getMessage());
             }
         }
@@ -545,7 +545,7 @@ public final class RemotePlayGuest implements AutoCloseable {
 
     private void fail(EndCause cause, String reason, String detail) {
         if (alive) {
-            RemotePlaySettings.say("sessione chiusa: %s", reason);
+            RemotePlaySettings.say("session closed: %s", reason);
             end(cause, detail);
         }
     }

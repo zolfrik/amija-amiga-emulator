@@ -471,7 +471,7 @@ public final class ShaderChain implements RenderChain {
         if (glGetProgrami(prog, GL_LINK_STATUS) == GL_FALSE) {
             String log = glGetProgramInfoLog(prog);
             glDeleteProgram(prog);
-            throw new IOException("Link fallito (" + shaderFile + "): " + log);
+            throw new IOException("Link failed (" + shaderFile + "): " + log);
         }
         return prog;
     }
@@ -483,7 +483,7 @@ public final class ShaderChain implements RenderChain {
         if (glGetShaderi(sh, GL_COMPILE_STATUS) == GL_FALSE) {
             String log = glGetShaderInfoLog(sh);
             glDeleteShader(sh);
-            throw new IOException("Compilazione fallita (" + label + "): " + log);
+            throw new IOException("Compilation failed (" + label + "): " + log);
         }
         return sh;
     }
@@ -556,7 +556,7 @@ public final class ShaderChain implements RenderChain {
                     System.err.println("[GL] LUT illeggibile: " + ts.path);
                 }
             } catch (IOException e) {
-                System.err.println("[GL] LUT non caricata (" + ts.path + "): " + e.getMessage());
+                System.err.println("[GL] LUT not loaded (" + ts.path + "): " + e.getMessage());
             }
             lutTextures.add(new int[]{tex, w, h});
         }

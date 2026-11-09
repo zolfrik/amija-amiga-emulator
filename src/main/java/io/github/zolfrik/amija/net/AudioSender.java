@@ -59,7 +59,7 @@ public final class AudioSender {
 
     public AudioSender(int format) {
         if (format != AudioBlockHeader.FORMAT_PCM16 && format != AudioBlockHeader.FORMAT_ADPCM) {
-            throw new IllegalArgumentException("formato audio non valido: " + format);
+            throw new IllegalArgumentException("invalid audio format: " + format);
         }
         this.format = format;
         this.blob = new byte[AudioBlockHeader.SIZE
@@ -79,7 +79,7 @@ public final class AudioSender {
     public void sendBlock(byte[] pcm, int frames, VideoSender.FragmentSink sink)
             throws IOException {
         if (frames < 1 || frames > AudioBlockHeader.MAX_FRAMES) {
-            throw new IllegalArgumentException("blocco di " + frames + " campioni");
+            throw new IllegalArgumentException("block of " + frames + " samples");
         }
         AudioBlockHeader header = new AudioBlockHeader(sampleIndex, format, frames);
         ByteBuffer b = RemotePlayProtocol.wrap(blob, 0, AudioBlockHeader.SIZE);

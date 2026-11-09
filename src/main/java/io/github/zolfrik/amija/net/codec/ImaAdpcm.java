@@ -129,8 +129,8 @@ public final class ImaAdpcm {
                               int pcmOffset) throws CodecException {
         int needed = blockBytes(frames, 2);
         if (length < needed) {
-            throw new CodecException("blocco ADPCM di " + length + " byte, ne servono " + needed
-                    + " per " + frames + " campioni");
+            throw new CodecException("ADPCM block of " + length + " bytes, needs " + needed
+                    + " for " + frames + " samples");
         }
         int p = srcOffset;
         for (int ch = 0; ch < 2; ch++) {
@@ -138,7 +138,7 @@ public final class ImaAdpcm {
             int index = src[p + 2] & 0xFF;
             if (index >= STEP_TABLE.length) {
                 // It comes from the network: an index outside the table would be an access outside the array.
-                throw new CodecException("indice di passo ADPCM " + index + " fuori tabella");
+                throw new CodecException("ADPCM step index " + index + " outside the table");
             }
             p += BLOCK_HEADER;
 

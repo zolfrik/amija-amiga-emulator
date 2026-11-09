@@ -151,14 +151,14 @@ public final class RemotePlayProtocol {
 
     public static String rejectReason(int code) {
         return switch (code) {
-            case REJECT_AUTH -> "codice di accesso errato";
-            case REJECT_BUSY -> "c'e' gia' un ospite collegato";
-            case REJECT_PROTOCOL -> "versione di protocollo diversa";
-            case REJECT_SHUTDOWN -> "l'host ha chiuso la sessione";
-            case REJECT_LAN_ONLY -> "l'host accetta solo la propria rete locale";
-            case REJECT_SPECTATORS_FULL -> "posti per spettatori esauriti";
-            case REJECT_NO_SPECTATORS -> "l'host non accetta spettatori";
-            default -> "motivo sconosciuto (" + code + ")";
+            case REJECT_AUTH -> "wrong access code";
+            case REJECT_BUSY -> "a guest is already connected";
+            case REJECT_PROTOCOL -> "different protocol version";
+            case REJECT_SHUTDOWN -> "the host closed the session";
+            case REJECT_LAN_ONLY -> "the host only accepts its own local network";
+            case REJECT_SPECTATORS_FULL -> "no spectator places left";
+            case REJECT_NO_SPECTATORS -> "the host does not accept spectators";
+            default -> "unknown reason (" + code + ")";
         };
     }
 
@@ -194,19 +194,19 @@ public final class RemotePlayProtocol {
      */
     public static void checkHeader(byte[] src, int length) throws ProtocolException {
         if (length < DATAGRAM_HEADER) {
-            throw new ProtocolException("datagramma di " + length + " byte: troppo corto");
+            throw new ProtocolException("datagram of " + length + " bytes: too short");
         }
         int magic = (src[0] & 0xFF) | ((src[1] & 0xFF) << 8);
         if (magic != MAGIC) {
-            throw new ProtocolException("magic 0x" + Integer.toHexString(magic) + " non nostro");
+            throw new ProtocolException("magic 0x" + Integer.toHexString(magic) + " not ours");
         }
         int type = src[2] & 0xFF;
         if (type != TYPE_VIDEO && type != TYPE_AUDIO && type != TYPE_FEEDBACK
                 && type != TYPE_SPECTATOR) {
-            throw new ProtocolException("tipo di datagramma sconosciuto: " + type);
+            throw new ProtocolException("unknown datagram type: " + type);
         }
         if (src[3] != 0) {
-            throw new ProtocolException("flag non nulli: 0x" + Integer.toHexString(src[3] & 0xFF));
+            throw new ProtocolException("non-zero flags: 0x" + Integer.toHexString(src[3] & 0xFF));
         }
     }
 

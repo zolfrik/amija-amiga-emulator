@@ -79,8 +79,8 @@ public final class SpectatorFeedback {
      */
     public void readFrom(byte[] src, int length) throws ProtocolException {
         if (length != SIZE) {
-            throw new ProtocolException("pacchetto dello spettatore di " + length
-                    + " byte, attesi " + SIZE);
+            throw new ProtocolException("spectator packet of " + length
+                    + " bytes, expected " + SIZE);
         }
         ByteBuffer b = RemotePlayProtocol.wrap(src, 0, SIZE);
         seq = b.getInt();
@@ -92,11 +92,11 @@ public final class SpectatorFeedback {
         audioFillMs = b.getShort() & 0xFFFF;
         int reserved16 = b.getShort() & 0xFFFF;
         if ((flags & ~FLAG_WANT_KEYFRAME) != 0) {
-            throw new ProtocolException("flag dello spettatore non definiti: 0x"
+            throw new ProtocolException("undefined spectator flags: 0x"
                     + Integer.toHexString(flags));
         }
         if (reserved8 != 0 || reserved16 != 0) {
-            throw new ProtocolException("campo riservato non nullo");
+            throw new ProtocolException("reserved field not zero");
         }
     }
 

@@ -1551,7 +1551,7 @@ public final class ConfigDialog {
         try {
             return javax.imageio.ImageIO.read(file);
         } catch (IOException e) {
-            System.err.println("[UI] Anteprima dello stato non leggibile ("
+            System.err.println("[UI] State preview not readable ("
                     + file.getName() + "): " + e.getMessage());
             return null;
         }
@@ -2609,7 +2609,7 @@ public final class ConfigDialog {
         try {
             config.save();
         } catch (IOException ex) {
-            System.err.println("[CONFIG] Impossibile salvare l'ultima cartella del file browser: "
+            System.err.println("[CONFIG] Cannot save the file browser's last folder: "
                     + ex.getMessage());
         }
     }
