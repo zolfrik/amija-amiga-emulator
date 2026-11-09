@@ -520,9 +520,9 @@ CONTENTS
      Values: lz4delta / lz4 / raw (default lz4delta)        Applies: on Start
 
   Sound (expert)                                 mister.audio / .audiolead
-     "On the MiSTer" plays the sound through the MiSTer's output; while the
-     MiSTer does not play it (not connected, or audio off in the core menu)
-     it plays on the PC. The number is how far ahead of the picture the MiSTer
+     "On the MiSTer" plays the sound through the MiSTer's output, drive
+     sounds included; while the MiSTer does not play it (not connected, or
+     audio off in the core menu) it plays on the PC. The number is how far ahead of the picture the MiSTer
      holds the sound, in milliseconds: raise it if the sound crackles, at the
      cost of the same delay on what you hear.
      Values: true / false (default true); 10 - 150 (default 40)

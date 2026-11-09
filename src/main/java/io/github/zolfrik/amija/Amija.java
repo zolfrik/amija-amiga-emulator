@@ -232,6 +232,8 @@ public class Amija implements RemotePlayControl, MisterControl {
     private volatile String remotePlayLastError;
     private boolean pendingLeave;
     private final FloppySound[] floppySounds = new FloppySound[4];
+    // Where the drive sounds go besides the PC: set while the MiSTer takes the audio.
+    private volatile java.util.function.BooleanSupplier floppySoundRoute;
     private final java.util.List<HardFile> hardFiles = new java.util.ArrayList<>();
     // Activity sources for the display's HD LED, one per unit (WHDLoad, master, slave), in
     // the order they appear from left to right.
@@ -610,6 +612,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             sound.setOutputRate(JavaSoundAudioOutput.OUTPUT_RATE);
         }
         out.setAudioSource(null);
+        setFloppySoundRoute(null);
         out.stop();
         misterApplier = null;
         // The PC's controls take the machine back.
@@ -664,8 +667,31 @@ public class Amija implements RemotePlayControl, MisterControl {
         }
         JavaSoundAudioOutput out = paula.getAudioOutput();
         out.setOutputRate(MisterOutput.AUDIO_RATE.hz);
-        mister.setAudioSource(out::render);
+        // The drive sounds ride on the same stream, so they are heard on the MiSTer too.
+        mister.setAudioSource((pcm, frames) -> {
+            int real = out.render(pcm, frames);
+            FloppySound[] sounds = floppySounds.clone();
+            for (FloppySound sound : sounds) {
+                if (sound != null) {
+                    sound.mixInto(pcm, frames, MisterOutput.AUDIO_RATE.hz);
+                }
+            }
+            return real;
+        });
         out.setExternalConsumer(mister::audioActive);
+        setFloppySoundRoute(mister::audioActive);
+    }
+
+    /** Sends the drive sounds where {@code route} says, or only to the PC with {@code null}. */
+    private void setFloppySoundRoute(java.util.function.BooleanSupplier route) {
+        floppySoundRoute = route;
+        synchronized (floppySounds) {
+            for (FloppySound sound : floppySounds) {
+                if (sound != null) {
+                    sound.setExternalRoute(route);
+                }
+            }
+        }
     }
 
     /**
@@ -2092,6 +2118,7 @@ public class Amija implements RemotePlayControl, MisterControl {
 
             if (sound == null) {
                 sound = new FloppySound(true, gainDb);
+                sound.setExternalRoute(floppySoundRoute);
                 floppySounds[index] = sound;
             } else if (sound.getGainDb() != gainDb) {
                 sound.setGainDb(gainDb);
