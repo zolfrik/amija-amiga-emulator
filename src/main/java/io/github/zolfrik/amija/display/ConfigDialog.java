@@ -40,6 +40,7 @@ import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.JoystickKeyMap;
 import io.github.zolfrik.amija.input.PortDevice;
 import io.github.zolfrik.amija.net.RemotePlayControl;
+import io.github.zolfrik.amija.net.mister.MisterControl;
 import io.github.zolfrik.amija.state.SaveStateManager;
 import io.github.zolfrik.amija.whdload.WhdLoadManager;
 
@@ -218,6 +219,7 @@ public final class ConfigDialog {
      *                            shader parameters live ("..." popup).
      * @param onSaveState         saves the slot and returns the outcome message.
      * @param onLoadState         loads the slot; see {@link LoadStateOutcome}.
+     * @param mister              the MiSTer output, or {@code null} to leave its section out
      * @param hardware            the media of the running machine, or {@code null} if there
      *                            is none: without a machine nothing is deferred and the list
      *                            marks nothing.
@@ -229,7 +231,8 @@ public final class ConfigDialog {
             java.util.function.BiConsumer<String, Float> shaderParamUpdater,
             java.util.function.Supplier<String> onSaveState,
             java.util.function.Supplier<LoadStateOutcome> onLoadState,
-            RemotePlayControl remotePlay, DriveHardware hardware, RewindControl rewind) {
+            RemotePlayControl remotePlay, MisterControl mister, DriveHardware hardware,
+            RewindControl rewind) {
         final Result[] result = { Result.CANCEL };
 
         // Before building anything: the tooltips of this popup are meant to be read, not
@@ -886,6 +889,15 @@ public final class ConfigDialog {
                         widgets(dialog, result), syncPorts);
 
         // -------------------------------------------------------------------
+        // Section: MiSTer (docs/groovy-mister-plan.md Phase 7). A guest has no machine whose
+        // picture could go anywhere, so it does not get the section.
+        // -------------------------------------------------------------------
+        MisterSection.Built misterSection = mister == null
+                || (remotePlay != null && remotePlay.isGuest()) ? null
+                : MisterSection.build(config, mister,
+                        title -> section(title, "mister", config), widgets(dialog, result));
+
+        // -------------------------------------------------------------------
         // Scrollable content
         // -------------------------------------------------------------------
         JPanel content = new JPanel();
@@ -922,6 +934,9 @@ public final class ConfigDialog {
         content.add(ports);
         if (remotePlaySection != null) {
             content.add(remotePlaySection.panel());
+        }
+        if (misterSection != null) {
+            content.add(misterSection.panel());
         }
         content.add(av);
         content.add(gui);
@@ -1054,6 +1069,9 @@ public final class ConfigDialog {
             if (remotePlaySection != null) {
                 remotePlaySection.applyToConfig().run();
             }
+            if (misterSection != null) {
+                misterSection.applyToConfig().run();
+            }
             // If a connection to a host was made during the popup, confirming means really
             // becoming the guest, i.e. unmounting the machine, which this dialog cannot do by
             // itself. It exits with the outcome that has it done outside.
@@ -1116,6 +1134,9 @@ public final class ConfigDialog {
         // opened.
         if (remotePlaySection != null) {
             remotePlaySection.dispose().run();
+        }
+        if (misterSection != null) {
+            misterSection.dispose().run();
         }
         return result[0];
     }

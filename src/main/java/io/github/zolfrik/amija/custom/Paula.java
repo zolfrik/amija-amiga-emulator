@@ -419,14 +419,15 @@ public final class Paula {
      * Schedules the next AUDIO_MIX event. The number of master cycles {@code k} to the next
      * sample is the smallest {@code k >= 1} such that
      * {@code outputSamplePhase + rate*k >= PAL_SYSTEM_CLOCK}, with
-     * {@code rate = OUTPUT_RATE + sampleRateCorrection}. Between two samples {@code rate}
+     * {@code rate = outputRate + sampleRateCorrection}. Between two samples {@code rate}
      * is constant (the ASR correction changes only at samples), so this is exactly a
      * per-cycle accumulator.
      */
     private void scheduleNextAudioSample() {
         if (agnus == null) return;
-        double rate = JavaSoundAudioOutput.OUTPUT_RATE + sampleRateCorrection;
-        if (rate <= 0) rate = JavaSoundAudioOutput.OUTPUT_RATE;
+        int nominal = audioOutput.outputRate();
+        double rate = nominal + sampleRateCorrection;
+        if (rate <= 0) rate = nominal;
         long k = (long) Math.ceil((PAL_SYSTEM_CLOCK - outputSamplePhase) / rate);
         if (k < 1) k = 1;
         outputSamplePhase += rate * k - PAL_SYSTEM_CLOCK;
@@ -1615,6 +1616,11 @@ public final class Paula {
 
     public AudioRingBuffer getAudioRingBuffer() {
         return audioRingBuffer;
+    }
+
+    /** The audio output: its rate, and the hooks for an external device that plays it. */
+    public JavaSoundAudioOutput getAudioOutput() {
+        return audioOutput;
     }
 
     /**

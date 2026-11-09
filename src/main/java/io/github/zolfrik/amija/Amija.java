@@ -65,6 +65,11 @@ import io.github.zolfrik.amija.net.RemotePlayHost;
 import io.github.zolfrik.amija.net.RemotePlayProtocol;
 import io.github.zolfrik.amija.net.RemotePlaySettings;
 import io.github.zolfrik.amija.net.VideoReceiver;
+import io.github.zolfrik.amija.custom.audio.JavaSoundAudioOutput;
+import io.github.zolfrik.amija.net.mister.GroovyModeline;
+import io.github.zolfrik.amija.net.mister.MisterControl;
+import io.github.zolfrik.amija.net.mister.MisterOutput;
+import io.github.zolfrik.amija.net.mister.MisterSettings;
 import io.github.zolfrik.amija.net.upnp.PortMapper;
 import io.github.zolfrik.amija.whdload.WhdLoadManager;
 import io.github.zolfrik.amija.custom.audio.FloppySound;
@@ -76,7 +81,9 @@ import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.GamePort;
 import io.github.zolfrik.amija.input.GamePortDevice;
+import io.github.zolfrik.amija.input.GatedKeyTarget;
 import io.github.zolfrik.amija.input.GlfwJoystickService;
+import io.github.zolfrik.amija.input.MisterInputApplier;
 import io.github.zolfrik.amija.input.PortDevice;
 import io.github.zolfrik.amija.input.RemoteInputApplier;
 import io.github.zolfrik.amija.input.RemoteInputSender;
@@ -114,7 +121,7 @@ import javax.swing.UnsupportedLookAndFeelException;
  * host mouse released; when it closes the machine restarts (cold, or resuming) and the
  * mouse is captured again.
  */
-public class Amija implements RemotePlayControl {
+public class Amija implements RemotePlayControl, MisterControl {
 
     private static final boolean VERBOSE = false;
 
@@ -186,6 +193,10 @@ public class Amija implements RemotePlayControl {
     private Keyboard keyboard;
     private AmigaMouseAdapter mouseAdapter;
     private AmigaKeyAdapter keyAdapter;
+    /** The PC's keyboard on its way to the Amiga: closed while the MiSTer's drives it. */
+    private GatedKeyTarget pcKeyboard;
+    /** The MiSTer's controls on the current machine, or null without a MiSTer output. */
+    private MisterInputApplier misterApplier;
     private AmigaJoystickKeyAdapter joystickAdapter;
     // Current game ports (recreated at every boot): Port 0 = mouse/JOY0DAT, Port 1 = joystick/JOY1DAT.
     private GamePort gamePort1;
@@ -196,6 +207,8 @@ public class Amija implements RemotePlayControl {
     // --- Remote play (docs/remote-play-plan.md). One of the two, never both: either this
     // machine emulates and serves a guest, or it does not emulate at all and is the guest.
     private RemotePlayHost remotePlayHost;
+    /** Output to a MiSTer running the Groovy core, or {@code null}. Survives machine rebuilds. */
+    private volatile MisterOutput misterOutput;
     /** Port forwarding on the router while hosting (section 7.1); null if not requested. */
     private volatile PortMapper portMapper;
     private Thread routerCloser;
@@ -396,6 +409,10 @@ public class Amija implements RemotePlayControl {
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             shutdownRemotePlay();
+            MisterOutput mister = misterOutput;
+            if (mister != null) {
+                mister.stop();
+            }
             // The router port must really be withdrawn, not just ordered to: the thread that
             // withdraws it is a daemon and would be killed halfway at JVM exit (section 7.1).
             awaitRouterPortClosed();
@@ -414,6 +431,7 @@ public class Amija implements RemotePlayControl {
         if (validateRom(config)) {
             bootMachine();
             startHosting(remotePlay);
+            startMisterAtBoot();
         } else {
             // ROM missing or wrong at the first start: open the popup so the user can set
             // the Kickstart path and the other parameters.
@@ -463,6 +481,191 @@ public class Amija implements RemotePlayControl {
                     + ": " + e.getMessage());
             remotePlayHost = null;
         }
+    }
+
+    // =========================================================================
+    // MiSTer output (docs/groovy-mister-plan.md)
+    // =========================================================================
+
+    /**
+     * Starts sending frames to a MiSTer at start-up only when the {@code amija.mister.*}
+     * system properties ask for it ({@code amija.mister.host} set). Otherwise the output
+     * starts from the F12 popup, every time. A MiSTer that does not answer is not an error
+     * here: the output keeps retrying while the machine runs locally.
+     */
+    private void startMisterAtBoot() {
+        MisterSettings settings;
+        try {
+            settings = MisterSettings.fromSystemProperties();
+        } catch (IllegalArgumentException e) {
+            System.err.println("[MISTER] configurazione non valida: " + e.getMessage());
+            return;
+        }
+        if (settings == null) {
+            return;
+        }
+        String refusal = launchMister(settings);
+        if (refusal != null) {
+            System.err.println("[MISTER] uscita sul MiSTer non avviata: " + refusal);
+        }
+    }
+
+    /**
+     * Remote play and the MiSTer output exclude each other: whichever is already running
+     * wins, and the other is refused with the reason.
+     *
+     * @return {@code null} if started, otherwise why not
+     */
+    private String launchMister(MisterSettings settings) {
+        if (virtualCRT == null) {
+            return Messages.t("msg.mister.nomachine");
+        }
+        if (remotePlayHost != null || isGuest() || joining) {
+            return Messages.t("msg.mister.remotebusy");
+        }
+        MisterOutput out = new MisterOutput(settings);
+        out.setAga(config.chipset() == Chipset.AGA);
+        misterOutput = out;
+        attachMisterAudio();
+        attachMisterInput();
+        out.start();
+        virtualCRT.setMisterOutput(out);
+        if (clock != null) {
+            clock.setPacer(out);
+        }
+        attachMisterLed();
+        return null;
+    }
+
+    /**
+     * Connects the controls plugged into the MiSTer to the current machine. Whether they or
+     * the PC's drive it, and which device each port takes, is decided by
+     * {@link #applyPortAssignments()}.
+     */
+    private void attachMisterInput() {
+        MisterOutput out = misterOutput;
+        if (out == null) return;
+        if (gamePort1 == null || gamePort2 == null || keyboard == null) {
+            misterApplier = null;
+            out.setInputTarget(null);
+            return;
+        }
+        misterApplier = new MisterInputApplier(gamePort1, gamePort2, keyboard);
+        out.setInputTarget(misterApplier);
+        applyPortAssignments();
+    }
+
+    /** Whether the MiSTer's controls drive the machine instead of the PC's. */
+    private boolean misterControls() {
+        MisterOutput out = misterOutput;
+        return out != null && misterApplier != null
+                && out.settings().inputs() == MisterSettings.Inputs.MISTER;
+    }
+
+    private void attachMisterLed() {
+        if (display == null) return;
+        display.setMisterLedSource(
+                () -> misterOutput != null,
+                () -> {
+                    MisterOutput out = misterOutput;
+                    return out != null && out.isConnected();
+                });
+    }
+
+    @Override
+    public boolean isMisterRunning() {
+        return misterOutput != null;
+    }
+
+    @Override
+    public String startMister() {
+        if (misterOutput != null) {
+            return null;
+        }
+        MisterSettings settings;
+        try {
+            settings = MisterSettings.from(config::misterValue, "mister.");
+        } catch (IllegalArgumentException e) {
+            return Messages.t("msg.mister.badconfig", e.getMessage());
+        }
+        return launchMister(settings);
+    }
+
+    @Override
+    public void stopMister() {
+        MisterOutput out = misterOutput;
+        if (out == null) {
+            return;
+        }
+        misterOutput = null;
+        if (clock != null) {
+            clock.setPacer(null);
+        }
+        if (virtualCRT != null) {
+            virtualCRT.setMisterOutput(null);
+        }
+        if (paula != null) {
+            JavaSoundAudioOutput sound = paula.getAudioOutput();
+            sound.setExternalConsumer(null);
+            sound.setOutputRate(JavaSoundAudioOutput.OUTPUT_RATE);
+        }
+        out.setAudioSource(null);
+        out.stop();
+        misterApplier = null;
+        // The PC's controls take the machine back.
+        applyPortAssignments();
+    }
+
+    @Override
+    public void setMisterGeometry(GroovyModeline.Geometry geometry) {
+        MisterOutput out = misterOutput;
+        if (out != null) {
+            out.setGeometry(geometry);
+        }
+    }
+
+    @Override
+    public String misterStatus() {
+        MisterOutput out = misterOutput;
+        if (out == null) {
+            return Messages.t("msg.mister.off");
+        }
+        java.net.InetAddress found = out.host();
+        MisterOutput.Fault fault = out.fault();
+        if (fault != null && fault.problem() == MisterOutput.Problem.NOT_FOUND) {
+            return Messages.t("msg.mister.fault.not_found");
+        }
+        if (found == null) {
+            return Messages.t("msg.mister.searching");
+        }
+        String host = found.getHostAddress();
+        if (out.isConnected()) {
+            return Messages.t(out.audioActive() ? "msg.mister.connected.audio"
+                    : "msg.mister.connected", host);
+        }
+        if (fault == null) {
+            return Messages.t("msg.mister.connecting", host);
+        }
+        String key = "msg.mister.fault."
+                + fault.problem().name().toLowerCase(java.util.Locale.ROOT);
+        return fault.detail() == null ? Messages.t(key, host)
+                : Messages.t(key, host, fault.detail());
+    }
+
+    /**
+     * Hands the audio of the current machine to the MiSTer, when its settings want it there:
+     * the chain runs at the MiSTer's rate, and the local sound card falls silent while the
+     * MiSTer plays (and takes over again when it does not).
+     */
+    private void attachMisterAudio() {
+        MisterOutput mister = misterOutput;
+        if (mister == null || paula == null || !mister.audioRequested()) {
+            return;
+        }
+        JavaSoundAudioOutput out = paula.getAudioOutput();
+        out.setOutputRate(MisterOutput.AUDIO_RATE.hz);
+        mister.setAudioSource(out::render);
+        out.setExternalConsumer(mister::audioActive);
     }
 
     /**
@@ -946,6 +1149,7 @@ public class Amija implements RemotePlayControl {
     @Override
     public String startHosting() {
         if (remotePlayHost != null) return null;
+        if (misterOutput != null) return Messages.t("msg.remoteplay.misterbusy");
         try {
             remotePlaySettings = new RemotePlaySettings(RemotePlaySettings.Mode.HOST, null,
                     config.remotePlayPort(), null, config.remotePlayBind(),
@@ -999,6 +1203,9 @@ public class Amija implements RemotePlayControl {
     public String requestJoin(String address, String code, boolean spectator) {
         if (joining || isGuest()) {
             return null;   // already in progress or already connected: the popup realigns by itself
+        }
+        if (misterOutput != null) {
+            return Messages.t("msg.remoteplay.misterbusy");
         }
         if (address == null || address.isBlank()) {
             return Messages.t("msg.remoteplay.noaddress");
@@ -1354,7 +1561,7 @@ public class Amija implements RemotePlayControl {
         rewindSession = openRewindSession();
         ConfigDialog.Result result = ConfigDialog.show(frame, config,
                 this::takeScreenshotFile, this::updateShaderParam,
-                this::saveState, this::loadState, this, activeHardware, rewindSession);
+                this::saveState, this::loadState, this, this, activeHardware, rewindSession);
         RewindSession rewind = rewindSession;
         rewindSession = null;
 
@@ -1719,7 +1926,9 @@ public class Amija implements RemotePlayControl {
      *
      * <p>Idempotent and safe live: it redirects the mouse/keyboard adapters to the right port
      * (enabling or disabling them) and tells the GLFW service which ports use a real
-     * joystick.
+     * joystick. While the picture goes to a MiSTer whose controls were chosen, the same
+     * choices are read from the devices plugged into the MiSTer instead, and the PC's
+     * mouse, keyboard and joysticks reach neither the ports nor the Amiga keyboard.
      *
      * <p><b>The guest's port is not the host's.</b> While hosting, the game port assigned to
      * the guest is outside this function: what is plugged into it is decided by the guest
@@ -1740,9 +1949,25 @@ public class Amija implements RemotePlayControl {
         if (guestPort == 0) d0 = null;
         if (guestPort == 1) d1 = null;
 
+        // With the MiSTer's controls in charge the same choices apply to its devices, and the
+        // PC's own reach no port and no key.
+        boolean fromMister = misterControls();
+        PortDevice pc0 = fromMister ? PortDevice.NONE : d0;
+        PortDevice pc1 = fromMister ? PortDevice.NONE : d1;
+        if (pcKeyboard != null) {
+            pcKeyboard.setOpen(!fromMister);
+        }
+        MisterInputApplier mister = misterApplier;
+        if (mister != null) {
+            mister.configure(fromMister && d0 != null ? d0 : PortDevice.NONE,
+                    config.joystickKeyMap(0),
+                    fromMister && d1 != null ? d1 : PortDevice.NONE,
+                    config.joystickKeyMap(1));
+        }
+
         // Host mouse -> the port set to MOUSE ("Port 0" first if both are).
-        GamePort mousePort = (d0 == PortDevice.MOUSE) ? gamePort1
-                           : (d1 == PortDevice.MOUSE) ? gamePort2 : null;
+        GamePort mousePort = (pc0 == PortDevice.MOUSE) ? gamePort1
+                           : (pc1 == PortDevice.MOUSE) ? gamePort2 : null;
         if (mouseAdapter != null) {
             mouseAdapter.setPort(mousePort);
             mouseAdapter.setEnabled(mousePort != null);
@@ -1752,17 +1977,17 @@ public class Amija implements RemotePlayControl {
         // can be driven together from the same keyboard.
         if (joystickAdapter != null) {
             joystickAdapter.configure(0,
-                    d0 == PortDevice.JOYSTICK_KEYBOARD ? gamePort1 : null,
+                    pc0 == PortDevice.JOYSTICK_KEYBOARD ? gamePort1 : null,
                     config.joystickKeyMap(0));
             joystickAdapter.configure(1,
-                    d1 == PortDevice.JOYSTICK_KEYBOARD ? gamePort2 : null,
+                    pc1 == PortDevice.JOYSTICK_KEYBOARD ? gamePort2 : null,
                     config.joystickKeyMap(1));
         }
 
         // Real joystick (GLFW) -> every port set to it, in order.
         java.util.List<GamePort> realPorts = new java.util.ArrayList<>(2);
-        if (d0 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort1);
-        if (d1 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort2);
+        if (pc0 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort1);
+        if (pc1 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort2);
         joystickService.setPorts(realPorts);
 
         // Hardware device reported by each port (for the JOYxDAT/POTINP reads), declared
@@ -2401,6 +2626,7 @@ public class Amija implements RemotePlayControl {
             final boolean aga = chipset.isAga();
             AbstractDenise denise = aga ? new AgaDenise() : ecs ? new EcsDenise() : new OcsDenise();
             paula = new Paula();
+            attachMisterAudio();
             paula.startAudioOutput();
 
             CIAPinSet ciaAPins = new CIAPinSet();
@@ -2450,6 +2676,10 @@ public class Amija implements RemotePlayControl {
             if (remotePlayHost != null) {
                 virtualCRT.setRemotePlayHost(remotePlayHost);
             }
+            if (misterOutput != null) {
+                misterOutput.setAga(chipset == Chipset.AGA);
+                virtualCRT.setMisterOutput(misterOutput);
+            }
 
             Keyboard keyboard = new Keyboard(ciaA);
             agnus.setKeyboard(keyboard);
@@ -2459,7 +2689,8 @@ public class Amija implements RemotePlayControl {
             // The target port and the enabled state of mouse/keyboard joystick are set right
             // after by applyPortAssignments (likewise for the real joystick).
             joystickAdapter = new AmigaJoystickKeyAdapter(frame);
-            keyAdapter = new AmigaKeyAdapter(keyboard, frame);
+            pcKeyboard = new GatedKeyTarget(keyboard);
+            keyAdapter = new AmigaKeyAdapter(pcKeyboard, frame);
             // The scale factor comes from the display, not from the config: it is the one
             // really applied to the window (already normalised to >= 1). It brings the mouse
             // deltas, which arrive in screen pixels, back to Amiga pixels.
@@ -2484,8 +2715,9 @@ public class Amija implements RemotePlayControl {
             applyPortAssignments();
 
             // The guest's controls must be reattached to the new game ports and keyboard:
-            // those of the previous machine no longer exist.
+            // those of the previous machine no longer exist. Likewise the MiSTer's.
             attachRemoteInput();
+            attachMisterInput();
 
             // Drives (DF0..DF3): connection and disk to insert at start-up. If DF0 holds a
             // multi-disk zip, the following disks fill the free drives.
@@ -2514,6 +2746,7 @@ public class Amija implements RemotePlayControl {
             display.setStatusLedSource(ciaA::isPowerLedOn);
             display.setHdLedSources(hdLedSources.toArray(new java.util.function.BooleanSupplier[0]));
             attachRemotePlayLed();
+            attachMisterLed();
             display.setStatusLedsEnabled(config.ledsVisible());
 
             // Optional diagnostic overlays (only from amiga.properties, not in the F12 popup).
@@ -2531,6 +2764,7 @@ public class Amija implements RemotePlayControl {
                 driver = eventBus.driver(eventCpu);
             }
             clock = new MasterClock(agnus, videoMode, virtualCRT, driver);
+            clock.setPacer(misterOutput);
             final MasterClock audioClock = clock;
             paula.setAudioActiveSupplier(() -> !audioClock.isPaused());
             // If the emulation thread dies of an exception, without this hook the display

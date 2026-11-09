@@ -31,7 +31,10 @@ import java.util.function.DoubleSupplier;
 
 public final class JavaSoundAudioOutput implements Runnable {
 
+    /** Default output rate; {@link #setOutputRate} changes it for the whole chain. */
     public static final int OUTPUT_RATE = 44_100;
+    /** Largest block {@link #render} accepts. */
+    public static final int MAX_RENDER_FRAMES = 8192;
     // 512 samples, about 12 ms: the line holds between one and two of them.
     private static final int CHUNK_FRAMES = 512;
     private static final int LINE_BUFFER_FRAMES = CHUNK_FRAMES * 2;
@@ -52,8 +55,14 @@ public final class JavaSoundAudioOutput implements Runnable {
     // The A500's analogue chain, one per side (see A500AudioFilter): a single pole would be
     // darker than the real filter and have the wrong slope above the cut-off.
     private final AudioRingBuffer ringBuffer;
-    private final A500AudioFilter filterLeft = new A500AudioFilter(OUTPUT_RATE);
-    private final A500AudioFilter filterRight = new A500AudioFilter(OUTPUT_RATE);
+    private volatile int outputRate = OUTPUT_RATE;
+    // Read side of the ring: the local line and an external consumer may take turns, so the
+    // read, the filters and the scratch buffers are used under this lock.
+    private final Object consumerLock = new Object();
+    private A500AudioFilter filterLeft = new A500AudioFilter(OUTPUT_RATE);
+    private A500AudioFilter filterRight = new A500AudioFilter(OUTPUT_RATE);
+    private final float[] tmpL = new float[MAX_RENDER_FRAMES];
+    private final float[] tmpR = new float[MAX_RENDER_FRAMES];
 
     private volatile boolean running;
     private volatile boolean ledFilterEnabled;
@@ -82,6 +91,136 @@ public final class JavaSoundAudioOutput implements Runnable {
     }
 
     private volatile PcmTap pcmTap;
+
+    /**
+     * Another device that plays the audio with its own clock and pulls it through
+     * {@link #render}. While it is active the local line plays silence and leaves the ring
+     * alone; when it is not, the local line plays as usual.
+     */
+    public interface ExternalConsumer {
+        boolean active();
+    }
+
+    private volatile ExternalConsumer externalConsumer;
+
+    // The cushion learning of the local line, applied to the external consumer as well (see
+    // the comment at learnedTargetFrames). Used under consumerLock.
+    private long externalActiveSinceNs;
+    private long externalGraceNs = START_GRACE_NS;
+    private long externalLastRaiseNs;
+
+    /** Installs (or removes, with {@code null}) the external consumer. */
+    public void setExternalConsumer(ExternalConsumer consumer) {
+        this.externalConsumer = consumer;
+    }
+
+    private boolean externalActive() {
+        ExternalConsumer c = externalConsumer;
+        return c != null && c.active();
+    }
+
+    /** Sample rate of the whole chain: the producer's resampler, the filters and the line. */
+    public int outputRate() {
+        return outputRate;
+    }
+
+    /**
+     * Changes the sample rate of the chain. The ring is emptied, since what it holds was
+     * made for the old rate; a running line is reopened at the new one.
+     */
+    public synchronized void setOutputRate(int hz) {
+        if (hz <= 0) {
+            throw new IllegalArgumentException("rate " + hz);
+        }
+        if (hz == outputRate) {
+            return;
+        }
+        boolean wasRunning = running;
+        stop();
+        synchronized (consumerLock) {
+            outputRate = hz;
+            filterLeft = new A500AudioFilter(hz);
+            filterRight = new A500AudioFilter(hz);
+            ringBuffer.clear();
+        }
+        if (wasRunning) {
+            start();
+        }
+    }
+
+    /**
+     * Takes exactly {@code frames} samples from the ring for an external consumer, filtered
+     * and converted as for the local line. A ring that cannot supply them all is faded to
+     * silence and padded, so the consumer always gets the count it asked for.
+     *
+     * @param pcm receives interleaved stereo S16LE, {@code frames*4} bytes
+     * @return the samples that came from the ring (less than {@code frames} on an underrun)
+     */
+    public int render(byte[] pcm, int frames) {
+        if (frames < 0 || frames > MAX_RENDER_FRAMES || pcm.length < frames * 4) {
+            throw new IllegalArgumentException("frames " + frames);
+        }
+        synchronized (consumerLock) {
+            int target = ringBuffer.targetFrames();
+            if (ringBuffer.available() > target * 4L) {
+                ringBuffer.discardDownTo(target * 3L / 4);
+            }
+            int got = ringBuffer.read(tmpL, tmpR, frames);
+            long nowNs = System.nanoTime();
+            if (activeSupplier.getAsBoolean()) {
+                if (externalActiveSinceNs == 0) externalActiveSinceNs = nowNs;
+            } else if (externalActiveSinceNs != 0) {
+                externalActiveSinceNs = 0;
+                externalGraceNs = RESUME_GRACE_NS;
+            }
+            if (got < frames) {
+                // Any shortfall is silence the consumer plays: the cushion grows as it does
+                // for the local line.
+                if (externalActiveSinceNs != 0 && nowNs - externalActiveSinceNs > externalGraceNs
+                        && nowNs - externalLastRaiseNs > RAISE_INTERVAL_NS && ringBuffer.raiseTarget()) {
+                    externalLastRaiseNs = nowNs;
+                    learnedTargetFrames = ringBuffer.targetFrames();
+                    System.out.printf("[AUDIO] Underrun: audio cushion lengthened to %d ms%n",
+                            ringBuffer.targetFrames() * 1000 / outputRate);
+                }
+                fadeOut(got, frames);
+            }
+            convert(pcm, frames);
+            return got;
+        }
+    }
+
+    /** Ramps the {@code got} samples read down to zero and pads with silence up to {@code frames}. */
+    private void fadeOut(int got, int frames) {
+        float n = got > 0 ? got : 1.0f;
+        for (int i = 0; i < got; i++) {
+            float ramp = (n - i) / n;
+            tmpL[i] *= ramp;
+            tmpR[i] *= ramp;
+        }
+        for (int i = got; i < frames; i++) {
+            tmpL[i] = 0.0f;
+            tmpR[i] = 0.0f;
+        }
+    }
+
+    /** Filters {@code frames} samples of the scratch buffers and writes them as S16LE. */
+    private void convert(byte[] pcm, int frames) {
+        boolean led = ledFilterEnabled;
+        A500AudioFilter fl = filterLeft;
+        A500AudioFilter fr = filterRight;
+        for (int i = 0; i < frames; i++) {
+            float l = fl.process(tmpL[i], led);
+            float r = fr.process(tmpR[i], led);
+            int li = (int) (clamp(l) * 32767.0f);
+            int ri = (int) (clamp(r) * 32767.0f);
+            int off = i * 4;
+            pcm[off] = (byte) li;
+            pcm[off + 1] = (byte) (li >>> 8);
+            pcm[off + 2] = (byte) ri;
+            pcm[off + 3] = (byte) (ri >>> 8);
+        }
+    }
 
     /**
      * Installs (or removes, with {@code null}) the tap of the PCM toward the network.
@@ -133,10 +272,10 @@ public final class JavaSoundAudioOutput implements Runnable {
 
     @Override
     public void run() {
-        AudioFormat format = new AudioFormat(OUTPUT_RATE, 16, 2, true, false);
-        float[] tmpL = new float[CHUNK_FRAMES];
-        float[] tmpR = new float[CHUNK_FRAMES];
+        int rate = outputRate;
+        AudioFormat format = new AudioFormat(rate, 16, 2, true, false);
         byte[] pcm = new byte[CHUNK_FRAMES * 4];
+        byte[] silence = new byte[CHUNK_FRAMES * 4];
 
         try {
             DataLine.Info info = new DataLine.Info(SourceDataLine.class, format);
@@ -148,7 +287,8 @@ public final class JavaSoundAudioOutput implements Runnable {
 
             // Priming: accumulate an initial cushion before draining the buffer. Kept a little
             // below the target level of the producer's ASR, so it is always reached.
-            while (running && ringBuffer.available() < ringBuffer.targetFrames() * 3L / 4) {
+            while (running && !externalActive()
+                    && ringBuffer.available() < ringBuffer.targetFrames() * 3L / 4) {
                 Thread.sleep(2);
             }
 
@@ -171,66 +311,57 @@ public final class JavaSoundAudioOutput implements Runnable {
                 while (running && line.available() < pcm.length) {
                     Thread.sleep(1);
                 }
+                if (externalActive()) {
+                    // Another device is the clock: the line keeps running on silence, ready
+                    // to take over again, and the ring is left to that device.
+                    activeSinceNs = 0;
+                    graceNs = RESUME_GRACE_NS;
+                    line.write(silence, 0, silence.length);
+                    continue;
+                }
                 if (activeSupplier.getAsBoolean()) {
                     if (activeSinceNs == 0) activeSinceNs = System.nanoTime();
                 } else if (activeSinceNs != 0) {
                     activeSinceNs = 0;
                     graceNs = RESUME_GRACE_NS;
                 }
-                // A ring this full means the consumer was held up (the sound device starting,
-                // a stall of the host): everything beyond the cushion is pure latency, and
-                // draining it through the ASR would take seconds at a lowered pitch.
-                int target = ringBuffer.targetFrames();
-                if (ringBuffer.available() > target * 4L) {
-                    ringBuffer.discardDownTo(target * 3L / 4);
-                }
-                long fillBefore = ringBuffer.available();
-                if (fillBefore < statMinFill) statMinFill = fillBefore;
-                if (fillBefore > statMaxFill) statMaxFill = fillBefore;
-                statSumFill += fillBefore;
-                statChunks++;
+                int frames;
+                synchronized (consumerLock) {
+                    // A ring this full means the consumer was held up (the sound device
+                    // starting, a stall of the host): everything beyond the cushion is pure
+                    // latency, and draining it through the ASR would take seconds at a
+                    // lowered pitch.
+                    int target = ringBuffer.targetFrames();
+                    if (ringBuffer.available() > target * 4L) {
+                        ringBuffer.discardDownTo(target * 3L / 4);
+                    }
+                    long fillBefore = ringBuffer.available();
+                    if (fillBefore < statMinFill) statMinFill = fillBefore;
+                    if (fillBefore > statMaxFill) statMaxFill = fillBefore;
+                    statSumFill += fillBefore;
+                    statChunks++;
 
-                int got = ringBuffer.read(tmpL, tmpR, CHUNK_FRAMES);
-                // A short read is played as it is: the line still holds about a chunk, so
-                // a brief dip of the ring costs nothing audible. Only a nearly empty ring is
-                // an underrun.
-                int frames = got;
-                if (got < MIN_READ_FRAMES) {
-                    statUnderflows++;
-                    long nowNs = System.nanoTime();
-                    if (activeSinceNs != 0 && nowNs - activeSinceNs > graceNs
-                            && nowNs - lastRaiseNs > RAISE_INTERVAL_NS && ringBuffer.raiseTarget()) {
-                        lastRaiseNs = nowNs;
-                        learnedTargetFrames = ringBuffer.targetFrames();
-                        System.out.printf("[AUDIO] Underrun: audio cushion lengthened to %d ms%n",
-                                ringBuffer.targetFrames() * 1000 / OUTPUT_RATE);
+                    int got = ringBuffer.read(tmpL, tmpR, CHUNK_FRAMES);
+                    // A short read is played as it is: the line still holds about a chunk,
+                    // so a brief dip of the ring costs nothing audible. Only a nearly empty
+                    // ring is an underrun.
+                    frames = got;
+                    if (got < MIN_READ_FRAMES) {
+                        statUnderflows++;
+                        long nowNs = System.nanoTime();
+                        if (activeSinceNs != 0 && nowNs - activeSinceNs > graceNs
+                                && nowNs - lastRaiseNs > RAISE_INTERVAL_NS && ringBuffer.raiseTarget()) {
+                            lastRaiseNs = nowNs;
+                            learnedTargetFrames = ringBuffer.targetFrames();
+                            System.out.printf("[AUDIO] Underrun: audio cushion lengthened to %d ms%n",
+                                    ringBuffer.targetFrames() * 1000 / rate);
+                        }
+                        // Underrun: instead of a hard cut or a DC hold (click), fade the
+                        // available samples to zero and fill the rest with silence.
+                        fadeOut(got, CHUNK_FRAMES);
+                        frames = CHUNK_FRAMES;
                     }
-                    // Underrun: instead of a hard cut or a DC hold (click), fade the available
-                    // samples to zero with a falling ramp and fill the rest with silence.
-                    float n = got > 0 ? got : 1.0f;
-                    for (int i = 0; i < got; i++) {
-                        float ramp = (n - i) / n;
-                        tmpL[i] *= ramp;
-                        tmpR[i] *= ramp;
-                    }
-                    for (int i = got; i < CHUNK_FRAMES; i++) {
-                        tmpL[i] = 0.0f;
-                        tmpR[i] = 0.0f;
-                    }
-                    frames = CHUNK_FRAMES;
-                }
-
-                boolean led = ledFilterEnabled;
-                for (int i = 0; i < frames; i++) {
-                    float l = filterLeft.process(tmpL[i], led);
-                    float r = filterRight.process(tmpR[i], led);
-                    int li = (int) (clamp(l) * 32767.0f);
-                    int ri = (int) (clamp(r) * 32767.0f);
-                    int off = i * 4;
-                    pcm[off] = (byte) li;
-                    pcm[off + 1] = (byte) (li >>> 8);
-                    pcm[off + 2] = (byte) ri;
-                    pcm[off + 3] = (byte) (ri >>> 8);
+                    convert(pcm, frames);
                 }
 
                 // Remote play (docs/remote-play-plan.md section 4.2): the chunk is already

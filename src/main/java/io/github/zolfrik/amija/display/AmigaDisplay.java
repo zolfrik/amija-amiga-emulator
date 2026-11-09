@@ -210,6 +210,10 @@ public class AmigaDisplay {
     private volatile BooleanSupplier remotePlayLedVisible;
     private volatile BooleanSupplier remotePlayLedActive;
 
+    // MiSTer output light: visible while the output runs, lit while the MiSTer answers.
+    private volatile BooleanSupplier misterLedVisible;
+    private volatile BooleanSupplier misterLedActive;
+
     // Notification (absolute path, drive index 0..3) when a disk is inserted by
     // drag-and-drop, so the caller can update the configuration (see F12).
     private volatile ObjIntConsumer<String> diskDropListener;
@@ -252,6 +256,19 @@ public class AmigaDisplay {
     public void setRemotePlayLedSource(BooleanSupplier visible, BooleanSupplier active) {
         this.remotePlayLedVisible = visible;
         this.remotePlayLedActive = active;
+    }
+
+    /**
+     * Connects the MiSTer output light: it says whether the picture is reaching the MiSTer
+     * without opening F12.
+     *
+     * @param visible {@code true} while the output runs: otherwise the row is not drawn
+     * @param active  {@code true} while a session with the MiSTer is open; with
+     *                {@code false} the light stays dim, the output is retrying
+     */
+    public void setMisterLedSource(BooleanSupplier visible, BooleanSupplier active) {
+        this.misterLedVisible = visible;
+        this.misterLedActive = active;
     }
 
     /** Shows or hides the power/drive LED panel (false: nothing drawn). */
@@ -1049,6 +1066,13 @@ public class AmigaDisplay {
             // screen, it is a constant (plan section 15.4).
             rows.add(new LedRow("NET",
                     new boolean[]{ netActive != null && netActive.getAsBoolean() },
+                    DRIVE_ACTIVE_STYLE, DRIVE_IDLE_STYLE));
+        }
+        BooleanSupplier misterVisible = misterLedVisible;
+        if (misterVisible != null && misterVisible.getAsBoolean()) {
+            BooleanSupplier misterActive = misterLedActive;
+            rows.add(new LedRow("MISTER",
+                    new boolean[]{ misterActive != null && misterActive.getAsBoolean() },
                     DRIVE_ACTIVE_STYLE, DRIVE_IDLE_STYLE));
         }
 

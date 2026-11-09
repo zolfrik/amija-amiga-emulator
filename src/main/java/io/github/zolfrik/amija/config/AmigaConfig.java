@@ -145,6 +145,19 @@ public final class AmigaConfig {
     private static final String K_RP_LAST_HOST = "remoteplay.last.host";
     private static final String K_RP_SPECTATORS_MAX = "remoteplay.spectators.max";
 
+    // MiSTer output (docs/groovy-mister-plan.md section 8)
+    private static final String K_MISTER_HOST = "mister.host";
+    private static final String K_MISTER_BIND = "mister.bind";
+    private static final String K_MISTER_MTU = "mister.mtu";
+    private static final String K_MISTER_COMPRESSION = "mister.compression";
+    private static final String K_MISTER_COLOR = "mister.color";
+    private static final String K_MISTER_HSHIFT = "mister.hshift";
+    private static final String K_MISTER_VSHIFT = "mister.vshift";
+    private static final String K_MISTER_AUDIO = "mister.audio";
+    private static final String K_MISTER_AUDIOLEAD = "mister.audiolead";
+    private static final String K_MISTER_INPUTS = "mister.inputs";
+    private static final String K_MISTER_EXPERT = "mister.expert";
+
     // =========================================================================
     // WHDLoad parameters (section whdload.prefs.* at the end of amiga.properties).
     // The S:WHDLoad.prefs file of the WHDLoad hard disk built on the fly is GENERATED from
@@ -611,6 +624,17 @@ public final class AmigaConfig {
         p.setProperty(K_RP_AUDIO_MODE, "adpcm");         // section 15.5, closed while listening
         p.setProperty(K_RP_LAST_HOST, "");
         p.setProperty(K_RP_SPECTATORS_MAX, Integer.toString(DEFAULT_SPECTATORS));
+        p.setProperty(K_MISTER_HOST, "");
+        p.setProperty(K_MISTER_BIND, "");
+        p.setProperty(K_MISTER_MTU, "1500");
+        p.setProperty(K_MISTER_COMPRESSION, "lz4delta");
+        p.setProperty(K_MISTER_COLOR, "auto");
+        p.setProperty(K_MISTER_HSHIFT, "0");
+        p.setProperty(K_MISTER_VSHIFT, "0");
+        p.setProperty(K_MISTER_AUDIO, "true");
+        p.setProperty(K_MISTER_AUDIOLEAD, "40");
+        p.setProperty(K_MISTER_INPUTS, "pc");
+        p.setProperty(K_MISTER_EXPERT, "false");
         // WHDLoad parameters (section whdload.prefs.*): defaults as in the stock WHDLoad.prefs.
         for (WhdPref pref : WHD_PREFS) {
             p.setProperty(pref.key(), pref.def());
@@ -1512,6 +1536,32 @@ public final class AmigaConfig {
         props.setProperty(K_RP_LAST_HOST, host == null ? "" : host.trim());
     }
 
+    // =========================================================================
+    // MiSTer output (docs/groovy-mister-plan.md section 8)
+    // =========================================================================
+
+    private String misterRaw(String fullKey) {
+        return props.getProperty(fullKey, "").trim();
+    }
+
+    /**
+     * One {@code mister.*} value as written, trimmed; {@code null} when absent or empty.
+     * The keys are those of section 8 without the prefix ({@code host}, {@code mtu}, ...).
+     */
+    public String misterValue(String key) {
+        String v = props.getProperty("mister." + key);
+        if (v == null) {
+            return null;
+        }
+        v = v.trim();
+        return v.isEmpty() ? null : v;
+    }
+
+    /** Sets one {@code mister.*} value; {@code null} empties it. */
+    public void setMisterValue(String key, String value) {
+        props.setProperty("mister." + key, value == null ? "" : value.trim());
+    }
+
     public void setOverscanEnabled(boolean enabled) {
         props.setProperty(K_OVERSCAN, Boolean.toString(enabled));
     }
@@ -1865,6 +1915,43 @@ public final class AmigaConfig {
         sb.append("# their own. Each one costs as much upload as the guest, so 4 suits an\n");
         sb.append("# ordinary connection. 0 accepts none; at most 16.\n");
         line(sb, K_RP_SPECTATORS_MAX, Integer.toString(remotePlaySpectatorsMax()));
+
+        sb.append("\n# ============================ MiSTer (Groovy core) ===========================\n");
+        sb.append("# Sends the picture and the sound over Ethernet to a MiSTer FPGA running the\n");
+        sb.append("# Groovy core, which shows it on a 15 kHz CRT. The PC keeps emulating; the\n");
+        sb.append("# MiSTer is only the analogue output. Cannot run together with remote play.\n");
+        sb.append("# All but bind and mtu are also editable from the F12 popup.\n");
+        sb.append("# The output starts from the F12 popup, every time: never by itself, unless\n");
+        sb.append("# the -Damija.mister.* system properties are given on the command line.\n");
+        sb.append("# Address of the MiSTer, e.g. 192.168.1.50. Empty or auto: searched on the PC's\n");
+        sb.append("# networks each time the output starts, a direct cable first.\n");
+        line(sb, K_MISTER_HOST, misterRaw(K_MISTER_HOST));
+        sb.append("# Local address to send from; empty = the network card on the MiSTer's subnet.\n");
+        line(sb, K_MISTER_BIND, misterRaw(K_MISTER_BIND));
+        sb.append("# Link MTU: 1500 for an ordinary network; larger only if both ends use jumbo\n");
+        sb.append("# frames.\n");
+        line(sb, K_MISTER_MTU, misterRaw(K_MISTER_MTU));
+        sb.append("# Frame encoding: lz4delta (default, least traffic), lz4, raw (needs a\n");
+        sb.append("# gigabit link).\n");
+        line(sb, K_MISTER_COMPRESSION, misterRaw(K_MISTER_COMPRESSION));
+        sb.append("# Colour depth: auto (16 bit for OCS/ECS, 24 bit for AGA), 565, 888.\n");
+        line(sb, K_MISTER_COLOR, misterRaw(K_MISTER_COLOR));
+        sb.append("# Position of the picture on the tube: horizontal shift in pixels (-64..64)\n");
+        sb.append("# and vertical shift in lines (-20..20). In the F12 popup with Expert mode.\n");
+        line(sb, K_MISTER_HSHIFT, misterRaw(K_MISTER_HSHIFT));
+        line(sb, K_MISTER_VSHIFT, misterRaw(K_MISTER_VSHIFT));
+        sb.append("# Play the sound on the MiSTer (it falls back to the PC by itself while the\n");
+        sb.append("# MiSTer does not play it).\n");
+        line(sb, K_MISTER_AUDIO, misterRaw(K_MISTER_AUDIO));
+        sb.append("# Sound held by the MiSTer ahead of the picture, in milliseconds (10..150).\n");
+        line(sb, K_MISTER_AUDIOLEAD, misterRaw(K_MISTER_AUDIOLEAD));
+        sb.append("# Whose controls drive the machine: pc (default, the PC's, as without the\n");
+        sb.append("# MiSTer) or mister (the devices plugged into the MiSTer, each port taking the\n");
+        sb.append("# device chosen for it among the game ports; the Groovy core sends them only\n");
+        sb.append("# if PS2 and Joysticks are on in its own menu).\n");
+        line(sb, K_MISTER_INPUTS, misterRaw(K_MISTER_INPUTS));
+        sb.append("# Show colour, compression and sound in the F12 popup.\n");
+        line(sb, K_MISTER_EXPERT, misterRaw(K_MISTER_EXPERT));
 
         sb.append("\n# ===================== WHDLoad parameters (WHDLoad.prefs) ====================\n");
         sb.append("# These values generate the S:WHDLoad.prefs file of the WHDLoad hard disk built\n");

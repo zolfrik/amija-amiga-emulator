@@ -5829,6 +5829,11 @@ public abstract class AbstractAgnus {
      * <p>The programmed modes (VARBEAMEN/VTOTAL/HTOTAL), variable syncs and the recomputed
      * display window are not modelled.
      */
+    /** Whether the beam runs NTSC frames (262 lines) rather than PAL ones (312). */
+    public boolean isBeamNtsc() {
+        return beamNtsc;
+    }
+
     private void applyBeamcon0() {
         final boolean ntsc = (beamcon0 & BEAMCON0_PAL_BIT) == 0;
         if (ntsc == beamNtsc) {

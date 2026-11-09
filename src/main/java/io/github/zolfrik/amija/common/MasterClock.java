@@ -55,6 +55,15 @@ public final class MasterClock {
     private volatile int generation = 0;
     private volatile java.util.function.Consumer<Throwable> failureHandler;
     private volatile Sampler sampler;
+    private volatile ExternalPacer pacer;
+
+    /**
+     * Makes the clock follow {@code pacer} instead of the wall clock, or the wall clock
+     * again with {@code null}.
+     */
+    public void setPacer(ExternalPacer pacer) {
+        this.pacer = pacer;
+    }
 
     /**
      * Something that takes the state of the machine now and then, on the clock thread, at
@@ -255,6 +264,9 @@ public final class MasterClock {
         final boolean DEBUG_PERF_LOG = false; // [CLOCK] diagnostics on stdout (off by default)
 
         long totalCycles = 0;
+        // Nanoseconds the cycles run so far should have taken. Accumulated batch by batch
+        // because an external pacer may change the speed at any time.
+        double expectedNs = 0;
         long startTime = System.nanoTime();
 
         // Diagnostics: emulation speed and number of delay clamps, one line per second.
@@ -275,6 +287,7 @@ public final class MasterClock {
                 // Reset the timing after the pause to avoid jerks
                 startTime = System.nanoTime();
                 totalCycles = 0;
+                expectedNs = 0;
                 continue;
             }
             idle = false;
@@ -294,6 +307,7 @@ public final class MasterClock {
 
             // A sample is taken at a frame boundary: the machine is stepped there first, and
             // the clocks spent count for the pacing like any others.
+            long extraRan = 0;
             Sampler s = sampler;
             if (s != null && s.due(ran)) {
                 long extra = 0;
@@ -302,11 +316,15 @@ public final class MasterClock {
                 }
                 totalCycles += extra;
                 logCycles += extra;
+                extraRan = extra;
                 s.sample();
             }
 
             // Throttling
-            long expectedElapsed = (long) (totalCycles * periodNs);
+            ExternalPacer p = pacer;
+            double speed = p == null ? ExternalPacer.DETACHED : p.speed();
+            expectedNs += (ran + extraRan) * (speed > 0 ? periodNs / speed : periodNs);
+            long expectedElapsed = (long) expectedNs;
             long actualElapsed = System.nanoTime() - startTime;
 
             if (actualElapsed < expectedElapsed) {
@@ -331,6 +349,7 @@ public final class MasterClock {
                 // to real-time pacing, avoiding the flat-out run that would flood the audio
                 // buffer.
                 totalCycles = 0;
+                expectedNs = 0;
                 startTime = System.nanoTime();
                 clampCount++;
             }
@@ -339,6 +358,7 @@ public final class MasterClock {
             // recalibrate every billion cycles (~2 minutes)
             if (totalCycles > 1_000_000_000L) {
                 totalCycles = 0;
+                expectedNs = 0;
                 startTime = System.nanoTime();
             }
 

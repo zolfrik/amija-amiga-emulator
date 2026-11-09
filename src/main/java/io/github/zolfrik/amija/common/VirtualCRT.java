@@ -26,6 +26,7 @@ import io.github.zolfrik.amija.custom.DeniseLineJob;
 import io.github.zolfrik.amija.display.AmigaDisplay;
 import io.github.zolfrik.amija.display.FrameInfo;
 import io.github.zolfrik.amija.net.RemotePlayHost;
+import io.github.zolfrik.amija.net.mister.MisterOutput;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -75,6 +76,10 @@ public final class VirtualCRT {
     // is born, so the video starts here. With the feature off the field is null and the hot
     // path is unchanged: one comparison with null.
     private volatile RemotePlayHost remotePlayHost;
+
+    // Output to a MiSTer running the Groovy core (docs/groovy-mister-plan.md): the same
+    // hand-over as remote play, one comparison with null when off.
+    private volatile MisterOutput misterOutput;
 
     private final Object renderLock = new Object();
     private volatile boolean renderRunning;
@@ -233,6 +238,14 @@ public final class VirtualCRT {
         this.remotePlayHost = host;
     }
 
+    /**
+     * Attaches (or detaches, with {@code null}) the MiSTer output: from now on every
+     * completed frame is also handed to it.
+     */
+    public void setMisterOutput(MisterOutput output) {
+        this.misterOutput = output;
+    }
+
     /** Stops the rendering threads (optional; they are daemons anyway). */
     public void stop() {
         drain();
@@ -313,14 +326,18 @@ public final class VirtualCRT {
                 borderCck1Rgb[wrapPendingRow] = NO_WRAP_SAMPLE;
             }
             wrapPendingRow = -1;
-            // The guest's input is applied HERE and not inside presentFrame(): that one can
-            // skip a frame (frame skip) and the controls must not skip with it. It is the
-            // fixed quantisation point of plan section 4.3: once per frame, on the emulation
-            // thread, always in the same place.
+            // The guest's input, and that of the controls plugged into the MiSTer, is applied
+            // HERE and not inside presentFrame(): that one can skip a frame (frame skip) and
+            // the controls must not skip with it. It is the fixed quantisation point of plan
+            // section 4.3: once per frame, on the emulation thread, always in the same place.
             blankWrapRowsBelowFrame();
             RemotePlayHost inputHost = remotePlayHost;
             if (inputHost != null) {
                 inputHost.applyPendingInput();
+            }
+            MisterOutput misterInput = misterOutput;
+            if (misterInput != null) {
+                misterInput.applyPendingInput();
             }
             handOverFrameEnd();
         } else if (wrapPendingRow >= 0 && hpos >= 2) {
@@ -643,6 +660,10 @@ public final class VirtualCRT {
         RemotePlayHost host = remotePlayHost;
         if (host != null) {
             host.submitFrame(frameBuffer, frameInfo);
+        }
+        MisterOutput mister = misterOutput;
+        if (mister != null) {
+            mister.submitFrame(frameBuffer, RAW_WIDTH, frameInfo, agnus.isBeamNtsc());
         }
         if (!ASYNC_RENDER) {
             // Default: the output stage composes the frame itself.
