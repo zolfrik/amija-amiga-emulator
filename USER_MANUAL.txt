@@ -30,18 +30,20 @@ CONTENTS
         3.8   Rewind
         3.9   Game ports
         3.10  Remote play
-        3.11  Audio / Video
-        3.12  GUI
-        3.13  Optional files
-        3.14  Sub-dialogs
-        3.15  Button bar
+        3.11  MiSTer (Groovy)
+        3.12  Audio / Video
+        3.13  GUI
+        3.14  Optional files
+        3.15  Sub-dialogs
+        3.16  Button bar
     4.  Properties available only in amiga.properties
         4.1   File browser folders
         4.2   Automatic-mode profiles
         4.3   Remote play
-        4.4   Diagnostic overlays
-        4.5   Blitter
-        4.6   WHDLoad parameters
+        4.4   MiSTer
+        4.5   Diagnostic overlays
+        4.6   Blitter
+        4.7   WHDLoad parameters
     5.  Property index
     6.  Command line
     License
@@ -63,6 +65,7 @@ CONTENTS
     *  Software or OpenGL rendering with RetroArch shaders (.glslp, .slangp)
     *  Five save-state slots, rewind, screenshots, real joysticks, drive sounds
     *  Remote play for a second player and spectators
+    *  Output to a real 15 kHz CRT through a MiSTer FPGA (Groovy core)
     *  Automatic mode: the machine is configured from the loaded media
 
   The configuration is stored in amiga.properties and can be edited by hand
@@ -102,7 +105,7 @@ CONTENTS
     whdload-saves/       persistent WHDLoad saves (WHDSaves: volume)
     floppysounds/        drive sound samples; replaceable, empty to silence
     whdload/             WHDLoad system files and .RTB tables; shipped empty,
-                         filled by the download assistant (3.13)
+                         filled by the download assistant (3.14)
 
   ---------------------------------------------------------------------------
   2.2   KEYBOARD AND MOUSE
@@ -139,16 +142,17 @@ CONTENTS
     Rewind (3.8)
     Game ports (3.9)
     Remote play (3.10)
-    Audio / Video (3.11)
-    GUI (3.12)
-    Optional files (3.13)                      hidden once all is installed
+    MiSTer (Groovy) (3.11)
+    Audio / Video (3.12)
+    GUI (3.13)
+    Optional files (3.14)                      hidden once all is installed
 
-  Saved state, Rewind, Game ports, Remote play, Audio / Video and GUI are
-  collapsible and closed by default; the open ones are remembered in
-  ui.popup.expanded.
+  Saved state, Rewind, Game ports, Remote play, MiSTer (Groovy), Audio /
+  Video and GUI are collapsible and closed by default; the open ones are
+  remembered in ui.popup.expanded.
 
   When joining or watching a remote session, System, the drive sections,
-  Saved state and Rewind are hidden.
+  Saved state, Rewind and MiSTer (Groovy) are hidden.
 
   ---------------------------------------------------------------------------
   3.1   CONVENTIONS
@@ -306,9 +310,9 @@ CONTENTS
 
   Auto-run WHDLoad archive                   whdload.enabled / whdload.file
      The archive is extracted into a bootable FFS hard disk together with the
-     WHDLoad system files and started. Requires the WHDLoad files (3.13).
+     WHDLoad system files and started. Requires the WHDLoad files (3.14).
      Saved games are kept in whdload-saves/. WHDLoad options are set in
-     whdload.prefs.* (4.6). Most titles need 1 MB or more of Chip RAM and
+     whdload.prefs.* (4.7). Most titles need 1 MB or more of Chip RAM and
      some Fast RAM.
      Values: true / false; absolute path to .lha or .lzh        Applies: BOOT
 
@@ -357,7 +361,7 @@ CONTENTS
        Joystick (keyboard)   keyboard-emulated joystick       joystick-keyboard
        Empty                 nothing connected                none
 
-     "Joystick (keyboard)" shows a "..." button for the key mapping (3.14.1).
+     "Joystick (keyboard)" shows a "..." button for the key mapping (3.15.1).
      During a remote session only your own port can be set.
      Applies: LIVE
 
@@ -460,8 +464,84 @@ CONTENTS
     "the two machines run different versions of AmiJa"
         Both sides must run the same version.
 
+  Remote play and the MiSTer output (3.11) cannot run together.
+
   ---------------------------------------------------------------------------
-  3.11   AUDIO / VIDEO
+  3.11   MISTER (GROOVY)
+  ---------------------------------------------------------------------------
+
+  Sends the picture and the sound over Ethernet to a MiSTer FPGA running the
+  Groovy core, which shows them on a 15 kHz CRT (for example SCART RGB) with
+  its own analogue output. The PC keeps emulating; the MiSTer is only the
+  screen, with less than a frame of delay. The emulation follows the MiSTer's
+  raster, PAL or NTSC, interlaced modes included.
+
+  Requirements: the Groovy core loaded on the MiSTer before pressing Start,
+  and a wired connection (direct cable or switch). Over Wi-Fi the picture
+  breaks up. The output cannot run together with remote play (3.10).
+
+  While the output runs, the LED panel shows a MISTER light, lit while the
+  MiSTer is receiving the picture.
+
+  Settings                                                     mister.expert
+     Expert mode shows Colour, Compression, Sound and Position as well.
+     Values: true / false (default false)                       Applies: LIVE
+
+  Output: Start / Stop
+     Starts or stops sending. The output never starts by itself: press Start
+     every time AmiJa is launched. On a failure it keeps retrying every
+     2 seconds and the Status line says why.
+
+  MiSTer address                                                 mister.host
+     The MiSTer's IP address. Empty: searched on all the PC's networks each
+     time the output starts, preferring a direct cable. "Search" lists the
+     MiSTers that answer and writes the address of the one chosen.
+     Values: IP address, or empty (default)                 Applies: on Start
+
+  Controls                                                     mister.inputs
+       PC        the PC's mouse, keyboard and joysticks (default)     pc
+       MiSTer    the devices plugged into the MiSTer                  mister
+     With MiSTer, each game port (3.9) takes the matching MiSTer device: its
+     mouse, its joysticks (the first one to the first port set to a real
+     joystick), or its keyboard with the keyboard joystick keys; the rest of
+     its keyboard is the Amiga keyboard, and the PC's controls are ignored.
+     Joystick button 1 is fire, buttons 2 and 3 the second and third; which
+     physical button is which is set in the MiSTer menu (Define buttons). The
+     Groovy core sends them only when PS2 and Joysticks are enabled in its
+     menu, which takes effect when the core is reloaded.
+     Values: pc / mister                                    Applies: on Start
+
+  Colour (expert)                                               mister.color
+       Auto      16 bit for OCS/ECS, 24 bit for AGA (default)     auto
+       16 bit    RGB 565                                          565
+       24 bit    RGB 888                                          888
+     24 bit on OCS/ECS changes nothing on screen and costs more traffic.
+                                                            Applies: on Start
+
+  Compression (expert)                                    mister.compression
+       LZ4 delta      only what changed since the last frame      lz4delta
+       LZ4            whole frames, compressed                    lz4
+       Uncompressed   about 165 Mbit/s, needs a gigabit link      raw
+     Values: lz4delta / lz4 / raw (default lz4delta)        Applies: on Start
+
+  Sound (expert)                                 mister.audio / .audiolead
+     "On the MiSTer" plays the sound through the MiSTer's output; while the
+     MiSTer does not play it (not connected, or audio off in the core menu)
+     it plays on the PC. The number is how far ahead of the picture the MiSTer
+     holds the sound, in milliseconds: raise it if the sound crackles, at the
+     cost of the same delay on what you hear.
+     Values: true / false (default true); 10 - 150 (default 40)
+                                                            Applies: on Start
+
+  Position (expert)                               mister.hshift / .vshift
+     Shift of the picture on the tube, to centre it while watching the TV.
+     Values: -64 - 64 pixels; -20 - 20 lines (default 0)        Applies: LIVE
+
+  Status
+     Whether the MiSTer is receiving the picture and, if not, why.
+
+  ---------------------------------------------------------------------------
+  3.12   AUDIO / VIDEO
   ---------------------------------------------------------------------------
 
   Rendering                                                   video.renderer
@@ -473,7 +553,7 @@ CONTENTS
      RetroArch preset from shaders/ (*.glslp, *.slangp), or None. OpenGL
      only. Slang presets are supported but not shipped; see
      shaders/Mega_Bezel_Packs/readme.txt. The "..." button opens the
-     parameters of the active shader (3.14.2).
+     parameters of the active shader (3.15.2).
      Values: path inside shaders/ without extension, or none    Applies: LIVE
 
   Window mode                                               video.windowMode
@@ -495,7 +575,8 @@ CONTENTS
      Values: true / false                                    Applies: RESTART
 
   Show power/drive LED panel                                    leds.visible
-     Power (also audio filter state), floppy and hard disk LEDs.
+     Power (also audio filter state), floppy and hard disk LEDs, plus NET
+     during remote play and MISTER while the MiSTer output runs.
      Values: true / false                                       Applies: BOOT
 
   Floppy sound volume                                    floppy.sound.volume
@@ -503,7 +584,7 @@ CONTENTS
      Values: 0 - 10                                             Applies: LIVE
 
   ---------------------------------------------------------------------------
-  3.12   GUI
+  3.13   GUI
   ---------------------------------------------------------------------------
 
   Language                                                       ui.language
@@ -518,7 +599,7 @@ CONTENTS
                                                             Applies: RELAUNCH
 
   ---------------------------------------------------------------------------
-  3.13   OPTIONAL FILES
+  3.14   OPTIONAL FILES
   ---------------------------------------------------------------------------
 
   Downloads, on request, two packages AmiJa cannot redistribute, directly
@@ -531,10 +612,10 @@ CONTENTS
   packages are installed. See THIRD-PARTY-NOTICES.md, section 5.
 
   ---------------------------------------------------------------------------
-  3.14   SUB-DIALOGS
+  3.15   SUB-DIALOGS
   ---------------------------------------------------------------------------
 
-  3.14.1   KEYBOARD JOYSTICK KEYS
+  3.15.1   KEYBOARD JOYSTICK KEYS
 
      One row per direction and Fire. Click a button and press the new key;
      ESC cancels (and cannot be assigned). A key can serve only one function
@@ -548,13 +629,13 @@ CONTENTS
      duplicated keys append the side (CONTROL:LEFT, SHIFT:RIGHT).
      Applies: LIVE
 
-  3.14.2   SHADER PARAMETERS
+  3.15.2   SHADER PARAMETERS
 
      One slider per "#pragma parameter" of the preset, applied immediately.
      Values are saved as <preset>.params next to the preset.
 
   ---------------------------------------------------------------------------
-  3.15   BUTTON BAR
+  3.16   BUTTON BAR
   ---------------------------------------------------------------------------
 
     About             version, author and project page
@@ -626,7 +707,21 @@ CONTENTS
         Last address joined. Maintained by AmiJa.
 
   ---------------------------------------------------------------------------
-  4.4   DIAGNOSTIC OVERLAYS
+  4.4   MISTER
+  ---------------------------------------------------------------------------
+
+    mister.bind
+        Local IP address to send from; empty = the network card on the
+        MiSTer's subnet.
+
+    mister.mtu
+        Link MTU. 1500 (default) for an ordinary network; larger only if both
+        ends use jumbo frames.
+
+  Applies: on Start
+
+  ---------------------------------------------------------------------------
+  4.5   DIAGNOSTIC OVERLAYS
   ---------------------------------------------------------------------------
 
     overlay.fps.enabled             host frames per second (bottom left)
@@ -635,7 +730,7 @@ CONTENTS
   Values: true / false (default false)                          Applies: BOOT
 
   ---------------------------------------------------------------------------
-  4.5   BLITTER
+  4.6   BLITTER
   ---------------------------------------------------------------------------
 
     blitter.immediate
@@ -644,7 +739,7 @@ CONTENTS
         Values: true / false (default false)                    Applies: BOOT
 
   ---------------------------------------------------------------------------
-  4.6   WHDLOAD PARAMETERS
+  4.7   WHDLOAD PARAMETERS
   ---------------------------------------------------------------------------
 
   These keys generate S:WHDLoad.prefs on the WHDLoad hard disk; the file
@@ -698,7 +793,7 @@ CONTENTS
   auto.hd.*                      4.2                          BOOT
   auto.kickstart13.path          System (3.2)                 BOOT
   auto.kickstart31.path          System (3.2)                 BOOT
-  blitter.immediate              4.5                          BOOT
+  blitter.immediate              4.6                          BOOT
   chipram.kb                     System (3.2)                 BOOT
   chipset                        System (3.2)                 RESTART
   chooser.*.lastDirectory        4.1                          -
@@ -707,7 +802,7 @@ CONTENTS
   drive.df0..3.enabled           Floppy drives (3.4)          LIVE
   drive.df0..3.readonly          Floppy drives (3.4)          LIVE
   fastram.kb                     System (3.2)                 BOOT
-  floppy.sound.volume            Audio / Video (3.11)         LIVE
+  floppy.sound.volume            Audio / Video (3.12)         LIVE
   hd.master.disk                 Drives (3.3) / Hard d. (3.5) BOOT
   hd.master.enabled              Hard disks (3.5)             BOOT
   hd.master.readonly             Hard disks (3.5)             BOOT
@@ -715,13 +810,24 @@ CONTENTS
   hd.slave.enabled               Hard disks (3.5)             BOOT
   hd.slave.readonly              Hard disks (3.5)             BOOT
   input.port0.device             Game ports (3.9)             LIVE
-  input.port0.joystick.*         Joystick keys (3.14.1)       LIVE
+  input.port0.joystick.*         Joystick keys (3.15.1)       LIVE
   input.port1.device             Game ports (3.9)             LIVE
-  input.port1.joystick.*         Joystick keys (3.14.1)       LIVE
+  input.port1.joystick.*         Joystick keys (3.15.1)       LIVE
   kickstart.path                 System (3.2)                 BOOT
-  leds.visible                   Audio / Video (3.11)         BOOT
-  overlay.fps.enabled            4.4                          BOOT
-  overlay.framecounter.enabled   4.4                          BOOT
+  leds.visible                   Audio / Video (3.12)         BOOT
+  mister.audio                   MiSTer (3.11)                on Start
+  mister.audiolead               MiSTer (3.11)                on Start
+  mister.bind                    4.4                          on Start
+  mister.color                   MiSTer (3.11)                on Start
+  mister.compression             MiSTer (3.11)                on Start
+  mister.expert                  MiSTer (3.11)                LIVE
+  mister.host                    MiSTer (3.11)                on Start
+  mister.hshift                  MiSTer (3.11)                LIVE
+  mister.inputs                  MiSTer (3.11)                on Start
+  mister.mtu                     4.4                          on Start
+  mister.vshift                  MiSTer (3.11)                LIVE
+  overlay.fps.enabled            4.5                          BOOT
+  overlay.framecounter.enabled   4.5                          BOOT
   remoteplay.audio.mode          Remote play (3.10)           next connection
   remoteplay.bind                4.3                          on hosting
   remoteplay.guest.allowreset    Remote play (3.10)           next connection
@@ -735,19 +841,19 @@ CONTENTS
   rewind.seconds                 Rewind (3.8)                 LIVE
   savestate.slot                 Saved state (3.7)            LIVE
   slowram.kb                     System (3.2)                 BOOT
-  ui.language                    GUI (3.12)                   BOOT
+  ui.language                    GUI (3.13)                   BOOT
   ui.popup.expanded              F12 popup (3)                -
-  ui.scale                       GUI (3.12)                   RELAUNCH
-  video.integerScaling           Audio / Video (3.11)         RESTART
+  ui.scale                       GUI (3.13)                   RELAUNCH
+  video.integerScaling           Audio / Video (3.12)         RESTART
   video.mode                     System (3.2)                 RESTART
-  video.monitor                  Audio / Video (3.11)         RESTART
-  video.overscan.enabled         Audio / Video (3.11)         RESTART
-  video.renderer                 Audio / Video (3.11)         RESTART
-  video.shader                   Audio / Video (3.11)         LIVE
-  video.windowMode               Audio / Video (3.11)         RESTART
+  video.monitor                  Audio / Video (3.12)         RESTART
+  video.overscan.enabled         Audio / Video (3.12)         RESTART
+  video.renderer                 Audio / Video (3.12)         RESTART
+  video.shader                   Audio / Video (3.12)         LIVE
+  video.windowMode               Audio / Video (3.12)         RESTART
   whdload.enabled                WHDLoad (3.6)                BOOT
   whdload.file                   Drives (3.3) / WHDLoad (3.6) BOOT
-  whdload.prefs.*                4.6                          BOOT
+  whdload.prefs.*                4.7                          BOOT
 
 
 ===============================================================================

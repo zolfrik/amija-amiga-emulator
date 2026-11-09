@@ -21,6 +21,7 @@
 - audio, real joysticks, mouse and full keyboard mapping, with low input and audio latency
 - software renderer or OpenGL backend with RetroArch shaders (.glslp, .slangp)
 - remote play: a second player joins over the network without a Kickstart or a copy of the game, and spectators can watch
+- MiSTer output: picture and sound on a real 15 kHz CRT through a MiSTer FPGA running the Groovy core, over Ethernet, with less than a frame of delay
 - command line for frontends: media files and any setting as `key=value`
 
 See [CHANGELOG.md](CHANGELOG.md) for the changes in each release.
