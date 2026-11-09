@@ -40,6 +40,7 @@ import javax.swing.SwingWorker;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.Timer;
 import javax.swing.event.ChangeListener;
+import java.awt.BorderLayout;
 import java.awt.FlowLayout;
 import java.util.List;
 import java.util.Locale;
@@ -76,12 +77,17 @@ final class MisterSection {
                 "true".equalsIgnoreCase(nullToEmpty(config.misterValue("expert"))));
         widgets.addRow(panel, 0, "label.mister.expert", expertCheck, null);
 
-        JButton startButton = widgets.button(Messages.t("button.mister.start"));
-        widgets.addRow(panel, 1, "label.mister.output", startButton, null);
-
+        // The address field and its Search button share the field column, so together they
+        // are as wide as the fields of the other rows.
         JTextField hostField = widgets.text(nullToEmpty(config.misterValue("host")));
+        hostField.setColumns(15);
         JButton searchButton = widgets.button(Messages.t("button.mister.search"));
-        widgets.addRow(panel, 2, "label.mister.host", hostField, wrap(searchButton));
+        JPanel hostPanel = new JPanel(new BorderLayout(6, 0));
+        hostPanel.setOpaque(false);
+        hostPanel.add(hostField, BorderLayout.CENTER);
+        hostPanel.add(searchButton, BorderLayout.EAST);
+        widgets.addRow(panel, 2, "label.mister.host", hostPanel, null);
+        widgets.tip("label.mister.host", hostField);
 
         JComboBox<Choice> colorCombo = widgets.combo(Choice.COLORS);
         colorCombo.setSelectedItem(Choice.find(Choice.COLORS, config.misterValue("color")));
@@ -118,6 +124,10 @@ final class MisterSection {
 
         JTextField statusField = widgets.readOnlyText("");
         widgets.addRow(panel, 8, "label.mister.status", statusField, null);
+
+        // Start/Stop comes last, below everything it acts on.
+        JButton startButton = widgets.button(Messages.t("button.mister.start"));
+        widgets.addRow(panel, 9, "label.mister.output", startButton, null);
 
         List<JComponent> expertRows = List.of(colorLabel, colorCombo, compressionLabel,
                 compressionCombo, audioLabel, audioCheck, leadPanel, positionLabel,
