@@ -1,10 +1,10 @@
 # Changelog
 
-## [0.7.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.6.0...v0.7.0) - 2026-11-09
+## [0.7.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.6.0...v0.7.0) - 2026-11-??
 
 ### Added
 
-* **MiSTer output**: the picture and the sound go over Ethernet to a MiSTer FPGA running the Groovy core, on a real 15 kHz CRT, with less than a frame of delay. New MiSTer (Groovy) section in the F12 popup: start and stop, automatic search of the MiSTer, picture position, and the controls plugged into the MiSTer can drive the Amiga.
+* Integration with the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) project, to send video and audio to a real CRT.
 
 ### Fixed
 
@@ -36,4 +36,3 @@
 ## [0.5.0](https://github.com/zolfrik/amija-amiga-emulator/releases/tag/v0.5.0) - 2026-10-23
 
 First public release.
-
