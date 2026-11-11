@@ -1,10 +1,14 @@
 # Changelog
 
-## [0.7.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.6.0...v0.7.0) - 2026-11-??
+## [0.7.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.6.0...v0.7.0) - 2026-11-11
 
 ### Added
 
 * Integration with the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) project, to send video and audio to a real CRT.
+
+### Changed
+
+* Cleaner audio output, with the A1200 output filter on AGA machines.
 
 ### Fixed
 
