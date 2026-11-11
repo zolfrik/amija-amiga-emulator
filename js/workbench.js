@@ -169,9 +169,9 @@
     buffers: null,
     loading: null,
     files: {
-      startup: "sounds/drive_startup_A500.wav?v=6",
-      spin: "sounds/drive_spin_A500.wav?v=6",
-      click: "sounds/drive_click_A500.wav?v=6",
+      startup: "sounds/drive_startup_A500.wav?v=7",
+      spin: "sounds/drive_spin_A500.wav?v=7",
+      click: "sounds/drive_click_A500.wav?v=7",
     },
 
     unlock() {
