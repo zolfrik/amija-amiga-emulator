@@ -41,6 +41,8 @@ shaders/Mega_Bezel_Packs/*
 *.ipf
 *.hdf
 *.lha
+*.iso
+*.cue
 
 # --- Dati di runtime ------------------------------------------------------
 # Tutti creati dall'emulatore al primo avvio, nessuno va versionato.
@@ -48,6 +50,7 @@ amiga.properties
 savestate/
 whdload-cache/
 whdload-saves/
+nvram/
 screenshots/
 dumps/
 *.log

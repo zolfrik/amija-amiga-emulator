@@ -39,6 +39,8 @@ import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.JoystickKeyMap;
 import io.github.zolfrik.amija.input.PortDevice;
+import io.github.zolfrik.amija.memory.KickstartFolder;
+import io.github.zolfrik.amija.memory.KickstartImage;
 import io.github.zolfrik.amija.net.RemotePlayControl;
 import io.github.zolfrik.amija.net.mister.MisterControl;
 import io.github.zolfrik.amija.state.SaveStateManager;
@@ -90,6 +92,8 @@ import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.File;
+import javax.swing.SwingConstants;
+import javax.swing.Timer;
 import java.io.IOException;
 
 /**
@@ -197,13 +201,15 @@ public final class ConfigDialog {
      * @param floppyDrives number of floppy drives connected
      * @param hdDisks      images of the mounted hard disks, in unit order
      * @param whdloadFile  WHDLoad archive running; empty string if none
+     * @param cdImage      CD32 disc in the drive; empty string if none
      */
     public record DriveHardware(int floppyDrives, java.util.List<String> hdDisks,
-            String whdloadFile) {
+            String whdloadFile, String cdImage) {
 
         public DriveHardware {
             hdDisks = java.util.List.copyOf(hdDisks);
             whdloadFile = whdloadFile == null ? "" : whdloadFile.trim();
+            cdImage = cdImage == null ? "" : cdImage.trim();
         }
     }
 
@@ -232,7 +238,7 @@ public final class ConfigDialog {
             java.util.function.Supplier<String> onSaveState,
             java.util.function.Supplier<LoadStateOutcome> onLoadState,
             RemotePlayControl remotePlay, MisterControl mister, DriveHardware hardware,
-            RewindControl rewind) {
+            RewindControl rewind, io.github.zolfrik.amija.net.serial.SerialControl serial) {
         final Result[] result = { Result.CANCEL };
 
         // Before building anything: the tooltips of this popup are meant to be read, not
@@ -267,31 +273,87 @@ public final class ConfigDialog {
         tip("label.kickstart", kickLabel, kickField);
         addRow(system, 1, kickLabel, kickField, kickBrowse);
 
-        // The two ROMs the automatic configuration chooses between: visible only with Expert
-        // off, i.e. when the emulator makes that choice. They have their own key in
-        // amiga.properties but share with the field above the last folder visited
-        // (BrowseKind.ROM): the Kickstarts all live together.
-        //
-        // If neither is set, the configuration predates Auto mode: the first then starts
-        // from the Kickstart chosen by hand, the one the machine is already running with.
-        // Otherwise the user would seem to have lost their ROM.
-        JLabel ks13Label = label(Messages.t("label.kickstart13"));
-        JTextField ks13Field = textField(
-                config.autoKickstart13().isEmpty() && config.autoKickstart31().isEmpty()
-                        ? config.storedKickstartPath() : config.autoKickstart13());
-        JButton ks13Browse = browseButton();
-        ks13Browse.addActionListener(e -> browse(dialog, config, BrowseKind.ROM, ks13Field,
-                Messages.t("chooser.rom"), "rom"));
-        tip("label.kickstart13", ks13Label, ks13Field);
-        addRow(system, 2, ks13Label, ks13Field, ks13Browse);
+        // The CD32's extended ROM: shown under the Kickstart only when that Kickstart is the
+        // CD32's (see syncAuto).
+        JLabel cdExtLabel = label(Messages.t("cd32.extrom"));
+        JTextField cdExt = textField(config.storedCd32ExtRomPath());
+        JButton cdExtBrowse = browseButton();
+        cdExtBrowse.addActionListener(e -> browse(dialog, config, BrowseKind.ROM, cdExt,
+                Messages.t("chooser.cd32rom"), "rom", "bin"));
+        tip("cd32.extrom", cdExtLabel, cdExt);
+        addRow(system, 2, cdExtLabel, cdExt, cdExtBrowse);
 
-        JLabel ks31Label = label(Messages.t("label.kickstart31"));
-        JTextField ks31Field = textField(config.autoKickstart31());
-        JButton ks31Browse = browseButton();
-        ks31Browse.addActionListener(e -> browse(dialog, config, BrowseKind.ROM, ks31Field,
-                Messages.t("chooser.rom"), "rom"));
-        tip("label.kickstart31", ks31Label, ks31Field);
-        addRow(system, 3, ks31Label, ks31Field, ks31Browse);
+        // The folder of Kickstart ROMs the automatic configuration picks from: visible only
+        // with Expert off, i.e. when the emulator makes that choice. The label explains the
+        // setting; the field's tooltip says what was found there for each machine. The folder
+        // is read again in the background whenever it is chosen or its path is edited.
+        JLabel ksDirLabel = label(Messages.t("label.kickstartdir"));
+        JTextField ksDirField = textField(config.autoKickstartDir());
+        JButton ksDirBrowse = browseButton();
+        tip("label.kickstartdir", ksDirLabel);
+        addRow(system, 3, ksDirLabel, ksDirField, ksDirBrowse);
+
+        // The last analysis and the folder it belongs to: the OK reuses it instead of reading
+        // the folder again.
+        KickstartFolder.Result[] ksScan = { null };
+        String[] ksScanDir = { null };
+        Runnable ksRescan = new Runnable() {
+            private javax.swing.SwingWorker<KickstartFolder.Result, Void> running;
+
+            @Override
+            public void run() {
+                String dir = ksDirField.getText().trim();
+                if (dir.equals(ksScanDir[0])) return;
+                if (running != null) running.cancel(false);
+                ksScanDir[0] = dir;
+                ksScan[0] = null;
+                if (dir.isEmpty()) {
+                    ksDirField.setToolTipText(foundSummary(null, Messages.t("kickstartdir.none")));
+                    return;
+                }
+                ksDirField.setToolTipText(foundSummary(null, Messages.t("kickstartdir.scanning")));
+                javax.swing.SwingWorker<KickstartFolder.Result, Void> w = new javax.swing.SwingWorker<>() {
+                    @Override
+                    protected KickstartFolder.Result doInBackground() {
+                        try {
+                            return KickstartFolder.scan(java.nio.file.Path.of(dir));
+                        } catch (RuntimeException e) {
+                            return KickstartFolder.scan(null);
+                        }
+                    }
+
+                    @Override
+                    protected void done() {
+                        if (isCancelled() || !dir.equals(ksScanDir[0])) return;
+                        try {
+                            ksScan[0] = get();
+                        } catch (Exception e) {
+                            return;
+                        }
+                        ksDirField.setToolTipText(foundSummary(ksScan[0], null));
+                    }
+                };
+                running = w;
+                w.execute();
+            }
+        };
+        ksDirBrowse.addActionListener(e -> {
+            File chosen = chooseDirectory(dialog, config, ksDirField.getText(),
+                    Messages.t("chooser.kickstartdir"));
+            if (chosen != null) {
+                ksDirField.setText(chosen.getAbsolutePath());
+                ksDirField.setCaretPosition(ksDirField.getText().length());
+            }
+        });
+        // Typing: the folder is read once the user stops for a moment.
+        Timer ksTyping = new Timer(500, e -> ksRescan.run());
+        ksTyping.setRepeats(false);
+        ksDirField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { ksTyping.restart(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { ksTyping.restart(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { ksTyping.restart(); }
+        });
+        ksRescan.run();
 
         // The six entries below describe the machine's hardware. With Expert off the
         // emulator decides them and the rows disappear entirely: someone who does not know
@@ -312,29 +374,29 @@ public final class ConfigDialog {
                 return this;
             }
         });
-        JLabel cpuLabel = addRow(system, 4, "label.cpu", cpuCombo, null);
+        JLabel cpuLabel = addRow(system, 5, "label.cpu", cpuCombo, null);
 
         // OCS/ECS/AGA chipset: like the processor, a change requires a cold restart.
         JComboBox<Chipset> chipsetCombo = new JComboBox<>(Chipset.values());
         chipsetCombo.setSelectedItem(config.chipset());
         chipsetCombo.setMaximumSize(dim(160, 26));
-        JLabel chipsetLabel = addRow(system, 5, "label.chipset", chipsetCombo, null);
+        JLabel chipsetLabel = addRow(system, 6, "label.chipset", chipsetCombo, null);
 
         JComboBox<Integer> chipCombo = kbCombo(CHIP_RAM_OPTIONS, config.chipRamKb());
-        JLabel chipLabel = addRow(system, 6, "label.chipram", chipCombo, null);
+        JLabel chipLabel = addRow(system, 7, "label.chipram", chipCombo, null);
 
         JComboBox<Integer> slowCombo = kbCombo(SLOW_RAM_OPTIONS, config.slowRamKb());
-        JLabel slowLabel = addRow(system, 7, "label.slowram", slowCombo, null);
+        JLabel slowLabel = addRow(system, 8, "label.slowram", slowCombo, null);
 
         JComboBox<Integer> fastCombo = kbCombo(FAST_RAM_OPTIONS, config.fastRamKb());
-        JLabel fastLabel = addRow(system, 8, "label.fastram", fastCombo, null);
+        JLabel fastLabel = addRow(system, 9, "label.fastram", fastCombo, null);
 
         // PAL/NTSC video mode: changing it requires restarting the emulator (handled by
         // Amija: an OK with a different mode forces a cold restart).
         JComboBox<VideoMode> videoModeCombo = new JComboBox<>(VideoMode.values());
         videoModeCombo.setSelectedItem(config.videoMode());
         videoModeCombo.setMaximumSize(dim(160, 26));
-        JLabel videoLabel = addRow(system, 9, "label.videomode", videoModeCombo, null);
+        JLabel videoLabel = addRow(system, 10, "label.videomode", videoModeCombo, null);
 
         // -------------------------------------------------------------------
         // Section: Game ports
@@ -350,15 +412,19 @@ public final class ConfigDialog {
         // otherwise whoever confirms the popup last would override the other's choice.
         JPanel ports = section(Messages.t("section.gameports"), "gameports", config);
         JoystickKeyMap[] joyKeyMaps = { config.joystickKeyMap(0), config.joystickKeyMap(1) };
+        io.github.zolfrik.amija.input.JoypadMap[] joypadMap = { config.joypadMap() };
+        // Whether the machine being configured is a CD32: its joystick port holds the pad
+        // (set by syncAuto, which knows the Kickstart and the media).
+        boolean[] cd32Machine = { false };
 
         // The button goes in the section's trailing column, the same in which the other
         // sections put their "...": it stays aligned with them and the drop-down keeps its
         // width whether the button is there or not.
-        JComboBox<PortDevice> port0Combo = deviceCombo(config.portDevice(0));
+        JComboBox<PortDevice> port0Combo = deviceCombo(config.portDevice(0), () -> false);
         JButton port0Keys = joystickKeysButton();
         JLabel port0Label = addRow(ports, 0, "label.port0", port0Combo, port0Keys);
 
-        JComboBox<PortDevice> port1Combo = deviceCombo(config.portDevice(1));
+        JComboBox<PortDevice> port1Combo = deviceCombo(config.portDevice(1), () -> cd32Machine[0]);
         JButton port1Keys = joystickKeysButton();
         JLabel port1Label = addRow(ports, 1, "label.port1", port1Combo, port1Keys);
 
@@ -367,8 +433,21 @@ public final class ConfigDialog {
         JLabel portOwnerNote = label("");
         addRow(ports, 2, new JLabel(""), portOwnerNote, null);
 
+        // A keyboard plugged into the CD32: shown only when the machine is one (see syncAuto).
+        JCheckBox cdKeyboard = check(Messages.t("cd32.keyboard"), config.cd32Keyboard());
+        tip("cd32.keyboard", cdKeyboard);
+        addRow(ports, 3, cdKeyboard, null, null);
+
         port0Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 0, joyKeyMaps));
-        port1Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 1, joyKeyMaps));
+        // On a CD32 the joystick port holds the pad: its keyboard keys carry the pad's names,
+        // and a real controller gets its own button mapping.
+        port1Keys.addActionListener(e -> {
+            if (port1Combo.getSelectedItem() == PortDevice.JOYSTICK_REAL) {
+                JoypadButtonsDialog.show(dialog, joypadMap);
+            } else {
+                JoystickKeysDialog.show(dialog, 1, joyKeyMaps, cd32Machine[0]);
+            }
+        });
 
         // A single place where the two rows realign: who owns which port, and the keys
         // button, which appears only on one's OWN port set to the keyboard joystick. Called
@@ -390,7 +469,11 @@ public final class ConfigDialog {
             setJoystickKeysButtonVisible(port0Keys, mine[0]
                     && port0Combo.getSelectedItem() == PortDevice.JOYSTICK_KEYBOARD);
             setJoystickKeysButtonVisible(port1Keys, mine[1]
-                    && port1Combo.getSelectedItem() == PortDevice.JOYSTICK_KEYBOARD);
+                    && (port1Combo.getSelectedItem() == PortDevice.JOYSTICK_KEYBOARD
+                        || (cd32Machine[0] && port1Combo.getSelectedItem() == PortDevice.JOYSTICK_REAL)));
+            port1Keys.setToolTipText(Messages.t(
+                    port1Combo.getSelectedItem() == PortDevice.JOYSTICK_REAL ? "joypad.tooltip"
+                            : cd32Machine[0] ? "joykeys.tooltip.pad" : "joykeys.tooltip"));
 
             String note = null;
             if (guest && remotePort >= 0) {
@@ -560,6 +643,34 @@ public final class ConfigDialog {
         addRow(whd, 0, whdEnabled, whdFile, whdTrailing);
 
         // -------------------------------------------------------------------
+        // Section: CD32, the disc and the keyboard. Expert only, and only when the Kickstart
+        // of the System section is the CD32's; in Auto the disc is an entry of the drive list.
+        // -------------------------------------------------------------------
+        JPanel cd32Panel = section(Messages.t("section.cd32"));
+        JTextField cdDisc = textField(config.cdImage() == null ? "" : config.cdImage());
+        JButton cdBrowse = browseButton();
+        JButton cdEject = ejectButton();
+        Runnable cdSync = () -> cdEject.setEnabled(!cdDisc.getText().trim().isEmpty());
+        cdBrowse.addActionListener(e -> {
+            browse(dialog, config, BrowseKind.MEDIA, cdDisc, Messages.t("chooser.cd32disc"),
+                    "cue", "iso", "zip");
+            cdSync.run();
+        });
+        cdEject.addActionListener(e -> {
+            cdDisc.setText("");
+            cdSync.run();
+        });
+        cdSync.run();
+        JPanel cdTrailing = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        cdTrailing.setOpaque(false);
+        cdTrailing.add(cdBrowse);
+        cdTrailing.add(cdEject);
+        JLabel cdLabel = label(Messages.t("cd32.disc"));
+        tip("cd32.disc", cdLabel, cdDisc);
+        addRow(cd32Panel, 0, cdLabel, cdDisc, cdTrailing);
+
+
+        // -------------------------------------------------------------------
         // Section: Drives, the single list of Auto mode, which replaces the three sections
         // above. See DriveList.
         // -------------------------------------------------------------------
@@ -583,6 +694,7 @@ public final class ConfigDialog {
             }
             s.whdloadEnabled = whdEnabled.isSelected();
             s.whdloadFile = whdFile.getText();
+            s.cdImage = cdDisc.getText();
             return s;
         };
         java.util.function.Consumer<MediaSet> applyToClassic = s -> {
@@ -601,6 +713,8 @@ public final class ConfigDialog {
             whdEnabled.setSelected(s.whdloadEnabled);
             whdFile.setText(s.whdloadFile == null ? "" : s.whdloadFile);
             whdFile.setCaretPosition(0);
+            cdDisc.setText(s.cdImage == null ? "" : s.cdImage);
+            cdDisc.setCaretPosition(0);
             // setSelected/setText fire no events: the row controls must be realigned by
             // hand, or they would stay enabled as before.
             classicSyncs.forEach(Runnable::run);
@@ -614,30 +728,67 @@ public final class ConfigDialog {
         // passing along what the user chose, so a game just put in the list does not vanish
         // when changing one's mind about the mode.
         // -------------------------------------------------------------------
+        // Whether the Kickstart field names the CD32's Kickstart; the file is read again only
+        // when the text changes.
+        String[] kickChecked = { null };
+        boolean[] kickCd32 = { false };
+        java.util.function.BooleanSupplier kickIsCd32 = () -> {
+            String path = kickField.getText().trim();
+            if (!path.equals(kickChecked[0])) {
+                kickChecked[0] = path;
+                kickCd32[0] = KickstartImage.isCd32Kickstart(path);
+            }
+            return kickCd32[0];
+        };
+        boolean guestPopup = remotePlay != null && remotePlay.isGuest();
         Runnable syncAuto = () -> {
             boolean simple = simpleMode.getAsBoolean();
+            // In Expert a CD32 Kickstart makes the machine a CD32: the extended ROM appears
+            // under it, the CD32 section appears, and what the CD32 fixes or lacks goes
+            // away (processor, chipset, the three RAMs, floppy drives, hard disks, WHDLoad).
+            boolean cd32 = !simple && kickIsCd32.getAsBoolean();
             expertCheck.setToolTipText(expertTip(config, simple));
             setRowVisible(!simple, kickLabel, kickField, kickBrowse);
-            setRowVisible(simple, ks13Label, ks13Field, ks13Browse);
-            setRowVisible(simple, ks31Label, ks31Field, ks31Browse);
+            setRowVisible(cd32, cdExtLabel, cdExt, cdExtBrowse);
+            setRowVisible(simple, ksDirLabel, ksDirField, ksDirBrowse);
             // Outside Expert the emulator decides the hardware: the rows are not needed.
-            setRowVisible(!simple, chipLabel, chipCombo);
-            setRowVisible(!simple, slowLabel, slowCombo);
-            setRowVisible(!simple, fastLabel, fastCombo);
+            setRowVisible(!simple && !cd32, chipLabel, chipCombo);
+            setRowVisible(!simple && !cd32, slowLabel, slowCombo);
+            setRowVisible(!simple && !cd32, fastLabel, fastCombo);
             setRowVisible(!simple, videoLabel, videoModeCombo);
-            setRowVisible(!simple, chipsetLabel, chipsetCombo);
-            setRowVisible(!simple, cpuLabel, cpuCombo);
+            setRowVisible(!simple && !cd32, chipsetLabel, chipsetCombo);
+            setRowVisible(!simple && !cd32, cpuLabel, cpuCombo);
             // A single list instead of the three sections per media type.
             media.setVisible(simple);
-            drives.setVisible(!simple);
-            hds.setVisible(!simple);
-            whd.setVisible(!simple);
+            drives.setVisible(!simple && !cd32);
+            hds.setVisible(!simple && !cd32);
+            whd.setVisible(!simple && !cd32);
+            // In Auto a CD32 disc goes in the list of drives like any other medium.
+            cd32Panel.setVisible(cd32);
+            // The CD32 keyboard: in Expert with the CD32 Kickstart, in Auto with a CD32 disc in
+            // the list (the machine Auto builds then boots the CD32 Kickstart). A guest has no
+            // machine of its own.
+            cd32Machine[0] = cd32 || (simple && driveList.hasCd());
+            cdKeyboard.setVisible(!guestPopup && cd32Machine[0]);
+            // The joystick port's names and its "..." follow the machine.
+            syncPorts.run();
+            port1Combo.repaint();
             Container box = media.getParent();
             if (box != null) {
                 box.revalidate();
                 box.repaint();
             }
         };
+
+        // The list tells when a CD32 disc comes or goes.
+        driveList.setOnChange(syncAuto);
+
+        // The Kickstart field is checked again at every edit (browse or typing).
+        kickField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { syncAuto.run(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { syncAuto.run(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { syncAuto.run(); }
+        });
 
         expertCheck.addActionListener(e -> {
             if (simpleMode.getAsBoolean()) {
@@ -883,8 +1034,10 @@ public final class ConfigDialog {
         // The realignment of the game ports rides on this section's timer instead of having
         // its own: what makes it necessary (a guest connecting or dropping while the popup is
         // open) is exactly what that timer watches.
+        // The null modem cable lives here too: a guest has no machine and therefore no port.
         RemotePlaySection.Built remotePlaySection = remotePlay == null ? null
                 : RemotePlaySection.build(config, remotePlay,
+                        remotePlay.isGuest() ? null : serial,
                         title -> section(title, "remoteplay", config),
                         widgets(dialog, result), syncPorts);
 
@@ -917,6 +1070,7 @@ public final class ConfigDialog {
             content.add(drives);
             content.add(hds);
             content.add(whd);
+            content.add(cd32Panel);
         }
         // The saved state comes after the media, after ALL of them, i.e. also after the
         // three per-type sections that in Expert mode replace the single list: so it sits
@@ -1001,8 +1155,15 @@ public final class ConfigDialog {
 
         java.util.function.Consumer<AmigaConfig> applyTo = cfg -> {
             cfg.setAutoEnabled(simpleMode.getAsBoolean());
-            cfg.setAutoKickstart13(ks13Field.getText());
-            cfg.setAutoKickstart31(ks31Field.getText());
+            // The Kickstart folder, and what it holds: the analysis made in the popup when it
+            // is about this folder, otherwise a fresh one (only if the folder changed).
+            String ksDir = ksDirField.getText().trim();
+            cfg.setAutoKickstartDir(ksDir);
+            if (ksScan[0] != null && ksDir.equals(ksScanDir[0])) {
+                cfg.applyKickstartScan(ksScan[0]);
+            } else {
+                cfg.refreshKickstartFolder();
+            }
             // With Expert off the system parameters are derived, not chosen: the saved ones
             // are NOT touched, so switching Expert on gives the user back exactly the machine
             // they configured by hand.
@@ -1018,6 +1179,8 @@ public final class ConfigDialog {
             // The media come from the view the user has in front of them: the single list
             // with Expert off, the three per-type sections with Expert on.
             (simpleMode.getAsBoolean() ? driveList.toMediaState() : classicMedia.get()).toConfig(cfg);
+            cfg.setCd32ExtRomPath(cdExt.getText().trim());
+            cfg.setCd32Keyboard(cdKeyboard.isSelected());
             cfg.setFloppySoundVolume((Integer) soundSpinner.getValue());
             cfg.setLedsVisible(ledCheck.isSelected());
             cfg.setOverscanEnabled(overscanCheck.isSelected());
@@ -1029,6 +1192,7 @@ public final class ConfigDialog {
             cfg.setPortDevice(1, (PortDevice) port1Combo.getSelectedItem());
             cfg.setJoystickKeyMap(0, joyKeyMaps[0]);
             cfg.setJoystickKeyMap(1, joyKeyMaps[1]);
+            cfg.setJoypadMap(joypadMap[0]);
             cfg.setLanguage(langCombo.getSelectedIndex() == 1 ? "it" : "en");
             cfg.setIntegerScaling((Integer) scalingSpinner.getValue());
             cfg.setUiScale((Double) uiScaleCombo.getSelectedItem());
@@ -1916,6 +2080,39 @@ public final class ConfigDialog {
         return "<html><body style='width: 260px'>" + text + "</body></html>";
     }
 
+    /**
+     * Tooltip of the Kickstart folder field: one row per machine, with the file chosen or
+     * "missing". With {@code status} not null, that text alone.
+     */
+    private static String foundSummary(KickstartFolder.Result result, String status) {
+        StringBuilder sb = new StringBuilder("<html><body>");
+        if (status != null) {
+            sb.append("<i>").append(escapeHtml(status)).append("</i>");
+        } else {
+            sb.append("<b>").append(escapeHtml(Messages.t("kickstartdir.found"))).append("</b>");
+            sb.append("<table cellpadding='1' cellspacing='0'>");
+            for (KickstartFolder.Role role : KickstartFolder.Role.values()) {
+                sb.append("<tr><td valign='top' nowrap>").append(escapeHtml(Messages.t(
+                        "kickstartdir.role." + role.name().toLowerCase(java.util.Locale.ROOT))))
+                  .append("&nbsp;&nbsp;</td><td valign='top' nowrap>");
+                KickstartFolder.Found f = result.get(role);
+                if (f == null) {
+                    sb.append("<font color='#E0A040'>")
+                      .append(escapeHtml(Messages.t("kickstartdir.missing"))).append("</font>");
+                } else {
+                    sb.append(escapeHtml(f.fileName()));
+                    if (!f.known()) {
+                        sb.append(" <i>(").append(escapeHtml(Messages.t("kickstartdir.variant")))
+                          .append(")</i>");
+                    }
+                }
+                sb.append("</td></tr>");
+            }
+            sb.append("</table>");
+        }
+        return sb.append("</body></html>").toString();
+    }
+
     private static String escapeHtml(String s) {
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
@@ -2072,7 +2269,12 @@ public final class ConfigDialog {
     }
 
     /** Drop-down choosing a game port's device (Mouse / Joystick / Empty). */
-    private static JComboBox<PortDevice> deviceCombo(PortDevice current) {
+    /**
+     * Drop-down of a port's device. With {@code padNames} true the port holds a CD32 pad and
+     * the two joystick entries are called joypads.
+     */
+    private static JComboBox<PortDevice> deviceCombo(PortDevice current,
+            java.util.function.BooleanSupplier padNames) {
         JComboBox<PortDevice> combo = new JComboBox<>(PortDevice.values());
         combo.setSelectedItem(current);
         combo.setMaximumSize(dim(200, 26));
@@ -2081,7 +2283,12 @@ public final class ConfigDialog {
             public Component getListCellRendererComponent(JList<?> list, Object value,
                     int index, boolean isSelected, boolean cellHasFocus) {
                 super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
-                if (value instanceof PortDevice d) setText(Messages.t(d.messageKey()));
+                if (value instanceof PortDevice d) {
+                    String key = d.messageKey();
+                    if (padNames.getAsBoolean() && d == PortDevice.JOYSTICK_REAL) key = "port.device.joypadReal";
+                    if (padNames.getAsBoolean() && d == PortDevice.JOYSTICK_KEYBOARD) key = "port.device.joypadKeyboard";
+                    setText(Messages.t(key));
+                }
                 return this;
             }
         });
@@ -2218,6 +2425,8 @@ public final class ConfigDialog {
         /** The media of the running machine, or {@code null} if there is none. */
         private final DriveHardware hardware;
         private final java.util.List<Item> items = new java.util.ArrayList<>();
+        /** Called after every change of the list; null until set. */
+        private Runnable onChange;
 
         DriveList(JDialog owner, AmigaConfig config, JPanel panel, DriveHardware hardware) {
             this.owner = owner;
@@ -2252,6 +2461,12 @@ public final class ConfigDialog {
             }
             String whd = MediaSet.text(state.whdloadFile);
             if (state.whdloadEnabled && !whd.isEmpty()) add(whd, false);
+            String cd = MediaSet.text(state.cdImage);
+            if (!cd.isEmpty()) {
+                // A CD32 has no floppy drive: the empty drives of the machine are not listed.
+                items.removeIf(DriveList::isEmptyDrive);
+                items.add(new Item(Kind.CD, cd, true));
+            }
             rebuild();
         }
 
@@ -2273,6 +2488,18 @@ public final class ConfigDialog {
         /** How many floppy drives the running machine has (0 if there is none). */
         private int liveFloppyDrives() {
             return hardware == null ? 0 : hardware.floppyDrives();
+        }
+
+        void setOnChange(Runnable onChange) {
+            this.onChange = onChange;
+        }
+
+        /** True if the list holds a CD32 disc: the machine will be a CD32. */
+        boolean hasCd() {
+            for (Item item : items) {
+                if (item.kind == Kind.CD) return true;
+            }
+            return false;
         }
 
         /** The media of the list, spread over the machine's drives. */
@@ -2303,6 +2530,9 @@ public final class ConfigDialog {
                 // excludes the other.
                 if (kind == Kind.HARDDISK && count(Kind.WHDLOAD, index) > 0) continue;
                 if (kind == Kind.WHDLOAD && count(Kind.HARDDISK, index) > 0) continue;
+                // A CD32 disc makes the machine a CD32: it goes alone, and nothing joins it.
+                if (kind == Kind.CD && countMedia(index) > 0) continue;
+                if (kind != Kind.CD && count(Kind.CD, index) > 0) continue;
                 out.add(kind);
             }
             return out;
@@ -2313,6 +2543,15 @@ public final class ConfigDialog {
             int n = 0;
             for (int i = 0; i < items.size(); i++) {
                 if (i != except && items.get(i).kind == kind) n++;
+            }
+            return n;
+        }
+
+        /** How many entries hold a file (empty drives excluded), excluding row {@code except}. */
+        private int countMedia(int except) {
+            int n = 0;
+            for (int i = 0; i < items.size(); i++) {
+                if (i != except && !isEmptyDrive(items.get(i))) n++;
             }
             return n;
         }
@@ -2347,6 +2586,8 @@ public final class ConfigDialog {
                 case HARDDISK -> nth >= hardware.hdDisks().size()
                         || !hardware.hdDisks().get(nth).equals(item.path);
                 case WHDLOAD -> !hardware.whdloadFile().equals(item.path);
+                // A disc in or out of the drive, or another disc, restarts the machine.
+                case CD -> !hardware.cdImage().equals(item.path);
             };
         }
 
@@ -2360,6 +2601,7 @@ public final class ConfigDialog {
                 case FLOPPY -> Messages.t("drive.entry.floppy", nth);
                 case HARDDISK -> Messages.t(nth == 0 ? "drive.entry.hd.master" : "drive.entry.hd.slave");
                 case WHDLOAD -> Messages.t("drive.entry.whdload");
+                case CD -> Messages.t("drive.entry.cd");
             };
             return pending(index) ? text + " *" : text;
         }
@@ -2371,6 +2613,7 @@ public final class ConfigDialog {
                 case FLOPPY -> "drive.entry.floppy";
                 case HARDDISK -> "drive.entry.hd";
                 case WHDLOAD -> "drive.entry.whdload";
+                case CD -> "drive.entry.cd";
             };
         }
 
@@ -2395,6 +2638,7 @@ public final class ConfigDialog {
             }
             panel.revalidate();
             panel.repaint();
+            if (onChange != null) onChange.run();
         }
 
         private void addEntryRow(int index) {
@@ -2412,7 +2656,8 @@ public final class ConfigDialog {
             JToggleButton readOnly = readOnlyButton(filled && items.get(index).readOnly);
             // WHDLoad is not mounted: AmiJa builds it a hard disk of its own, which must be
             // able to write the saves.
-            readOnly.setEnabled(hasMedia && items.get(index).kind != Kind.WHDLOAD);
+            readOnly.setEnabled(hasMedia && items.get(index).kind != Kind.WHDLOAD
+                    && items.get(index).kind != Kind.CD);
             readOnly.addItemListener(e -> {
                 if (index < items.size()) items.get(index).readOnly = readOnly.isSelected();
             });
@@ -2473,7 +2718,16 @@ public final class ConfigDialog {
                         Messages.t("app.title"), JOptionPane.WARNING_MESSAGE);
                 return;
             }
-            Item item = new Item(kind, path, isZipPath(path));
+            Item item = new Item(kind, path, kind == Kind.CD || isZipPath(path));
+            // A CD32 has no floppy drive: the empty drives go away with the disc's arrival.
+            if (kind == Kind.CD) {
+                for (int i = items.size() - 1; i >= 0; i--) {
+                    if (i != index && isEmptyDrive(items.get(i))) {
+                        items.remove(i);
+                        if (i < index) index--;
+                    }
+                }
+            }
             if (index < items.size()) {
                 items.set(index, item);
             } else {
@@ -2596,6 +2850,38 @@ public final class ConfigDialog {
             rememberLastDirectory(config, kind, parentDir);
         }
         return selected;
+    }
+
+    /**
+     * Opens the file browser in folder mode and returns the folder chosen, or {@code null}.
+     * Starts from the current folder, or from the last ROM folder visited.
+     */
+    private static File chooseDirectory(JDialog parent, AmigaConfig config, String currentPath,
+            String desc) {
+        JFileChooser fc = FastFileChooser.acquire();
+        fc.setDialogTitle(desc);
+        fc.resetChoosableFileFilters();
+        fc.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        try {
+            String current = currentPath == null ? "" : currentPath.trim();
+            File start = !current.isEmpty() && new File(current).isDirectory() ? new File(current)
+                    : config.lastRomDirectory().isEmpty() ? null : new File(config.lastRomDirectory());
+            if (start != null && start.isDirectory()) {
+                File up = start.getParentFile();
+                fc.setCurrentDirectory(up != null ? up : start);
+                fc.setSelectedFile(start);
+            }
+            fc.rescanCurrentDirectory();
+            if (fc.showOpenDialog(parent) != JFileChooser.APPROVE_OPTION) return null;
+            File selected = fc.getSelectedFile();
+            if (selected != null && selected.isDirectory()) {
+                rememberLastDirectory(config, BrowseKind.ROM, selected);
+            }
+            return selected;
+        } finally {
+            // The instance is shared with the file browsers.
+            fc.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        }
     }
 
     private static void rememberLastDirectory(AmigaConfig config, BrowseKind kind, File dir) {

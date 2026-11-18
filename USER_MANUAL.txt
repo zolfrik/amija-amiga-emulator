@@ -26,16 +26,17 @@ CONTENTS
         3.4   Floppy drives (expert mode)
         3.5   Hard disks (expert mode)
         3.6   WHDLoad (expert mode)
-        3.7   Saved state
-        3.8   Rewind
-        3.9   Game ports
-        3.10  Remote play
-        3.11  MiSTer (Groovy)
-        3.12  Audio / Video
-        3.13  GUI
-        3.14  Optional files
-        3.15  Sub-dialogs
-        3.16  Button bar
+        3.7   CD32 (expert mode)
+        3.8   Saved state
+        3.9   Rewind
+        3.10   Game ports
+        3.11  Remote play
+        3.12  MiSTer (Groovy)
+        3.13  Audio / Video
+        3.14  GUI
+        3.15  Optional files
+        3.16  Sub-dialogs
+        3.17  Button bar
     4.  Properties available only in amiga.properties
         4.1   File browser folders
         4.2   Automatic-mode profiles
@@ -44,6 +45,7 @@ CONTENTS
         4.5   Diagnostic overlays
         4.6   Blitter
         4.7   WHDLoad parameters
+        4.8   Serial port
     5.  Property index
     6.  Command line
     License
@@ -57,14 +59,16 @@ CONTENTS
   CIAs and floppy drives run on a common 7.09 MHz master clock.
 
     *  OCS, ECS and AGA chipsets (AGA on an emulated A1200), PAL and NTSC
+    *  CD32: discs as .cue, .iso or zip, CD audio, the CD32 pad
     *  68000, 68010 and 68020 processors
     *  Chip, Slow and Fast RAM; up to four floppy drives
-    *  ADF, IPF and ZIP disk images
+    *  ADF (standard and extended), IPF and ZIP disk images
     *  Hard disk images (.hdf) on a Zorro II AutoConfig controller
     *  WHDLoad archives (.lha, .lzh) started directly
     *  Software or OpenGL rendering with RetroArch shaders (.glslp, .slangp)
     *  Five save-state slots, rewind, screenshots, real joysticks, drive sounds
     *  Remote play for a second player and spectators
+    *  Null modem cable between two AmiJa over the network
     *  Output to a real 15 kHz CRT through a MiSTer FPGA (Groovy core)
     *  Automatic mode: the machine is configured from the loaded media
 
@@ -82,8 +86,9 @@ CONTENTS
   copyrighted and not included; it is available with Amiga Forever
   (amigaforever.com) or can be dumped from an Amiga you own.
 
-  Press F12, set "Kickstart 1.3" and, for hard disk, WHDLoad and AGA software,
-  "Kickstart 3.1" (preferably the A1200 release 40.68). Press OK to boot.
+  Put your Kickstart ROMs in one folder, press F12, choose that folder in
+  "Kickstart folder" and press OK. AmiJa recognises every ROM in it by its
+  contents and picks the one each game needs (3.2).
 
   ---------------------------------------------------------------------------
   2.1   FILES AND FOLDERS
@@ -102,10 +107,11 @@ CONTENTS
     blurs/               blur passes used by some presets
     screenshots/         screenshots (PNG)
     savestate/           Slot1/ ... Slot5/, each with state.a5s and state.png
+    nvram/               cd32.nvr, the CD32's saved games and settings
     whdload-saves/       persistent WHDLoad saves (WHDSaves: volume)
     floppysounds/        drive sound samples; replaceable, empty to silence
     whdload/             WHDLoad system files and .RTB tables; shipped empty,
-                         filled by the download assistant (3.14)
+                         filled by the download assistant (3.15)
 
   ---------------------------------------------------------------------------
   2.2   KEYBOARD AND MOUSE
@@ -123,7 +129,9 @@ CONTENTS
 
     Drag and drop           insert a disk image. The window is split into four
                             quadrants: top-left DF0, top-right DF1, bottom-left
-                            DF2, bottom-right DF3.
+                            DF2, bottom-right DF3. A CD32 disc goes into the
+                            CD32's drive; dropped on another machine in
+                            automatic mode, it restarts it as a CD32 (3.3).
 
   Keys held down are released automatically when the window loses focus.
 
@@ -138,14 +146,15 @@ CONTENTS
     System (3.2)
     Drives (3.3)                               automatic mode
     Floppy drives, Hard disks, WHDLoad         expert mode (3.4 - 3.6)
-    Saved state (3.7)
-    Rewind (3.8)
-    Game ports (3.9)
-    Remote play (3.10)
-    MiSTer (Groovy) (3.11)
-    Audio / Video (3.12)
-    GUI (3.13)
-    Optional files (3.14)                      hidden once all is installed
+    CD32 (3.7)                                 expert mode, CD32 Kickstart
+    Saved state (3.8)
+    Rewind (3.9)
+    Game ports (3.10)
+    Remote play (3.11)
+    MiSTer (Groovy) (3.12)
+    Audio / Video (3.13)
+    GUI (3.14)
+    Optional files (3.15)                      hidden once all is installed
 
   Saved state, Rewind, Game ports, Remote play, MiSTer (Groovy), Audio /
   Video and GUI are collapsible and closed by default; the open ones are
@@ -153,6 +162,9 @@ CONTENTS
 
   When joining or watching a remote session, System, the drive sections,
   Saved state, Rewind and MiSTer (Groovy) are hidden.
+
+  On a CD32 the processor, chipset, the three RAM rows, the floppy drives,
+  hard disks and WHDLoad are hidden: the machine is fixed (3.7).
 
   ---------------------------------------------------------------------------
   3.1   CONVENTIONS
@@ -185,6 +197,8 @@ CONTENTS
        Hard disk/WHDLoad Kickstart 3.1, ECS, 68010, 2 MB Chip + 8 MB Fast
        AGA               Kickstart 3.1, A1200 (AGA, 68020, 2 MB Chip);
                          8 MB Fast with hard disk or WHDLoad
+       CD32              CD32 Kickstart and extended ROM (40.60), AGA,
+                         68020, 2 MB Chip; used when a CD32 disc is loaded
 
      The AGA profile is used when the WHDLoad slave requires AGA or a file
      name contains the word "AGA" (e.g. "(AGA)", "_AGA.lha"). A WHDLoad slave
@@ -199,18 +213,37 @@ CONTENTS
      Note: ticking the box writes auto.enabled=false.
      Values: true / false (default true)                        Applies: BOOT
 
-  Kickstart 1.3 / Kickstart 3.1          auto.kickstart13.path / .kickstart31.path
-     ROMs used by automatic mode: 1.3 for floppy, 3.1 for hard disk, WHDLoad
-     and AGA. For 3.1, use the A1200 release (40.68): some AGA WHDLoad slaves
-     reject 40.63. If one is empty, the other is used, then kickstart.path,
-     then the built-in ROM.
+  Kickstart folder                                        auto.kickstart.dir
+     Folder holding your Kickstart ROMs, subfolders included; automatic mode
+     only. Every ROM is recognised by its contents, not by its name, and one
+     is chosen for each profile:
+
+       Floppy              Kickstart 1.3 (34.5)
+       Hard disk/WHDLoad   Kickstart 3.1 (40.63)
+       AGA                 Kickstart 3.1 for the A1200 (40.68)
+       CD32                CD32 Kickstart and extended ROM (40.60)
+
+     Known good dumps are preferred; overdumps and Cloanto-encrypted copies
+     count as the dump. Damaged ROMs and those of other models (A3000,
+     A4000) are skipped. The field's tooltip lists what was found. A profile
+     whose ROM is missing does not start: a message names the ROM and the
+     folder. The folder is read again whenever its contents change. The
+     choice is kept in auto.kickstart13.path, auto.kickstart31.path,
+     auto.kickstart31.a1200.path, auto.cd32.kickstart.path and
+     auto.cd32.extrom.path, maintained by AmiJa.
      Values: absolute path or empty                             Applies: BOOT
 
   Kickstart                                                   kickstart.path
      ROM used in expert mode. Any power-of-two image up to 512 KB. Headers,
      appended data and duplicated halves are normalised; CDTV extended ROMs
-     and ReKick images are rejected with an explanation.
+     and ReKick images are rejected with an explanation. The CD32 Kickstart
+     (40.60) makes the machine a CD32 (3.7).
      Values: absolute path                                      Applies: BOOT
+
+  CD32 extended ROM                                         cd32.extrom.path
+     Shown under the Kickstart when it is the CD32's: the second half of the
+     CD32 ROM, with the CD drive software and the boot animation.
+     Values: absolute path                                   Applies: RESTART
 
   Processor                                                        cpu.model
      68000; 68010 (vector base register, loop mode, MOVEC/MOVES/RTD;
@@ -252,15 +285,20 @@ CONTENTS
     Hard drive master     first .hdf
     Hard drive slave      second .hdf
     WHDLoad               .lha or .lzh archive
+    CD32 disc             .cue, .iso, or a zip holding one
 
   Limits: four floppies, two hard disks, one WHDLoad archive; a hard disk and
-  a WHDLoad archive cannot be combined. Unsupported or excess files are
-  rejected with the reason. Entries marked with an asterisk need hardware the
-  running machine does not have and are mounted at the next start.
+  a WHDLoad archive cannot be combined. A CD32 disc goes alone: it makes the
+  machine a CD32, with the two CD32 ROMs of the Kickstart folder, and is
+  refused with a message when the folder lacks them. Unsupported or excess
+  files are rejected with the reason. Entries marked with an asterisk need
+  hardware the running machine does not have and are mounted at the next
+  start.
 
   The rows write the same keys as expert mode (drive.dfN.disk,
-  hd.master.disk, whdload.file, ...).
-  Applies: LIVE for floppies in existing drives, BOOT otherwise
+  hd.master.disk, whdload.file, cd.image, ...).
+  Applies: LIVE for floppies in existing drives, RESTART for a CD32 disc,
+  BOOT otherwise
 
   ---------------------------------------------------------------------------
   3.4   FLOPPY DRIVES (EXPERT MODE)
@@ -271,7 +309,9 @@ CONTENTS
      Values: true / false                                       Applies: LIVE
 
   Disk path                                                   drive.dfN.disk
-     .adf   sector image
+     .adf   sector image, 80 to 83 cylinders; also the extended ADF
+            formats that hold raw tracks of copy-protected disks:
+            UAE-1ADF (writable) and UAE--ADF (read only)
      .ipf   flux-level image of an original disk, copy protection included
      .zip   compressed image; a multi-disk archive fills DF0 and the next
             free drives (<archive>.zip!<n>); always write-protected
@@ -310,14 +350,31 @@ CONTENTS
 
   Auto-run WHDLoad archive                   whdload.enabled / whdload.file
      The archive is extracted into a bootable FFS hard disk together with the
-     WHDLoad system files and started. Requires the WHDLoad files (3.14).
+     WHDLoad system files and started. Requires the WHDLoad files (3.15).
      Saved games are kept in whdload-saves/. WHDLoad options are set in
      whdload.prefs.* (4.7). Most titles need 1 MB or more of Chip RAM and
      some Fast RAM.
      Values: true / false; absolute path to .lha or .lzh        Applies: BOOT
 
   ---------------------------------------------------------------------------
-  3.7   SAVED STATE
+  3.7   CD32 (EXPERT MODE)
+  ---------------------------------------------------------------------------
+
+  The machine is a CD32 when the Kickstart of the System section is the
+  CD32's (40.60), with or without a disc: AGA, 68020, 2 MB Chip RAM, no
+  floppy drive and no hard disk, the CD32 pad in the joystick port (3.10).
+  Without a disc it starts with its boot animation. Both ROMs are
+  copyrighted and not included. Saved games and settings are kept in
+  nvram/cd32.nvr.
+
+  CD32 disc                                                         cd.image
+     .cue sheet (with its data and audio tracks), .iso, or a zip holding
+     them. A disc dropped on the window of a running CD32 goes into its
+     drive.
+     Values: absolute path or empty                          Applies: RESTART
+
+  ---------------------------------------------------------------------------
+  3.8   SAVED STATE
   ---------------------------------------------------------------------------
 
   Five slots, one tab each (savestate/Slot1/ ... Slot5/). Each tab shows a
@@ -334,7 +391,7 @@ CONTENTS
   A legacy savestate/state1.a5s is migrated to Slot 1 automatically.
 
   ---------------------------------------------------------------------------
-  3.8   REWIND
+  3.9   REWIND
   ---------------------------------------------------------------------------
 
   History to keep                                             rewind.seconds
@@ -350,7 +407,7 @@ CONTENTS
      AmiJa asks whether to rewind or restart.
 
   ---------------------------------------------------------------------------
-  3.9   GAME PORTS
+  3.10   GAME PORTS
   ---------------------------------------------------------------------------
 
   Port 0 / Port 1                     input.port0.device / input.port1.device
@@ -361,12 +418,24 @@ CONTENTS
        Joystick (keyboard)   keyboard-emulated joystick       joystick-keyboard
        Empty                 nothing connected                none
 
-     "Joystick (keyboard)" shows a "..." button for the key mapping (3.15.1).
+     "Joystick (keyboard)" shows a "..." button for the key mapping (3.16.1).
      During a remote session only your own port can be set.
      Applies: LIVE
 
+  On a CD32 the joystick port holds the CD32 pad, and its entries are named
+  "Joypad (real)" and "Joypad (keyboard)". The red button is fire; the other
+  six buttons (blue, green, yellow, rewind, forward, play/pause) have their
+  own keys in the keyboard mapping (3.16.1), and a real controller's buttons
+  are assigned with the "..." button of "Joypad (real)" (3.16.3).
+
+  Keyboard connected                                           cd32.keyboard
+     Shown only on a CD32. An Amiga keyboard plugged into the CD32, as with
+     the SX-1 and SX32 expansions. Unticked, the PC keyboard drives only the
+     pad.
+     Values: true / false (default false)                    Applies: RESTART
+
   ---------------------------------------------------------------------------
-  3.10   REMOTE PLAY
+  3.11   REMOTE PLAY
   ---------------------------------------------------------------------------
 
   The host runs the emulation and streams video and audio; the guest sends
@@ -376,7 +445,12 @@ CONTENTS
   Latency affects the guest only: about one frame on a local network, about
   three frames over a good Internet connection. One guest per session.
 
-  Mode: Off / Host / Join / Watch
+  The same section also plugs a null modem cable between two AmiJa (see
+  NULL MODEM below). The two kinds of session are independent and can run
+  together.
+
+  Mode: Off / Stream: host / Stream: join / Stream: watch /
+        Null modem: host / Null modem: join
      Not saved; AmiJa always starts with no session.
 
   HOSTING
@@ -464,10 +538,43 @@ CONTENTS
     "the two machines run different versions of AmiJa"
         Both sides must run the same version.
 
-  Remote play and the MiSTer output (3.11) cannot run together.
+  NULL MODEM
+
+  A virtual serial cable between two AmiJa, each running the same program on
+  its own machine: the two-computer modes of games (Computer Link, Null
+  Modem) and terminal programs. Each event on the wire reaches the other
+  side after the same fixed delay of emulated time, so what the programs see
+  does not depend on the network; a slow network only makes both machines
+  wait. One side hosts, the other joins with its address and code.
+
+  Security (host)                                       serial.link.lanonly
+     "Local network only" refuses connections from outside the local
+     network; untick it to play over the Internet.
+     Values: true / false (default true)             Applies: on start hosting
+
+  Port                                                      serial.link.port
+     TCP port of the cable, the same on both ends; not the port of the
+     stream, so the two can run together. No router is asked to open it:
+     over the Internet, forward it by hand.
+     Values: 1-65535 (default 7789)                  Applies: on start hosting
+
+  Session: Start hosting / Stop hosting
+     Listens for the other instance and shows its Address and a Join code,
+     generated afresh every time and never saved.
+
+  Host address / Join code / Session: Connect          serial.link.address
+     The host's address:port and its code. The address is remembered.
+
+  The cable is plugged in once both machines run; while the popup is open on
+  one side, the other waits. Loading a saved state, rewinding or restarting
+  the machine unplugs it: host or join again. The Status line shows the
+  delay of the cable, the network round trip and how often this machine had
+  to wait for the other; the LED panel shows a SER light (3.13).
+
+  Remote play and the MiSTer output (3.12) cannot run together.
 
   ---------------------------------------------------------------------------
-  3.11   MISTER (GROOVY)
+  3.12   MISTER (GROOVY)
   ---------------------------------------------------------------------------
 
   Sends the picture and the sound over Ethernet to a MiSTer FPGA running the
@@ -478,7 +585,7 @@ CONTENTS
 
   Requirements: the Groovy core loaded on the MiSTer before pressing Start,
   and a wired connection (direct cable or switch). Over Wi-Fi the picture
-  breaks up. The output cannot run together with remote play (3.10).
+  breaks up. The output cannot run together with remote play (3.11).
 
   While the output runs, the LED panel shows a MISTER light, lit while the
   MiSTer is receiving the picture.
@@ -496,7 +603,7 @@ CONTENTS
   Controls                                                     mister.inputs
        PC        the PC's mouse, keyboard and joysticks (default)     pc
        MiSTer    the devices plugged into the MiSTer                  mister
-     With MiSTer, each game port (3.9) takes the matching MiSTer device: its
+     With MiSTer, each game port (3.10) takes the matching MiSTer device: its
      mouse, its joysticks (the first one to the first port set to a real
      joystick), or its keyboard with the keyboard joystick keys; the rest of
      its keyboard is the Amiga keyboard, and the PC's controls are ignored.
@@ -522,9 +629,10 @@ CONTENTS
   Sound (expert)                                 mister.audio / .audiolead
      "On the MiSTer" plays the sound through the MiSTer's output, drive
      sounds included; while the MiSTer does not play it (not connected, or
-     audio off in the core menu) it plays on the PC. The number is how far ahead of the picture the MiSTer
-     holds the sound, in milliseconds: raise it if the sound crackles, at the
-     cost of the same delay on what you hear.
+     audio off in the core menu) it plays on the PC. The number is how far
+     ahead of the picture the MiSTer holds the sound, in milliseconds: raise
+     it if the sound crackles, at the cost of the same delay on what you
+     hear.
      Values: true / false (default true); 10 - 150 (default 40)
                                                             Applies: on Start
 
@@ -541,7 +649,7 @@ CONTENTS
      2 seconds and the Status line says why.
 
   ---------------------------------------------------------------------------
-  3.12   AUDIO / VIDEO
+  3.13   AUDIO / VIDEO
   ---------------------------------------------------------------------------
 
   Rendering                                                   video.renderer
@@ -553,7 +661,7 @@ CONTENTS
      RetroArch preset from shaders/ (*.glslp, *.slangp), or None. OpenGL
      only. Slang presets are supported but not shipped; see
      shaders/Mega_Bezel_Packs/readme.txt. The "..." button opens the
-     parameters of the active shader (3.15.2).
+     parameters of the active shader (3.16.2).
      Values: path inside shaders/ without extension, or none    Applies: LIVE
 
   Window mode                                               video.windowMode
@@ -575,8 +683,9 @@ CONTENTS
      Values: true / false                                    Applies: RESTART
 
   Show power/drive LED panel                                    leds.visible
-     Power (also audio filter state), floppy and hard disk LEDs, plus NET
-     during remote play and MISTER while the MiSTer output runs.
+     Power (also audio filter state), floppy and hard disk LEDs, CD on a
+     CD32, plus NET during remote play, SER while a null modem cable is
+     plugged in or waiting, and MISTER while the MiSTer output runs.
      Values: true / false                                       Applies: BOOT
 
   Floppy sound volume                                    floppy.sound.volume
@@ -584,7 +693,7 @@ CONTENTS
      Values: 0 - 10                                             Applies: LIVE
 
   ---------------------------------------------------------------------------
-  3.13   GUI
+  3.14   GUI
   ---------------------------------------------------------------------------
 
   Language                                                       ui.language
@@ -599,7 +708,7 @@ CONTENTS
                                                             Applies: RELAUNCH
 
   ---------------------------------------------------------------------------
-  3.14   OPTIONAL FILES
+  3.15   OPTIONAL FILES
   ---------------------------------------------------------------------------
 
   Downloads, on request, two packages AmiJa cannot redistribute, directly
@@ -612,10 +721,10 @@ CONTENTS
   packages are installed. See THIRD-PARTY-NOTICES.md, section 5.
 
   ---------------------------------------------------------------------------
-  3.15   SUB-DIALOGS
+  3.16   SUB-DIALOGS
   ---------------------------------------------------------------------------
 
-  3.15.1   KEYBOARD JOYSTICK KEYS
+  3.16.1   KEYBOARD JOYSTICK KEYS
 
      One row per direction and Fire. Click a button and press the new key;
      ESC cancels (and cannot be assigned). A key can serve only one function
@@ -624,18 +733,36 @@ CONTENTS
        Port 0    W A S D, right Ctrl
        Port 1    arrow keys, left Ctrl
 
-     Keys: input.portN.joystick.up / down / right / left / fire
+     On a CD32 the joystick port also lists the pad's six other buttons:
+     blue, green, yellow, rewind, forward and play/pause.
+
+     Keys: input.portN.joystick.up / down / right / left / fire, and on a
+     CD32 .blue / .green / .yellow / .rewind / .forward / .play
      Values: KeyEvent VK_ name without prefix (W, UP, SPACE, NUMPAD5); for
      duplicated keys append the side (CONTROL:LEFT, SHIFT:RIGHT).
      Applies: LIVE
 
-  3.15.2   SHADER PARAMETERS
+  3.16.2   SHADER PARAMETERS
 
      One slider per "#pragma parameter" of the preset, applied immediately.
      Values are saved as <preset>.params next to the preset.
 
+  3.16.3   JOYPAD BUTTONS
+
+     The buttons of a real controller used as the CD32 pad. Click a pad
+     button, then press the controller button to assign; ESC cancels.
+     Directions always come from the stick and the D-pad.
+
+       Red (fire) A    Blue B    Green X    Yellow Y
+       Rewind LB       Forward RB           Play/pause START
+
+     Keys: input.joypad.fire / .blue / .green / .yellow / .rewind /
+     .forward / .play
+     Values: A, B, X, Y, LB, RB, LT, RT, BACK, START, GUIDE, LS, RS, or
+     BUTTONn for a raw button; empty = unassigned            Applies: LIVE
+
   ---------------------------------------------------------------------------
-  3.16   BUTTON BAR
+  3.17   BUTTON BAR
   ---------------------------------------------------------------------------
 
     About             version, author and project page
@@ -780,6 +907,23 @@ CONTENTS
 
   Applies: BOOT
 
+  ---------------------------------------------------------------------------
+  4.8   SERIAL PORT
+  ---------------------------------------------------------------------------
+
+    serial.mode
+        What is plugged into the serial port at boot: off (nothing) or
+        loopback (a plug that wires the port back on itself). A null modem
+        cable is started from the Remote play section (3.11) every time,
+        never at boot.
+        Values: off / loopback (default off)                   Applies: BOOT
+
+    serial.link.delay.ms
+        Delay of the null modem cable in milliseconds of emulated time:
+        auto (measured from the network when the cable is joined) or a
+        number. The larger of the two ends is used.
+        Values: auto / number (default auto)              Applies: next cable
+
 
 ===============================================================================
  5.  PROPERTY INDEX
@@ -788,12 +932,19 @@ CONTENTS
   Key                            Section                      Applies
   ---------------------------------------------------------------------------
   auto.aga.*                     4.2                          BOOT
+  auto.cd32.extrom.path          System (3.2)                 -
+  auto.cd32.kickstart.path       System (3.2)                 -
   auto.enabled                   System (3.2)                 BOOT
   auto.floppy.*                  4.2                          BOOT
   auto.hd.*                      4.2                          BOOT
-  auto.kickstart13.path          System (3.2)                 BOOT
-  auto.kickstart31.path          System (3.2)                 BOOT
+  auto.kickstart.dir             System (3.2)                 BOOT
+  auto.kickstart13.path          System (3.2)                 -
+  auto.kickstart31.a1200.path    System (3.2)                 -
+  auto.kickstart31.path          System (3.2)                 -
   blitter.immediate              4.6                          BOOT
+  cd.image                       Drives (3.3) / CD32 (3.7)    RESTART
+  cd32.extrom.path               System (3.2)                 RESTART
+  cd32.keyboard                  Game ports (3.10)            RESTART
   chipram.kb                     System (3.2)                 BOOT
   chipset                        System (3.2)                 RESTART
   chooser.*.lastDirectory        4.1                          -
@@ -802,55 +953,61 @@ CONTENTS
   drive.df0..3.enabled           Floppy drives (3.4)          LIVE
   drive.df0..3.readonly          Floppy drives (3.4)          LIVE
   fastram.kb                     System (3.2)                 BOOT
-  floppy.sound.volume            Audio / Video (3.12)         LIVE
+  floppy.sound.volume            Audio / Video (3.13)         LIVE
   hd.master.disk                 Drives (3.3) / Hard d. (3.5) BOOT
   hd.master.enabled              Hard disks (3.5)             BOOT
   hd.master.readonly             Hard disks (3.5)             BOOT
   hd.slave.disk                  Drives (3.3) / Hard d. (3.5) BOOT
   hd.slave.enabled               Hard disks (3.5)             BOOT
   hd.slave.readonly              Hard disks (3.5)             BOOT
-  input.port0.device             Game ports (3.9)             LIVE
-  input.port0.joystick.*         Joystick keys (3.15.1)       LIVE
-  input.port1.device             Game ports (3.9)             LIVE
-  input.port1.joystick.*         Joystick keys (3.15.1)       LIVE
+  input.joypad.*                 Joypad buttons (3.16.3)      LIVE
+  input.port0.device             Game ports (3.10)            LIVE
+  input.port0.joystick.*         Joystick keys (3.16.1)       LIVE
+  input.port1.device             Game ports (3.10)            LIVE
+  input.port1.joystick.*         Joystick keys (3.16.1)       LIVE
   kickstart.path                 System (3.2)                 BOOT
-  leds.visible                   Audio / Video (3.12)         BOOT
-  mister.audio                   MiSTer (3.11)                on Start
-  mister.audiolead               MiSTer (3.11)                on Start
+  leds.visible                   Audio / Video (3.13)         BOOT
+  mister.audio                   MiSTer (3.12)                on Start
+  mister.audiolead               MiSTer (3.12)                on Start
   mister.bind                    4.4                          on Start
-  mister.color                   MiSTer (3.11)                on Start
-  mister.compression             MiSTer (3.11)                on Start
-  mister.expert                  MiSTer (3.11)                LIVE
-  mister.host                    MiSTer (3.11)                on Start
-  mister.hshift                  MiSTer (3.11)                LIVE
-  mister.inputs                  MiSTer (3.11)                on Start
+  mister.color                   MiSTer (3.12)                on Start
+  mister.compression             MiSTer (3.12)                on Start
+  mister.expert                  MiSTer (3.12)                LIVE
+  mister.host                    MiSTer (3.12)                on Start
+  mister.hshift                  MiSTer (3.12)                LIVE
+  mister.inputs                  MiSTer (3.12)                on Start
   mister.mtu                     4.4                          on Start
-  mister.vshift                  MiSTer (3.11)                LIVE
+  mister.vshift                  MiSTer (3.12)                LIVE
   overlay.fps.enabled            4.5                          BOOT
   overlay.framecounter.enabled   4.5                          BOOT
-  remoteplay.audio.mode          Remote play (3.10)           next connection
+  remoteplay.audio.mode          Remote play (3.11)           next connection
   remoteplay.bind                4.3                          on hosting
-  remoteplay.guest.allowreset    Remote play (3.10)           next connection
-  remoteplay.guest.keyboard      Remote play (3.10)           next connection
-  remoteplay.guest.port          Remote play (3.10)           next connection
-  remoteplay.lan.only            Remote play (3.10)           on hosting
-  remoteplay.last.host           Remote play (3.10)           -
-  remoteplay.port                Remote play (3.10)           on hosting
-  remoteplay.spectators.max      Remote play (3.10)           next connection
-  remoteplay.upnp                Remote play (3.10)           on hosting
-  rewind.seconds                 Rewind (3.8)                 LIVE
-  savestate.slot                 Saved state (3.7)            LIVE
+  remoteplay.guest.allowreset    Remote play (3.11)           next connection
+  remoteplay.guest.keyboard      Remote play (3.11)           next connection
+  remoteplay.guest.port          Remote play (3.11)           next connection
+  remoteplay.lan.only            Remote play (3.11)           on hosting
+  remoteplay.last.host           Remote play (3.11)           -
+  remoteplay.port                Remote play (3.11)           on hosting
+  remoteplay.spectators.max      Remote play (3.11)           next connection
+  remoteplay.upnp                Remote play (3.11)           on hosting
+  rewind.seconds                 Rewind (3.9)                 LIVE
+  savestate.slot                 Saved state (3.8)            LIVE
+  serial.link.address            Remote play (3.11)           -
+  serial.link.delay.ms           4.8                          next cable
+  serial.link.lanonly            Remote play (3.11)           on hosting
+  serial.link.port               Remote play (3.11)           on hosting
+  serial.mode                    4.8                          BOOT
   slowram.kb                     System (3.2)                 BOOT
-  ui.language                    GUI (3.13)                   BOOT
+  ui.language                    GUI (3.14)                   BOOT
   ui.popup.expanded              F12 popup (3)                -
-  ui.scale                       GUI (3.13)                   RELAUNCH
-  video.integerScaling           Audio / Video (3.12)         RESTART
+  ui.scale                       GUI (3.14)                   RELAUNCH
+  video.integerScaling           Audio / Video (3.13)         RESTART
   video.mode                     System (3.2)                 RESTART
-  video.monitor                  Audio / Video (3.12)         RESTART
-  video.overscan.enabled         Audio / Video (3.12)         RESTART
-  video.renderer                 Audio / Video (3.12)         RESTART
-  video.shader                   Audio / Video (3.12)         LIVE
-  video.windowMode               Audio / Video (3.12)         RESTART
+  video.monitor                  Audio / Video (3.13)         RESTART
+  video.overscan.enabled         Audio / Video (3.13)         RESTART
+  video.renderer                 Audio / Video (3.13)         RESTART
+  video.shader                   Audio / Video (3.13)         LIVE
+  video.windowMode               Audio / Video (3.13)         RESTART
   whdload.enabled                WHDLoad (3.6)                BOOT
   whdload.file                   Drives (3.3) / WHDLoad (3.6) BOOT
   whdload.prefs.*                4.7                          BOOT
@@ -864,8 +1021,9 @@ CONTENTS
       java -jar AmiJa.jar [options] [file ...] [key=value ...]
 
   file              Media to load: floppy (.adf, .ipf, .zip), hard disk
-                    (.hdf) or WHDLoad archive (.lha, .lzh), assigned as in
-                    the Drives list (3.3). When files are given, they replace
+                    (.hdf), WHDLoad archive (.lha, .lzh) or CD32 disc (.cue,
+                    .iso, or a zip holding one), assigned as in the Drives
+                    list (3.3). When files are given, they replace
                     all configured media. Same limits as 3.3. A missing file
                     aborts the launch.
 

@@ -40,7 +40,7 @@ public final class MasterClock {
     private volatile boolean paused = false;
     /** True while the clock thread is stopped in the pause branch: see {@link #pauseAndWait}. */
     private volatile boolean idle = false;
-    private Thread clockThread;
+    private volatile Thread clockThread;
     /**
      * Generation of the clock thread: {@link #start()} increments it and hands it to the
      * thread it creates; {@link #run(int)} exits as soon as it is no longer its own.
@@ -56,6 +56,50 @@ public final class MasterClock {
     private volatile java.util.function.Consumer<Throwable> failureHandler;
     private volatile Sampler sampler;
     private volatile ExternalPacer pacer;
+    /**
+     * How long a machine held by its {@link Limiter} waits at most before asking again. The
+     * limiter normally ends the wait sooner with {@link #wakeHeld()}; a timed park alone lasts
+     * at least one tick of the host timer, which can be many milliseconds.
+     */
+    private static final long HELD_WAIT_NS = 200_000L;
+
+    private volatile Limiter limiter;
+
+    /**
+     * Something outside the machine that bounds how far it may run: the other end of a
+     * serial cable, which this machine must not overtake by more than the delay of the cable.
+     */
+    public interface Limiter {
+
+        /**
+         * Called on the clock thread before the machine runs: before every batch, and before
+         * the steps that take it to the start of a frame for a sample.
+         *
+         * @param wanted the clocks the batch would run
+         * @return how many of them may run now; zero or less to hold the machine
+         */
+        int allowance(int wanted);
+
+        /**
+         * The machine has to run past the limit anyway: it is being taken to the start of a
+         * frame (a saved state, a rewind sample) and the limit has not moved for too long.
+         */
+        default void overrun() { }
+    }
+
+    /** Registers the limiter, or removes it with {@code null}. */
+    public void setLimiter(Limiter limiter) {
+        this.limiter = limiter;
+    }
+
+    /**
+     * Ends the wait of a machine held by its limiter at once, so that it asks again. Any
+     * thread; harmless when the machine is not held (its next wait just returns at once).
+     */
+    public void wakeHeld() {
+        Thread t = clockThread;
+        if (t != null) java.util.concurrent.locks.LockSupport.unpark(t);
+    }
 
     /**
      * Makes the clock follow {@code pacer} instead of the wall clock, or the wall clock
@@ -292,32 +336,53 @@ public final class MasterClock {
             }
             idle = false;
 
+            // A limiter may shorten the batch, or hold the machine: held, it waits until the
+            // limiter wakes it (or a moment at most) and asks again, and the time spent
+            // waiting is not a delay to catch up with.
+            int batch = batchSize;
+            Limiter lim = limiter;
+            if (lim != null) {
+                batch = Math.min(batchSize, lim.allowance(batchSize));
+                if (batch <= 0) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(HELD_WAIT_NS);
+                    startTime = System.nanoTime();
+                    totalCycles = 0;
+                    expectedNs = 0;
+                    continue;
+                }
+            }
+
             // Run a batch of cycles to reduce the overhead of the time check
             final long ran;
             if (driver == null) {
-                for (int i = 0; i < batchSize; i++) {
+                for (int i = 0; i < batch; i++) {
                     singleTick();
                 }
-                ran = batchSize;
+                ran = batch;
             } else {
-                ran = driver.run(batchSize);
+                ran = driver.run(batch);
             }
             totalCycles += ran;
             logCycles += ran;
 
             // A sample is taken at a frame boundary: the machine is stepped there first, and
-            // the clocks spent count for the pacing like any others.
+            // the clocks spent count for the pacing like any others. The steps stay within
+            // what the limiter allows; when the boundary is beyond it, the sample waits for a
+            // later batch that ends closer to it.
             long extraRan = 0;
             Sampler s = sampler;
             if (s != null && s.due(ran)) {
+                long room = lim == null ? STEP_GUARD : Math.min(STEP_GUARD, lim.allowance(STEP_GUARD));
                 long extra = 0;
-                for (int i = 0; i < STEP_GUARD && !s.atBoundary(); i++) {
+                boolean there = s.atBoundary();
+                while (!there && extra < room) {
                     extra += driver == null ? stepOne() : driver.run(1);
+                    there = s.atBoundary();
                 }
                 totalCycles += extra;
                 logCycles += extra;
                 extraRan = extra;
-                s.sample();
+                if (there) s.sample();
             }
 
             // Throttling

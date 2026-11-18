@@ -108,7 +108,8 @@ public final class MisterInputApplier implements MisterInputTarget {
             for (int usage = 0; usage < USAGES; usage++) {
                 KeyBinding host = HidKeyMap.hostKey(usage);
                 JoystickAction a = host == null ? null : maps[p].actionFor(host);
-                if (a != null) {
+                // The MiSTer's keyboard drives no CD32 pad: those keys stay the Amiga's.
+                if (a != null && !a.isCd32()) {
                     keyActions[p][usage] = a;
                     joystickKey[usage] = true;
                 }
@@ -168,6 +169,7 @@ public final class MisterInputApplier implements MisterInputTarget {
                 case LEFT -> left = true;
                 case RIGHT -> right = true;
                 case FIRE -> fire = true;
+                default -> { }
             }
         }
         applyJoystick(p, right ? 1 : left ? -1 : 0, down ? 1 : up ? -1 : 0, fire ? FIRE : 0);

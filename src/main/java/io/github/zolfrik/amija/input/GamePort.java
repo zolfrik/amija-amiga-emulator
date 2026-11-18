@@ -124,9 +124,37 @@ public class GamePort implements GamePortControls {
     // Eventi joystick
     // -------------------------------------------------------------------------
 
-    /** Sets the joystick axes. Sets device = JOYSTICK. */
+    /** The CD32 pad buttons held, bit 0 PLAY, 1 REWIND, 2 FORWARD, 3 GREEN, 4 YELLOW. */
+    private int cd32Buttons;
+
+    public static final int CD32_PLAY = 0, CD32_REWIND = 1, CD32_FORWARD = 2,
+            CD32_GREEN = 3, CD32_YELLOW = 4;
+
+    private void joystickInput() {
+        if (device != GamePortDevice.CD32_PAD) device = GamePortDevice.JOYSTICK;
+    }
+
+    /** Presses or releases one of the CD32 pad's extra buttons ({@link #CD32_PLAY} ...). */
+    @Override
+    public synchronized void pressCd32Button(int button, boolean pressed) {
+        if (pressed) cd32Buttons |= 1 << button;
+        else cd32Buttons &= ~(1 << button);
+    }
+
+    /**
+     * The pad's buttons in the order its shift register sends them: bit 0 PLAY, 1 REWIND,
+     * 2 FORWARD, 3 GREEN, 4 YELLOW, 5 RED (fire), 6 BLUE (button 2).
+     */
+    public synchronized int cd32ButtonBits() {
+        int bits = cd32Buttons;
+        if (joystick.isFirePressed()) bits |= 1 << 5;
+        if (joystick.isButton2Pressed()) bits |= 1 << 6;
+        return bits;
+    }
+
+    /** Sets the joystick axes. Sets device = JOYSTICK unless a CD32 pad is attached. */
     public synchronized void setJoystickAxes(int x, int y) {
-        device = GamePortDevice.JOYSTICK;
+        joystickInput();
         joystick.setAxisX(x);
         joystick.setAxisY(y);
         joyMouseCounter();
@@ -134,20 +162,20 @@ public class GamePort implements GamePortControls {
 
     /** Presses or releases the main fire. Updates the CIA-A pin. */
     public void pressJoystickFire(boolean pressed) {
-        device = GamePortDevice.JOYSTICK;
+        joystickInput();
         joystick.setFireButton(pressed);
         updateCIAFirePin(pressed);
     }
 
     /** Presses or releases button 2 (read via POTINP). */
     public void pressJoystickButton2(boolean pressed) {
-        device = GamePortDevice.JOYSTICK;
+        joystickInput();
         joystick.setButton2(pressed);
     }
 
     /** Presses or releases button 3 (read via POTINP). */
     public void pressJoystickButton3(boolean pressed) {
-        device = GamePortDevice.JOYSTICK;
+        joystickInput();
         joystick.setButton3(pressed);
     }
 
@@ -193,6 +221,12 @@ public class GamePort implements GamePortControls {
     public boolean isRightOrButton2Pressed() {
         return (device == GamePortDevice.MOUSE)    ? mouse.isRightPressed()
              : (device == GamePortDevice.JOYSTICK) ? joystick.isButton2Pressed() : false;
+    }
+
+    /** True for the CD32 pad. */
+    @Override
+    public boolean isCd32Pad() {
+        return device == GamePortDevice.CD32_PAD;
     }
 
     /**

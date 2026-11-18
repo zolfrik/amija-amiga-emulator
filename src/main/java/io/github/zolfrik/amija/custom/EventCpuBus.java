@@ -59,7 +59,7 @@ import io.github.zolfrik.amija.cpu.event.TimeBase;
  */
 public final class EventCpuBus implements CpuBus {
 
-    private static final byte FAST32 = 0, CHIP16 = 1, CIA = 2, CHIP32 = 3;
+    private static final byte FAST32 = 0, CHIP16 = 1, CIA = 2, CHIP32 = 3, FAST16 = 4, AKIKO = 5;
     private static final int CCK = TimeBase.CCK;
     private static final int HALF_CCK = CCK / 2;
 
@@ -91,12 +91,17 @@ public final class EventCpuBus implements CpuBus {
         final int slowPages = agnus.slowRamBytes() >>> 16;
         // The A1200 decoding leaves $A00000-$BEFFFF to nobody: an access there ends without
         // the E clock.
-        this.gayle = agnus.isAGA();
+        // The CD32 board decodes its CIAs over $BE0000-$BFFFFF, all of it on the E clock; its
+        // ROMs sit on a 16-bit path.
+        final boolean cd32 = agnus.isCd32Board();
+        this.gayle = agnus.isAGA() && !cd32;
         this.eClockSync = agnus.eClockSyncPhase();
         for (int p = 0; p < 256; p++) {
             final byte t;
             if (p < 0x20) t = chip32 ? CHIP32 : CHIP16;
-            else if (p >= (gayle ? 0xBF : 0xA0) && p < 0xC0) t = CIA;
+            else if (cd32 && p == 0xB8) t = AKIKO;
+            else if (cd32 && ((p >= 0xE0 && p < 0xE8) || p >= 0xF8)) t = FAST16;
+            else if (p >= (cd32 ? 0xBE : gayle ? 0xBF : 0xA0) && p < 0xC0) t = CIA;
             else if (p >= 0xC0 && p < 0xC0 + slowPages && p < 0xD8) t = CHIP16;
             else if (p >= 0xD0 && p < 0xE0) t = CHIP16;
             else t = FAST32;
@@ -379,6 +384,13 @@ public final class EventCpuBus implements CpuBus {
                 if (hi < 0 || lo < 0) throw BusFault.INSTANCE;
                 return (hi << 16) | lo;
             }
+            case FAST16: {
+                final int hi = agnus.eventTransfer(address, true, 2, 0);
+                final int lo = agnus.eventTransfer(address + 2, true, 2, 0);
+                idle(2 * memCycle);
+                if (hi < 0 || lo < 0) throw BusFault.INSTANCE;
+                return (hi << 16) | lo;
+            }
             default: {
                 final int hi = agnus.eventTransfer(address, true, 2, 0);
                 final int lo = agnus.eventTransfer(address + 2, true, 2, 0);
@@ -431,6 +443,18 @@ public final class EventCpuBus implements CpuBus {
                 final int hi = ciaAccess(address, true, 2, 0);
                 final int lo = ciaAccess(address + 2, true, 2, 0);
                 return (hi << 16) | lo;
+            }
+            case FAST16: {
+                final int hi = agnus.eventTransfer(address, true, 2, 0);
+                final int lo = agnus.eventTransfer(address + 2, true, 2, 0);
+                idle(2 * memCycle);
+                if (hi < 0 || lo < 0) throw BusFault.INSTANCE;
+                return (hi << 16) | lo;
+            }
+            case AKIKO: {
+                final int v = agnus.akikoReadLong(address);
+                idle((address & 3) != 0 ? 2 * memCycle : memCycle);
+                return v;
             }
             default: {
                 final int hi = agnus.eventTransfer(address, true, 2, 0);
@@ -487,6 +511,17 @@ public final class EventCpuBus implements CpuBus {
             case CIA:
                 ciaAccess(address, false, 2, value >>> 16);
                 ciaAccess(address + 2, false, 2, value);
+                break;
+            case FAST16: {
+                final int a = agnus.eventTransfer(address, false, 2, value >>> 16);
+                final int b = agnus.eventTransfer(address + 2, false, 2, value);
+                idle(2 * memCycle);
+                if (a < 0 || b < 0) throw BusFault.INSTANCE;
+                break;
+            }
+            case AKIKO:
+                agnus.akikoWriteLong(address, value);
+                idle((address & 3) != 0 ? 2 * memCycle : memCycle);
                 break;
             default: {
                 final int a = agnus.eventTransfer(address, false, 2, value >>> 16);

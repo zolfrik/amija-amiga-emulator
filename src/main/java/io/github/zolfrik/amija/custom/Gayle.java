@@ -39,11 +39,19 @@ package io.github.zolfrik.amija.custom;
  *
  * <p>With nothing attached Gayle never raises an interrupt: the request bits can only be
  * set by a card or a drive.
+ *
+ * <p>The CD32 has no Gayle, but its board answers the ID register in {@code $DD0000-$DEFFFF}
+ * with {@code $F1} (see {@link #setCd32}); the IDE and PCMCIA window is not decoded there.
  */
 public final class Gayle {
 
     /** The ID of the AGA Gayle, read one bit per access, MSB first. */
     private static final int ID = 0xD1;
+
+    /** The ID the CD32 board answers. */
+    private static final int ID_CD32 = 0xF1;
+
+    private int id = ID;
 
     /** Status of an IDE port with no drive: busy and error clear, every other bit set. */
     private static final int IDE_STATUS_NO_DRIVE = 0x7F;
@@ -57,6 +65,11 @@ public final class Gayle {
     private int cs;
     private int csMask;
     private int cfg;
+
+    /** The CD32 board: the ID register only, answering {@code $F1}. */
+    public void setCd32(boolean cd32) {
+        id = cd32 ? ID_CD32 : ID;
+    }
 
     /** /RESET: the interrupt registers are cleared, the card registers are kept. */
     public void reset() {
@@ -74,7 +87,7 @@ public final class Gayle {
         addr &= 0xFFFFFF;
         if (addr >= 0xDD0000) {
             if ((addr & 0xFFFF) != 0x1000) return 0;
-            int bit = (ID >>> (7 - (idCount & 7))) & 1;
+            int bit = (id >>> (7 - (idCount & 7))) & 1;
             idCount++;
             return bit << 7;
         }

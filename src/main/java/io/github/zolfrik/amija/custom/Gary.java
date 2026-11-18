@@ -127,6 +127,8 @@ public final class Gary {
         AUTOCONFIG,
         HD_CONTROLLER, // Zorro II board of the hard disk controller (exprom + ports)
         GAYLE,         // A1200: Gayle's IDE/PCMCIA registers and ID register
+        EXT_ROM,       // CD32: the extended ROM at $E00000, its mirror and the overlay
+        AKIKO,         // CD32: Akiko's registers at $B80000
         OVERLAY_ROM,   // read in the $000000 area with the overlay on: ROM
         OPEN_BUS,      // area not decoded: reads the current value of the data bus
         OTHER_IO,
@@ -442,6 +444,24 @@ public final class Gary {
      */
     private boolean gayleDecode = false;
 
+    /**
+     * CD32 decoding, on top of the A1200 one (it implies {@link #gayleDecode}): Akiko at
+     * {@code $B80000}, the custom chips at {@code $B90000} and in {@code $C00000-$CFFFFF},
+     * the CIAs in {@code $BE0000-$BFFFFF} with their own chip selects, the Kickstart mirrored
+     * at {@code $A80000}, the extended ROM at {@code $E00000} with a mirror at {@code $B00000},
+     * and in the overlay at {@code $000000}. See {@link #setCd32Board}.
+     */
+    private boolean cd32Board = false;
+
+    /** Size of the CD32 extended ROM, a power of two. */
+    private int extRomSize = 512 * 1024;
+
+    private final Region extRomRegion = new Region(0xE00000, 0xE7FFFF, Target.EXT_ROM, "CS_EXTROM",
+            new RegionRules());
+
+    private final Region akikoRegion = new Region(0xB80000, 0xB8FFFF, Target.AKIKO, "CS_AKIKO",
+            gayleRules());
+
     /** Gayle's two register windows (see {@link Gayle#decodes}). */
     private final Region gayleRegion = new Region(0xD80000, 0xDEFFFF, Target.GAYLE, "CS_GAYLE",
             gayleRules());
@@ -689,6 +709,25 @@ public final class Gary {
 
     public boolean isGayleDecode() {
         return gayleDecode;
+    }
+
+    /**
+     * Turns on the CD32 board, whose extended ROM is {@code extRomSize} bytes. The board is
+     * an A1200 without Gayle's IDE and PCMCIA and with Akiko: the overlay, the floating bus and
+     * the reset behave as on the A1200, the map differs as {@link #route} describes.
+     */
+    public void setCd32Board(int extRomSize) {
+        if (extRomSize <= 0 || (extRomSize & (extRomSize - 1)) != 0 || extRomSize > 512 * 1024) {
+            throw new IllegalArgumentException("Invalid extended ROM size: " + extRomSize);
+        }
+        this.cd32Board = true;
+        this.gayleDecode = true;
+        this.extRomSize = extRomSize;
+        extRomRegion.physicalSize = extRomSize;
+    }
+
+    public boolean isCd32Board() {
+        return cd32Board;
     }
 
     /**
@@ -945,6 +984,11 @@ public final class Gary {
             ovlFlipFlop = false;
         }
 
+        if (cd32Board) {
+            Route r = routeCd32(addr, type, uds, lds, isCpu, out);
+            if (r != null) return r;
+        }
+
         // -- 2. CIA ($A00000-$BFFFFF), absolute priority ----------------------------
         // Gary decodes the whole range for the CIAs; the A1200 only its last 64 KB, and
         // nothing answers below.
@@ -1024,6 +1068,77 @@ public final class Gary {
         }
 
         return applyRules(hit, addr, type, uds, lds, effectiveAddr, out);
+    }
+
+    /**
+     * The CD32 map where it differs from the A1200's; {@code null} where it does not.
+     *
+     * <pre>
+     *   $000000-$1FFFFF  extended ROM while the overlay is on (reads)
+     *   $A00000-$A7FFFF  nothing
+     *   $A80000-$AFFFFF  Kickstart mirror
+     *   $B00000-$B7FFFF  extended ROM mirror
+     *   $B80000-$B8FFFF  Akiko
+     *   $B90000-$B9FFFF  custom chips
+     *   $BA0000-$BDFFFF  nothing
+     *   $BE0000-$BFFFFF  CIAs
+     *   $C00000-$CFFFFF  custom chips
+     *   $D00000-$DCFFFF  nothing
+     *   $DD0000-$DEFFFF  the Gayle ID register
+     *   $E00000-$E7FFFF  extended ROM
+     *   $F00000-$F7FFFF  nothing
+     * </pre>
+     */
+    private Route routeCd32(int addr, AccessType type, boolean uds, boolean lds, boolean isCpu,
+                            Route out) {
+        if (isCpu && ovlFlipFlop && addr < 0x200000 && type != AccessType.WRITE) {
+            if (uds && lds && (addr & 1) != 0) return out.fillAddressErr(extRomRegion);
+            return routeExtRom(addr, uds, lds, out);
+        }
+        final int page = addr >>> 16;
+        if (page < 0xA0) return null;
+        if (page < 0xA8) return out.fillOpenBus(addr);
+        if (page < 0xB0) return routeRomMirror(addr, type, uds, lds, out);
+        if (page < 0xB8) return routeExtRomAccess(addr, type, uds, lds, out);
+        if (page == 0xB8) return applyRules(akikoRegion, addr, type, uds, lds, addr & 0xFFFF, out);
+        if (page == 0xB9) return routeCustomMirror(addr, type, uds, lds, out);
+        if (page < 0xBE) return out.fillOpenBus(addr);
+        if (page < 0xC0) {
+            // Akiko's CIA selects: A13..A12 = 00 and 01 select CIA-B, 10 and 11 CIA-A, so one
+            // chip answers anywhere in the page. A write that reaches CIA-A ends the overlay.
+            final int cs = (addr >>> 12) & 3;
+            final int ciaAddr = (addr & ~0x3000) | (cs < 2 ? 0x1000 : 0x2000);
+            if (type == AccessType.WRITE && cs >= 2) ovlFlipFlop = false;
+            return routeCia(ciaAddr, type, uds, lds, out);
+        }
+        if (page < 0xD0) return routeCustomMirror(addr, type, uds, lds, out);
+        if (page < 0xDD) return out.fillOpenBus(addr);
+        if (page < 0xDF) return applyRules(gayleRegion, addr, type, uds, lds, addr, out);
+        if (page < 0xE0) return null;
+        if (page < 0xE8) return routeExtRomAccess(addr, type, uds, lds, out);
+        if (page < 0xF0) return null;
+        if (page < 0xF8) return out.fillOpenBus(addr);
+        return null;
+    }
+
+    private Route routeExtRomAccess(int addr, AccessType type, boolean uds, boolean lds, Route out) {
+        if (type == AccessType.WRITE) {
+            return out.fillOkReadOnly(extRomRegion, uds, lds, extRomRegion.rules.dtackCycles,
+                    addr & (extRomSize - 1));
+        }
+        return routeExtRom(addr, uds, lds, out);
+    }
+
+    private Route routeExtRom(int addr, boolean uds, boolean lds, Route out) {
+        return out.set(true, Target.EXT_ROM, extRomRegion.chipSelect, uds, lds,
+                extRomRegion.rules.dtackCycles, false, false, extRomRegion,
+                addr & (extRomSize - 1), false);
+    }
+
+    private Route routeCustomMirror(int addr, AccessType type, boolean uds, boolean lds, Route out) {
+        Region custom = findFirstRegionByTarget(Target.CUSTOM_REGS);
+        if (custom == null) return out.fillOpenBus(addr);
+        return applyRules(custom, addr, type, uds, lds, addr & 0xFFFF, out);
     }
 
     /** A mirror of the Kickstart ROM outside its socket window. */

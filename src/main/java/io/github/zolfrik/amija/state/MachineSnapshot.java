@@ -140,6 +140,13 @@ public final class MachineSnapshot {
                 SaveStateManager.buildRoots(cpu, eventBus, agnus, port1, port2));
     }
 
+    private volatile io.github.zolfrik.amija.common.MasterClock.Limiter limiter;
+
+    /** What bounds the steps a capture takes to reach the start of a frame; null: nothing. */
+    public void setLimiter(io.github.zolfrik.amija.common.MasterClock.Limiter limiter) {
+        this.limiter = limiter;
+    }
+
     /** {@code true} once a state has been captured. */
     public boolean isCaptured() {
         return captured;
@@ -147,7 +154,7 @@ public final class MachineSnapshot {
 
     /** Takes the state of the machine, replacing the one held. */
     public void capture() {
-        SaveStateManager.advanceToBoundary(agnus, cpu, eventBus);
+        SaveStateManager.advanceToBoundary(agnus, cpu, eventBus, limiter);
         if (denise != null) denise.syncRendering();
         try {
             for (MethodHandle h : scalarGet) h.invokeExact(intValue, fpValue, enumValue);

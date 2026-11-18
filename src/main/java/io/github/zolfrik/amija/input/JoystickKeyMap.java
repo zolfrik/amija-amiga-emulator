@@ -29,8 +29,10 @@ import java.util.EnumMap;
  *
  * <p>Emulator defaults:
  * <ul>
- *   <li><b>Port 0</b>: W / S / D / A + right Ctrl;</li>
- *   <li><b>Port 1</b>: arrow keys + left Ctrl.</li>
+ *   <li><b>Port 0</b>: W / S / D / A + right Ctrl; CD32 blue Q, green E, yellow R,
+ *       rewind 1, play 2, forward 3;</li>
+ *   <li><b>Port 1</b>: arrow keys + left Ctrl; CD32 blue Space, green Z, yellow X,
+ *       rewind C, forward V, play Enter.</li>
  * </ul>
  *
  * <p>The values can be configured from {@code amiga.properties}
@@ -54,6 +56,12 @@ public final class JoystickKeyMap {
             m.bindings.put(JoystickAction.LEFT,  new KeyBinding(KeyEvent.VK_A, std));
             m.bindings.put(JoystickAction.FIRE,
                     new KeyBinding(KeyEvent.VK_CONTROL, KeyEvent.KEY_LOCATION_RIGHT));
+            m.bindings.put(JoystickAction.BLUE,    new KeyBinding(KeyEvent.VK_Q, std));
+            m.bindings.put(JoystickAction.GREEN,   new KeyBinding(KeyEvent.VK_E, std));
+            m.bindings.put(JoystickAction.YELLOW,  new KeyBinding(KeyEvent.VK_R, std));
+            m.bindings.put(JoystickAction.REWIND,  new KeyBinding(KeyEvent.VK_1, std));
+            m.bindings.put(JoystickAction.FORWARD, new KeyBinding(KeyEvent.VK_3, std));
+            m.bindings.put(JoystickAction.PLAY,    new KeyBinding(KeyEvent.VK_2, std));
         } else {
             m.bindings.put(JoystickAction.UP,    new KeyBinding(KeyEvent.VK_UP, std));
             m.bindings.put(JoystickAction.DOWN,  new KeyBinding(KeyEvent.VK_DOWN, std));
@@ -61,6 +69,12 @@ public final class JoystickKeyMap {
             m.bindings.put(JoystickAction.LEFT,  new KeyBinding(KeyEvent.VK_LEFT, std));
             m.bindings.put(JoystickAction.FIRE,
                     new KeyBinding(KeyEvent.VK_CONTROL, KeyEvent.KEY_LOCATION_LEFT));
+            m.bindings.put(JoystickAction.BLUE,    new KeyBinding(KeyEvent.VK_SPACE, std));
+            m.bindings.put(JoystickAction.GREEN,   new KeyBinding(KeyEvent.VK_Z, std));
+            m.bindings.put(JoystickAction.YELLOW,  new KeyBinding(KeyEvent.VK_X, std));
+            m.bindings.put(JoystickAction.REWIND,  new KeyBinding(KeyEvent.VK_C, std));
+            m.bindings.put(JoystickAction.FORWARD, new KeyBinding(KeyEvent.VK_V, std));
+            m.bindings.put(JoystickAction.PLAY,    new KeyBinding(KeyEvent.VK_ENTER, std));
         }
         return m;
     }
@@ -78,7 +92,16 @@ public final class JoystickKeyMap {
 
     /** Function driven by the keyboard event, or {@code null} if the key is not mapped. */
     public JoystickAction actionFor(KeyEvent e) {
+        return actionFor(e, true);
+    }
+
+    /**
+     * Function driven by the keyboard event, or {@code null} if the key is not mapped;
+     * without {@code cd32} the CD32 functions are not looked at.
+     */
+    public JoystickAction actionFor(KeyEvent e, boolean cd32) {
         for (var entry : bindings.entrySet()) {
+            if (!cd32 && entry.getKey().isCd32()) continue;
             if (entry.getValue().matches(e)) return entry.getKey();
         }
         return null;

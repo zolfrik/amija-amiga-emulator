@@ -23,6 +23,7 @@ package io.github.zolfrik.amija.display;
 import io.github.zolfrik.amija.config.AmigaConfig;
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.net.RemotePlayControl;
+import io.github.zolfrik.amija.net.serial.SerialControl;
 
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
@@ -45,12 +46,16 @@ import java.util.List;
  * user looks at the window, so a timer realigns the controls, and the rest of the class
  * exists to keep that realignment in one place.
  *
- * <h2>Four modes, and the rows that appear</h2>
- * The {@code Off / Host / Join / Watch} selector shows and hides the rows of the chosen role with
- * {@code setRowVisible}, as Auto mode already does. The same button changes label and action
- * ("Host" becomes "Stop hosting") instead of showing two side by side, one of them always
- * off. Watch is Join as a spectator (section 16): same rows, the spectator code instead of the
- * join code, and nothing of this machine reaches the host's.
+ * <h2>Six modes, and the rows that appear</h2>
+ * The selector offers the three roles of the video stream ({@code Host / Join / Watch}) and the
+ * two ends of a null modem cable to another instance ({@code docs/serial-nullmodem-plan.md}),
+ * and shows and hides the rows of the chosen role with {@code setRowVisible}, as Auto mode
+ * already does. The same button changes label and action ("Host" becomes "Stop hosting")
+ * instead of showing two side by side, one of them always off. Watch is Join as a spectator
+ * (section 16): same rows, the spectator code instead of the join code, and nothing of this
+ * machine reaches the host's. The null modem rows repeat those of the stream wherever the
+ * two mean the same thing (port, security, address and code with their Copy buttons, host
+ * address and code to type); the two connections are independent and can run together.
  *
  * <h2>No button closes the popup</h2>
  * Neither hosting nor connecting closes the window: they act at once and the result shows in
@@ -81,18 +86,22 @@ final class RemotePlaySection {
                  Runnable applyToConfig, Runnable dispose) {
     }
 
-    /** Like {@link #build(AmigaConfig, RemotePlayControl, java.util.function.Function,
-     * Widgets, Runnable)}, with nothing to realign outside this section. */
+    /** Like {@link #build(AmigaConfig, RemotePlayControl, SerialControl,
+     * java.util.function.Function, Widgets, Runnable)}, with no serial port and nothing to
+     * realign outside this section. */
     static Built build(AmigaConfig config, RemotePlayControl control,
                        java.util.function.Function<String, JComponent> section,
                        Widgets widgets) {
-        return build(config, control, section, widgets, null);
+        return build(config, control, null, section, widgets, null);
     }
 
     /**
      * Builds the section.
      *
      * @param control  the real remote play, which lives outside the popup
+     * @param serial   the serial port of the running machine; {@code null} when there is
+     *                 none (a guest has no machine), and then the null modem modes are not
+     *                 offered
      * @param section  factory of panels in the same style as the other sections
      * @param alsoSync other rows of the popup that depend on the session state and must be
      *                 realigned with these: today the game ports, one of which changes owner
@@ -101,7 +110,7 @@ final class RemotePlaySection {
      *                 different moments at which the popup says two different things.
      *                 {@code null} if there is nothing to realign
      */
-    static Built build(AmigaConfig config, RemotePlayControl control,
+    static Built build(AmigaConfig config, RemotePlayControl control, SerialControl serial,
                        java.util.function.Function<String, JComponent> section,
                        Widgets widgets, Runnable alsoSync) {
         JComponent panel = section.apply(Messages.t("section.remoteplay"));
@@ -112,10 +121,13 @@ final class RemotePlaySection {
         final boolean guestAtOpen = control.isGuest();
 
         // --- Modo -----------------------------------------------------------------
-        JComboBox<Mode> modeCombo = widgets.combo(Mode.values());
+        JComboBox<Mode> modeCombo = widgets.combo(serial == null ? Mode.streamModes() : Mode.values());
         modeCombo.setSelectedItem(control.isSpectator() ? Mode.WATCH
                 : control.isGuest() ? Mode.JOIN
-                : control.isHosting() ? Mode.HOST : Mode.OFF);
+                : control.isHosting() ? Mode.HOST
+                : serial != null && serial.isSerialHosting() ? Mode.SERIAL_HOST
+                : serial != null && (serial.isSerialLinked() || serial.isSerialJoining())
+                        ? Mode.SERIAL_JOIN : Mode.OFF);
         widgets.addRow(panel, 0, "label.remoteplay.mode", modeCombo, null);
 
         // --- Host rows ---------------------------------------------------------------
@@ -195,9 +207,47 @@ final class RemotePlaySection {
         JLabel joinButtonLabel = widgets.addRow(panel, 13, "label.remoteplay.session2",
                 joinButton, null);
 
+        // --- Null modem rows ---------------------------------------------------------
+        // The same rows as the stream, in the same order, where they mean the same thing.
+        // The delay of the cable and the loopback plug are set in amiga.properties only.
+        JTextField serialPortField = widgets.text(Integer.toString(config.serialPort()));
+        JLabel serialPortLabel = widgets.addRow(panel, 15, "label.serial.port",
+                serialPortField, null);
+
+        JCheckBox serialLanCheck = widgets.check(Messages.t("label.remoteplay.lanonly"),
+                config.serialLanOnly());
+        JLabel serialLanLabel = widgets.addRow(panel, 16, "label.serial.security",
+                serialLanCheck, null);
+
+        JButton serialHostButton = widgets.button(Messages.t("button.remoteplay.start"));
+        JLabel serialHostButtonLabel = widgets.addRow(panel, 17, "label.serial.session",
+                serialHostButton, null);
+
+        JTextField serialAddressField = widgets.readOnlyText("");
+        JButton copySerialAddress = widgets.button(Messages.t("button.remoteplay.copy"));
+        JLabel serialAddressLabel = widgets.addRow(panel, 18, "label.serial.address",
+                serialAddressField, copySerialAddress);
+
+        JTextField serialCodeField = widgets.readOnlyText("");
+        JButton copySerialCode = widgets.button(Messages.t("button.remoteplay.copy"));
+        JLabel serialCodeLabel = widgets.addRow(panel, 19, "label.serial.joincode",
+                serialCodeField, copySerialCode);
+
+        JTextField serialHostAddressField = widgets.text(serialLastHost(config));
+        JLabel serialHostAddressLabel = widgets.addRow(panel, 20, "label.serial.hostaddress",
+                serialHostAddressField, null);
+
+        JTextField serialJoinCodeField = widgets.text("");
+        JLabel serialJoinCodeLabel = widgets.addRow(panel, 21, "label.serial.entercode",
+                serialJoinCodeField, null);
+
+        JButton serialJoinButton = widgets.button(Messages.t("button.remoteplay.connect"));
+        JLabel serialJoinButtonLabel = widgets.addRow(panel, 22, "label.serial.session2",
+                serialJoinButton, null);
+
         // --- Status, always visible -------------------------------------------------
         JTextField statusField = widgets.readOnlyText("");
-        JLabel statusLabel = widgets.addRow(panel, 14, "label.remoteplay.status",
+        JLabel statusLabel = widgets.addRow(panel, 30, "label.remoteplay.status",
                 statusField, null);
 
         List<JComponent> hostRows = List.of(portLabel, portField, upnpCheck,
@@ -212,6 +262,13 @@ final class RemotePlaySection {
                 allowReset);
         List<JComponent> joinRows = List.of(hostAddressLabel, hostAddressField,
                 joinCodeLabel, joinCodeField, joinButtonLabel, joinButton);
+        List<JComponent> serialHostRows = List.of(serialPortLabel, serialPortField,
+                serialLanLabel, serialLanCheck, serialHostButtonLabel, serialHostButton);
+        List<JComponent> serialHostLiveRows = List.of(serialAddressLabel, serialAddressField,
+                copySerialAddress, serialCodeLabel, serialCodeField, copySerialCode);
+        List<JComponent> serialJoinRows = List.of(serialHostAddressLabel,
+                serialHostAddressField, serialJoinCodeLabel, serialJoinCodeField,
+                serialJoinButtonLabel, serialJoinButton);
 
         // A single place where the controls realign with reality: called by the mode change,
         // the buttons and the timer. Three copies would be the sure way to leave one behind.
@@ -237,6 +294,31 @@ final class RemotePlaySection {
                     && control.spectatorCode() != null, spectatorCodeRows);
             widgets.setRowVisible(mode == Mode.HOST, hostOptionRows);
             widgets.setRowVisible(mode.joins(), joinRows);
+            widgets.setRowVisible(mode == Mode.SERIAL_HOST, serialHostRows);
+            widgets.setRowVisible(mode == Mode.SERIAL_JOIN, serialJoinRows);
+            if (serial != null) {
+                boolean serialHosting = serial.isSerialHosting();
+                boolean serialJoining = serial.isSerialJoining();
+                // A cable joined from this side: the listening end keeps its server open.
+                boolean serialJoined = !serialHosting && serial.isSerialLinked();
+                widgets.setRowVisible(mode == Mode.SERIAL_HOST && serialHosting,
+                        serialHostLiveRows);
+                serialHostButton.setText(Messages.t(serialHosting
+                        ? "button.remoteplay.stop" : "button.remoteplay.start"));
+                serialHostButton.setEnabled(!serialJoining && !serialJoined);
+                serialJoinButton.setText(Messages.t(serialJoined
+                        ? "button.remoteplay.disconnect" : "button.remoteplay.connect"));
+                serialJoinButton.setEnabled(!serialJoining && !serialHosting);
+                boolean serialIdle = !serialHosting && !serialJoining && !serialJoined;
+                serialPortField.setEnabled(serialIdle);
+                serialLanCheck.setEnabled(serialIdle);
+                serialHostAddressField.setEnabled(serialIdle);
+                serialJoinCodeField.setEnabled(serialIdle);
+                if (serialHosting) {
+                    serialAddressField.setText(nullToEmpty(serial.serialLanAddress()));
+                    serialCodeField.setText(nullToEmpty(serial.serialJoinCode()));
+                }
+            }
 
             hostButton.setText(Messages.t(hosting
                     ? "button.remoteplay.stop" : "button.remoteplay.start"));
@@ -276,7 +358,8 @@ final class RemotePlaySection {
                         : nullToEmpty(control.routerStatus()));
                 copyInternet.setEnabled(internet != null);
             }
-            statusField.setText(control.status());
+            statusField.setText(mode.serial() && serial != null
+                    ? serial.serialStatus() : control.status());
             if (alsoSync != null) {
                 alsoSync.run();
             }
@@ -325,6 +408,39 @@ final class RemotePlaySection {
             sync.run();
         });
 
+        serialHostButton.addActionListener(e -> {
+            if (serial.isSerialHosting()) {
+                serial.stopSerial();
+            } else {
+                applySerialFields(config, serialPortField, serialLanCheck, serialHostAddressField);
+                String error = serial.startSerialHost(config.serialPort(), config.serialLanOnly());
+                if (error != null) {
+                    widgets.error(error);
+                }
+            }
+            sync.run();
+        });
+
+        serialJoinButton.addActionListener(e -> {
+            if (serial.isSerialJoining()) {
+                return;   // already in flight
+            }
+            if (serial.isSerialLinked()) {
+                serial.stopSerial();
+            } else {
+                applySerialFields(config, serialPortField, serialLanCheck, serialHostAddressField);
+                String typed = serialHostAddressField.getText();
+                String error = serial.joinSerial(hostOf(typed),
+                        portOf(typed, config.serialPort()), serialJoinCodeField.getText());
+                if (error != null) {
+                    widgets.error(error);
+                }
+            }
+            sync.run();
+        });
+
+        copySerialAddress.addActionListener(e -> copy(serialAddressField.getText()));
+        copySerialCode.addActionListener(e -> copy(serialCodeField.getText()));
         copyAddress.addActionListener(e -> copy(addressField.getText()));
         copyCode.addActionListener(e -> copy(codeField.getText()));
         copyInternet.addActionListener(e -> copy(internetField.getText()));
@@ -336,7 +452,9 @@ final class RemotePlaySection {
         widgets.tip("label.remoteplay.guestkeyboard", shareKeyboard);
         widgets.tip("label.remoteplay.guestreset", allowReset);
         widgets.tip("button.remoteplay.copy", copyAddress, copyCode, copyInternet,
-                copySpectatorCode);
+                copySpectatorCode, copySerialAddress, copySerialCode);
+        widgets.tip("label.serial.session", serialHostButton);
+        widgets.tip("label.serial.session2", serialJoinButton);
         widgets.tip("label.remoteplay.session", hostButton);
         widgets.tip("label.remoteplay.session2", joinButton);
 
@@ -346,9 +464,14 @@ final class RemotePlaySection {
         timer.start();
         sync.run();
 
-        Runnable applyToConfig = () -> applyHostFields(config, portField, upnpCheck,
-                lanOnlyCheck, guestPortCombo, shareKeyboard, allowReset, audioCombo,
-                spectatorsCombo);
+        Runnable applyToConfig = () -> {
+            applyHostFields(config, portField, upnpCheck, lanOnlyCheck, guestPortCombo,
+                    shareKeyboard, allowReset, audioCombo, spectatorsCombo);
+            if (serial != null) {
+                applySerialFields(config, serialPortField, serialLanCheck,
+                        serialHostAddressField);
+            }
+        };
 
         return new Built(panel, () -> outcome[0], applyToConfig, timer::stop);
     }
@@ -378,6 +501,56 @@ final class RemotePlaySection {
         Object max = spectators.getSelectedItem();
         if (max instanceof Integer n) {
             config.setRemotePlaySpectatorsMax(n);
+        }
+    }
+
+    /**
+     * Writes the null modem fields to the configuration. The role itself is never stored: a
+     * null modem session is started by the user every time, never at boot. A loopback plug
+     * set by hand in amiga.properties is never touched.
+     */
+    private static void applySerialFields(AmigaConfig config, JTextField portField,
+            JCheckBox lanOnly, JTextField hostAddress) {
+        try {
+            int port = Integer.parseInt(portField.getText().trim());
+            if (port > 0 && port <= 65535) {
+                config.setSerialValue("link.port", Integer.toString(port));
+            }
+        } catch (NumberFormatException ignored) {
+            // Port mistyped: keep the previous one, as the stream does.
+        }
+        config.setSerialValue("link.lanonly", Boolean.toString(lanOnly.isSelected()));
+        String typed = hostAddress.getText().trim();
+        if (!typed.isEmpty()) {
+            config.setSerialValue("link.address", hostOf(typed));
+        }
+    }
+
+    /** The address of the listening end as it was last typed, with the port of the cable. */
+    private static String serialLastHost(AmigaConfig config) {
+        String address = config.serialValue("link.address");
+        return address == null ? "" : address + ":" + config.serialPort();
+    }
+
+    /** The host part of {@code host:port}; the whole text when it carries no port. */
+    static String hostOf(String typed) {
+        String s = typed == null ? "" : typed.trim();
+        int colon = s.lastIndexOf(':');
+        return colon > 0 && s.indexOf(':') == colon ? s.substring(0, colon).trim() : s;
+    }
+
+    /** The port of {@code host:port}; {@code fallback} when there is none or it is not a port. */
+    static int portOf(String typed, int fallback) {
+        String s = typed == null ? "" : typed.trim();
+        int colon = s.lastIndexOf(':');
+        if (colon <= 0 || s.indexOf(':') != colon) {
+            return fallback;
+        }
+        try {
+            int port = Integer.parseInt(s.substring(colon + 1).trim());
+            return port > 0 && port <= 65535 ? port : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
         }
     }
 
@@ -430,16 +603,27 @@ final class RemotePlaySection {
     // =====================================================================
 
     enum Mode {
-        OFF, HOST, JOIN, WATCH;
+        OFF, HOST, JOIN, WATCH, SERIAL_HOST, SERIAL_JOIN;
 
-        /** Whether this mode connects to someone else's machine. */
+        /** Whether this mode connects to someone else's machine to receive its picture. */
         boolean joins() {
             return this == JOIN || this == WATCH;
         }
 
+        /** Whether this mode is an end of a null modem cable. */
+        boolean serial() {
+            return this == SERIAL_HOST || this == SERIAL_JOIN;
+        }
+
+        /** The modes offered when there is no serial port. */
+        static Mode[] streamModes() {
+            return new Mode[] { OFF, HOST, JOIN, WATCH };
+        }
+
         @Override
         public String toString() {
-            return Messages.t("remoteplay.mode." + name().toLowerCase(java.util.Locale.ROOT));
+            return Messages.t("remoteplay.mode."
+                    + name().toLowerCase(java.util.Locale.ROOT).replace("_", ""));
         }
     }
 

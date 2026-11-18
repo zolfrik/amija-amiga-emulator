@@ -13,14 +13,16 @@
 **Features**
 
 - OCS, ECS and AGA chipsets, PAL and NTSC - AGA on an emulated A1200 board
+- CD32: discs as .cue, .iso or zip, CD audio, the CD32 pad
 - 68000, 68010 and 68020 processors
-- automatic mode: the machine is configured from the media you load
-- floppy drives DF0-DF3, ADF and IPF images, multi-disk sets in a .zip
+- automatic mode: the machine is configured from the media you load, with the right Kickstart picked from your ROM folder
+- floppy drives DF0-DF3, ADF (standard and extended) and IPF images, multi-disk sets in a .zip
 - hard disk images (.hdf, Zorro II AutoConfig) and WHDLoad .lha auto-run
 - five save-state slots and rewind
 - audio, real joysticks, mouse and full keyboard mapping, with low input and audio latency
 - software renderer or OpenGL backend with RetroArch shaders (.glslp, .slangp)
 - remote play: a second player joins over the network without a Kickstart or a copy of the game, and spectators can watch
+- null modem cable between two AmiJa over the network, for two-computer games
 - integration with the Groovy MiSTer project
 - command line for frontends: media files and any setting as `key=value`
 
@@ -42,7 +44,7 @@ java -jar AmiJa.jar
 
 Without a configured Kickstart, AmiJa boots its own built-in firmware. It has
 no AmigaDOS: Workbench, hard disk installs and WHDLoad require a real
-Kickstart. Press F12 to configure it.
+Kickstart. Press F12 and choose the folder holding your Kickstart ROMs.
 
 Every setting, key and command-line option is documented in
 [USER_MANUAL.txt](USER_MANUAL.txt).

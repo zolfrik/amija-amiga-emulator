@@ -204,6 +204,7 @@ public class AmigaDisplay {
     // master, slave). Each supplier is true while that disk is reading/writing. Empty/null =
     // no hard disk: the HD LED and its label are not drawn.
     private volatile BooleanSupplier[] hdLedSources;
+    private volatile BooleanSupplier cdLedSource;
 
     // Remote play light: visible only during a session, lit when the other end is really
     // there. Both null = feature off, and the row is not drawn.
@@ -213,10 +214,17 @@ public class AmigaDisplay {
     // MiSTer output light: visible while the output runs, lit while the MiSTer answers.
     private volatile BooleanSupplier misterLedVisible;
     private volatile BooleanSupplier misterLedActive;
+    private volatile java.util.function.IntSupplier serialLedState;
 
     // Notification (absolute path, drive index 0..3) when a disk is inserted by
     // drag-and-drop, so the caller can update the configuration (see F12).
     private volatile ObjIntConsumer<String> diskDropListener;
+    /** Receives a dropped CD image (a disc for the CD32), anywhere in the window. */
+    private volatile java.util.function.Consumer<String> cdDropListener;
+
+    public void setCdDropListener(java.util.function.Consumer<String> listener) {
+        this.cdDropListener = listener;
+    }
 
     /** Registers the listener notified when a disk is dropped on a drive. */
     public void setDiskDropListener(ObjIntConsumer<String> listener) {
@@ -237,6 +245,14 @@ public class AmigaDisplay {
      */
     public void setHdLedSources(BooleanSupplier... sources) {
         this.hdLedSources = sources;
+    }
+
+    /**
+     * Connects the "CD" LED: {@code true} while the CD drive is active. {@code null} on a
+     * machine without a CD drive: then the row is not drawn.
+     */
+    public void setCdLedSource(BooleanSupplier source) {
+        this.cdLedSource = source;
     }
 
     /**
@@ -266,6 +282,15 @@ public class AmigaDisplay {
      * @param active  {@code true} while a session with the MiSTer is open; with
      *                {@code false} the light stays dim, the output is retrying
      */
+    /**
+     * The SER LED: {@code state} returns 0 for hidden, 1 while waiting for the other end of a
+     * null modem cable (dim), 2 with the cable plugged in (lit), 3 while the machine is held
+     * waiting for the other one (amber).
+     */
+    public void setSerialLedSource(java.util.function.IntSupplier state) {
+        this.serialLedState = state;
+    }
+
     public void setMisterLedSource(BooleanSupplier visible, BooleanSupplier active) {
         this.misterLedVisible = visible;
         this.misterLedActive = active;
@@ -421,13 +446,6 @@ public class AmigaDisplay {
         return inputComponent;
     }
 
-    /**
-     * Enlargement factor of the emulated window, at least 1. Needed by whoever works in
-     * screen pixels and must go back to Amiga pixels: the mouse above all.
-     */
-    public int getVideoScale() {
-        return videoScale;
-    }
 
     /**
      * Selects (live) the RetroArch shader preset, if the backend is OpenGL. No-op in
@@ -979,6 +997,8 @@ public class AmigaDisplay {
     private static final LedStyle POWER_DIM_STYLE    = ledStyle(LED_POWER, 0.6f);
     private static final LedStyle DRIVE_ACTIVE_STYLE = ledStyle(LED_DRIVE, 1.0f);
     private static final LedStyle DRIVE_IDLE_STYLE   = ledStyle(LED_DRIVE, 0.16f);
+    private static final Color LED_HELD = new Color(0xFF, 0xB0, 0x20); // amber: waiting for the other machine
+    private static final LedStyle HELD_STYLE         = ledStyle(LED_HELD, 1.0f);
 
     private static final class LedStyle {
         final Color glowOuter;
@@ -1058,6 +1078,11 @@ public class AmigaDisplay {
         if (hdStates.length > 0) {
             rows.add(new LedRow("HD", hdStates, DRIVE_ACTIVE_STYLE, DRIVE_IDLE_STYLE));
         }
+        BooleanSupplier cd = cdLedSource;
+        if (cd != null) {
+            rows.add(new LedRow("CD", new boolean[]{ cd.getAsBoolean() },
+                    DRIVE_ACTIVE_STYLE, DRIVE_IDLE_STYLE));
+        }
         BooleanSupplier netVisible = remotePlayLedVisible;
         if (netVisible != null && netVisible.getAsBoolean()) {
             BooleanSupplier netActive = remotePlayLedActive;
@@ -1074,6 +1099,13 @@ public class AmigaDisplay {
             rows.add(new LedRow("MISTER",
                     new boolean[]{ misterActive != null && misterActive.getAsBoolean() },
                     DRIVE_ACTIVE_STYLE, DRIVE_IDLE_STYLE));
+        }
+
+        java.util.function.IntSupplier serial = serialLedState;
+        int serialState = serial == null ? 0 : serial.getAsInt();
+        if (serialState != 0) {
+            rows.add(new LedRow("SER", new boolean[]{ serialState >= 2 },
+                    serialState == 3 ? HELD_STYLE : DRIVE_ACTIVE_STYLE, DRIVE_IDLE_STYLE));
         }
 
         final int baseLedW = 59, ledH = 10; // thin bars like the real ones (84 reduced by 30%)
@@ -1333,7 +1365,9 @@ public class AmigaDisplay {
     /** Accepts the drag (copy cursor) only if the quadrant points to a connected drive. */
     private void updateDragAcceptance(DropTargetDragEvent e) {
         FloppyDrive d = driveAt(hoverQuadrant);
-        if (d != null && d.isConnected()) {
+        // A machine without floppy drives (the CD32) takes a disc anywhere.
+        boolean noDrives = cdDropListener != null && !anyDriveConnected();
+        if ((d != null && d.isConnected()) || noDrives) {
             e.acceptDrag(DnDConstants.ACTION_COPY);
         } else {
             e.rejectDrag(); // show the "no-drop" cursor on the drives not available
@@ -1655,6 +1689,30 @@ public class AmigaDisplay {
 
     /** Completes a drop: validates quadrant and file, then inserts the disk in the drive. */
     private void handleDrop(DropTargetDropEvent e) {
+        if (cdDropListener != null && e.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+            try {
+                e.acceptDrop(DnDConstants.ACTION_COPY);
+                @SuppressWarnings("unchecked")
+                List<File> files = (List<File>) e.getTransferable()
+                        .getTransferData(DataFlavor.javaFileListFlavor);
+                for (File f : files) {
+                    if (io.github.zolfrik.amija.custom.cd.CdImage.isDisc(f.toPath())) {
+                        java.util.function.Consumer<String> l = cdDropListener;
+                        String path = f.getAbsolutePath();
+                        javax.swing.SwingUtilities.invokeLater(() -> l.accept(path));
+                        e.dropComplete(true);
+                        endDragOverlay();
+                        return;
+                    }
+                }
+                handleFloppyDrop(e, files);
+            } catch (Exception ex) {
+                System.err.println("[DND] Error receiving the file: " + ex.getMessage());
+                e.dropComplete(false);
+                endDragOverlay();
+            }
+            return;
+        }
         int q = quadrantAt(e.getLocation());
         FloppyDrive drive = driveAt(q);
         if (drive == null || !drive.isConnected()
@@ -1679,6 +1737,25 @@ public class AmigaDisplay {
         }
         e.dropComplete(ok);
         endDragOverlay();
+    }
+
+    /** A drop already accepted that is not a disc: a floppy for the quadrant under the mouse. */
+    private void handleFloppyDrop(DropTargetDropEvent e, List<File> files) {
+        int q = quadrantAt(e.getLocation());
+        FloppyDrive drive = driveAt(q);
+        File disk = firstSupportedDisk(files);
+        boolean ok = drive != null && drive.isConnected() && disk != null;
+        if (ok) handleDiskDrop(drive, q, disk);
+        e.dropComplete(ok);
+        endDragOverlay();
+    }
+
+    private boolean anyDriveConnected() {
+        for (int q = 0; q < 4; q++) {
+            FloppyDrive d = driveAt(q);
+            if (d != null && d.isConnected()) return true;
+        }
+        return false;
     }
 
     /**

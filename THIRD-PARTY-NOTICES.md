@@ -108,8 +108,8 @@ disabled when they are absent.
 
 | File | Rights holder | Status |
 |---|---|---|
-| Kickstart ROM | Cloanto / Amiga Corporation | User-supplied (available with [Amiga Forever](https://www.amigaforever.com/)) |
-| ADF / IPF / HDF disk images | Respective publishers | User-supplied |
+| Kickstart ROMs, CD32 extended ROM | Cloanto / Amiga Corporation | User-supplied (available with [Amiga Forever](https://www.amigaforever.com/)) |
+| ADF / IPF / HDF disk images, CD32 discs | Respective publishers | User-supplied |
 | `whdload/WHDLoad_files/C`, `S` | Bert Jahn | Freeware; downloadable (§5) |
 | `whdload/WHDLoad_files/Devs/Kickstarts/*.RTB` | SinSoft / Pavel Troller (SoftKick) | Redistributable as an intact archive only; downloadable (§5) |
 | `whdload/WHDLoad_files/Devs/Kickstarts/kick*` | Cloanto / Amiga Corporation | User-supplied |

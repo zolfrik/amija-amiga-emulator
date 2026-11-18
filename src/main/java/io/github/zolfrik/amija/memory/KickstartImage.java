@@ -376,6 +376,57 @@ public final class KickstartImage {
         return compatibility() == Compatibility.SOCKET_ROM;
     }
 
+    /** Version of the ROM from its header (word at offset {@code $0C}): 40 for Kickstart 3.1. */
+    public int romVersion() { return readWord(data, 0x0C); }
+
+    /** Revision of the ROM from its header (word at offset {@code $0E}): 60 for the CD32's. */
+    public int romRevision() { return readWord(data, 0x0E); }
+
+    /**
+     * True for the CD32's own Kickstart: a socket ROM of version 40, revision 60, a revision
+     * of Kickstart 3.1 that shipped only in the CD32. Its contents are those of the A1200's
+     * 3.1 save for exec and scsi.device: the header is what tells them apart. The CD32's
+     * extended ROM carries the same header and a reset vector into the socket too; it is not
+     * a Kickstart because it holds no exec.library linked for the socket.
+     */
+    public boolean isCd32Kickstart() {
+        return isSocketRom() && romVersion() == 40 && romRevision() == 60
+                && execVersion() == 40;
+    }
+
+    /** Base address of the CD32's extended ROM. */
+    public static final int CD32_EXTENDED_BASE = 0xE00000;
+
+    /**
+     * True for the CD32's extended ROM: header 40.60 and the {@code cdstrap} resident linked
+     * for {@code $E00000}, where the CD32 maps it.
+     */
+    public boolean isCd32ExtendedRom() {
+        return data.length == 512 * 1024 && romVersion() == 40 && romRevision() == 60
+                && hasResident(data, CD32_EXTENDED_BASE, "cdstrap");
+    }
+
+    /** CRC32 of the normalised image: the same for a dump, its overdump and its encrypted copy. */
+    public long crc32() {
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(data);
+        return crc.getValue();
+    }
+
+    /**
+     * {@link #isCd32Kickstart()} of a file; false when the path is empty, the file is missing
+     * or it is not a usable Kickstart.
+     */
+    public static boolean isCd32Kickstart(String path) {
+        if (path == null || path.isBlank()) return false;
+        try {
+            Path p = Path.of(path.trim());
+            return Files.isRegularFile(p) && load(p).isCd32Kickstart();
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
     /** Technical reason for the incompatibility for logs and diagnostics, or null if compatible. */
     public String incompatibilityReason() {
         switch (compatibility()) {
@@ -521,6 +572,16 @@ public final class KickstartImage {
             }
         }
         return -1;
+    }
+
+    /** True if the image holds a resident named {@code name} linked for {@code base}. */
+    private static boolean hasResident(byte[] b, int base, String name) {
+        for (int off = 0; off + 26 <= b.length; off += 2) {
+            if (readWord(b, off) != RTC_MATCHWORD) continue;
+            if (readLong(b, off + 2) != base + off) continue;
+            if (name.equals(readString(b, base, readLong(b, off + 14)))) return true;
+        }
+        return false;
     }
 
     /** Reads a NUL-terminated string from a ROM pointer, or null if outside the image. */

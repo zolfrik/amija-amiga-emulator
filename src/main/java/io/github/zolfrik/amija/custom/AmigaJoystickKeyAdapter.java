@@ -53,7 +53,11 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
         volatile GamePortControls port;
         volatile JoystickKeyMap keyMap;
         boolean up, down, left, right, fire;
+        /** CD32 buttons held: bit n = GamePort.CD32 button n, bit 7 = blue. */
+        int cd32;
     }
+
+    private static final int CD32_BLUE_BIT = 7;
 
     private final PortState[] states = new PortState[PORTS];
 
@@ -92,7 +96,7 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
     /** Releases directions and fire on every configured port. */
     public void releaseAll() {
         for (PortState s : states) {
-            if (s.up || s.down || s.left || s.right || s.fire) {
+            if (s.up || s.down || s.left || s.right || s.fire || s.cd32 != 0) {
                 release(s);
             }
         }
@@ -156,10 +160,16 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
         for (PortState s : states) {
             GamePortControls p = s.port;
             if (p == null) continue;
-            JoystickAction action = s.keyMap.actionFor(e);
+            JoystickAction action = s.keyMap.actionFor(e, p.isCd32Pad());
             if (action == null) continue;
             handled = true;
-            if (action == JoystickAction.FIRE) {
+            if (action.isCd32()) {
+                int b = action.cd32Button();
+                int bit = 1 << (b == JoystickAction.CD32_BUTTON2 ? CD32_BLUE_BIT : b);
+                s.cd32 = pressed ? s.cd32 | bit : s.cd32 & ~bit;
+                if (b == JoystickAction.CD32_BUTTON2) p.pressJoystickButton2(pressed);
+                else p.pressCd32Button(b, pressed);
+            } else if (action == JoystickAction.FIRE) {
                 s.fire = pressed;
                 p.pressJoystickFire(pressed);
             } else {
@@ -180,10 +190,16 @@ public class AmigaJoystickKeyAdapter extends KeyAdapter {
     /** Releases directions and fire on the currently configured port, if any. */
     private void release(PortState s) {
         s.up = s.down = s.left = s.right = s.fire = false;
+        int cd32 = s.cd32;
+        s.cd32 = 0;
         GamePortControls p = s.port;
         if (p != null) {
             p.setJoystickAxes(0, 0);
             p.pressJoystickFire(false);
+            if ((cd32 & (1 << CD32_BLUE_BIT)) != 0) p.pressJoystickButton2(false);
+            for (int b = 0; b < CD32_BLUE_BIT; b++) {
+                if ((cd32 & (1 << b)) != 0) p.pressCd32Button(b, false);
+            }
         }
     }
 }

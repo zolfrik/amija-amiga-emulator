@@ -100,13 +100,23 @@ public final class JoystickKeysDialog {
      *             the keys already taken.
      */
     public static void show(Window parent, int portIndex, JoystickKeyMap[] maps) {
-        new Editor(parent, portIndex, maps).open();
+        show(parent, portIndex, maps, false);
+    }
+
+    /**
+     * As {@link #show(Window, int, JoystickKeyMap[])}; with {@code cd32Pad} the port holds a
+     * CD32 pad: the buttons carry the pad's names (fire is the red button) and the pad's other
+     * buttons are listed. Without it they are not.
+     */
+    public static void show(Window parent, int portIndex, JoystickKeyMap[] maps, boolean cd32Pad) {
+        new Editor(parent, portIndex, maps, cd32Pad).open();
     }
 
     /** State and behaviour of a single opening of the popup. */
     private static final class Editor {
 
         private final int portIndex;
+        private final boolean cd32Pad;
         private final JoystickKeyMap[] maps;
         /** Working copy: committed to {@code maps[portIndex]} on close. */
         private final JoystickKeyMap working;
@@ -128,8 +138,9 @@ public final class JoystickKeysDialog {
         private Border savedBorder;
         private Font savedFont;
 
-        Editor(Window parent, int portIndex, JoystickKeyMap[] maps) {
+        Editor(Window parent, int portIndex, JoystickKeyMap[] maps, boolean cd32Pad) {
             this.portIndex = portIndex;
+            this.cd32Pad   = cd32Pad;
             this.maps      = maps;
             this.working   = maps[portIndex].copy();
             this.other     = maps[1 - portIndex];
@@ -190,7 +201,8 @@ public final class JoystickKeysDialog {
             header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
             header.setBorder(pad(14, 18, 6, 18));
 
-            JLabel title = new JLabel(Messages.t("joykeys.header", portIndex));
+            JLabel title = new JLabel(Messages.t(cd32Pad ? "joykeys.header.pad" : "joykeys.header",
+                    portIndex));
             title.setForeground(FG);
             title.setFont(derive(title.getFont(), Font.BOLD, 15f));
             title.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -227,7 +239,9 @@ public final class JoystickKeysDialog {
 
             int row = 0;
             for (JoystickAction action : JoystickAction.values()) {
-                JLabel label = new JLabel(Messages.t(action.messageKey()));
+                // The pad's other buttons exist only on a CD32 pad.
+                if (action.isCd32() && !cd32Pad) continue;
+                JLabel label = new JLabel(name(action));
                 label.setForeground(FG);
 
                 // The text colour is chosen by the look and feel, because it draws the
@@ -310,7 +324,7 @@ public final class JoystickKeysDialog {
             b.setForeground(Color.BLACK);
             b.setBorder(BorderFactory.createLineBorder(ACCENT, px(2)));
             b.setFont(savedFont.deriveFont(Font.BOLD));
-            hint.setText(Messages.t("joykeys.capturing", Messages.t(action.messageKey())));
+            hint.setText(Messages.t("joykeys.capturing", name(action)));
 
             captureDispatcher = e -> {
                 if (e.getID() != KeyEvent.KEY_PRESSED) return true;
@@ -414,10 +428,10 @@ public final class JoystickKeysDialog {
         }
 
         /** Widest capture message among all the functions (to size the popup). */
-        private static String longestCapturingMessage() {
+        private String longestCapturingMessage() {
             String longest = " ";
             for (JoystickAction action : JoystickAction.values()) {
-                String msg = Messages.t("joykeys.capturing", Messages.t(action.messageKey()));
+                String msg = Messages.t("joykeys.capturing", name(action));
                 if (msg.length() > longest.length()) longest = msg;
             }
             return longest;
@@ -426,6 +440,14 @@ public final class JoystickKeysDialog {
         private void warn(String message) {
             JOptionPane.showMessageDialog(dialog, message,
                     Messages.t("joykeys.conflict.title"), JOptionPane.WARNING_MESSAGE);
+        }
+
+        /** The function's name: on a CD32 pad the buttons carry the pad's own names. */
+        private String name(JoystickAction action) {
+            if (cd32Pad && (action == JoystickAction.FIRE || action.isCd32())) {
+                return JoypadButtonsDialog.buttonName(action);
+            }
+            return Messages.t(action.messageKey());
         }
 
         private static JButton button(String text, boolean primary) {

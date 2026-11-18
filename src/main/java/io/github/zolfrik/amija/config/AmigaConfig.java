@@ -30,6 +30,8 @@ import io.github.zolfrik.amija.input.JoystickAction;
 import io.github.zolfrik.amija.input.JoystickKeyMap;
 import io.github.zolfrik.amija.input.KeyBinding;
 import io.github.zolfrik.amija.input.PortDevice;
+import io.github.zolfrik.amija.memory.KickstartFolder;
+import io.github.zolfrik.amija.memory.KickstartImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -81,8 +83,18 @@ public final class AmigaConfig {
 
     // Property keys.
     private static final String K_AUTO_EN     = "auto.enabled";
+    private static final String K_AUTO_KS_DIR = "auto.kickstart.dir";
+    private static final String K_AUTO_KS_IDX = "auto.kickstart.index";
+    // Derived from the folder by refreshKickstartFolder(), one per role.
     private static final String K_AUTO_KS13   = "auto.kickstart13.path";
     private static final String K_AUTO_KS31   = "auto.kickstart31.path";
+    private static final String K_AUTO_KS31_A1200 = "auto.kickstart31.a1200.path";
+    private static final String K_AUTO_CD32_KS    = "auto.cd32.kickstart.path";
+    private static final String K_AUTO_CD32_EXT   = "auto.cd32.extrom.path";
+    /** Derived keys, in the order of {@link KickstartFolder.Role}. */
+    private static final String[] AUTO_ROM_KEYS = {
+            K_AUTO_KS13, K_AUTO_KS31, K_AUTO_KS31_A1200, K_AUTO_CD32_KS, K_AUTO_CD32_EXT };
+
     private static final String K_KICKSTART   = "kickstart.path";
     private static final String K_CHIPRAM_KB  = "chipram.kb";
     private static final String K_SLOWRAM_KB  = "slowram.kb";
@@ -95,6 +107,9 @@ public final class AmigaConfig {
     private static final String K_HD_RO       = "hd.%s.readonly";
     private static final String K_WHDLOAD_EN   = "whdload.enabled";
     private static final String K_WHDLOAD_FILE = "whdload.file";
+    private static final String K_CD_IMAGE     = "cd.image";
+    private static final String K_CD32_EXTROM  = "cd32.extrom.path";
+    private static final String K_CD32_KEYBOARD = "cd32.keyboard";
     private static final String K_LAST_MEDIA_DIR  = "chooser.media.lastDirectory";
     private static final String K_LAST_FLOPPY_DIR = "chooser.floppy.lastDirectory";
     private static final String K_LAST_ROM_DIR    = "chooser.rom.lastDirectory";
@@ -109,6 +124,7 @@ public final class AmigaConfig {
     private static final String K_PORT_DEVICE = "input.port%d.device";
     /** Keyboard joystick key: {@code input.port<N>.joystick.<up|down|right|left|fire>}. */
     private static final String K_JOY_KEY = "input.port%d.joystick.%s";
+    private static final String K_JOYPAD = "input.joypad.%s";
     private static final String K_LANGUAGE    = "ui.language";
     private static final String K_UI_SCALE    = "ui.scale";
     /** Comma-separated ids of the collapsible F12 popup sections the user left open. */
@@ -157,6 +173,13 @@ public final class AmigaConfig {
     private static final String K_MISTER_AUDIOLEAD = "mister.audiolead";
     private static final String K_MISTER_INPUTS = "mister.inputs";
     private static final String K_MISTER_EXPERT = "mister.expert";
+    private static final String K_SERIAL_MODE = "serial.mode";
+    private static final String K_SERIAL_ADDRESS = "serial.link.address";
+    private static final String K_SERIAL_PORT = "serial.link.port";
+    private static final String K_SERIAL_DELAY = "serial.link.delay.ms";
+    private static final String K_SERIAL_LANONLY = "serial.link.lanonly";
+    /** Default port of the null modem cable: not the one of remote play, the two can run together. */
+    public static final int DEFAULT_SERIAL_PORT = 7789;
 
     // =========================================================================
     // WHDLoad parameters (section whdload.prefs.* at the end of amiga.properties).
@@ -286,9 +309,10 @@ public final class AmigaConfig {
     public record AutoProfile(String kickstartPath, boolean expanded, boolean aga, int chipRamKb,
             int slowRamKb, int fastRamKb, Chipset chipset, CpuModel cpuModel, VideoMode videoMode) {
 
-        /** {@code true} if the profile boots Kickstart 3.1 rather than 1.3. */
-        public boolean usesKickstart31() {
-            return expanded || aga;
+        /** The Kickstart this profile boots. */
+        public KickstartFolder.Role kickstartRole() {
+            return aga ? KickstartFolder.Role.KS31_A1200
+                    : expanded ? KickstartFolder.Role.KS31 : KickstartFolder.Role.KS13;
         }
     }
 
@@ -463,6 +487,7 @@ public final class AmigaConfig {
         }
         out.put(K_WHDLOAD_EN, c.props.getProperty(K_WHDLOAD_EN, ""));
         out.put(K_WHDLOAD_FILE, c.props.getProperty(K_WHDLOAD_FILE, ""));
+        out.put(K_CD_IMAGE, c.props.getProperty(K_CD_IMAGE, ""));
         return out;
     }
 
@@ -544,8 +569,9 @@ public final class AmigaConfig {
         Properties p = new Properties();
         // Automatic mode: on by default (it is why it exists).
         p.setProperty(K_AUTO_EN, "true");
-        p.setProperty(K_AUTO_KS13, "");                 // to be set by the user
-        p.setProperty(K_AUTO_KS31, "");
+        p.setProperty(K_AUTO_KS_DIR, "");               // to be set by the user
+        p.setProperty(K_AUTO_KS_IDX, "");
+        for (String k : AUTO_ROM_KEYS) p.setProperty(k, "");
         for (AutoDefaults d : AUTO_PROFILES) {
             p.setProperty(d.prefix() + "chipram.kb", Integer.toString(d.chipRamKb()));
             p.setProperty(d.prefix() + "slowram.kb", Integer.toString(d.slowRamKb()));
@@ -576,6 +602,10 @@ public final class AmigaConfig {
         // WHDLoad: absent by default.
         p.setProperty(K_WHDLOAD_EN, "false");
         p.setProperty(K_WHDLOAD_FILE, "");
+        // CD32: no disc, no ROM named.
+        p.setProperty(K_CD_IMAGE, "");
+        p.setProperty(K_CD32_EXTROM, "");
+        p.setProperty(K_CD32_KEYBOARD, "false");
         p.setProperty(K_LAST_MEDIA_DIR, "");
         p.setProperty(K_LAST_FLOPPY_DIR, "");
         p.setProperty(K_LAST_ROM_DIR, "");
@@ -635,6 +665,11 @@ public final class AmigaConfig {
         p.setProperty(K_MISTER_AUDIOLEAD, "40");
         p.setProperty(K_MISTER_INPUTS, "pc");
         p.setProperty(K_MISTER_EXPERT, "false");
+        p.setProperty(K_SERIAL_MODE, "off");
+        p.setProperty(K_SERIAL_ADDRESS, "");
+        p.setProperty(K_SERIAL_PORT, Integer.toString(DEFAULT_SERIAL_PORT));
+        p.setProperty(K_SERIAL_DELAY, "auto");
+        p.setProperty(K_SERIAL_LANONLY, "true");
         // WHDLoad parameters (section whdload.prefs.*): defaults as in the stock WHDLoad.prefs.
         for (WhdPref pref : WHD_PREFS) {
             p.setProperty(pref.key(), pref.def());
@@ -657,14 +692,78 @@ public final class AmigaConfig {
         return getBool(K_AUTO_EN, true);
     }
 
-    /** Kickstart 1.3 of Auto mode (floppy-only profile); empty if not set. */
-    public String autoKickstart13() {
-        return props.getProperty(K_AUTO_KS13, "").trim();
+    /** The folder of Kickstart ROMs Auto mode picks from; empty if not chosen. */
+    public String autoKickstartDir() {
+        return props.getProperty(K_AUTO_KS_DIR, "").trim();
     }
 
-    /** Kickstart 3.1 of Auto mode (hard disk/WHDLoad profile); empty if not set. */
+    public void setAutoKickstartDir(String dir) {
+        props.setProperty(K_AUTO_KS_DIR, dir == null ? "" : dir.trim());
+    }
+
+    /** The ROM the last analysis of the folder chose for a role; empty if none. */
+    public String autoKickstart(KickstartFolder.Role role) {
+        return props.getProperty(AUTO_ROM_KEYS[role.ordinal()], "").trim();
+    }
+
+    public void setAutoKickstart(KickstartFolder.Role role, String path) {
+        props.setProperty(AUTO_ROM_KEYS[role.ordinal()], path == null ? "" : path.trim());
+    }
+
+    /** Kickstart 1.3 of Auto mode (floppy-only profile); empty if not found. */
+    public String autoKickstart13() {
+        return autoKickstart(KickstartFolder.Role.KS13);
+    }
+
+    /** Kickstart 3.1 of Auto mode (hard disk/WHDLoad profile); empty if not found. */
     public String autoKickstart31() {
-        return props.getProperty(K_AUTO_KS31, "").trim();
+        return autoKickstart(KickstartFolder.Role.KS31);
+    }
+
+    /**
+     * Brings the ROMs chosen for each role up to date with the folder: the folder is listed
+     * (cheap) and read again only if its fingerprint differs from the last analysis.
+     *
+     * @return true if the derived keys were rewritten (the configuration should be saved)
+     */
+    public boolean refreshKickstartFolder() {
+        String dir = autoKickstartDir();
+        if (dir.isEmpty()) return false;
+        Path path;
+        try {
+            path = Path.of(dir);
+        } catch (RuntimeException e) {
+            return false;
+        }
+        String fp = KickstartFolder.fingerprint(path);
+        if (fp.equals(props.getProperty(K_AUTO_KS_IDX, ""))) return false;
+        applyKickstartScan(KickstartFolder.scan(path));
+        return true;
+    }
+
+    /** Writes an analysis of the folder into the derived keys. */
+    public void applyKickstartScan(KickstartFolder.Result result) {
+        for (KickstartFolder.Role role : KickstartFolder.Role.values()) {
+            KickstartFolder.Found f = result.get(role);
+            setAutoKickstart(role, f == null ? "" : f.path().toAbsolutePath().toString());
+        }
+        props.setProperty(K_AUTO_KS_IDX, result.fingerprint());
+    }
+
+    /**
+     * In Auto mode, the first ROM the machine to build needs and the folder did not provide,
+     * or null when nothing is missing (or Auto is off).
+     */
+    public KickstartFolder.Role autoMissingRole() {
+        if (!autoEnabled()) return null;
+        java.util.List<KickstartFolder.Role> needed = cd32Machine()
+                ? java.util.List.of(KickstartFolder.Role.CD32, KickstartFolder.Role.CD32_EXT)
+                : java.util.List.of(autoProfile().kickstartRole());
+        for (KickstartFolder.Role role : needed) {
+            String rom = autoKickstart(role);
+            if (rom.isEmpty() || !Files.isRegularFile(Path.of(rom))) return role;
+        }
+        return null;
     }
 
     /**
@@ -693,6 +792,7 @@ public final class AmigaConfig {
             if (hdEnabled(unit) && hdDisk(unit) != null) files.add(hdDisk(unit));
         }
         if (whdloadEnabled() && whdloadFile() != null) files.add(whdloadFile());
+        if (cdImage() != null) files.add(cdImage());
         return files;
     }
 
@@ -737,7 +837,8 @@ public final class AmigaConfig {
         final boolean aga = agaRequired(activeFiles);
         AutoDefaults d = aga ? AUTO_AGA : expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
         int fastRamKb = aga && !expanded ? 0 : d.fastRamKb(this);
-        String kickstart = autoKickstartPath(expanded || aga);
+        String kickstart = autoKickstart(aga ? KickstartFolder.Role.KS31_A1200
+                : expanded ? KickstartFolder.Role.KS31 : KickstartFolder.Role.KS13);
         // The profile's processor is a floor: a Kickstart built for the 68020 raises it, and so
         // does a WHDLoad slave that declares it needs one.
         CpuModel cpu = HardwareRules.satisfying(HardwareRules.romFacts(kickstart).cpu(),
@@ -803,20 +904,6 @@ public final class AmigaConfig {
         return autoProfile(expandedMediaActive(), activeMediaFiles());
     }
 
-    /**
-     * ROM chosen by Auto mode: Kickstart 3.1 for the expanded profile, 1.3 for floppy only.
-     * If the profile's box is empty it falls back on the other and finally on the Kickstart
-     * set by hand, so anyone coming from an earlier configuration (where only
-     * {@code kickstart.path} existed) still starts.
-     */
-    private String autoKickstartPath(boolean expanded) {
-        String preferred = expanded ? autoKickstart31() : autoKickstart13();
-        String other = expanded ? autoKickstart13() : autoKickstart31();
-        if (!preferred.isEmpty()) return preferred;
-        if (!other.isEmpty()) return other;
-        return storedKickstartPath();
-    }
-
     // =========================================================================
     // Typed getters (falling back to the defaults if the key is missing/invalid)
     //
@@ -826,18 +913,114 @@ public final class AmigaConfig {
     // and come back into force as soon as Auto is switched off.
     // =========================================================================
 
+    // -------------------------------------------------------------------------
+    // CD32
+    // -------------------------------------------------------------------------
+
+    /**
+     * The disc in the CD drive ({@code cd.image}): a {@code .cue}, an {@code .iso}, or a zip
+     * holding one; {@code null} when none. With a disc the machine is a CD32, whatever Auto
+     * or the hand-made settings say: the CD32 is one fixed machine (68EC020, AGA, 2 MB of
+     * Chip RAM, nothing else).
+     */
+    public String cdImage() {
+        String v = props.getProperty(K_CD_IMAGE, "").trim();
+        return v.isEmpty() ? null : v;
+    }
+
+    public void setCdImage(String path) {
+        props.setProperty(K_CD_IMAGE, path == null ? "" : path);
+    }
+
+    /**
+     * True when the machine to build is a CD32. In Expert the Kickstart decides: a CD32
+     * Kickstart (40.60) builds a CD32, with or without a disc. In Auto a disc does
+     * ({@link #cdImage()}), with the CD32 ROMs found in the Kickstart folder.
+     */
+    public boolean cd32Machine() {
+        if (autoEnabled()) return cdImage() != null;
+        return isCd32Kickstart(storedKickstartPath());
+    }
+
+    /** Last answer of {@link #isCd32Kickstart(String)}, valid while the file is unchanged. */
+    private String cd32CheckPath;
+    private long cd32CheckStamp;
+    private boolean cd32CheckResult;
+
+    /** Whether a file is the CD32's Kickstart; read once per path and file version. */
+    private synchronized boolean isCd32Kickstart(String path) {
+        long stamp = -1;
+        try {
+            Path p = Path.of(path);
+            if (Files.isRegularFile(p)) {
+                stamp = Files.getLastModifiedTime(p).toMillis() * 31 + Files.size(p);
+            }
+        } catch (IOException | RuntimeException e) {
+            stamp = -1;
+        }
+        if (!path.equals(cd32CheckPath) || stamp != cd32CheckStamp) {
+            cd32CheckPath = path;
+            cd32CheckStamp = stamp;
+            cd32CheckResult = stamp != -1 && KickstartImage.isCd32Kickstart(path);
+        }
+        return cd32CheckResult;
+    }
+
+    /** The CD32 Kickstart of Auto mode, found in the Kickstart folder. */
+    public String cd32KickstartPath() {
+        return autoKickstart(KickstartFolder.Role.CD32);
+    }
+
+    /**
+     * The CD32 extended ROM the machine uses, mapped at {@code $E00000}: in Auto the one found
+     * in the Kickstart folder, in Expert {@code cd32.extrom.path}.
+     */
+    public String cd32ExtRomPath() {
+        return autoEnabled() ? autoKickstart(KickstartFolder.Role.CD32_EXT) : storedCd32ExtRomPath();
+    }
+
+    /** The CD32 extended ROM chosen by hand ({@code cd32.extrom.path}), used in Expert. */
+    public String storedCd32ExtRomPath() {
+        return props.getProperty(K_CD32_EXTROM, "").trim();
+    }
+
+    public void setCd32ExtRomPath(String path) {
+        props.setProperty(K_CD32_EXTROM, path == null ? "" : path);
+    }
+
+    /**
+     * Whether a keyboard is plugged into the CD32 ({@code cd32.keyboard}, default false: the
+     * console comes without one). Without it the PC's keys reach no Amiga keyboard and no
+     * keyboard talks to CIA-A.
+     */
+    public boolean cd32Keyboard() {
+        return Boolean.parseBoolean(props.getProperty(K_CD32_KEYBOARD, "false").trim());
+    }
+
+    public void setCd32Keyboard(boolean connected) {
+        props.setProperty(K_CD32_KEYBOARD, Boolean.toString(connected));
+    }
+
+    /** Whether the machine to build has an Amiga keyboard: always, except a CD32 without one. */
+    public boolean keyboardConnected() {
+        return !cd32Machine() || cd32Keyboard();
+    }
+
     /** Absolute path of the Kickstart, or the empty string if not configured. */
     public String kickstartPath() {
-        return autoEnabled() ? autoProfile().kickstartPath() : storedKickstartPath();
+        if (!autoEnabled()) return storedKickstartPath();
+        return cd32Machine() ? cd32KickstartPath() : autoProfile().kickstartPath();
     }
 
     /** Chip RAM in KB (default 512). */
     public int chipRamKb() {
+        if (cd32Machine()) return 2048;
         return autoEnabled() ? autoProfile().chipRamKb() : storedChipRamKb();
     }
 
     /** Slow RAM in KB (default 512); 0 = no Slow RAM. */
     public int slowRamKb() {
+        if (cd32Machine()) return 0;
         return autoEnabled() ? autoProfile().slowRamKb() : storedSlowRamKb();
     }
 
@@ -847,6 +1030,7 @@ public final class AmigaConfig {
      * run from hard disk and WHDLoad.
      */
     public int fastRamKb() {
+        if (cd32Machine()) return 0;
         return autoEnabled() ? autoProfile().fastRamKb() : storedFastRamKb();
     }
 
@@ -1118,6 +1302,7 @@ public final class AmigaConfig {
      * effect only after a restart (cold restart).
      */
     public Chipset chipset() {
+        if (cd32Machine()) return Chipset.AGA;
         return autoEnabled() ? autoProfile().chipset() : storedChipset();
     }
 
@@ -1127,6 +1312,7 @@ public final class AmigaConfig {
      * 68020. A change takes effect only after a cold restart.
      */
     public CpuModel cpuModel() {
+        if (cd32Machine()) return CpuModel.M68020;
         return autoEnabled() ? autoProfile().cpuModel() : storedCpuModel();
     }
 
@@ -1243,11 +1429,11 @@ public final class AmigaConfig {
     }
 
     public void setAutoKickstart13(String path) {
-        props.setProperty(K_AUTO_KS13, path == null ? "" : path.trim());
+        setAutoKickstart(KickstartFolder.Role.KS13, path);
     }
 
     public void setAutoKickstart31(String path) {
-        props.setProperty(K_AUTO_KS31, path == null ? "" : path.trim());
+        setAutoKickstart(KickstartFolder.Role.KS31, path);
     }
 
     public void setKickstartPath(String path) {
@@ -1332,6 +1518,30 @@ public final class AmigaConfig {
     }
 
     /** Writes the keyboard joystick keys of port {@code port} (0 or 1). */
+    /**
+     * Which control of a real controller drives each pad button ({@code input.joypad.*});
+     * missing or invalid entries keep the default.
+     */
+    public io.github.zolfrik.amija.input.JoypadMap joypadMap() {
+        io.github.zolfrik.amija.input.JoypadMap map = io.github.zolfrik.amija.input.JoypadMap.defaults();
+        for (JoystickAction button : io.github.zolfrik.amija.input.JoypadMap.BUTTONS) {
+            String value = props.getProperty(String.format(K_JOYPAD, button.configKey()));
+            if (value == null) continue;
+            // An empty value is a button left unassigned on purpose.
+            String token = io.github.zolfrik.amija.input.JoypadMap.normalise(value);
+            if (token.isEmpty() && !value.trim().isEmpty()) continue;
+            map.set(button, token);
+        }
+        return map;
+    }
+
+    public void setJoypadMap(io.github.zolfrik.amija.input.JoypadMap map) {
+        if (map == null) return;
+        for (JoystickAction button : io.github.zolfrik.amija.input.JoypadMap.BUTTONS) {
+            props.setProperty(String.format(K_JOYPAD, button.configKey()), map.get(button));
+        }
+    }
+
     public void setJoystickKeyMap(int port, JoystickKeyMap map) {
         if (map == null) return;
         for (JoystickAction action : JoystickAction.values()) {
@@ -1562,6 +1772,64 @@ public final class AmigaConfig {
         props.setProperty("mister." + key, value == null ? "" : value.trim());
     }
 
+    // =========================================================================
+    // Serial port (docs/serial-nullmodem-plan.md section 7)
+    // =========================================================================
+
+    /** One {@code serial.*} value as written, trimmed; {@code null} when absent or empty. */
+    public String serialValue(String key) {
+        String v = props.getProperty("serial." + key);
+        if (v == null) {
+            return null;
+        }
+        v = v.trim();
+        return v.isEmpty() ? null : v;
+    }
+
+    /** Sets one {@code serial.*} value; {@code null} empties it. */
+    public void setSerialValue(String key, String value) {
+        props.setProperty("serial." + key, value == null ? "" : value.trim());
+    }
+
+    /**
+     * The plug in the serial port at boot: off or loopback. A null modem cable is a session
+     * the user opens from the popup and is never stored, so it never starts by itself.
+     */
+    public String serialMode() {
+        String v = serialValue("mode");
+        if (v == null) return "off";
+        v = v.toLowerCase(java.util.Locale.ROOT);
+        return switch (v) {
+            case "loopback" -> v;
+            default -> "off";
+        };
+    }
+
+    /** TCP port of the null modem cable. */
+    public int serialPort() {
+        try {
+            int port = Integer.parseInt(String.valueOf(serialValue("link.port")));
+            return port >= 1 && port <= 65535 ? port : DEFAULT_SERIAL_PORT;
+        } catch (NumberFormatException e) {
+            return DEFAULT_SERIAL_PORT;
+        }
+    }
+
+    /** Delay of the cable to force, in milliseconds; 0 for "auto", the measured one. */
+    public int serialDelayMs() {
+        try {
+            int ms = Integer.parseInt(String.valueOf(serialValue("link.delay.ms")));
+            return Math.max(0, Math.min(1000, ms));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** Whether the listening end refuses peers outside the local network. */
+    public boolean serialLanOnly() {
+        return !"false".equalsIgnoreCase(String.valueOf(serialValue("link.lanonly")));
+    }
+
     public void setOverscanEnabled(boolean enabled) {
         props.setProperty(K_OVERSCAN, Boolean.toString(enabled));
     }
@@ -1685,9 +1953,14 @@ public final class AmigaConfig {
         sb.append("# force the moment this is set to false.\n");
         line(sb, K_AUTO_EN, Boolean.toString(autoEnabled()));
 
-        sb.append("\n# ABSOLUTE path of the two Kickstart ROMs used by the automatic configuration.\n");
-        line(sb, K_AUTO_KS13, autoKickstart13());
-        line(sb, K_AUTO_KS31, autoKickstart31());
+        sb.append("\n# Folder of the Kickstart ROMs (subfolders included) the automatic configuration\n");
+        sb.append("# picks from. The paths below are what AmiJa found there, rewritten whenever the\n");
+        sb.append("# folder changes (index = its fingerprint): 1.3 for floppy games, 3.1 (40.63)\n");
+        sb.append("# for hard disk and WHDLoad, 3.1 for the A1200 (40.68) for AGA software, the\n");
+        sb.append("# CD32 Kickstart (40.60) and its extended ROM for CD32 discs.\n");
+        line(sb, K_AUTO_KS_DIR, autoKickstartDir());
+        line(sb, K_AUTO_KS_IDX, props.getProperty(K_AUTO_KS_IDX, "").trim());
+        for (String k : AUTO_ROM_KEYS) line(sb, k, props.getProperty(k, "").trim());
 
         sb.append("\n# The three hardware profiles of the automatic configuration: auto.floppy.* is\n");
         sb.append("# used when only floppies are in play, auto.hd.* when a hard disk or WHDLoad is,\n");
@@ -1752,6 +2025,16 @@ public final class AmigaConfig {
         String whd = props.getProperty(K_WHDLOAD_FILE, "").trim();
         line(sb, K_WHDLOAD_FILE, whd);
 
+        sb.append("\n# CD32 (68EC020, AGA, 2 MB of Chip RAM, CD32 pad in the joystick port). In Expert\n");
+        sb.append("# the CD32's Kickstart (40.60) in kickstart.path makes the machine a CD32, with\n");
+        sb.append("# or without a disc, and cd32.extrom.path is its extended ROM; in Auto a disc\n");
+        sb.append("# does, with the CD32 ROMs of the Kickstart folder. The disc is a .cue, an .iso,\n");
+        sb.append("# or a zip holding one. The NVRAM is kept in nvram/cd32.nvr.\n");
+        line(sb, K_CD_IMAGE, props.getProperty(K_CD_IMAGE, "").trim());
+        line(sb, K_CD32_EXTROM, storedCd32ExtRomPath());
+        sb.append("# An Amiga keyboard plugged into the CD32 (the console comes without one).\n");
+        line(sb, K_CD32_KEYBOARD, Boolean.toString(cd32Keyboard()));
+
         sb.append("\n# Last directories used by the file browsers of the F12 popup. The \"media\"\n");
         sb.append("# one belongs to the single browser of the automatic configuration, which\n");
         sb.append("# takes every kind of file; empty = start from the floppy one.\n");
@@ -1781,6 +2064,8 @@ public final class AmigaConfig {
         sb.append("\n# Keys driving the keyboard joystick of each port (device joystick-keyboard).\n");
         sb.append("# Each port has its own set, so both can be played on the same keyboard.\n");
         sb.append("# Defaults: Port 0 = W/A/S/D + right Ctrl, Port 1 = arrow keys + left Ctrl.\n");
+        sb.append("# blue/green/yellow/rewind/forward/play are the CD32 pad's other buttons: they act\n");
+        sb.append("# only while the port holds a CD32 pad; otherwise their keys reach the Amiga keyboard.\n");
         sb.append("# A key is the name of the java.awt.event.KeyEvent VK_ constant without the\n");
         sb.append("# prefix (W, UP, SPACE, NUMPAD5, ...); for keys that exist twice on the\n");
         sb.append("# keyboard add the position: CONTROL:LEFT, CONTROL:RIGHT, SHIFT:LEFT, ...\n");
@@ -1792,6 +2077,16 @@ public final class AmigaConfig {
                 line(sb, String.format(K_JOY_KEY, port, action.configKey()),
                         map.get(action).configValue());
             }
+        }
+
+        sb.append("\n# Controls of a real controller (device joystick-real) driving the pad buttons:\n");
+        sb.append("# fire is the red button. A control is a button of the standard gamepad layout\n");
+        sb.append("# (A, B, X, Y, LB, RB, BACK, START, GUIDE, LS, RS), a trigger (LT, RT) or a raw\n");
+        sb.append("# button number (BUTTON0, BUTTON1, ...); empty = not assigned. Editable from the\n");
+        sb.append("# F12 popup on a CD32: \"Joypad (real)\" in port 1, then \"...\".\n");
+        io.github.zolfrik.amija.input.JoypadMap pad = joypadMap();
+        for (JoystickAction button : io.github.zolfrik.amija.input.JoypadMap.BUTTONS) {
+            line(sb, String.format(K_JOYPAD, button.configKey()), pad.get(button));
         }
 
         sb.append("\n# User interface language: en = English, it = Italian.\n");
@@ -1806,7 +2101,7 @@ public final class AmigaConfig {
         line(sb, K_UI_SCALE, uiScaleValue());
 
         sb.append("\n# Collapsible sections of the F12 popup that are open, separated by commas\n");
-        sb.append("# (gameports, state, rewind, remoteplay, av, gui). Empty = all closed.\n");
+        sb.append("# (gameports, state, rewind, remoteplay, mister, av, gui). Empty = all closed.\n");
         sb.append("# System, Drives and Optional files are always open. Clicking a section\n");
         sb.append("# title in the popup changes it.\n");
         line(sb, K_UI_EXPANDED, String.join(",", expandedPopupSections()));
@@ -1953,6 +2248,25 @@ public final class AmigaConfig {
         sb.append("# Show colour, compression and sound in the F12 popup.\n");
         line(sb, K_MISTER_EXPERT, misterRaw(K_MISTER_EXPERT));
 
+        sb.append("\n# ================================ Serial port ================================\n");
+        sb.append("# What is plugged into the serial port at boot: off (nothing) or loopback (a\n");
+        sb.append("# plug that wires the port back on itself), set here only. A null modem cable\n");
+        sb.append("# to another AmiJa is started from the Remote play section of the F12 popup\n");
+        sb.append("# every time, never at boot; the fields below are what it remembers.\n");
+        sb.append("# The join code is never saved: the listening end makes a new one every time.\n");
+        line(sb, K_SERIAL_MODE, serialMode());
+        sb.append("# nullmodem-join: the address of the listening instance.\n");
+        line(sb, K_SERIAL_ADDRESS, misterRaw(K_SERIAL_ADDRESS));
+        sb.append("# TCP port of the cable, on both ends.\n");
+        line(sb, K_SERIAL_PORT, Integer.toString(serialPort()));
+        sb.append("# Delay of the cable in milliseconds of emulated time, the same in both\n");
+        sb.append("# directions: auto (measured from the network when the cable is joined) or a\n");
+        sb.append("# number. The larger of the two ends is used. Programs see it as latency.\n");
+        sb.append("# Not in the F12 popup.\n");
+        line(sb, K_SERIAL_DELAY, serialDelayMs() == 0 ? "auto" : Integer.toString(serialDelayMs()));
+        sb.append("# nullmodem-host: refuse connections from outside the local network.\n");
+        line(sb, K_SERIAL_LANONLY, Boolean.toString(serialLanOnly()));
+
         sb.append("\n# ===================== WHDLoad parameters (WHDLoad.prefs) ====================\n");
         sb.append("# These values generate the S:WHDLoad.prefs file of the WHDLoad hard disk built\n");
         sb.append("# on the fly (they are not shown in the F12 popup). Flags (true/false) enable\n");
@@ -1989,8 +2303,9 @@ public final class AmigaConfig {
     private static java.util.List<String> machineKeys() {
         java.util.List<String> keys = new java.util.ArrayList<>();
         keys.add(K_AUTO_EN);
-        keys.add(K_AUTO_KS13);
-        keys.add(K_AUTO_KS31);
+        keys.add(K_AUTO_KS_DIR);
+        keys.add(K_AUTO_KS_IDX);
+        for (String k : AUTO_ROM_KEYS) keys.add(k);
         for (AutoDefaults d : AUTO_PROFILES) {
             keys.add(d.prefix() + "chipram.kb");
             keys.add(d.prefix() + "slowram.kb");
@@ -2017,6 +2332,9 @@ public final class AmigaConfig {
         }
         keys.add(K_WHDLOAD_EN);
         keys.add(K_WHDLOAD_FILE);
+        keys.add(K_CD_IMAGE);
+        keys.add(K_CD32_EXTROM);
+        keys.add(K_CD32_KEYBOARD);
         return keys;
     }
 

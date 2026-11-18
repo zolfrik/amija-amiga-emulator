@@ -21,6 +21,7 @@
 package io.github.zolfrik.amija.state;
 
 import io.github.zolfrik.amija.common.AppHome;
+import io.github.zolfrik.amija.common.MasterClock;
 import io.github.zolfrik.amija.config.AmigaConfig;
 import io.github.zolfrik.amija.cpu.Processor;
 import io.github.zolfrik.amija.cpu.event.EventCpu;
@@ -86,9 +87,9 @@ public final class SaveStateManager {
      * {@code amiga.properties}. 3: adds the AutoConfig boards (FastRam, HdController) to the
      * roots, so the dynamic memory map is rebuilt on load. 4: adds Gayle. Slots of an earlier
      * version no longer load: they are a single snapshot, redone by pressing "Save State"
-     * again.
+     * again. 5: adds the CD32's Akiko, NVRAM and audio player.
      */
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
 
     /** How many state slots exist. They are numbered from 1 to {@code SLOT_COUNT}. */
     public static final int SLOT_COUNT = 5;
@@ -210,7 +211,17 @@ public final class SaveStateManager {
      */
     public static void save(File file, Processor cpu, EventCpuBus eventBus, AbstractAgnus agnus,
             GamePort port1, GamePort port2, AmigaConfig cfg) throws IOException {
-        advanceToBoundary(agnus, cpu, eventBus);
+        save(file, cpu, eventBus, agnus, port1, port2, cfg, null);
+    }
+
+    /**
+     * Saves the machine; the steps that take it to the start of a frame stay within what
+     * {@code limiter} allows (null: no bound).
+     */
+    public static void save(File file, Processor cpu, EventCpuBus eventBus, AbstractAgnus agnus,
+            GamePort port1, GamePort port2, AmigaConfig cfg, MasterClock.Limiter limiter)
+            throws IOException {
+        advanceToBoundary(agnus, cpu, eventBus, limiter);
         List<Object> roots = buildRoots(cpu, eventBus, agnus, port1, port2);
         byte[] configBlob = encodeConfig(cfg.snapshot());
 
@@ -415,6 +426,13 @@ public final class SaveStateManager {
         addCia(roots, field(agnus, "ciaB"));
         add(roots, field(agnus, "keyboard"));
         add(roots, field(agnus, "batteryClock"));
+        // CD32: Akiko, its NVRAM and the drive's audio player (absent elsewhere).
+        Object akiko = field(agnus, "akiko");
+        if (akiko != null) {
+            add(roots, akiko);
+            add(roots, field(akiko, "nvram"));
+            add(roots, field(akiko, "player"));
+        }
         add(roots, port1);
         add(roots, port2);
 
@@ -474,18 +492,52 @@ public final class SaveStateManager {
      * through its bus, an instruction at a time.
      */
     static void advanceToBoundary(AbstractAgnus agnus, Processor cpu, EventCpuBus eventBus) {
+        advanceToBoundary(agnus, cpu, eventBus, null);
+    }
+
+    /**
+     * As {@link #advanceToBoundary(AbstractAgnus, Processor, EventCpuBus)}, without running
+     * past what {@code limiter} allows (the other end of a serial cable): at the limit it
+     * waits for the limit to move. If it does not move for {@link #LIMIT_WAIT_NS}, the
+     * limiter is told it is overrun and the steps go on unbounded.
+     */
+    static void advanceToBoundary(AbstractAgnus agnus, Processor cpu, EventCpuBus eventBus,
+                                  MasterClock.Limiter limiter) {
         final int GUARD = 8_000_000; // wide margin: a whole frame is ~70k colour clocks
-        if (eventBus != null) {
-            final io.github.zolfrik.amija.common.ClockDriver driver = eventBus.driver((EventCpu) cpu);
-            for (int i = 0; i < GUARD && agnus.getVpos() != 0; i++) driver.run(1);
-            return;
-        }
+        final io.github.zolfrik.amija.common.ClockDriver driver =
+                eventBus != null ? eventBus.driver((EventCpu) cpu) : null;
+        long room = limiter == null ? Long.MAX_VALUE : 0;
+        long heldSince = 0;
         for (int i = 0; i < GUARD; i++) {
-            if (agnus.getVpos() == 0 && cpu.isAtInstructionBoundary()) return;
-            agnus.risingEdge();
-            agnus.fallingEdge();
+            if (agnus.getVpos() == 0 && (driver != null || cpu.isAtInstructionBoundary())) return;
+            if (room <= 0) {
+                room = limiter.allowance(GUARD);
+                if (room <= 0) {
+                    long now = System.nanoTime();
+                    if (heldSince == 0) heldSince = now;
+                    if (now - heldSince > LIMIT_WAIT_NS) {
+                        limiter.overrun();
+                        room = Long.MAX_VALUE;
+                    } else {
+                        java.util.concurrent.locks.LockSupport.parkNanos(200_000L);
+                        i--;
+                        continue;
+                    }
+                }
+                heldSince = 0;
+            }
+            if (driver != null) {
+                room -= driver.run(1);
+            } else {
+                agnus.risingEdge();
+                agnus.fallingEdge();
+                room--;
+            }
         }
     }
+
+    /** How long a step towards the start of a frame waits for a limit that does not move. */
+    static final long LIMIT_WAIT_NS = 2_000_000_000L;
 
     // =========================================================================
     // Compatibility fingerprint

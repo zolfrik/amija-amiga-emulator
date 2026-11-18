@@ -41,7 +41,9 @@ public final class MediaSet {
     public enum Kind {
         FLOPPY(4, "adf", "ipf", "zip"),
         HARDDISK(AmigaConfig.HD_UNITS.length, "hdf"),
-        WHDLOAD(1, "lha", "lzh");
+        WHDLOAD(1, "lha", "lzh"),
+        /** A CD32 disc: a .cue or .iso, or a zip holding one. */
+        CD(1, "cue", "iso", "zip");
 
         /** How many of this type the machine can mount at once. */
         public final int max;
@@ -55,10 +57,25 @@ public final class MediaSet {
 
         /** The type of {@code path}, or {@code null} if the extension is none of ours. */
         public static Kind of(String path) {
-            String name = path.toLowerCase(Locale.ROOT);
-            // A multi-disk zip is addressed as <zip>!<n>: the archive is what counts.
-            int cut = name.indexOf(DiskImage.ZIP_ENTRY_SEPARATOR);
-            if (cut > 0) name = name.substring(0, cut);
+            // A multi-disk zip is addressed as <zip>!<n>: the archive is what counts. Only that
+            // exact suffix is removed: a '!' elsewhere belongs to the name ("[!]" marks a
+            // verified dump).
+            String file;
+            try {
+                file = DiskImage.pathOf(path).toString();
+            } catch (RuntimeException e) {
+                file = path;
+            }
+            String name = file.toLowerCase(Locale.ROOT);
+            // A zip is a CD32 disc when it holds a .cue or an .iso, floppies otherwise.
+            if (name.endsWith(".zip")) {
+                try {
+                    return io.github.zolfrik.amija.custom.cd.CdImage.isDisc(java.nio.file.Path.of(file))
+                            ? CD : FLOPPY;
+                } catch (RuntimeException e) {
+                    return FLOPPY;
+                }
+            }
             for (Kind k : values()) {
                 for (String ext : k.extensions) {
                     if (name.endsWith("." + ext)) return k;
@@ -79,6 +96,8 @@ public final class MediaSet {
     public final boolean[] hdReadOnly = new boolean[AmigaConfig.HD_UNITS.length];
     public boolean whdloadEnabled;
     public String whdloadFile = "";
+    /** The CD32 disc; empty if none. */
+    public String cdImage = "";
 
     public static MediaSet fromConfig(AmigaConfig c) {
         MediaSet s = new MediaSet();
@@ -94,6 +113,7 @@ public final class MediaSet {
         }
         s.whdloadEnabled = c.whdloadEnabled();
         s.whdloadFile = c.whdloadFile() == null ? "" : c.whdloadFile();
+        s.cdImage = c.cdImage() == null ? "" : c.cdImage();
         return s;
     }
 
@@ -110,6 +130,7 @@ public final class MediaSet {
         }
         c.setWhdloadEnabled(whdloadEnabled);
         c.setWhdloadFile(text(whdloadFile));
+        c.setCdImage(text(cdImage));
     }
 
     /** {@code s} trimmed, or the empty string for {@code null}. */
@@ -146,6 +167,7 @@ public final class MediaSet {
                     s.whdloadEnabled = true;
                     s.whdloadFile = item.path();
                 }
+                case CD -> s.cdImage = item.path();
             }
         }
         // One connected drive per disk, and as many for the disks of a multi-disk zip in
@@ -157,7 +179,7 @@ public final class MediaSet {
         // The exception is a completely empty list: there DF0 stays connected because it is
         // the only possible target of a disk dragged onto the window, and without it
         // drag-and-drop would have nowhere to land (a drop on a drive that is not connected
-        // is refused).
+        // is refused). A CD32 disc makes the machine a CD32, which has no floppy drive.
         //
         // A drive left empty is not requested: the drives go up to the last one that has a
         // disk, and the empty ones before it stay connected because without them that one
@@ -169,14 +191,15 @@ public final class MediaSet {
         int connected = lastDisk + 1;
         if (lastDisk >= 0) connected = Math.max(connected, zipDiskCount(s.floppyDisk[0]));
         if (entries.isEmpty()) connected = 1;
+        if (!text(s.cdImage).isEmpty()) connected = 0;
         for (int i = 0; i < Math.min(4, connected); i++) s.floppyConnected[i] = true;
         return s;
     }
 
     /**
      * Checks that a list of types can be mounted: no more of a type than the machine has
-     * room for, and not hard disk and WHDLoad together, since both would be the boot
-     * volume.
+     * room for, not hard disk and WHDLoad together, since both would be the boot volume, and
+     * a CD32 disc alone, since it makes the machine a CD32.
      *
      * @throws IllegalArgumentException saying what does not fit
      */
@@ -193,6 +216,10 @@ public final class MediaSet {
             throw new IllegalArgumentException(
                     "a hard disk and a WHDLoad archive cannot be used together");
         }
+        if (count[Kind.CD.ordinal()] > 0 && kinds.size() > count[Kind.CD.ordinal()]) {
+            throw new IllegalArgumentException(
+                    "a CD32 disc makes the machine a CD32: it cannot be used with other media");
+        }
     }
 
     private static String describe(Kind k) {
@@ -200,6 +227,7 @@ public final class MediaSet {
             case FLOPPY -> "floppy (.adf/.ipf/.zip)";
             case HARDDISK -> "hard disk (.hdf)";
             case WHDLOAD -> "WHDLoad (.lha/.lzh)";
+            case CD -> "CD32 disc (.cue/.iso/.zip)";
         };
     }
 

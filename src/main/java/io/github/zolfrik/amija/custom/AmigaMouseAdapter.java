@@ -56,18 +56,12 @@ import java.awt.image.BufferedImage;
  * <p>The capture is released with the <b>middle button</b> (or when the window loses focus,
  * so the pointer is not trapped during an alt-tab).
  *
- * <h3>Integer scaling: host deltas are divided</h3>
+ * <h3>One host pixel is one mouse count, whatever the zoom</h3>
  *
- * <p>AWT events arrive in screen pixels, and with integer scaling the emulated window is
- * enlarged xN: one Amiga pixel takes N. Delivering the host delta as it is would make the
- * emulated pointer N times faster than the physical mouse, and the sensitivity would change
- * with the zoom, which is not what the user asks for by choosing a zoom. So deltas are
- * divided by {@code videoScale}.
- *
- * <p>The division <b>keeps the remainder</b> ({@link #moveScaled}). Truncating, at N=3 a slow
- * movement of 1-2 pixels per event would always give 0 and the emulated pointer would not
- * move at all: the mouse would be broken exactly in precision movements. Accumulating, N
- * one-pixel events produce the Amiga pixel they are worth.
+ * <p>Each host pixel of movement becomes one count of the Amiga mouse counter, with no
+ * regard for the integer scaling of the emulated window. The physical travel needed to
+ * cross the Amiga screen is therefore the same at every zoom, and on a window enlarged xN
+ * the pointer covers N times as many host pixels.
  *
  * <h3>Button mapping (in captured mode)</h3>
  * <pre>
@@ -103,29 +97,13 @@ public class AmigaMouseAdapter extends MouseAdapter {
     // --- Captured mode state (delta from the centre, screen coordinates) ---
     private int centerX, centerY;
 
-    /** Integer scaling factor of the emulated window ({@code video.integerScaling}), at least 1. */
-    private final int videoScale;
-    // Remainder of the division by videoScale, in host pixels not yet delivered to the
-    // port. Without it, movements shorter than videoScale would be lost (see the class doc).
-    private int remainderX, remainderY;
-
     // The left click that activates the capture is consumed (not forwarded): this flag
     // discards its release so no spurious release is generated.
     private boolean swallowNextLeftRelease = false;
 
-    /** Adapter without integer scaling (window at native size). */
     public AmigaMouseAdapter(GamePortControls port, JFrame frame) {
-        this(port, frame, 1);
-    }
-
-    /**
-     * @param videoScale enlargement factor of the emulated window; host deltas are divided
-     *                   by it before reaching the port
-     */
-    public AmigaMouseAdapter(GamePortControls port, JFrame frame, int videoScale) {
         this.port = port;
         this.frame = frame;
-        this.videoScale = Math.max(1, videoScale);
 
         Robot r = null;
         try {
@@ -223,7 +201,6 @@ public class AmigaMouseAdapter extends MouseAdapter {
     private void capture() {
         if (!enabled || robot == null || frame == null || captured) return;
         captured = true;
-        resetRemainder();
         setCursor(blankCursor);
         recenter();
     }
@@ -236,7 +213,6 @@ public class AmigaMouseAdapter extends MouseAdapter {
         // Reset the free mode state so the first movement after it does not produce a
         // huge delta.
         lastX = lastY = Integer.MIN_VALUE;
-        resetRemainder();
     }
 
     private void setCursor(Cursor c) {
@@ -268,7 +244,6 @@ public class AmigaMouseAdapter extends MouseAdapter {
         insideFrame = true;
         lastX = e.getX();
         lastY = e.getY();
-        resetRemainder();
     }
 
     @Override
@@ -284,7 +259,6 @@ public class AmigaMouseAdapter extends MouseAdapter {
         insideFrame = false;
         lastX = Integer.MIN_VALUE;
         lastY = Integer.MIN_VALUE;
-        resetRemainder();
     }
 
     // -------------------------------------------------------------------------
@@ -315,12 +289,9 @@ public class AmigaMouseAdapter extends MouseAdapter {
         int dx = e.getXOnScreen() - centerX;
         int dy = e.getYOnScreen() - centerY;
         if (dx == 0 && dy == 0) return;
-        moveScaled(dx, dy);
+        port.moveMouse(dx, dy);
         // Bring the pointer back to the centre: the recentring event falls exactly on the
-        // centre (dx=dy=0) and is therefore naturally ignored. It must be done at every HOST
-        // movement, even when the division by videoScale has not yet produced an Amiga
-        // pixel: otherwise the pointer would drift away from the centre until it left the
-        // window, losing the capture.
+        // centre (dx=dy=0) and is therefore naturally ignored.
         recenter();
     }
 
@@ -333,43 +304,11 @@ public class AmigaMouseAdapter extends MouseAdapter {
             int dx = x - lastX;
             int dy = y - lastY;
             if (dx != 0 || dy != 0) {
-                moveScaled(dx, dy);
+                port.moveMouse(dx, dy);
             }
         }
         lastX = x;
         lastY = y;
-    }
-
-    /**
-     * Converts a delta in host pixels into a delta in Amiga pixels and delivers it to the
-     * port.
-     *
-     * <p>The division by {@code videoScale} keeps the remainder in {@link #remainderX}/
-     * {@link #remainderY}, so no movement is lost: N one-pixel host events are worth one
-     * Amiga pixel, instead of being truncated to zero one by one. Java's integer division
-     * truncates toward zero, so the remainder's sign follows the movement and no drift
-     * accumulates when the direction changes.
-     */
-    private void moveScaled(int dxHost, int dyHost) {
-        if (videoScale == 1) {
-            port.moveMouse(dxHost, dyHost);   // historical path, no remainder to keep
-            return;
-        }
-        remainderX += dxHost;
-        remainderY += dyHost;
-        int dx = remainderX / videoScale;
-        int dy = remainderY / videoScale;
-        remainderX -= dx * videoScale;
-        remainderY -= dy * videoScale;
-        if (dx != 0 || dy != 0) {
-            port.moveMouse(dx, dy);
-        }
-    }
-
-    /** Clears the accumulated remainder: a new gesture does not inherit the previous one's. */
-    private void resetRemainder() {
-        remainderX = 0;
-        remainderY = 0;
     }
 
     // -------------------------------------------------------------------------

@@ -42,7 +42,16 @@ import java.util.zip.ZipFile;
  *       disk eject, and at JVM exit through a shutdown hook.</li>
  *   <li><b>IPF</b> - read only. The raw MFM bitstream is extracted when the file is
  *       opened and kept in memory.</li>
+ *   <li><b>Extended ADF</b>, {@code UAE-1ADF} ({@link Format#EXT2}) and {@code UAE--ADF}
+ *       ({@link Format#EXT1}). A table in the header says, track by track, whether the
+ *       track holds AmigaDOS sectors (encoded like an ADF's) or raw MFM cells (taken as
+ *       they are, with their own length). {@code UAE-1ADF} is read and written: a written
+ *       track is stored as sectors when all of them decode cleanly, as raw cells otherwise,
+ *       in the space the table gives it. {@code UAE--ADF} is read only.</li>
  * </ul>
+ *
+ * <p>A plain ADF may have 80 to 83 cylinders: the tracks past the 80th hold data like the
+ * others.
  *
  * <p>The class is {@link AutoCloseable}: a try-with-resources guarantees the final flush
  * even when an exception is thrown.
@@ -53,7 +62,11 @@ public final class DiskImage implements AutoCloseable {
     // Public constants
     // =========================================================================
 
-    public enum Format { ADF, IPF }
+    /**
+     * The file's format. {@code EXT1} is the {@code UAE--ADF} extended ADF, {@code EXT2} the
+     * {@code UAE-1ADF} one.
+     */
+    public enum Format { ADF, IPF, EXT1, EXT2 }
 
     public static final int SECTOR_SIZE          = 512;
     public static final int SECTORS_PER_TRACK_DD = 11;
@@ -61,6 +74,10 @@ public final class DiskImage implements AutoCloseable {
     public static final int CYLINDERS            = 80;
     public static final int SIDES                = 2;
     public static final int PHYSICAL_TRACKS      = CYLINDERS * SIDES;  // 160
+    /** Cylinders a plain ADF may have at most: the tracks past 80 hold data too. */
+    public static final int MAX_ADF_CYLINDERS    = 83;
+    /** Tracks an image may describe: the head range of the drive, cylinders 0-83. */
+    public static final int MAX_IMAGE_TRACKS     = 84 * SIDES;
 
     static final int ADF_DD_SIZE = PHYSICAL_TRACKS * SECTORS_PER_TRACK_DD * SECTOR_SIZE; // 901 120
     static final int ADF_HD_SIZE = PHYSICAL_TRACKS * SECTORS_PER_TRACK_HD * SECTOR_SIZE; // 1 802 240
@@ -86,18 +103,35 @@ public final class DiskImage implements AutoCloseable {
     private final boolean readOnly;
     private final int     sectorsPerTrack;
 
-    /** Flat ADF sector data: offset = physicalTrack * sectorsPerTrack * SECTOR_SIZE */
+    /** The bytes the sector tracks are read from (the file's): see {@link #trackOffset}. */
     private final byte[]   sectorData;
 
-    /** Pre-parsed IPF MFM buffers, one per physical track */
-    private final byte[][] ipfMfmTracks;
+    // The track table: one entry per physical track the image describes. A track past the
+    // table is not on the medium.
 
-    /** Per-byte cell density of the IPF tracks (1000 = nominal); null = uniform. */
-    private final int[][] ipfTrackDensity;
+    /** What every track holds: {@link #TRACK_SECTORS}, {@link #TRACK_RAW} or {@link #TRACK_NONE}. */
+    private final byte[]   trackKind;
+    /** Sector track: offset of its first sector in {@link #sectorData}. */
+    private final int[]    trackOffset;
+    /** Raw track: its MFM cells, as they pass under the head from the index. */
+    private final byte[][] rawMfm;
+    /** Raw track: its EXACT length in bits (a long track is not a multiple of 8 bits).
+     *  FloppyDrive wraps the rotation at the exact bit with it. */
+    private final int[]    rawBits;
+    /** Raw track: per-byte cell density (1000 = nominal); null = uniform. */
+    private final int[][]  rawDensity;
+    /**
+     * UAE-1ADF: bytes of the file the track owns, from {@link #trackOffset}; -1 for a track
+     * that can never be written. Null for the other formats.
+     */
+    private final int[]    trackSpace;
 
-    /** EXACT length in bits of every IPF track (long tracks are not multiples of 8
-     *  bits). FloppyDrive wraps the rotation at the exact bit with it. */
-    private final int[] ipfTrackBits;
+    /** AmigaDOS sectors, MFM-encoded on demand from {@link #sectorData}. */
+    private static final byte TRACK_SECTORS = 0;
+    /** MFM cells stored as they are. */
+    private static final byte TRACK_RAW     = 1;
+    /** A track the image declares but never formatted. */
+    private static final byte TRACK_NONE    = 2;
 
     /**
      * How many physical tracks the medium has: 160 for an ADF, the cylinder and head range
@@ -175,9 +209,13 @@ public final class DiskImage implements AutoCloseable {
         ImageBytes image = isZip ? readZippedDiskImage(path, zipEntryIndex)
                                  : new ImageBytes(name, Files.readAllBytes(path));
         byte[] raw = image.raw;
-        boolean isIpf = image.name.endsWith(".ipf") || isIpfMagic(raw);
-        return new DiskImage(path, isIpf ? Format.IPF : Format.ADF, raw,
-                             isZip || isIpf || forceReadOnly);
+        Format format = image.name.endsWith(".ipf") || isIpfMagic(raw) ? Format.IPF
+                      : hasMagic(raw, EXT2_MAGIC) ? Format.EXT2
+                      : hasMagic(raw, EXT1_MAGIC) ? Format.EXT1
+                      : Format.ADF;
+        // A plain ADF and a UAE-1ADF outside a zip are written back.
+        boolean writable = format == Format.ADF || format == Format.EXT2;
+        return new DiskImage(path, format, raw, isZip || !writable || forceReadOnly);
     }
 
     // -------------------------------------------------------------------------
@@ -276,6 +314,14 @@ public final class DiskImage implements AutoCloseable {
         }
     }
 
+    private static final byte[] EXT1_MAGIC = "UAE--ADF".getBytes(StandardCharsets.ISO_8859_1);
+    private static final byte[] EXT2_MAGIC = "UAE-1ADF".getBytes(StandardCharsets.ISO_8859_1);
+
+    private static boolean hasMagic(byte[] raw, byte[] magic) {
+        return raw.length >= magic.length
+                && Arrays.equals(raw, 0, magic.length, magic, 0, magic.length);
+    }
+
     private static boolean isIpfMagic(byte[] raw) {
         return raw.length >= 4
             && raw[0] == 'C' && raw[1] == 'A' && raw[2] == 'P' && raw[3] == 'S';
@@ -307,12 +353,10 @@ public final class DiskImage implements AutoCloseable {
                 + " in " + path.getFileName());
     }
 
-    private boolean hasTrackData(int physicalTrack) {
-        if (format == Format.ADF) {
-            int trackBytes = sectorsPerTrack * SECTOR_SIZE;
-            return (long) (physicalTrack + 1) * trackBytes <= sectorData.length;
-        }
-        return ipfMfmTracks != null && physicalTrack < ipfMfmTracks.length;
+    /** Kind of the track, {@link #TRACK_NONE} past the table. */
+    private byte kindOf(int physicalTrack) {
+        return physicalTrack >= 0 && physicalTrack < trackKind.length
+                ? trackKind[physicalTrack] : TRACK_NONE;
     }
 
     private static byte[] createBlankMfmTrack() {
@@ -335,33 +379,50 @@ public final class DiskImage implements AutoCloseable {
         this.format   = format;
         this.readOnly = readOnly;
 
+        int tracks;
         if (format == Format.ADF) {
-            if      (raw.length == ADF_DD_SIZE) sectorsPerTrack = SECTORS_PER_TRACK_DD;
-            else if (raw.length == ADF_HD_SIZE) sectorsPerTrack = SECTORS_PER_TRACK_HD;
-            else throw new IOException("ADF: invalid size: " + raw.length
-                    + " (expected " + ADF_DD_SIZE + " or " + ADF_HD_SIZE + " bytes)");
-            sectorData   = raw;
-            ipfMfmTracks = null;
-            ipfTrackBits = null;
-            ipfTrackDensity = null;
-            mfmTrackCache = new byte[PHYSICAL_TRACKS][];
-            adfTrackWordsScratch = new int[TRACK_BUFFER_BYTES / 2];
-            adfSectorMfmScratch = new int[545];
-            formattedTracks = PHYSICAL_TRACKS;
+            sectorsPerTrack = adfSectorsPerTrack(raw.length);
+            tracks = raw.length / (sectorsPerTrack * SECTOR_SIZE);
+            trackSpace  = null;
+            sectorData  = raw;
+            trackKind   = new byte[tracks];          // all TRACK_SECTORS
+            trackOffset = new int[tracks];
+            for (int t = 0; t < tracks; t++) trackOffset[t] = t * sectorsPerTrack * SECTOR_SIZE;
+            rawMfm      = new byte[tracks][];
+            rawBits     = new int[tracks];
+            rawDensity  = null;
+            formattedTracks = tracks;
+        } else if (format == Format.EXT1 || format == Format.EXT2) {
+            ExtTracks t = format == Format.EXT2 ? parseExt2(raw) : parseExt1(raw);
+            sectorsPerTrack = t.sectorsPerTrack;
+            tracks      = t.kind.length;
+            sectorData  = t.data;
+            trackKind   = t.kind;
+            trackOffset = t.offset;
+            rawMfm      = t.mfm;
+            rawBits     = t.bits;
+            rawDensity  = null;
+            trackSpace  = format == Format.EXT2 ? t.space : null;
+            formattedTracks = tracks;
         } else {
+            trackSpace      = null;
             sectorsPerTrack = SECTORS_PER_TRACK_DD;
             sectorData      = null;
             IpfTracks t     = parseIpf(raw);
-            ipfMfmTracks    = t.mfm;
-            ipfTrackBits    = t.bits;
-            ipfTrackDensity = t.density;
+            tracks      = t.mfm.length;
+            trackKind   = new byte[tracks];
+            Arrays.fill(trackKind, TRACK_RAW);
+            trackOffset = new int[tracks];
+            rawMfm      = t.mfm;
+            rawBits     = t.bits;
+            rawDensity  = t.density;
             formattedTracks = t.trackCount;
-            mfmTrackCache = null;
-            adfTrackWordsScratch = null;
-            adfSectorMfmScratch = null;
         }
+        mfmTrackCache = new byte[tracks][];
+        adfTrackWordsScratch = new int[TRACK_BUFFER_BYTES / 2];
+        adfSectorMfmScratch = new int[545];
 
-        dirtyTracks = new boolean[PHYSICAL_TRACKS];
+        dirtyTracks = new boolean[tracks];
         // The shutdown hook is NOT registered here: see the shutdownHook field.
     }
 
@@ -385,12 +446,11 @@ public final class DiskImage implements AutoCloseable {
                     "physicalTrack out of range: " + physicalTrack
                     + " (expected >= 0)");
         }
-        if (physicalTrack >= PHYSICAL_TRACKS || !hasTrackData(physicalTrack)) {
-            return blankMfmTrack();
-        }
-        if (format != Format.ADF) return copyIpfMFM(physicalTrack);
+        byte kind = kindOf(physicalTrack);
+        if (kind == TRACK_NONE) return blankMfmTrack();
+        if (kind == TRACK_RAW)  return rawMfm[physicalTrack];
 
-        // ADF: return the cached MFM encoding (the caller, loadTrackData, copies it into
+        // Sector track: return the cached MFM encoding (the caller, loadTrackData, copies it into
         // trackBuffer, so sharing the cached instance is safe).
         byte[] cached = mfmTrackCache[physicalTrack];
         if (cached == null) {
@@ -407,20 +467,28 @@ public final class DiskImage implements AutoCloseable {
      * caller then uses the constant cell period.
      */
     public int[] getTrackDensity(int physicalTrack) {
-        if (format != Format.IPF || ipfTrackDensity == null
-                || physicalTrack < 0 || physicalTrack >= PHYSICAL_TRACKS) return null;
-        return ipfTrackDensity[physicalTrack];
+        if (rawDensity == null || kindOf(physicalTrack) != TRACK_RAW) return null;
+        return rawDensity[physicalTrack];
     }
 
     /**
      * The cell of an AmigaDOS track where a drive reading it slips its jitter cells (see
      * {@code FloppyDrive}), or -1 for a track with none. It lies in the gap before sector 0,
-     * at {@code gapWords * 8 / 3 * 2}. An IPF track has none.
+     * at {@code gapWords * 8 / 3 * 2}. A raw or unformatted track has none.
      */
     public int getJitterSkipCell(int physicalTrack) {
-        if (format != Format.ADF) return -1;
+        if (kindOf(physicalTrack) != TRACK_SECTORS) return -1;
         int gapWords = TRACK_BUFFER_BYTES / 2 - sectorsPerTrack * 544;
         return gapWords > 0 ? (gapWords * 8) / 3 * 2 : -1;
+    }
+
+    /**
+     * Whether a disk DMA starting on this track reads it from its start: the raw tracks of
+     * a {@code UAE--ADF}. The format keeps no index position for them, and they were made
+     * to be read from their sync word on.
+     */
+    public boolean readsFromTrackStart(int physicalTrack) {
+        return format == Format.EXT1 && kindOf(physicalTrack) == TRACK_RAW;
     }
 
     /**
@@ -428,7 +496,8 @@ public final class DiskImage implements AutoCloseable {
      * an ADF, past the INFO range of an IPF). A drive reading it sees noise.
      */
     public boolean isUnformatted(int physicalTrack) {
-        return physicalTrack < 0 || physicalTrack >= formattedTracks;
+        return physicalTrack < 0 || physicalTrack >= formattedTracks
+                || (physicalTrack < trackKind.length && trackKind[physicalTrack] == TRACK_NONE);
     }
 
     /**
@@ -437,11 +506,9 @@ public final class DiskImage implements AutoCloseable {
      * {@code trkbits} (not necessarily a multiple of 8).
      */
     public int getTrackBits(int physicalTrack) {
-        if (physicalTrack < 0 || physicalTrack >= PHYSICAL_TRACKS || !hasTrackData(physicalTrack))
+        if (kindOf(physicalTrack) != TRACK_RAW || rawBits[physicalTrack] <= 0)
             return TRACK_BUFFER_BYTES * 8;
-        if (format == Format.ADF || ipfTrackBits == null || ipfTrackBits[physicalTrack] <= 0)
-            return TRACK_BUFFER_BYTES * 8;
-        return ipfTrackBits[physicalTrack];
+        return rawBits[physicalTrack];
     }
 
     /**
@@ -461,7 +528,7 @@ public final class DiskImage implements AutoCloseable {
         if (out == null) throw new NullPointerException("out");
         if (off < 0 || off + SECTOR_SIZE > out.length)
             throw new IndexOutOfBoundsException("off=" + off + " len=" + out.length);
-        int offset = (physicalTrack * sectorsPerTrack + sectorIndex) * SECTOR_SIZE;
+        int offset = trackOffset[physicalTrack] + sectorIndex * SECTOR_SIZE;
         System.arraycopy(sectorData, offset, out, off, SECTOR_SIZE);
     }
 
@@ -478,7 +545,7 @@ public final class DiskImage implements AutoCloseable {
         validateAddress(physicalTrack, sectorIndex);
         if (data.length != SECTOR_SIZE)
             throw new IllegalArgumentException("writeSector: expected " + SECTOR_SIZE + " bytes");
-        int offset = (physicalTrack * sectorsPerTrack + sectorIndex) * SECTOR_SIZE;
+        int offset = trackOffset[physicalTrack] + sectorIndex * SECTOR_SIZE;
         System.arraycopy(data, 0, sectorData, offset, SECTOR_SIZE);
         markDirty(physicalTrack);
     }
@@ -492,7 +559,7 @@ public final class DiskImage implements AutoCloseable {
         int expected = sectorsPerTrack * SECTOR_SIZE;
         if (sectors.length != expected)
             throw new IllegalArgumentException("writeTrack: expected " + expected + " bytes");
-        System.arraycopy(sectors, 0, sectorData, physicalTrack * expected, expected);
+        System.arraycopy(sectors, 0, sectorData, trackOffset[physicalTrack], expected);
         markDirty(physicalTrack);
     }
 
@@ -513,9 +580,21 @@ public final class DiskImage implements AutoCloseable {
      * @return number of sectors actually decoded and written
      */
     public synchronized int writeTrackMFM(int physicalTrack, byte[] mfm, int lenBytes) {
-        if (closed || readOnly || format != Format.ADF || mfm == null) return 0;
-        if (physicalTrack < 0 || physicalTrack >= PHYSICAL_TRACKS
-                || !hasTrackData(physicalTrack)) return 0;
+        return writeTrackMFM(physicalTrack, mfm, lenBytes, lenBytes * 8);
+    }
+
+    /**
+     * As {@link #writeTrackMFM(int, byte[], int)}, with the exact length of the track in
+     * bits, which a UAE-1ADF keeps when it stores the track as raw cells.
+     *
+     * @return the sectors stored; 0 when none was, or when the track was stored as raw cells
+     */
+    public synchronized int writeTrackMFM(int physicalTrack, byte[] mfm, int lenBytes,
+                                          int trackBits) {
+        if (closed || readOnly || mfm == null) return 0;
+        if (format == Format.EXT2) return writeExt2Track(physicalTrack, mfm, lenBytes, trackBits);
+        if (format != Format.ADF) return 0;
+        if (kindOf(physicalTrack) != TRACK_SECTORS) return 0;
 
         int totalBits = Math.min(lenBytes, mfm.length) * 8;
         if (totalBits < SECTOR_MFM_WORDS * 16) return 0;
@@ -543,7 +622,7 @@ public final class DiskImage implements AutoCloseable {
             if (!seen[num]) {
                 seen[num] = true;
                 System.arraycopy(sector, 0, sectorData,
-                                 (physicalTrack * sectorsPerTrack + num) * SECTOR_SIZE,
+                                 trackOffset[physicalTrack] + num * SECTOR_SIZE,
                                  SECTOR_SIZE);
                 written++;
             }
@@ -570,9 +649,25 @@ public final class DiskImage implements AutoCloseable {
      */
     private int decodeSectorMFM(int physicalTrack, byte[] mfm, int totalBits, int pos,
                                 byte[] out) {
+        return decodeSectorMFM(physicalTrack, mfm, totalBits, pos, out, false);
+    }
+
+    /**
+     * @param exact the check a UAE-1ADF makes before storing a track as sectors: the format
+     *              byte is not looked at, and a sector whose label is not zero is rejected
+     */
+    private int decodeSectorMFM(int physicalTrack, byte[] mfm, int totalBits, int pos,
+                                byte[] out, boolean exact) {
         // Words 0-3: info = format(FF) | track | sector | sectors to the end of the track
         int info = mfmOddEvenLong(mfm, totalBits, pos, pos + 2 * 16);
-        if (((info >>> 24) & 0xFF) != 0xFF)             return -1;
+        if (!exact && ((info >>> 24) & 0xFF) != 0xFF)   return -1;
+        if (exact) {
+            // Words 4-19: the label, four longs, odd halves first.
+            for (int i = 0; i < 4; i++) {
+                if (mfmOddEvenLong(mfm, totalBits, pos + (4 + 2 * i) * 16,
+                                   pos + (12 + 2 * i) * 16) != 0) return -1;
+            }
+        }
         if (((info >>> 16) & 0xFF) != physicalTrack)    return -1;
         int num = (info >>> 8) & 0xFF;
         if (num >= sectorsPerTrack)                     return -1;
@@ -606,6 +701,92 @@ public final class DiskImage implements AutoCloseable {
             out[i * 4 + 3] = (byte)  value;
         }
         return num;
+    }
+
+    // =========================================================================
+    // UAE-1ADF: storing a written track
+    // =========================================================================
+
+    /**
+     * Stores a track written by the drive into a UAE-1ADF. If the cells hold all the
+     * track's sectors, each decoding cleanly (header and data checksums, the track number,
+     * a zero label), the track becomes an AmigaDOS one; otherwise it is kept as the raw
+     * cells written. Either way it stays in the space its table entry gives it, cleared
+     * first. A track that does not fit is cut to its space, keeping its tail.
+     *
+     * @return the sectors stored, 0 for a raw track
+     */
+    private int writeExt2Track(int physicalTrack, byte[] mfm, int lenBytes, int trackBits) {
+        if (physicalTrack < 0 || physicalTrack >= trackKind.length) return 0;
+        int space = trackSpace[physicalTrack];
+        if (space < 0) return 0;
+        int totalBits = Math.min(trackBits, Math.min(lenBytes, mfm.length) * 8);
+        if (totalBits <= 0) return 0;
+        int off = trackOffset[physicalTrack];
+        int entry = 12 + physicalTrack * 12;
+
+        byte[] sectors = new byte[sectorsPerTrack * SECTOR_SIZE];
+        boolean amigaDos = space >= sectors.length
+                && decodeWholeTrack(physicalTrack, mfm, totalBits, sectors);
+        Arrays.fill(sectorData, off, off + space, (byte) 0);
+        int stored;
+        if (amigaDos) {
+            System.arraycopy(sectors, 0, sectorData, off, sectors.length);
+            putEntry(entry, 0, space, sectors.length * 8);
+            trackKind[physicalTrack] = TRACK_SECTORS;
+            rawMfm[physicalTrack] = null;
+            rawBits[physicalTrack] = 0;
+            stored = sectorsPerTrack;
+        } else {
+            int bytes = (totalBits + 7) / 8;
+            int skip = Math.max(0, bytes - space);
+            int keep = bytes - skip;
+            int bits = skip > 0 ? keep * 8 : totalBits;
+            System.arraycopy(mfm, skip, sectorData, off, keep);
+            putEntry(entry, EXT2_RAW, space, bits);
+            trackKind[physicalTrack] = bits > 0 ? TRACK_RAW : TRACK_NONE;
+            rawMfm[physicalTrack] = Arrays.copyOfRange(sectorData, off, off + keep);
+            rawBits[physicalTrack] = bits;
+            stored = 0;
+        }
+        markDirty(physicalTrack);
+        return stored;
+    }
+
+    /**
+     * Decodes every sector of the track, scanning the cells from the index for two turns:
+     * true only when as many sectors as the track has were read, every one of them clean.
+     */
+    private boolean decodeWholeTrack(int physicalTrack, byte[] mfm, int totalBits,
+                                     byte[] out) {
+        byte[] sector = new byte[SECTOR_SIZE];
+        int limit = 2 * totalBits - (4 + SECTOR_MFM_WORDS) * 16;
+        int pos = 0;
+        for (int found = 0; found < sectorsPerTrack; found++) {
+            while (mfmWord(mfm, totalBits, pos) != MFM_SYNC) {
+                if (pos >= limit) return false;
+                pos++;
+            }
+            while (mfmWord(mfm, totalBits, pos) == MFM_SYNC) {
+                if (pos >= limit) return false;
+                pos += 16;
+            }
+            int num = decodeSectorMFM(physicalTrack, mfm, totalBits, pos, sector, true);
+            if (num < 0) return false;
+            System.arraycopy(sector, 0, out, num * SECTOR_SIZE, SECTOR_SIZE);
+            pos += SECTOR_MFM_WORDS * 16;
+        }
+        return true;
+    }
+
+    /** Rewrites a track's entry in the UAE-1ADF table held in {@link #sectorData}. */
+    private void putEntry(int entry, int type, int space, int bits) {
+        byte[] b = sectorData;
+        b[entry] = 0; b[entry + 1] = 0; b[entry + 2] = 0; b[entry + 3] = (byte) type;
+        b[entry + 4]  = (byte) (space >>> 24); b[entry + 5]  = (byte) (space >>> 16);
+        b[entry + 6]  = (byte) (space >>> 8);  b[entry + 7]  = (byte) space;
+        b[entry + 8]  = (byte) (bits >>> 24);  b[entry + 9]  = (byte) (bits >>> 16);
+        b[entry + 10] = (byte) (bits >>> 8);   b[entry + 11] = (byte) bits;
     }
 
     /**
@@ -708,13 +889,24 @@ public final class DiskImage implements AutoCloseable {
      * rewriting the whole image. Idempotent.
      */
     public synchronized void flush() throws IOException {
-        if (!anyDirty || readOnly || format != Format.ADF || closed) return;
+        if (!anyDirty || readOnly || closed) return;
+        if (format != Format.ADF && format != Format.EXT2) return;
         try (RandomAccessFile raf = new RandomAccessFile(filePath.toFile(), "rw")) {
-            for (int t = 0; t < PHYSICAL_TRACKS; t++) {
+            for (int t = 0; t < dirtyTracks.length; t++) {
                 if (!dirtyTracks[t]) continue;
-                long fileOffset = (long) t * sectorsPerTrack * SECTOR_SIZE;
+                if (format == Format.EXT2) {
+                    // The track's entry in the table, then its whole space.
+                    int entry = 12 + t * 12;
+                    raf.seek(entry);
+                    raf.write(sectorData, entry, 12);
+                    raf.seek(trackOffset[t]);
+                    raf.write(sectorData, trackOffset[t], trackSpace[t]);
+                    dirtyTracks[t] = false;
+                    continue;
+                }
+                int fileOffset = trackOffset[t];
                 raf.seek(fileOffset);
-                raf.write(sectorData, (int) fileOffset, sectorsPerTrack * SECTOR_SIZE);
+                raf.write(sectorData, fileOffset, sectorsPerTrack * SECTOR_SIZE);
                 dirtyTracks[t] = false;
             }
         }
@@ -759,7 +951,7 @@ public final class DiskImage implements AutoCloseable {
      * {@link #shutdownHook} field.
      */
     private void armShutdownHook() {
-        if (shutdownHook != null || closed || readOnly || format != Format.ADF) return;
+        if (shutdownHook != null || closed || readOnly) return;
         Thread hook = new Thread(this::flushQuietly,
                                  "DiskImage-flush-" + filePath.getFileName());
         try {
@@ -796,17 +988,18 @@ public final class DiskImage implements AutoCloseable {
     }
 
     private void validateTrack(int physicalTrack) {
-        if (physicalTrack < 0 || physicalTrack >= PHYSICAL_TRACKS)
+        if (physicalTrack < 0 || physicalTrack >= trackKind.length
+                || trackKind[physicalTrack] != TRACK_SECTORS)
             throw new IllegalArgumentException(
                     "physicalTrack out of range: " + physicalTrack
-                    + " (0–" + (PHYSICAL_TRACKS - 1) + ")");
+                    + " (0-" + (trackKind.length - 1) + ")");
     }
 
     private void validateAddress(int physicalTrack, int sectorIndex) {
         validateTrack(physicalTrack);
         if (sectorIndex < 0 || sectorIndex >= sectorsPerTrack)
             throw new IllegalArgumentException(
-                    "sectorIndex fuori range: " + sectorIndex
+                    "sectorIndex out of range: " + sectorIndex
                     + " (0–" + (sectorsPerTrack - 1) + ")");
     }
 
@@ -820,7 +1013,7 @@ public final class DiskImage implements AutoCloseable {
         Arrays.fill(words, 0xAAAA);
 
         int wordPos = totalWords - (sectorsPerTrack * 544);
-        int base = physicalTrack * sectorsPerTrack * SECTOR_SIZE;
+        int base = trackOffset[physicalTrack];
         int prevBit = 0;
 
         for (int s = 0; s < sectorsPerTrack; s++) {
@@ -908,6 +1101,179 @@ public final class DiskImage implements AutoCloseable {
             words[idx] = (value | clockBits) & 0xFFFF;
             lastWord = value;
         }
+    }
+
+    // =========================================================================
+    // Plain ADF sizes
+    // =========================================================================
+
+    /**
+     * Sectors per track of a plain ADF of {@code size} bytes: 11 (double density) or 22
+     * (high density), with 80 to {@value #MAX_ADF_CYLINDERS} cylinders.
+     */
+    private static int adfSectorsPerTrack(int size) throws IOException {
+        for (int cylinders = CYLINDERS; cylinders <= MAX_ADF_CYLINDERS; cylinders++) {
+            if (size == cylinders * SIDES * SECTORS_PER_TRACK_DD * SECTOR_SIZE)
+                return SECTORS_PER_TRACK_DD;
+            if (size == cylinders * SIDES * SECTORS_PER_TRACK_HD * SECTOR_SIZE)
+                return SECTORS_PER_TRACK_HD;
+        }
+        throw new IOException("ADF: invalid size: " + size + " (expected " + ADF_DD_SIZE
+                + " or " + ADF_HD_SIZE + " bytes, or the size of 81 to " + MAX_ADF_CYLINDERS
+                + " cylinders)");
+    }
+
+    // =========================================================================
+    // Extended ADF parsers
+    // =========================================================================
+
+    /** The track table of an extended ADF. */
+    private static final class ExtTracks {
+        byte[]   data;
+        byte[]   kind;
+        int[]    offset;
+        byte[][] mfm;
+        int[]    bits;
+        int[]    space;
+        int      sectorsPerTrack = SECTORS_PER_TRACK_DD;
+
+        ExtTracks(int tracks) {
+            space  = new int[tracks];
+            kind   = new byte[tracks];
+            offset = new int[tracks];
+            mfm    = new byte[tracks][];
+            bits   = new int[tracks];
+        }
+    }
+
+    // Track types of the UAE-1ADF table.
+    private static final int EXT2_AMIGADOS = 0;
+    private static final int EXT2_RAW      = 1;
+    private static final int EXT2_NONE     = 5;
+
+    /**
+     * {@code UAE-1ADF}: the magic, a reserved word, the number of tracks, then one 12-byte
+     * entry per track (reserved word; type word: low byte 0 = AmigaDOS, 1 = raw MFM, high
+     * byte = revolutions - 1; long: bytes the track takes in the file; long: length in
+     * bits), then the tracks' data one after the other in the order of the table.
+     *
+     * <p>An AmigaDOS track is its sectors' 512-byte data. A raw track is its first
+     * {@code bitlen} cells, the end of the rotation; one with no cells is unformatted. A
+     * track whose space exceeds 20000 bytes makes the disk a high-density one.
+     */
+    private static ExtTracks parseExt2(byte[] raw) throws IOException {
+        if (raw.length < 12) throw new IOException("UAE-1ADF: truncated header");
+        int tracks = u16(raw, 10);
+        if (tracks == 0 || tracks > MAX_IMAGE_TRACKS)
+            throw new IOException("UAE-1ADF: unsupported number of tracks: " + tracks);
+        int tableEnd = 12 + tracks * 12;
+        if (raw.length < tableEnd) throw new IOException("UAE-1ADF: truncated track table");
+
+        ExtTracks out = new ExtTracks(tracks);
+        long offs = tableEnd;
+        for (int t = 0; t < tracks; t++) {
+            int e = 12 + t * 12;
+            int type = raw[e + 3] & 0xFF;
+            int len  = u24(raw, e + 5);
+            int bits = u24(raw, e + 9);
+            if (len > 20000) out.sectorsPerTrack = SECTORS_PER_TRACK_HD;
+            out.offset[t] = (int) offs;
+            out.space[t]  = type == EXT2_NONE ? -1 : len;
+            switch (type) {
+                case EXT2_AMIGADOS -> out.kind[t] = TRACK_SECTORS;
+                case EXT2_RAW -> {
+                    if (bits == 0) {
+                        out.kind[t] = TRACK_NONE;
+                    } else {
+                        if (bits > MAX_TRACK_BYTES * 8)
+                            throw new IOException("UAE-1ADF: track " + t + " too long: "
+                                    + bits + " bits");
+                        out.kind[t] = TRACK_RAW;
+                        out.mfm[t]  = slice(raw, offs, (bits + 7) / 8, 0);
+                        out.bits[t] = bits;
+                    }
+                }
+                case EXT2_NONE -> out.kind[t] = TRACK_NONE;
+                default -> throw new IOException("UAE-1ADF: track " + t
+                        + " has an unsupported type " + type);
+            }
+            offs += len;
+        }
+        out.data = sectorSource(raw, out);
+        return out;
+    }
+
+    /** Tracks of a {@code UAE--ADF}: always 160. */
+    private static final int EXT1_TRACKS = PHYSICAL_TRACKS;
+
+    /**
+     * {@code UAE--ADF}: the magic, then 160 pairs of words (sync, length in bytes), then the
+     * tracks' data one after the other. A track with sync 0 is an AmigaDOS one, its
+     * sectors' data; any other is raw MFM, with its sync word passing under the head first
+     * and then its {@code length} bytes, the end of the rotation.
+     */
+    private static ExtTracks parseExt1(byte[] raw) throws IOException {
+        int tableEnd = 8 + EXT1_TRACKS * 4;
+        if (raw.length < tableEnd) throw new IOException("UAE--ADF: truncated track table");
+        ExtTracks out = new ExtTracks(EXT1_TRACKS);
+        long offs = tableEnd;
+        for (int t = 0; t < EXT1_TRACKS; t++) {
+            int sync = u16(raw, 8 + t * 4);
+            int len  = u16(raw, 10 + t * 4);
+            if (sync == 0) {
+                out.kind[t]   = TRACK_SECTORS;
+                out.offset[t] = (int) offs;
+            } else {
+                int bits = len * 8 + 16;
+                if (bits > MAX_TRACK_BYTES * 8)
+                    throw new IOException("UAE--ADF: track " + t + " too long: " + len + " bytes");
+                byte[] mfm = slice(raw, offs, len, 2);
+                mfm[0] = (byte) (sync >>> 8);
+                mfm[1] = (byte) sync;
+                out.kind[t] = TRACK_RAW;
+                out.mfm[t]  = mfm;
+                out.bits[t] = bits;
+            }
+            offs += len;
+        }
+        out.data = sectorSource(raw, out);
+        return out;
+    }
+
+    /**
+     * {@code count} bytes of the file from {@code offs}, placed {@code lead} bytes into a
+     * new array; whatever lies past the end of the file reads as zero.
+     */
+    private static byte[] slice(byte[] raw, long offs, int count, int lead) {
+        byte[] out = new byte[lead + count];
+        if (offs < raw.length) {
+            int n = (int) Math.min(count, raw.length - offs);
+            System.arraycopy(raw, (int) offs, out, lead, n);
+        }
+        return out;
+    }
+
+    /**
+     * The bytes the sector tracks are read from: the file itself, lengthened with zeros
+     * when a sector track runs past its end.
+     */
+    private static byte[] sectorSource(byte[] raw, ExtTracks t) throws IOException {
+        long need = raw.length;
+        for (int i = 0; i < t.kind.length; i++) {
+            if (t.kind[i] == TRACK_SECTORS)
+                need = Math.max(need, (long) t.offset[i] + t.sectorsPerTrack * SECTOR_SIZE);
+            need = Math.max(need, (long) t.offset[i] + Math.max(0, t.space[i]));
+        }
+        if (need > Integer.MAX_VALUE - 8) throw new IOException("Extended ADF: track table out of range");
+        return need > raw.length ? Arrays.copyOf(raw, (int) need) : raw;
+    }
+
+    private static int u16(byte[] b, int i) {
+        return ((b[i] & 0xFF) << 8) | (b[i + 1] & 0xFF);
+    }
+
+    private static int u24(byte[] b, int i) {
+        return ((b[i] & 0xFF) << 16) | ((b[i + 1] & 0xFF) << 8) | (b[i + 2] & 0xFF);
     }
 
     // =========================================================================
@@ -1174,10 +1540,6 @@ public final class DiskImage implements AutoCloseable {
                 }
             }
         }
-    }
-
-    private byte[] copyIpfMFM(int physicalTrack) {
-        return ipfMfmTracks[physicalTrack];
     }
 
     private static final class IpfImge {

@@ -87,12 +87,48 @@ public final class GlfwJoystickService {
     private GLFWErrorCallback errorCallback;
     private GLFWGamepadState gamepadState;
 
+    /** Which control drives each pad button; replaced whole, read by the polling thread. */
+    private volatile JoypadMap joypadMap = JoypadMap.defaults();
+
+    /** Waiting for the next control pressed, or null. Guarded by {@link #lock}. */
+    private java.util.function.Consumer<String> capture;
+    /** Controls held when the capture started or at the last pass: only a new press counts. */
+    private java.util.Set<String> captureHeld;
+    /** Whether a controller was present at the last pass. */
+    private volatile boolean controllerPresent;
+
     private GlfwJoystickService() { }
+
+    /** Sets which control drives each pad button (applies from the next pass). */
+    public void setJoypadMap(JoypadMap map) {
+        joypadMap = map == null ? JoypadMap.defaults() : map.copy();
+    }
+
+    /** Whether a controller was connected at the last reading (starts the service if needed). */
+    public boolean isControllerPresent() {
+        ensureStarted();
+        return controllerPresent;
+    }
+
+    /**
+     * Waits for the next control pressed on the first controller and hands its token to
+     * {@code onToken} on the Swing thread. Controls already held do not count. A new call
+     * replaces the pending one; {@code null} cancels it.
+     */
+    public void captureNextControl(java.util.function.Consumer<String> onToken) {
+        synchronized (lock) {
+            capture = onToken;
+            captureHeld = null;
+        }
+        if (onToken != null) ensureStarted();
+    }
 
     /** Previous state of a port, to send the {@link GamePort} only the changes. */
     private static final class Prev {
         int x = 0, y = 0;
         boolean fire, b2, b3;
+        /** CD32 extra buttons held, bit n = GamePort.CD32 button n. */
+        int cd32;
         boolean valid = false; // false => forces the first send (even neutral)
     }
 
@@ -115,7 +151,7 @@ public final class GlfwJoystickService {
         synchronized (lock) {
             for (GamePortControls p : ports) {
                 if (!newPorts.contains(p)) {
-                    apply(p, new Prev(), 0, 0, false, false, false);
+                    apply(p, new Prev(), 0, 0, false, false, false, 0);
                 }
             }
             ports = newPorts.toArray(new GamePortControls[0]);
@@ -191,6 +227,11 @@ public final class GlfwJoystickService {
      */
     private void poll() {
         synchronized (lock) {
+            int first = GLFW_JOYSTICK_1;
+            while (first <= GLFW_JOYSTICK_LAST && !glfwJoystickPresent(first)) first++;
+            controllerPresent = first <= GLFW_JOYSTICK_LAST;
+            if (capture != null && controllerPresent) pollCapture(first);
+
             GamePortControls[] snap = ports;
             Prev[] prevSnap = prev;
             if (snap.length == 0) return;
@@ -203,7 +244,7 @@ public final class GlfwJoystickService {
                 while (jid <= GLFW_JOYSTICK_LAST && !glfwJoystickPresent(jid)) jid++;
                 if (jid > GLFW_JOYSTICK_LAST) {
                     // No controller for this port: centre and release the buttons.
-                    apply(port, p, 0, 0, false, false, false);
+                    apply(port, p, 0, 0, false, false, false, 0);
                     continue;
                 }
                 readAndApply(jid, port, p);
@@ -215,9 +256,8 @@ public final class GlfwJoystickService {
     /** Reads the state of joystick {@code jid} and applies it to the port. */
     private void readAndApply(int jid, GamePortControls port, Prev p) {
         int x = 0, y = 0;
-        boolean fire = false, b2 = false, b3 = false;
-
-        if (glfwJoystickIsGamepad(jid) && glfwGetGamepadState(jid, gamepadState)) {
+        boolean gamepad = glfwJoystickIsGamepad(jid) && glfwGetGamepadState(jid, gamepadState);
+        if (gamepad) {
             // Gamepad with a known mapping: uniform layout (left stick + D-pad).
             float ax = gamepadState.axes(GLFW_GAMEPAD_AXIS_LEFT_X);
             float ay = gamepadState.axes(GLFW_GAMEPAD_AXIS_LEFT_Y);
@@ -227,11 +267,8 @@ public final class GlfwJoystickService {
             if (gamepadState.buttons(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT) == GLFW_PRESS) x = 1;
             if (gamepadState.buttons(GLFW_GAMEPAD_BUTTON_DPAD_UP)    == GLFW_PRESS) y = -1;
             if (gamepadState.buttons(GLFW_GAMEPAD_BUTTON_DPAD_DOWN)  == GLFW_PRESS) y = 1;
-            fire = gamepadState.buttons(GLFW_GAMEPAD_BUTTON_A) == GLFW_PRESS;
-            b2   = gamepadState.buttons(GLFW_GAMEPAD_BUTTON_B) == GLFW_PRESS;
-            b3   = gamepadState.buttons(GLFW_GAMEPAD_BUTTON_X) == GLFW_PRESS;
         } else {
-            // Generic joystick: raw axes/hats/buttons.
+            // Generic joystick: raw axes/hats.
             FloatBuffer axes = glfwGetJoystickAxes(jid);
             if (axes != null && axes.capacity() >= 2) {
                 float ax = axes.get(0);
@@ -247,20 +284,88 @@ public final class GlfwJoystickService {
                 if ((h & GLFW_HAT_UP)    != 0) y = -1;
                 if ((h & GLFW_HAT_DOWN)  != 0) y = 1;
             }
-            ByteBuffer btns = glfwGetJoystickButtons(jid);
-            if (btns != null) {
-                if (btns.capacity() > 0) fire = btns.get(0) == GLFW_PRESS;
-                if (btns.capacity() > 1) b2   = btns.get(1) == GLFW_PRESS;
-                if (btns.capacity() > 2) b3   = btns.get(2) == GLFW_PRESS;
+        }
+        ByteBuffer raw = glfwGetJoystickButtons(jid);
+
+        // The buttons, through the pad mapping: red is the fire line, blue the second
+        // button, green the third (the middle line of a plain joystick).
+        JoypadMap map = joypadMap;
+        boolean fire = pressed(map.get(JoystickAction.FIRE), gamepad, raw);
+        boolean b2 = pressed(map.get(JoystickAction.BLUE), gamepad, raw);
+        boolean b3 = pressed(map.get(JoystickAction.GREEN), gamepad, raw);
+        int cd32 = 0;
+        if (b3) cd32 |= 1 << GamePort.CD32_GREEN;
+        if (pressed(map.get(JoystickAction.YELLOW), gamepad, raw)) cd32 |= 1 << GamePort.CD32_YELLOW;
+        if (pressed(map.get(JoystickAction.REWIND), gamepad, raw)) cd32 |= 1 << GamePort.CD32_REWIND;
+        if (pressed(map.get(JoystickAction.FORWARD), gamepad, raw)) cd32 |= 1 << GamePort.CD32_FORWARD;
+        if (pressed(map.get(JoystickAction.PLAY), gamepad, raw)) cd32 |= 1 << GamePort.CD32_PLAY;
+
+        // On a CD32 pad the third button is green, not the middle line.
+        if (port.isCd32Pad()) b3 = false;
+        else cd32 = 0;
+        apply(port, p, x, y, fire, b2, b3, cd32);
+    }
+
+    /**
+     * Whether the control a token names is held. Layout tokens are read from the gamepad
+     * state when the controller has the layout, otherwise from the raw button the layout
+     * usually puts there; raw tokens always from the raw buttons.
+     */
+    private boolean pressed(String token, boolean gamepad, ByteBuffer raw) {
+        if (token.isEmpty()) return false;
+        if (gamepad) {
+            int layout = JoypadMap.layoutIndex(token);
+            if (layout >= 0) return gamepadState.buttons(layout) == GLFW_PRESS;
+            if (token.equals(JoypadMap.LEFT_TRIGGER)) {
+                return gamepadState.axes(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER) > 0;
+            }
+            if (token.equals(JoypadMap.RIGHT_TRIGGER)) {
+                return gamepadState.axes(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0;
             }
         }
+        int index = token.equals(JoypadMap.LEFT_TRIGGER) || token.equals(JoypadMap.RIGHT_TRIGGER)
+                ? -1 : JoypadMap.rawIndex(token);
+        return index >= 0 && raw != null && index < raw.capacity() && raw.get(index) == GLFW_PRESS;
+    }
 
-        apply(port, p, x, y, fire, b2, b3);
+    /**
+     * One pass of a pending capture on controller {@code jid}: the controls held now, and the
+     * first one not held at the previous pass, if any, is delivered. A controller with the
+     * gamepad layout answers with layout tokens, any other with raw buttons.
+     */
+    private void pollCapture(int jid) {
+        java.util.Set<String> held = new java.util.LinkedHashSet<>();
+        if (glfwJoystickIsGamepad(jid) && glfwGetGamepadState(jid, gamepadState)) {
+            for (int b = 0; b < JoypadMap.LAYOUT_BUTTONS.length; b++) {
+                if (gamepadState.buttons(b) == GLFW_PRESS) held.add(JoypadMap.LAYOUT_BUTTONS[b]);
+            }
+            if (gamepadState.axes(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER) > 0) held.add(JoypadMap.LEFT_TRIGGER);
+            if (gamepadState.axes(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0) held.add(JoypadMap.RIGHT_TRIGGER);
+        } else {
+            ByteBuffer raw = glfwGetJoystickButtons(jid);
+            if (raw != null) {
+                for (int b = 0; b < raw.capacity(); b++) {
+                    if (raw.get(b) == GLFW_PRESS) held.add(JoypadMap.rawButton(b));
+                }
+            }
+        }
+        java.util.Set<String> before = captureHeld;
+        captureHeld = held;
+        if (before == null) return;
+        for (String token : held) {
+            if (!before.contains(token)) {
+                java.util.function.Consumer<String> target = capture;
+                capture = null;
+                captureHeld = null;
+                javax.swing.SwingUtilities.invokeLater(() -> target.accept(token));
+                return;
+            }
+        }
     }
 
     /** Sends the port only the values changed from the previous state. */
     private static void apply(GamePortControls port, Prev p,
-            int x, int y, boolean fire, boolean b2, boolean b3) {
+            int x, int y, boolean fire, boolean b2, boolean b3, int cd32) {
         if (!p.valid || p.x != x || p.y != y) {
             port.setJoystickAxes(x, y);
             p.x = x; p.y = y;
@@ -277,6 +382,11 @@ public final class GlfwJoystickService {
             port.pressJoystickButton3(b3);
             p.b3 = b3;
         }
+        int changed = p.valid ? p.cd32 ^ cd32 : 0x1F;
+        for (int b = 0; b < 5; b++) {
+            if ((changed & (1 << b)) != 0) port.pressCd32Button(b, (cd32 & (1 << b)) != 0);
+        }
+        p.cd32 = cd32;
         p.valid = true;
     }
 }

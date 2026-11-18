@@ -26,6 +26,8 @@ import io.github.zolfrik.amija.custom.audio.AmigaAudioFilter;
 import io.github.zolfrik.amija.custom.audio.AudioRingBuffer;
 import io.github.zolfrik.amija.custom.audio.BlepMixer;
 import io.github.zolfrik.amija.custom.audio.JavaSoundAudioOutput;
+import io.github.zolfrik.amija.custom.serial.LoopbackCable;
+import io.github.zolfrik.amija.custom.serial.SerialCable;
 import io.github.zolfrik.amija.input.GamePort;
 import io.github.zolfrik.amija.input.GamePortDevice;
 
@@ -35,7 +37,7 @@ import java.util.function.IntSupplier;
 /**
  * Paula (8364): audio, interrupt controller, disk DMA and serial port of the Amiga.
  */
-public final class Paula {
+public final class Paula implements LoopbackCable.Transmitter {
 
     // =========================================================================
     // Dependencies
@@ -83,6 +85,8 @@ public final class Paula {
     private int intreq2;
     private int intena2;
     private final long[] setIntreq = new long[16];
+    /** A second request for the same bit, later than the one in {@link #setIntreq}. */
+    private final long[] setIntreqNext = new long[16];
     private long iplPipe;
 
     // =========================================================================
@@ -98,6 +102,13 @@ public final class Paula {
     private final int[][] potCap = new int[2][2];
     private final int[][] potDat = new int[2][2];
     private final int[][] potDatAct = new int[2][2];
+    /**
+     * CD32 pad shift register position per port: 8 at rest, counted down by each falling
+     * edge of the port's fire line driven as an output; bits are read at 8 down to 2, 1 reads
+     * one, 0 zero. And the fire line state last seen, for the edge.
+     */
+    private final int[] cd32Shifter = {8, 8};
+    private final int[] cd32FireState = new int[2];
 
     /** Lines of fast discharge after START. */
     private static final int POTDAT_DELAY = 8;
@@ -167,14 +178,60 @@ public final class Paula {
     // UART
     // =========================================================================
 
+    /** Master cycles per colour clock: every UART time below is counted in master cycles. */
+    private static final int MC_PER_CCK = 2;
+
     private int serper;
+    /** SERDAT, the transmit buffer: the whole 16-bit word as written. */
+    private int serdat;
+    /** A word written to SERDAT is waiting for the shift register. */
+    private boolean serdatFull;
+    /** Master cycle from which SERDATR shows TBE again after the buffer emptied. */
+    private long serTbeVisibleAt;
+    /** The transmit shift register is sending a word. */
+    private boolean serShiftBusy;
+    private int serShift;
+    /** Bits in the word being sent besides the start bit: position of its highest set bit. */
+    private int serShiftBits;
+    private long serShiftStart;
+    /** Remaining length of the word being sent: start instant, bit period and colour clocks left. */
+    private long serTxFrom;
+    private int serTxPeriod = 1;
+    private int serTxCcks;
+    /** A SERDAT write on its way to the buffer. */
+    private long serWriteAt = AbstractAgnus.NEVER;
+    private int serWriteValue;
+    /** End of the word being sent. */
+    private long serTxEndAt = AbstractAgnus.NEVER;
+    /**
+     * The last stretches of bits put on TXD, oldest first from {@link #txSegNext}: start
+     * instant, length of the first bit and of the others in master cycles, the levels (bit 0
+     * first) and how many they are. A stretch replaces the older ones from its start on.
+     */
+    private static final int TX_SEGMENTS = 8;
+    private final long[] txSegStart = new long[TX_SEGMENTS];
+    private final int[] txSegFirst = new int[TX_SEGMENTS];
+    private final int[] txSegBit = new int[TX_SEGMENTS];
+    private final int[] txSegPattern = new int[TX_SEGMENTS];
+    private final int[] txSegBits = new int[TX_SEGMENTS];
+    private int txSegNext;
+    /** ADKCON UARTBRK: TXD held low. The instant of its last change. */
+    private boolean txBreak;
+    private long txBreakAt;
+
+    /** What is plugged into the serial port; null when nothing is. */
+    private SerialCable serialCable;
+    /** Start edge the receiver is waiting for or following; NEVER when RXD has none coming. */
+    private long rxEdgeAt = AbstractAgnus.NEVER;
+    /** Samples taken of the word being received: 0 before the start bit has been checked. */
+    private int rxCount;
+    private int rxShift;
+
+    /** SERDATR bits 9-0, the receive buffer. */
     private int serReceiveBuffer;
-    private int serTransmitBuffer;
-    private int serTransmitShiftReg;
+    /** Receive buffer full: set when a word arrives, cleared by clearing INTREQ bit 11. */
+    private boolean serRbf;
     private boolean serOvrun;
-    // Separate flag to detect a full transmit buffer: serTransmitBuffer==0 is a valid SERDAT value,
-    // so we cannot use a zero-check to determine whether the buffer is empty.
-    private boolean serTxbFull = false;
 
     // =========================================================================
     // Audio
@@ -276,6 +333,7 @@ public final class Paula {
         // never write START and read POTGOR $0500.
         for (int j = 0; j < 2; j++) {
             for (int i = 0; i < 2; i++) { potCap[j][i] = 0; potDat[j][i] = 0; potDatAct[j][i] = 0; }
+            cd32Shifter[j] = 8;
         }
 
         dskpth = dskptl = dsklen = 0;
@@ -299,10 +357,30 @@ public final class Paula {
         dskbytr_incoming = 0;
 
         serper = 0;
+        serdat = 0;
+        serdatFull = false;
+        serTbeVisibleAt = 0;
+        serShiftBusy = false;
+        serShift = 0;
+        serShiftBits = 0;
+        serShiftStart = 0;
+        serTxFrom = 0;
+        serTxPeriod = 1;
+        serTxCcks = 0;
+        serWriteAt = AbstractAgnus.NEVER;
+        serTxEndAt = AbstractAgnus.NEVER;
         serReceiveBuffer = 0;
-        serTransmitBuffer = serTransmitShiftReg = 0;
+        serRbf = false;
         serOvrun = false;
-        serTxbFull = false;
+        Arrays.fill(setIntreqNext, AbstractAgnus.NEVER);
+        Arrays.fill(txSegStart, AbstractAgnus.NEVER);
+        txSegNext = 0;
+        txBreak = false;
+        txBreakAt = 0;
+        rxEdgeAt = AbstractAgnus.NEVER;
+        rxCount = 0;
+        rxShift = 0;
+        if (serialCable != null) serialCable.transmitBreak(false);
 
         Arrays.fill(audLCH, 0); Arrays.fill(audLCL, 0);
         Arrays.fill(audLEN, 0); Arrays.fill(audPER, 0);
@@ -510,7 +588,8 @@ public final class Paula {
         for (int i = 0; i < 16; i++) {
             if (clock >= setIntreq[i]) {
                 setINTREQ(true, (1 << i));
-                setIntreq[i] = AbstractAgnus.NEVER;
+                setIntreq[i] = setIntreqNext[i];
+                setIntreqNext[i] = AbstractAgnus.NEVER;
             }
         }
         if (clock >= shadowPokeAt) {
@@ -630,14 +709,20 @@ public final class Paula {
             final GamePort port = (joy == 0) ? gamePort1 : gamePort2;
             final boolean connected = port != null && port.getDevice() != GamePortDevice.NONE;
             final boolean pullup = port != null && port.pullsUpPotLines();
+            final boolean pad = port != null && port.isCd32Pad();
             for (int i = 0; i < 2; i++) {
                 final int pdir = 0x0200 << (joy * 4 + i * 2);
                 final int pdat = 0x0100 << (joy * 4 + i * 2);
                 // i == 0 is the X line (middle button / button 3), i == 1 the Y line
                 // (right button / button 2).
-                final boolean isButton = port != null
+                boolean isButton = port != null
                         && (i == 0 ? port.isMiddleOrButton3Pressed()
                                    : port.isRightOrButton2Pressed());
+                if (pad && !cd32PadMode(joy)) {
+                    // Out of pad mode only red and blue can be read; the middle line floats.
+                    isButton = i == 1 && (port.cd32ButtonBits() & (1 << 6)) != 0;
+                    cd32Shifter[joy] = 8;
+                }
 
                 boolean canCharge = true;
                 int charge = pullup ? 1 : 0;   // slow charge through the device's pull-up
@@ -659,6 +744,9 @@ public final class Paula {
                             && potCap[joy][i] >= 10 && !isButton) {
                         potDatAct[joy][i] = 0;
                     }
+                    // The pad pulls up its floating middle line, and its blue line out of
+                    // pad mode.
+                    if (pad && charge == 0 && (i == 0 || !cd32PadMode(joy))) charge = 2;
                 } else {                                          // line is an OUTPUT
                     boolean high = (potgo & pdat) != 0;
                     charge = high ? 2 : -2;                       // immediate (dis)charge
@@ -689,52 +777,226 @@ public final class Paula {
     // UART Service Methods
     // =========================================================================
 
+    /**
+     * The transmitter. A word written to SERDAT reaches the buffer one colour clock later.
+     * If the shift register is idle it takes the word at once, otherwise at the end of the
+     * word it is sending; either way TBE is requested at that moment.
+     *
+     * <p>The length of a word is not fixed: the shift register sends the start bit and then
+     * the written word up to its highest set bit, which is the stop bit the program put
+     * there. A word therefore lasts {@code (SERPER + 1) * (bits + 1)} colour clocks.
+     */
     public void serviceTxdEvent(EventID id) {
-        // Sentinel-bit scheme:
-        //   shift register layout = [sentinel=1][data bits][start bit=0]
-        //   Transmission ends when the shift register becomes 0 after the sentinel
-        //   has been shifted out as the stop bit (mark = 1).
-
-        if (serTransmitShiftReg == 0) {
-            // Shift register empty: try to reload from buffer.
-            if (serTxbFull) {
-                int longBit = ((serper & 0x8000) != 0) ? 1 : 0;    // 9-bit vs 8-bit mode
-                int numData  = 8 + longBit;
-                int dataMask = (1 << numData) - 1;
-                // [sentinel at top] | [data] | [start bit = 0 at LSB]
-                serTransmitShiftReg = ((1 << numData) | (serTransmitBuffer & dataMask)) << 1;
-                serTransmitBuffer = 0;
-                serTxbFull = false;
-                // TBE: transmit buffer is now empty -> raise interrupt
-                raiseInterrupt(0x0001);
-            } else {
-                // Nothing left to send - stop scheduling.
-                agnus.cancel(EventSlot.SLOT_TXD);
-                return;
+        long clock = agnus.getMasterClock();
+        if (clock >= serTxEndAt) {
+            serTxEndAt = AbstractAgnus.NEVER;
+            serShiftBusy = false;
+            loadSerialShift(true);
+            serdatFull = false;
+            serTbeVisibleAt = clock + MC_PER_CCK;
+        }
+        if (clock >= serWriteAt) {
+            serWriteAt = AbstractAgnus.NEVER;
+            serdat = serWriteValue;
+            serdatFull = true;
+            if (!serShiftBusy) {
+                requestSerialInterrupt(0, TBE_IRQ_DELAY_CYCLES);
+                loadSerialShift(false);
             }
         }
-
-        // Consume the current LSB (0 = space, 1 = mark); the TXD pin is not wired anywhere.
-        serTransmitShiftReg >>>= 1;   // unsigned right-shift (sentinel propagates correctly)
-
-        agnus.scheduleRel(EventSlot.SLOT_TXD, getSerPulseWidth(), EventID.TXD_BIT);
+        rescheduleTxdEvent();
     }
 
-    public void serviceRxdEvent(EventID id) {
-        // Stub for now
+    private void rescheduleTxdEvent() {
+        agnus.scheduleAbs(EventSlot.SLOT_TXD, Math.min(serWriteAt, serTxEndAt), EventID.TXD_BIT);
     }
 
-    private long getSerPulseWidth() {
-        return ((serper & 0x7FFF) + 1) * 2L;
+    /**
+     * Moves the buffer into the shift register, if there is a word and the register is idle.
+     *
+     * @param requestTbe false when the caller has already requested TBE for this word
+     */
+    private void loadSerialShift(boolean requestTbe) {
+        if (serShiftBusy || !serdatFull) return;
+        long clock = agnus.getMasterClock();
+        serShift = serdat;
+        serdatFull = false;
+        if (requestTbe) requestSerialInterrupt(0, TBE_IRQ_DELAY_CYCLES);
+        serShiftBusy = true;
+        serShiftBits = 32 - Integer.numberOfLeadingZeros(serShift & 0xFFFF);
+        serShiftStart = clock;
+        serTbeVisibleAt = clock + MC_PER_CCK;
+
+        serTxFrom = clock;
+        serTxPeriod = (serper & 0x7FFF) + 1;
+        serTxCcks = serTxPeriod * (serShiftBits + 1);
+        serTxEndAt = clock + (long) serTxCcks * MC_PER_CCK;
+        // On the wire: the start bit, then the word up to its highest set bit.
+        putOnTxd(clock, serTxPeriod * MC_PER_CCK, serTxPeriod * MC_PER_CCK, serShift << 1, serShiftBits + 1);
     }
 
-    public void receiveSerialData(int data) {
-        if ((intreq & 0x0800) != 0) { // RBF already set
-            serOvrun = true;
+    private void putOnTxd(long start, int firstBitCycles, int bitCycles, int pattern, int bits) {
+        txSegStart[txSegNext] = start;
+        txSegFirst[txSegNext] = firstBitCycles;
+        txSegBit[txSegNext] = bitCycles;
+        txSegPattern[txSegNext] = pattern;
+        txSegBits[txSegNext] = bits;
+        txSegNext = (txSegNext + 1) % TX_SEGMENTS;
+        if (serialCable != null) {
+            serialCable.transmit(start, firstBitCycles, bitCycles, pattern, bits);
+            serialLineChanged();
         }
-        serReceiveBuffer = data & 0x1FF;
-        raiseInterrupt(0x0800); // RBF
     }
+
+    /** Level of the TXD pin at {@code time}, now or in the recent past: true is mark. */
+    @Override
+    public boolean txdLevel(long time) {
+        if (time >= txBreakAt ? txBreak : !txBreak) return false;
+        for (int n = 1; n <= TX_SEGMENTS; n++) {
+            int i = (txSegNext - n + TX_SEGMENTS) % TX_SEGMENTS;
+            if (txSegStart[i] > time) continue;
+            long off = time - txSegStart[i];
+            long idx = off < txSegFirst[i] ? 0 : 1 + (off - txSegFirst[i]) / txSegBit[i];
+            return idx >= txSegBits[i] || ((txSegPattern[i] >>> (int) idx) & 1) != 0;
+        }
+        return true;
+    }
+
+    /** First instant, not before {@code from}, at which TXD is low; NEVER if it stays high. */
+    @Override
+    public long nextTxdSpace(long from) {
+        if (from >= txBreakAt ? txBreak : !txBreak) return from;
+        long best = (txBreak && txBreakAt > from) ? txBreakAt : AbstractAgnus.NEVER;
+        for (int n = 0; n < TX_SEGMENTS; n++) {
+            int i = (txSegNext + n) % TX_SEGMENTS;
+            if (txSegStart[i] == AbstractAgnus.NEVER) continue;
+            long bound = txSegStart[(i + 1) % TX_SEGMENTS];
+            if (n == TX_SEGMENTS - 1 || bound < txSegStart[i]) bound = AbstractAgnus.NEVER;
+            long bitStart = txSegStart[i];
+            for (int b = 0; b < txSegBits[i]; b++) {
+                long bitEnd = bitStart + (b == 0 ? txSegFirst[i] : txSegBit[i]);
+                if (((txSegPattern[i] >>> b) & 1) == 0 && bitEnd > from) {
+                    long t = Math.max(bitStart, from);
+                    if (t < bound && t < best) best = t;
+                    break;
+                }
+                bitStart = bitEnd;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * SERPER. A new period takes effect on the word being sent as well: the whole bits
+     * still to go are rescaled to it, the part of the current bit is kept as it is.
+     */
+    private void setSERPER(int value) {
+        value &= 0xFFFF;
+        if (serper == value) return;
+        serper = value;
+        long clock = agnus.getMasterClock();
+        if (serTxFrom + (long) serTxCcks * MC_PER_CCK > clock) {
+            int left = serTxCcks - (int) ((clock - serTxFrom) / MC_PER_CCK);
+            if (left >= 0) {
+                int partial = left % serTxPeriod;
+                int wholeBits = left / serTxPeriod;
+                serTxPeriod = (serper & 0x7FFF) + 1;
+                serTxCcks = wholeBits * serTxPeriod + partial;
+                serTxFrom = clock;
+                if (serShiftBusy) {
+                    // The rest of the word goes on the wire at the new rate.
+                    int total = serShiftBits + 1;
+                    int bits = wholeBits + (partial > 0 ? 1 : 0);
+                    if (bits > 0 && bits <= total) {
+                        putOnTxd(clock, (partial > 0 ? partial : serTxPeriod) * MC_PER_CCK,
+                                serTxPeriod * MC_PER_CCK, (serShift << 1) >>> (total - bits), bits);
+                    }
+                }
+                if (serTxEndAt != AbstractAgnus.NEVER) {
+                    serTxEndAt = clock + (long) serTxCcks * MC_PER_CCK;
+                    rescheduleTxdEvent();
+                }
+            }
+        }
+    }
+
+    /**
+     * The receiver. It samples RXD with its own bit clock: half a bit after the line goes
+     * low it checks the start bit, then takes one sample per bit, eight data bits or nine
+     * with SERPER LONG, and the stop bit. The stop bit lands in the receive buffer above the
+     * data, RBF is flagged at once and requested as an interrupt ten colour clocks later.
+     *
+     * <p>The start is a level, not an edge: with the line still low after a word (a break)
+     * the next word starts at once, and the receiver delivers words of zeros for as long as
+     * the break lasts.
+     */
+    public void serviceRxdEvent(EventID id) {
+        if (serialCable == null) return;
+        long clock = agnus.getMasterClock();
+        boolean level = serialCable.rxd();
+        int dataBits = (serper & 0x8000) != 0 ? 9 : 8;
+        if (rxCount == 0) {
+            if (level) {
+                // Not a start bit after all.
+                rxEdgeAt = AbstractAgnus.NEVER;
+                armReceiver();
+                return;
+            }
+            rxShift = 0;
+        } else if (level) {
+            rxShift |= 1 << (rxCount - 1);
+        }
+        if (rxCount <= dataBits) {
+            rxCount++;
+            agnus.scheduleAbs(EventSlot.SLOT_RXD,
+                    clock + (long) ((serper & 0x7FFF) + 1) * MC_PER_CCK, EventID.RXD_BIT);
+            return;
+        }
+        if (serRbf) serOvrun = true;
+        serReceiveBuffer = rxShift & 0x3FF;
+        serRbf = true;
+        requestSerialInterrupt(11, RBF_IRQ_DELAY_CYCLES);
+        rxCount = 0;
+        rxEdgeAt = AbstractAgnus.NEVER;
+        armReceiver();
+    }
+
+    /** Waits for the next low level on RXD and schedules the check of its start bit. */
+    private void armReceiver() {
+        rxCount = 0;
+        rxEdgeAt = serialCable == null ? AbstractAgnus.NEVER : serialCable.nextSpace(agnus.getMasterClock());
+        if (rxEdgeAt == AbstractAgnus.NEVER) {
+            agnus.cancel(EventSlot.SLOT_RXD);
+        } else {
+            int sper = (serper & 0x7FFF) + 1;
+            agnus.scheduleAbs(EventSlot.SLOT_RXD, rxEdgeAt + (long) ((sper - 1) / 2) * MC_PER_CCK, EventID.RXD_BIT);
+        }
+    }
+
+    /**
+     * What is on its way on RXD has changed. A receiver in the middle of a word keeps its
+     * own schedule; one still waiting for the line to go low looks again.
+     */
+    public void serialLineChanged() {
+        if (serialCable != null && rxCount == 0 && rxEdgeAt > agnus.getMasterClock()) armReceiver();
+    }
+
+    /** Plugs a cable into the serial port, or unplugs it with null. */
+    public void setSerialCable(SerialCable cable) {
+        serialCable = cable;
+        rxCount = 0;
+        rxEdgeAt = AbstractAgnus.NEVER;
+        if (agnus != null) {
+            if (cable != null) cable.transmitBreak(txBreak);
+            armReceiver();
+        }
+    }
+
+    /** RBF reaches INTREQ ten colour clocks after the stop bit was sampled. */
+    private static final int RBF_IRQ_DELAY_CYCLES = 10 * MC_PER_CCK;
+
+    /** TBE reaches INTREQ two colour clocks after the shift register took the word. */
+    private static final int TBE_IRQ_DELAY_CYCLES = 2 * MC_PER_CCK;
 
     // =========================================================================
     // Disk Controller Service Methods
@@ -1057,10 +1319,9 @@ public final class Paula {
 
     /**
      * Variant of {@link #readRegister(int)} <b>without side effects</b>, for the debugger
-     * and disassembler. Three Paula registers change state when read, as the hardware does:
+     * and disassembler. Two Paula registers change state when read, as the hardware does:
      * <ul>
      *   <li>{@code DSKDATR} ($008) takes a word out of the disk FIFO;</li>
-     *   <li>{@code SERDATR} ($018) clears OVRUN;</li>
      *   <li>{@code DSKBYTR} ($01A) clears the DSKBYT bit.</li>
      * </ul>
      * Here they return the state <i>without</i> consuming it. Everything else goes through
@@ -1074,12 +1335,6 @@ public final class Paula {
                 if (dsk_fifoCount == 0) return agnus != null ? agnus.getLastBusData() : 0xFFFF;
                 int shift = (dsk_fifoCount - 1) * 16;
                 return (int) ((dsk_fifo >>> shift) & 0xFFFF);
-            }
-            case 0x018: {
-                boolean savedOvrun = serOvrun;
-                int v = buildSerdatr();
-                serOvrun = savedOvrun;
-                return v;
             }
             case 0x01A: {
                 int savedIncoming = dskbytr_incoming;
@@ -1138,19 +1393,64 @@ public final class Paula {
         if (potCap[0][1] > 100) v |= 0x0400;   // DATLY - port 1, line Y
         if (potCap[1][0] > 100) v |= 0x1000;   // DATRX - port 2, line X
         if (potCap[1][1] > 100) v |= 0x4000;   // DATRY - port 2, line Y
+        for (int joy = 0; joy < 2; joy++) {
+            final GamePort port = (joy == 0) ? gamePort1 : gamePort2;
+            if (port == null || !port.isCd32Pad() || !cd32PadMode(joy)) continue;
+            // In pad mode the Y line carries the shift register: an input line reads one,
+            // an output its latch, then the register position decides.
+            final int p9dir = 0x0800 << (joy * 4);
+            final int p9dat = 0x0400 << (joy * 4);
+            v = (v & ~p9dat) | (potgo & p9dat);
+            if ((potgo & p9dir) == 0) v |= p9dat;
+            final int shifter = cd32Shifter[joy];
+            if (shifter == 0) v &= ~p9dat;
+            if (shifter >= 2 && (port.cd32ButtonBits() & (1 << (shifter - 2))) != 0) v &= ~p9dat;
+        }
         return v;
     }
 
+    /** A read of CIA-A port A: the pot lines are brought up to date, as for a POTGOR read. */
+    public void potLinesTouched() {
+        capCheck(false);
+    }
+
+    /** The CD32 pad is in pad mode while its pin 5 (the X line) is held low. */
+    private boolean cd32PadMode(int joy) {
+        return potCap[joy][0] <= 100;
+    }
+
+    /**
+     * CIA-A port A was written: a falling edge of a port's fire line, driven as an output,
+     * clocks that port's CD32 pad shift register while the pad is in pad mode.
+     */
+    public void cd32PadClock(int pra, int ddra) {
+        capCheck(false);
+        for (int joy = 0; joy < 2; joy++) {
+            final int bit = 0x40 << joy;
+            if (cd32PadMode(joy) && (ddra & bit) != 0 && (pra & bit) != cd32FireState[joy]
+                    && (pra & bit) == 0) {
+                cd32Shifter[joy] = Math.max(0, cd32Shifter[joy] - 1);
+            }
+            cd32FireState[joy] = ddra & pra & bit;
+        }
+    }
+
+    /**
+     * SERDATR ($DFF018). Reading it changes nothing: RBF and OVRUN go away when the program
+     * clears INTREQ bit 11.
+     *
+     * <p>TBE is not the bare state of the buffer: after the shift register takes the word,
+     * and after a word ends, the bit takes one colour clock to show. TSRE needs TBE as well.
+     */
     private int buildSerdatr() {
         int val = serReceiveBuffer & 0x3FF;
-        if (serOvrun)               val |= 0x8000; // OVRUN
-        if ((intreq & 0x0800) != 0) val |= 0x4000; // RBF
-        if (!serTxbFull)            val |= 0x2000; // TBE  - buffer empty (serTxbFull=false means buffer has no pending byte)
-        if (serTransmitShiftReg == 0) val |= 0x1000; // TSRE - shift register empty
-        val |= 0x0800; // RXD idle (mark)
-
-        // Reading SERDATR clears only OVRUN. RBF must be cleared explicitly via INTREQ write.
-        serOvrun = false;
+        if (serOvrun) val |= 0x8000;
+        if (serRbf)   val |= 0x4000;
+        if (!serdatFull && agnus.getMasterClock() >= serTbeVisibleAt) {
+            val |= 0x2000;
+            if (!serShiftBusy) val |= 0x1000;
+        }
+        if (serialCable == null || serialCable.rxd()) val |= 0x0800; // RXD, the pin itself
         return val;
     }
 
@@ -1206,7 +1506,7 @@ public final class Paula {
             case 0x024: setDSKLEN(value); break;
             case 0x026: /* DSKDAT: write-only, but usually no effect in emulation */ break;
             case 0x030: setSERDAT(value); break;
-            case 0x032: serper = value & 0xFFFF; break;
+            case 0x032: setSERPER(value); break;
             case 0x034: setPOTGO(value); break;
             case 0x07E:
                 dsksync = value & 0xFFFF;
@@ -1263,6 +1563,12 @@ public final class Paula {
             dsk_writeBits    = 0;
             // Every drive's cell clock restarts from this write, selected or not.
             if (agnus != null) agnus.restartDrivesBitCell();
+            // A track read from its start: the head goes back to it and the shifter
+            // starts empty with it.
+            if (agnus != null && agnus.rewindSelectedDrivesForDma()) {
+                dsk_dataReg      = 0;
+                dsk_dataRegCount = 0;
+            }
 
             diskState = DriveDmaState.READ; // Default; overridden below
             dsklenWriteCount = 0;
@@ -1296,14 +1602,9 @@ public final class Paula {
     }
 
     private void setSERDAT(int value) {
-        serTransmitBuffer = value & 0x1FF; // 9 data bits stored
-        serTxbFull = true;
-        // If the shift register is idle, start transmission immediately.
-        if (serTransmitShiftReg == 0) {
-            agnus.scheduleRel(EventSlot.SLOT_TXD, 0, EventID.TXD_BIT);
-        }
-        // If the shift register is busy the new byte will be picked up automatically
-        // when the current word finishes (serviceTxdEvent checks serTxbFull).
+        serWriteValue = value & 0xFFFF;
+        serWriteAt = agnus.getMasterClock() + MC_PER_CCK;
+        rescheduleTxdEvent();
     }
 
     /**
@@ -1348,6 +1649,12 @@ public final class Paula {
         boolean set = (value & 0x8000) != 0;
         int bits = value & 0x7FFF;
         if (set) intreq |= bits; else intreq &= ~bits;
+        if ((bits & 0x0800) != 0) {
+            // The flags of the receiver live on INTREQ bit 11: clearing it empties the
+            // receive buffer flag and the overrun, setting it by hand reads back as an overrun.
+            serOvrun = set;
+            if (!set) serRbf = false;
+        }
         scheduleShadowPoke(value, false);
     }
 
@@ -1427,6 +1734,16 @@ public final class Paula {
         int bits = value & 0x7FFF;
         syncAudioChannels();
         if (set) adkcon |= bits; else adkcon &= ~bits;
+        boolean brk = (adkcon & 0x0800) != 0;
+        if (brk != txBreak) {
+            // UARTBRK: TXD is held low for as long as the bit is set.
+            txBreak = brk;
+            txBreakAt = agnus.getMasterClock();
+            if (serialCable != null) {
+                serialCable.transmitBreak(brk);
+                serialLineChanged();
+            }
+        }
     }
 
     /** ADKCON FAST: the disk controller reads at 2 us per bit (MFM) rather than 4 us. */
@@ -1465,6 +1782,24 @@ public final class Paula {
         rescheduleIrqEvent();
     }
 
+    /**
+     * As {@link #scheduleIntreq}, for the serial port: a request later than the one already
+     * queued for the bit is kept and fires in its turn instead of collapsing into it. Two
+     * words can end closer together than the delay of the interrupt.
+     */
+    private void requestSerialInterrupt(int bit, int delayCycles) {
+        long when = agnus.getMasterClock() + delayCycles;
+        if (setIntreq[bit] == AbstractAgnus.NEVER) {
+            setIntreq[bit] = when;
+        } else if (when < setIntreq[bit]) {
+            setIntreqNext[bit] = setIntreq[bit];
+            setIntreq[bit] = when;
+        } else if (when > setIntreq[bit]) {
+            setIntreqNext[bit] = when;
+        }
+        rescheduleIrqEvent();
+    }
+
     public void setAudioDmaEnabledMask(int dmacon) {
         syncAudioChannels();
         boolean master = (dmacon & 0x0200) != 0;
@@ -1485,6 +1820,14 @@ public final class Paula {
         double lag = outputSampleLag;
         float left = blep.output(0, rate, lag) + blep.output(3, rate, lag);
         float right = blep.output(1, rate, lag) + blep.output(2, rate, lag);
+        // The CD32's drive plays into the same output: a full-scale CD sample is as loud as
+        // two Paula channels at full volume.
+        final Akiko akiko = agnus != null ? agnus.akiko() : null;
+        if (akiko != null) {
+            akiko.syncAudio();
+            left += akiko.audioLeft() * (2.0f / 32768.0f);
+            right += akiko.audioRight() * (2.0f / 32768.0f);
+        }
         audioRingBuffer.write(left * 0.5f, right * 0.5f);
     }
 

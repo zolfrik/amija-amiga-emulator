@@ -41,6 +41,17 @@ public interface AmigaKeyTarget {
 
     void releaseKey(int rawKeyNum);
 
+    /** No keyboard plugged in: every key is lost. */
+    AmigaKeyTarget UNPLUGGED = new AmigaKeyTarget() {
+        @Override
+        public void pressKey(int rawKeyNum) {
+        }
+
+        @Override
+        public void releaseKey(int rawKeyNum) {
+        }
+    };
+
     /**
      * True while CTRL+Amiga+Amiga reads as held and the keyboard keeps the machine in reset.
      *

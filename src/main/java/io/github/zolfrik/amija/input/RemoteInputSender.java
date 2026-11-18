@@ -242,7 +242,8 @@ public final class RemoteInputSender implements GamePortControls, AmigaKeyTarget
         }
         return switch (device) {
             case MOUSE -> FeedbackPacket.DEVICE_MOUSE;
-            case JOYSTICK -> FeedbackPacket.DEVICE_JOYSTICK;
+            // The guest drives a CD32 pad as a joystick: direction, red and blue.
+            case JOYSTICK, CD32_PAD -> FeedbackPacket.DEVICE_JOYSTICK;
             case NONE -> FeedbackPacket.DEVICE_NONE;
         };
     }

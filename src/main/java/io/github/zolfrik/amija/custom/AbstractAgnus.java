@@ -173,6 +173,19 @@ public abstract class AbstractAgnus {
     private final BatteryBackedClock batteryClock = new BatteryBackedClock();
     /** Gayle's registers; decoded only on the A1200 board (see {@link Gary#setGayleDecode}). */
     private final Gayle gayle = new Gayle();
+    /** The CD32's extended ROM and Akiko; {@code null} on every other board. */
+    private ROM extRom;
+    private Akiko akiko;
+    /**
+     * CD32: lines left before the next TOD pulse Akiko gives CIA-A, in CCK. Below one line the
+     * pulse falls in the current line at that offset; then a frame of 313 (PAL) or 262 (NTSC)
+     * lines is added, whatever the length of the frames the beam actually draws.
+     */
+    private int cd32TodCounter;
+    /** Lines of Akiko's clock run so far; -1 before the first. */
+    private long akikoLinesDone = -1;
+    /** Akiko's line work runs this many colour clocks before the end of the line. */
+    private static final int AKIKO_LINE_LEAD_CCK = 3;
 
     private final FloppyDrive df0, df1, df2, df3;
 
@@ -809,6 +822,21 @@ public abstract class AbstractAgnus {
 
     public long getMasterClock() {
         return masterClock;
+    }
+
+    /**
+     * Plugs a cable into the serial port, or unplugs it with null: Paula gets TXD and RXD,
+     * CIA-B the handshake lines.
+     */
+    public void setSerialCable(io.github.zolfrik.amija.custom.serial.SerialCable cable) {
+        if (paula != null) paula.setSerialCable(cable);
+        if (ciaB != null) ciaB.setSerialCable(cable);
+    }
+
+    /** Plugs a loopback into the serial port: TXD to RXD, DTR to DSR and CD, RTS to CTS. */
+    public void connectSerialLoopback() {
+        setSerialCable(new io.github.zolfrik.amija.custom.serial.LoopbackCable(
+                this::getMasterClock, paula, ciaB::isSerialDtr, ciaB::isSerialRts));
     }
 
     public void scheduleAbs(EventSlot slot, long cycle, EventID id) {
@@ -2028,6 +2056,69 @@ public abstract class AbstractAgnus {
      * find it and give it a base address. {@code null} (or an empty board) leaves the base
      * configuration without Fast RAM.
      */
+    /**
+     * Makes the machine a CD32: the board decoding of {@link Gary#setCd32Board}, the extended
+     * ROM, Akiko with the 1 KB EEPROM over {@code nvram}, and no floppy drive. Called right
+     * after the constructor, before the processor's reset.
+     */
+    public void installCd32(ROM extendedRom, I2cEeprom nvram) {
+        this.extRom = extendedRom;
+        gary.setCd32Board(extendedRom.size());
+        gayle.setCd32(true);
+        akiko = new Akiko(new Akiko.Memory() {
+            @Override
+            public int readByte(int address) {
+                return dmaReadByte(address);
+            }
+
+            @Override
+            public void writeByte(int address, int value) {
+                dmaWriteByte(address, value);
+            }
+        }, nvram);
+        akiko.setClock(() -> masterClock * 256L, mode == VideoMode.NTSC);
+        akiko.setInterruptSink(() -> {
+            if (paula != null && !paula.isPortsInterruptAsserted()) paula.assertPortsInterrupt();
+        });
+        df0.setConnected(false);
+        df1.setConnected(false);
+        df2.setConnected(false);
+        df3.setConnected(false);
+    }
+
+    /** True on the CD32 board. */
+    public boolean isCd32Board() {
+        return gary != null && gary.isCd32Board();
+    }
+
+    /** Akiko on a CD32, {@code null} otherwise. */
+    public Akiko akiko() {
+        return akiko;
+    }
+
+    /** A byte of Chip RAM read by a DMA that does not use the chip bus slots. */
+    private int dmaReadByte(int address) {
+        address &= 0xFFFFFF;
+        if (address >= 0x200000) return 0;
+        return chipRAM.readByte(address & (chipRAM.size() - 1));
+    }
+
+    /** A byte of Chip RAM written by a DMA that does not use the chip bus slots. */
+    private void dmaWriteByte(int address, int value) {
+        address &= 0xFFFFFF;
+        if (address >= 0x200000) return;
+        chipRAM.writeByte(address & (chipRAM.size() - 1), value & 0xFF);
+    }
+
+    /** A long word access to Akiko: its bytes are accessed in one go, lowest first. */
+    final int akikoReadLong(int address) {
+        return akiko.readLong(address);
+    }
+
+    final void akikoWriteLong(int address, int value) {
+        akiko.writeLong(address, value);
+    }
+
     public void setFastRam(FastRam fastRam) {
         this.fastRam = (fastRam != null && fastRam.present()) ? fastRam : null;
         if (gary != null) {
@@ -2114,6 +2205,7 @@ public abstract class AbstractAgnus {
      * believed otherwise.
      */
     public void rebuildAutoconfigMapping() {
+        if (akiko != null) akiko.stateLoaded();
         if (gary == null) return;
         gary.unmapFastRam();
         gary.unmapHdControllers();
@@ -3068,12 +3160,61 @@ public abstract class AbstractAgnus {
         return displayInterlaced;
     }
 
+    /** Length of the current line in CCK. */
+    private int lineLengthCck() {
+        return maxHpos >> 1;
+    }
+
+    /** Lines of a short frame: 312 PAL, 262 NTSC. */
+    private int videoModeLines() {
+        return mode == VideoMode.NTSC ? 262 : 312;
+    }
+
+    /**
+     * The frame rate Akiko's drive clock is expressed in: the colour clock over a frame of 312
+     * (PAL) or 262 (NTSC) lines, so that a sector, {@code lines * rate / 75} lines, lasts
+     * exactly 1/75 of a second whatever the picture does.
+     */
+    private float akikoFrameRate() {
+        if (mode == VideoMode.NTSC) {
+            return 3579545f / ((float) videoModeLines() * ((MAXHPOS_SHORT >> 1) + 0.5f));
+        }
+        return 3546895f / ((float) videoModeLines() * (MAXHPOS_SHORT >> 1));
+    }
+
+    /**
+     * Akiko's line work, three colour clocks before the line ends. The drive's clock is its
+     * own: it counts lines of elapsed time, 227 colour clocks (227.5 NTSC) since power-on, not
+     * the lines the beam draws, so a line the beam skips or repeats does not move it.
+     */
+    private void akikoLine() {
+        final long lines = (masterClock >> 1) * 2 / (mode == VideoMode.NTSC ? 455 : 454);
+        if (akikoLinesDone < 0) akikoLinesDone = lines - 1;
+        while (akikoLinesDone < lines) {
+            akikoLinesDone++;
+            akiko.hsync(videoModeLines(), akikoFrameRate());
+        }
+    }
+
     /** Computes the TOD pulses of the line that starts. */
     private void armTodPulses(long lineStartCck) {
         todRiseHposB = todPulseRiseHpos(todIncOffsetCck(TOD_HOFFSET_CIAB, lineStartCck));
         todFallHposB = todRiseHposB < 0 ? -1 : todRiseHposB + TOD_PULSE_WIDTH_SC;
 
-        if (vpos == CIAA_TOD_VPOS) {
+        if (akiko != null) {
+            // The CD32's CIA-A TOD input is Akiko's, one pulse per 313 (PAL) or 262 (NTSC)
+            // lines counted from the reset; the CIA-B one is the hsync of every line.
+            final int lineCck = lineLengthCck();
+            if (cd32TodCounter < lineCck) {
+                todRiseHposA = todPulseRiseHpos(todIncOffsetCck(cd32TodCounter, lineStartCck));
+                todFallHposA = todRiseHposA < 0 ? -1 : todRiseHposA + TOD_PULSE_WIDTH_SC;
+                cd32TodCounter += (akiko.ntscMode() ? 262 : 313) * lineCck;
+            } else {
+                todRiseHposA = -1;
+                todFallHposA = -1;
+                cd32TodCounter -= lineCck;
+            }
+        } else if (vpos == CIAA_TOD_VPOS) {
             // LOF ? 132 : 18; LOF=1 is field==0 (see longFrame in updateBeam).
             final int hoffset = (field == 0) ? TOD_HOFFSET_CIAA_LONG : TOD_HOFFSET_CIAA_SHORT;
             todRiseHposA = todPulseRiseHpos(todIncOffsetCck(hoffset, lineStartCck));
@@ -3121,6 +3262,9 @@ public abstract class AbstractAgnus {
         if (nextHpos == 1) {
             armTodPulses((masterClock - 1) >> 1);
         }
+        if (akiko != null && nextHpos == maxHpos - 2 * AKIKO_LINE_LEAD_CCK + 1) {
+            akikoLine();
+        }
         if (ciaB != null) {
             if (nextHpos == todRiseHposB) {
                 ciaB.getPinSet().getTodPin().setExternalInput(true);
@@ -3142,6 +3286,9 @@ public abstract class AbstractAgnus {
         // hpos. See TRIGGER_VPOS_LEAD_HPOS.
         if (nextHpos == maxHpos - TRIGGER_VPOS_LEAD_HPOS) {
             advanceTriggerVpos();
+        }
+        if (vposWriteDue >= 0 && masterClock >= vposWriteDue) {
+            applyVposWrite();
         }
         if (nextHpos == maxHpos - TRIGGER_VPOS_LEAD_HPOS + 1
                 || (resetDriveHsyncPending && nextHpos == 2)) {
@@ -3210,6 +3357,10 @@ public abstract class AbstractAgnus {
      * counter and counting the interrupted line (see {@code resetRowPending}).
      */
     private void advanceRow() {
+        if (repeatRow >= 0) {
+            vpos = repeatRow - 1;
+            repeatRow = -1;
+        }
         vpos++;
 
         // Lines per frame depend on LOF (Long Frame):
@@ -3309,6 +3460,9 @@ public abstract class AbstractAgnus {
                 gary.setRomOverlay(ciaOvlEnabled);
             }
 
+            // CD32: PA0 low mutes the CD audio.
+            if (akiko != null) akiko.setMuted(((pra | ~ddra) & 0x01) == 0);
+
             // LED / Audio filter
             boolean ledState = (pra & 0x02) != 0;
             if (ledState != lastLedState) {
@@ -3343,6 +3497,10 @@ public abstract class AbstractAgnus {
             if (!ciaAIrq && !paula.isPortsInterruptAsserted()) {
                 paula.assertPortsInterrupt();
             }
+        }
+
+        if (akiko != null && akiko.interruptAsserted() && !paula.isPortsInterruptAsserted()) {
+            paula.assertPortsInterrupt();
         }
 
         if (ciaB != null) {
@@ -3538,10 +3696,11 @@ public abstract class AbstractAgnus {
         floppyCatchUp();
         int prb = ciaB != null ? ciaB.peekPortB() & 0xFF : 0xFF;
         boolean step = (prb & 0x01) == 0;
-        if (df0 != null) df0.selectSet((prb & 0x08) == 0, step);
-        if (df1 != null) df1.selectSet((prb & 0x10) == 0, step);
-        if (df2 != null) df2.selectSet((prb & 0x20) == 0, step);
-        if (df3 != null) df3.selectSet((prb & 0x40) == 0, step);
+        boolean mtr  = (prb & 0x80) == 0;
+        if (df0 != null) df0.selectSet((prb & 0x08) == 0, step, mtr);
+        if (df1 != null) df1.selectSet((prb & 0x10) == 0, step, mtr);
+        if (df2 != null) df2.selectSet((prb & 0x20) == 0, step, mtr);
+        if (df3 != null) df3.selectSet((prb & 0x40) == 0, step, mtr);
         lastCiabPrb = prb;
         appliedCiabPrb = prb;
         floppyBusy = true;
@@ -4513,6 +4672,8 @@ public abstract class AbstractAgnus {
         if (target == Gary.Target.CIA_A || target == Gary.Target.CIA_BOTH) {
             // CIA-A: low byte (D7-D0) on LDS (odd addresses)
             if (cpuBusReq.lds) {
+                // The port A read looks at the fire lines: the pot lines settle first.
+                if (reg == 0 && paula != null) paula.potLinesTouched();
                 int cv = ciaA.readRegister(reg) & 0xFF;
                 result = (result & 0xFF00) | cv;
             }
@@ -4534,6 +4695,8 @@ public abstract class AbstractAgnus {
             // CIA-A: low byte (D7-D0) on LDS
             if (cpuBusReq.lds) {
                 ciaA.writeRegister(reg, (byte)(data & 0xFF));
+                // A port A write may clock a CD32 pad through its fire line.
+                if (reg == 0 && paula != null) paula.cd32PadClock(data & 0xFF, ciaA.peekDataDirectionA() & 0xFF);
             }
         }
         if (target == Gary.Target.CIA_B || target == Gary.Target.CIA_BOTH) {
@@ -4622,6 +4785,10 @@ public abstract class AbstractAgnus {
         int pc = processor.getOpcodeAddress() & 0xFFFFFF;
         if (pc >= 0xF80000) return true;
         if (pc >= 0xE00000 && pc < 0xE80000) return true;
+        if (gary.isCd32Board()) {
+            if (pc >= 0xA80000 && pc < 0xB80000) return true;
+            return pc < 0x200000 && gary.isRomOverlayEnabled();
+        }
         return pc < 0x080000 && gary.isRomOverlayEnabled();
     }
     private int readBusData(Gary.Route route, int addr) {
@@ -4660,6 +4827,11 @@ public abstract class AbstractAgnus {
                 readRtcBusData(route, addr);
             case GAYLE ->
                 readGayleBusData(route, addr);
+            case EXT_ROM ->
+                extRom.readWord(alignedEff);
+            case AKIKO ->
+                route.uds && route.lds ? akiko.readWord(addr)
+                        : route.uds ? akiko.readByte(addr & ~1) << 8 : akiko.readByte(addr | 1);
             default ->
                 // Open bus: no device drives the data bus. See floatingBusRead().
                 floatingBusRead(addr);
@@ -4804,6 +4976,12 @@ public abstract class AbstractAgnus {
             case GAYLE:
                 if (uds) gayle.writeByte(addr & ~1, (data >> 8) & 0xFF);
                 if (lds) gayle.writeByte(addr | 1, data & 0xFF);
+                break;
+
+            case AKIKO:
+                if (uds && lds) akiko.writeWord(addr, data);
+                else if (uds) akiko.writeByte(addr & ~1, (data >> 8) & 0xFF);
+                else if (lds) akiko.writeByte(addr | 1, data & 0xFF);
                 break;
         }
     }
@@ -5200,10 +5378,11 @@ public abstract class AbstractAgnus {
                 if (paula != null) paula.setDiskDmaPointer(dskpt);
                 break;
             case 0x02A: // VPOSW
-                // Bit 15 = LOF
+                // Bit 15 = LOF, at once. The vertical counter takes the line it holds now with
+                // the written V8 two colour clocks later (see applyVposWrite).
                 if ((value & 0x8000) != 0) field = 0; else field = 1;
-                vpos = (vpos & 0xFF) | ((value & 1) << 8);
-                triggerVpos = vpos;
+                vposWriteValue = (triggerVpos & 0xFF) | ((value & 1) << 8);
+                vposWriteDue = masterClock + 2 * 2;
                 // LOL is always reset when VPOSW is written to (all NTSC Agnus versions
                 // and ECS Agnus in NTSC mode): the current line goes back to short.
                 if (lol) updateLineLength(false);
@@ -5380,6 +5559,10 @@ public abstract class AbstractAgnus {
 
     private void internalReset(boolean hardware) {
         gayle.reset();
+        if (akiko != null) akiko.reset();
+        cd32TodCounter = 0;
+        vposWriteDue = -1;
+        repeatRow = -1;
         if (hardware) {
             masterClock = 0;
             vpos = 0;
@@ -5630,6 +5813,30 @@ public abstract class AbstractAgnus {
         if (df1 != null) df1.hsync();
         if (df2 != null) df2.hsync();
         if (df3 != null) df3.hsync();
+    }
+
+    /** A VPOSW write waiting to reach the vertical counter: its value and master cycle; -1 none. */
+    private int vposWriteValue;
+    private long vposWriteDue = -1;
+    /** The line the next end of line moves to instead of the following one; -1 none. */
+    private int repeatRow = -1;
+
+    /**
+     * A VPOSW write reaches the vertical counter two colour clocks after the write, with the
+     * line it held at the write. A line that began in between is undone: the counter goes back
+     * to the written line and the next line repeats it.
+     */
+    private void applyVposWrite() {
+        vposWriteDue = -1;
+        final int v = vposWriteValue;
+        if (triggerVpos != vpos) {
+            // The counter has already moved to the next line: that line becomes v again.
+            triggerVpos = v;
+            repeatRow = v;
+        } else {
+            vpos = v;
+            triggerVpos = v;
+        }
     }
 
     /**
@@ -6306,6 +6513,22 @@ public abstract class AbstractAgnus {
         if (df3 != null) df3.restartBitCell();
     }
 
+    /**
+     * Disk DMA start: the selected drives on a track read from its start go back to it
+     * ({@link FloppyDrive#rewindForDmaStart}).
+     *
+     * @return whether any did
+     */
+    public boolean rewindSelectedDrivesForDma() {
+        floppyCatchUp();
+        boolean any = false;
+        if (df0 != null) any |= df0.rewindForDmaStart();
+        if (df1 != null) any |= df1.rewindForDmaStart();
+        if (df2 != null) any |= df2.rewindForDmaStart();
+        if (df3 != null) any |= df3.rewindForDmaStart();
+        return any;
+    }
+
     public boolean inVBlankArea(int vpos) {
         return vpos < (beamNtsc ? 20 : 26);
     }
@@ -6329,6 +6552,7 @@ public abstract class AbstractAgnus {
         return switch (route.target) {
             case CHIP_RAM                       -> chipRAM.readByte(eff);
             case KICKSTART_ROM, OVERLAY_ROM     -> rom.readByte(eff);
+            case EXT_ROM                        -> extRom.readByte(eff);
             case SLOW_RAM                       -> slowRAM.readByte(eff);
             case FAST_RAM                       -> (fastRam != null) ? fastRam.ram().readByte(eff) : 0x00;
             case CUSTOM_REGS                    -> (address % 2 == 0) ? (peekCustomRegister(address) >> 8) & 0xFF : peekCustomRegister(address) & 0xFF;
@@ -6348,6 +6572,7 @@ public abstract class AbstractAgnus {
         return switch (route.target) {
             case CHIP_RAM                       -> chipRAM.readWord(eff);
             case KICKSTART_ROM, OVERLAY_ROM     -> rom.readWord(eff);
+            case EXT_ROM                        -> extRom.readWord(eff);
             case SLOW_RAM                       -> slowRAM.readWord(eff);
             case FAST_RAM                       -> (fastRam != null) ? fastRam.ram().readWord(eff) : 0x0000;
             case CUSTOM_REGS                    -> peekCustomRegister(address);

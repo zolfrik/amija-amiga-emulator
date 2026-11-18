@@ -69,4 +69,13 @@ public interface GamePortControls {
     void pressJoystickButton2(boolean pressed);
 
     void pressJoystickButton3(boolean pressed);
+
+    /**
+     * Presses or releases one of the CD32 pad's extra buttons ({@code GamePort.CD32_*}).
+     * Ignored where no CD32 pad can be driven.
+     */
+    default void pressCd32Button(int button, boolean pressed) { }
+
+    /** True when the port holds a CD32 pad, whose extra buttons then mean something. */
+    default boolean isCd32Pad() { return false; }
 }

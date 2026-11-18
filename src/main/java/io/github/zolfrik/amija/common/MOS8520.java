@@ -369,7 +369,22 @@ public class MOS8520 {
 
     // -- I/O port logic -----------------------------------------------------------
 
+    /** The serial cable plugged into the machine (CIA-B only); null when there is none. */
+    private io.github.zolfrik.amija.custom.serial.SerialCable serialCable;
+
+    public void setSerialCable(io.github.zolfrik.amija.custom.serial.SerialCable cable) {
+        serialCable = cable;
+        if (cable != null) cable.control(isSerialDtr(), isSerialRts());
+    }
+
+    /** /DTR (PA7) driven low: the pin is an output and its bit is 0. */
+    public boolean isSerialDtr() { return (ddra & 0x80) != 0 && (pra & 0x80) == 0; }
+
+    /** /RTS (PA6) driven low: the pin is an output and its bit is 0. */
+    public boolean isSerialRts() { return (ddra & 0x40) != 0 && (pra & 0x40) == 0; }
+
     private void updatePA() {
+        if (serialCable != null) serialCable.control(isSerialDtr(), isSerialRts());
         int drivenPra = pra;
         if (!isCIAA) {
             // CIA-B Port A: RS232 /RTS (bit 6) and /DTR (bit 7) are active low
@@ -420,7 +435,16 @@ public class MOS8520 {
     private int computePA() {
         final int ext = pinSet.readExternal(0);
         if (!isCIAA) {
-            return ((pra & ddra) | (ddra ^ 0xFF)) & 0xFF;
+            int b = ((pra & ddra) | (ddra ^ 0xFF)) & 0xFF;
+            if (serialCable != null) {
+                // /CD, /CTS and /DSR are the levels of the cable, whatever the direction
+                // register says; all three are active low.
+                b &= ~0x38;
+                if (!serialCable.cd())  b |= 0x20;
+                if (!serialCable.cts()) b |= 0x10;
+                if (!serialCable.dsr()) b |= 0x08;
+            }
+            return b;
         }
         int v = ext & 0x3C;
         // Buttons: high when not pressed, but an output driving 0 pulls them low anyway.

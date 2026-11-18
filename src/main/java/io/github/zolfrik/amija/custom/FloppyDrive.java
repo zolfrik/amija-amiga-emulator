@@ -270,6 +270,8 @@ public final class FloppyDrive {
     private boolean selected     = false;
     private boolean prevSelected = false;
     private boolean prevStep     = false;
+    /** /MTR of the previous control-line write (true = low, motor requested). */
+    private boolean prevMotorOn  = false;
     private boolean lastStepDir  = false;
 
     // =========================================================================
@@ -483,12 +485,13 @@ public final class FloppyDrive {
      * their edges. A /SEL that reads active here latches no motor and shifts no ID bit;
      * the next {@link #update} compares against this state.
      */
-    public void selectSet(boolean selected, boolean step) {
+    public void selectSet(boolean selected, boolean step, boolean motorOn) {
         flushPending();
         statusDirty  = true;
         this.selected = connected && selected;
         prevSelected = this.selected;
         prevStep     = step;
+        prevMotorOn  = motorOn;
     }
 
     public void update(boolean selected, boolean motorOn, boolean step,
@@ -506,6 +509,10 @@ public final class FloppyDrive {
                 executeStep(direction);
             }
         }
+
+        // The /MTR line of the previous write: the motor flip-flop below sees it too.
+        final boolean motorBefore = prevMotorOn;
+        prevMotorOn = motorOn;
 
         if (!connected) {
             this.selected = false;
@@ -534,11 +541,16 @@ public final class FloppyDrive {
         boolean selFallingEdge = selected && !prevSelected;
 
         if (selFallingEdge) {
+            // The motor flip-flop is clocked by /SEL going low. It turns the motor on when
+            // /MTR is low in this write OR was low in the previous one: a write that selects
+            // the drive and raises /MTR at once still latches "on" when /MTR was low before
+            // it. Only /MTR high on both sides turns the motor off.
+            boolean latched = motorOn || motorBefore;
             boolean oldMotorTarget = motorTarget;
-            setMotor(motorOn);
-            if (!oldMotorTarget && motorOn) slipShifter();
+            setMotor(latched);
+            if (!oldMotorTarget && latched) slipShifter();
 
-            if (oldMotorTarget || motorOn) {
+            if (oldMotorTarget || latched) {
                 // Motor transition or motor already on: clear the ID shift register
                 idBitIndex = 0;
                 idBit      = false; // /RDY inactive (high)
@@ -809,8 +821,9 @@ public final class FloppyDrive {
         trackModified = false;
         if (diskImage == null || diskImage.isReadOnly()) return;
         int physicalTrack = currentTrack * 2 + (currentSide ? 1 : 0);
-        int sectors = diskImage.writeTrackMFM(physicalTrack, trackBuffer, trackLenBytes);
-        if (sectors == 0 && !customFormatWarned) {
+        int sectors = diskImage.writeTrackMFM(physicalTrack, trackBuffer, trackLenBytes,
+                                              trackBitLen);
+        if (sectors == 0 && diskImage.getFormat() == DiskImage.Format.ADF && !customFormatWarned) {
             // An ADF holds standard AmigaDOS sectors only: data written in a format of
             // the program's own (some games' user disks) cannot be represented. Reported
             // once, so the loss is not silent.
@@ -876,6 +889,21 @@ public final class FloppyDrive {
     public void restartBitCell() {
         flushPending();
         resetBitClock();
+    }
+
+    /**
+     * Disk DMA start on this drive while selected: on a track the image reads from its
+     * start ({@link DiskImage#readsFromTrackStart}) the head goes back to the track's first
+     * cell.
+     *
+     * @return whether it did, in which case the controller's read shifter starts empty
+     */
+    public boolean rewindForDmaStart() {
+        if (!selected || !diskInserted || diskImage == null) return false;
+        if (!diskImage.readsFromTrackStart(currentTrack * 2 + (currentSide ? 1 : 0))) return false;
+        flushPending();
+        bitPointer = 0;
+        return true;
     }
 
     // =========================================================================
@@ -1118,8 +1146,9 @@ public final class FloppyDrive {
         writeProtected = (image != null) && image.isReadOnly();
         // Hot, every insertion or removal latches; cold (configuration), none does.
         dskchange      = machineRunning || (image == null);
-        // The cell density model applies to IPF only; ADF is bypassed (fixed rate).
-        densityModel   = (image != null) && image.getFormat() == DiskImage.Format.IPF;
+        // The cell clock scaled by the track's length applies to every image with tracks
+        // of their own length (IPF, extended ADF); a plain ADF has the fixed rate.
+        densityModel   = (image != null) && image.getFormat() != DiskImage.Format.ADF;
         if (diskInserted) { loadCurrentTrack(); randomiseAngularPosition(); }
         // A disk dropped into a spinning drive restarts the /RDY delay.
         if (motorTarget) { readyUpLines = readyUpDelay(); motorAtSpeed = false; }
@@ -1289,6 +1318,7 @@ public final class FloppyDrive {
         idBitIndex           = 0;
         prevSelected         = false;
         prevStep             = false;
+        prevMotorOn          = false;
         lastStepDir          = false;
         // bitPointer is kept: it is the angular position of the platter, which no
         // reset signal can rewind: a program that reboots the machine with RESET finds

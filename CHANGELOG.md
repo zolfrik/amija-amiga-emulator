@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.7.0...v0.8.0) - 2026-11-18
+
+### Added
+
+* **CD32**: discs as .cue, .iso or zip, CD audio, the CD32 pad, saved games in NVRAM.
+* **Null modem**: a virtual serial cable between two AmiJa over the network.
+* Full serial port emulation.
+* Extended ADF images and ADFs of 81-83 cylinders.
+
+### Changed
+
+* Automatic mode takes one **Kickstart folder**: AmiJa recognises every ROM in it by its contents and picks the right one for each machine.
+
+### Fixed
+
+* The mouse moves the same distance at every window zoom.
+* Floppy motor timing in a few loaders (Great Courts).
+* Minor bugfixing.
+
 ## [0.7.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.6.0...v0.7.0) - 2026-11-11
 
 ### Added

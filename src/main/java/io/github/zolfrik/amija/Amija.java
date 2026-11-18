@@ -79,6 +79,8 @@ import io.github.zolfrik.amija.display.AmigaDisplay;
 import io.github.zolfrik.amija.display.ConfigDialog;
 import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.i18n.Messages;
+import io.github.zolfrik.amija.input.AmigaKeyTarget;
+import io.github.zolfrik.amija.memory.KickstartFolder;
 import io.github.zolfrik.amija.input.GamePort;
 import io.github.zolfrik.amija.input.GamePortDevice;
 import io.github.zolfrik.amija.input.GatedKeyTarget;
@@ -214,6 +216,9 @@ public class Amija implements RemotePlayControl, MisterControl {
     private Thread routerCloser;
     private volatile RemotePlayGuest remotePlayGuest;
     private RemotePlaySettings remotePlaySettings = RemotePlaySettings.off();
+    /** The serial port of the machine and what is plugged into it. */
+    private final io.github.zolfrik.amija.net.serial.SerialPortService serialPort =
+            new io.github.zolfrik.amija.net.serial.SerialPortService(() -> misterOutput != null);
     /** Guest side: gathers the local gestures into the packet to send. */
     private RemoteInputSender remoteInputSender;
     // --- Connecting to a host: the session opens with the popup STILL OPEN ---------------
@@ -406,11 +411,13 @@ public class Amija implements RemotePlayControl, MisterControl {
         // A disk dropped on a drive updates the config in memory, so the F12 popup shows the
         // path in that drive (and saves it if the user confirms with OK).
         display.setDiskDropListener(this::rememberDroppedDisk);
+        display.setCdDropListener(this::insertCdDisc);
         display.setShaderPreset(resolveShaderPath(config.shader()));
         installConfigHotkey();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             shutdownRemotePlay();
+            serialPort.close();
             MisterOutput mister = misterOutput;
             if (mister != null) {
                 mister.stop();
@@ -547,7 +554,7 @@ public class Amija implements RemotePlayControl, MisterControl {
     private void attachMisterInput() {
         MisterOutput out = misterOutput;
         if (out == null) return;
-        if (gamePort1 == null || gamePort2 == null || keyboard == null) {
+        if (gamePort1 == null || gamePort2 == null) {
             misterApplier = null;
             out.setInputTarget(null);
             return;
@@ -987,8 +994,7 @@ public class Amija implements RemotePlayControl, MisterControl {
 
         joystickAdapter = new AmigaJoystickKeyAdapter(frame);
         keyAdapter = new AmigaKeyAdapter(remoteInputSender, frame);
-        mouseAdapter = new AmigaMouseAdapter(remoteInputSender, frame,
-                display != null ? display.getVideoScale() : 1);
+        mouseAdapter = new AmigaMouseAdapter(remoteInputSender, frame);
         applyGuestPortAssignment();
 
         if (inputComponent != null) {
@@ -1548,6 +1554,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         // The popup is modal and pauses: without being told, the guest would see a frozen
         // screen and think the connection was lost (section 9).
         if (remotePlayHost != null) remotePlayHost.notifyPaused(true);
+        serialPort.notifyPaused(true);
         if (mouseAdapter != null) mouseAdapter.release();
         boolean exclusiveFullScreenSuspended = display != null && display.suspendExclusiveFullScreen();
 
@@ -1583,11 +1590,15 @@ public class Amija implements RemotePlayControl, MisterControl {
         int oldFastRam = config.fastRamKb();
 
         boolean oldAuto = config.autoEnabled();
+        String oldCdImage = String.valueOf(config.cdImage());
+        String oldCd32Roms = config.cd32KickstartPath() + "|" + config.cd32ExtRomPath()
+                + "|" + config.cd32Keyboard();
 
         rewindSession = openRewindSession();
         ConfigDialog.Result result = ConfigDialog.show(frame, config,
                 this::takeScreenshotFile, this::updateShaderParam,
-                this::saveState, this::loadState, this, this, activeHardware, rewindSession);
+                this::saveState, this::loadState, this, this, activeHardware, rewindSession,
+                serialPort);
         RewindSession rewind = rewindSession;
         rewindSession = null;
 
@@ -1625,7 +1636,13 @@ public class Amija implements RemotePlayControl, MisterControl {
                 // holds while the mode stays the same: switching Expert on or off redefines
                 // the machine from scratch, and there the restart is the point.
                 boolean deferHardware = oldAuto && config.autoEnabled();
-                boolean needsColdRestart = windowChanged
+                // A disc in or out of the CD drive changes the machine itself (CD32 or not);
+                // so do the CD32's ROMs and keyboard, on a CD32.
+                boolean cdChanged = !oldCdImage.equals(String.valueOf(config.cdImage()))
+                        || (config.cd32Machine() && !oldCd32Roms.equals(
+                                config.cd32KickstartPath() + "|" + config.cd32ExtRomPath()
+                                + "|" + config.cd32Keyboard()));
+                boolean needsColdRestart = windowChanged || cdChanged
                         || (!deferHardware
                             && (oldChipset != config.chipset()
                                 || oldCpuModel != config.cpuModel()
@@ -1740,6 +1757,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             case QUIT -> { System.exit(0); return; } // the shutdown hook switches the machine off
         }
         if (remotePlayHost != null) remotePlayHost.notifyPaused(false);
+        serialPort.notifyPaused(false);
         if (exclusiveFullScreenSuspended && !displayRecreated && display != null) {
             display.resumeExclusiveFullScreen();
         }
@@ -2014,6 +2032,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         java.util.List<GamePort> realPorts = new java.util.ArrayList<>(2);
         if (pc0 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort1);
         if (pc1 == PortDevice.JOYSTICK_REAL) realPorts.add(gamePort2);
+        joystickService.setJoypadMap(config.joypadMap());
         joystickService.setPorts(realPorts);
 
         // Hardware device reported by each port (for the JOYxDAT/POTINP reads), declared
@@ -2023,6 +2042,11 @@ public class Amija implements RemotePlayControl, MisterControl {
         // on the port, and a switch from joystick to mouse a joystick.
         if (d0 != null) gamePort1.setDevice(d0.hardwareDevice());
         if (d1 != null) gamePort2.setDevice(d1.hardwareDevice());
+        // The CD32's controller is its pad: a joystick in its joystick port is one.
+        if (agnus != null && agnus.isCd32Board()
+                && gamePort2.getDevice() == GamePortDevice.JOYSTICK) {
+            gamePort2.setDevice(GamePortDevice.CD32_PAD);
+        }
 
         // The port given away is declared empty, and LAST. Detaching the host's adapters from
         // it makes them release what they held pressed (right and necessary), but every
@@ -2189,6 +2213,54 @@ public class Amija implements RemotePlayControl, MisterControl {
         }
     }
 
+    /**
+     * A CD image dropped on the window. On a running CD32 the disc is changed in the drive,
+     * which notices within two seconds. In Auto any other machine is switched off and back on
+     * as a CD32 with that disc ({@code cd.image}, saved), if the Kickstart folder has the two
+     * CD32 ROMs; otherwise, and in Expert, the user is told why it cannot.
+     */
+    private void insertCdDisc(String path) {
+        if (agnus != null && agnus.isCd32Board()) {
+            try {
+                io.github.zolfrik.amija.custom.cd.CdImage next =
+                        io.github.zolfrik.amija.custom.cd.CdImage.open(Paths.get(path));
+                agnus.akiko().insert(next);
+                closeCdImage();
+                cdImage = next;
+                config.setCdImage(path);
+                saveConfig();
+                System.out.println("[CD32] Disc changed: " + next.name());
+            } catch (IOException e) {
+                error(Messages.t("error.boot", e.getMessage()));
+            }
+            return;
+        }
+        // Not a CD32 now. In Expert the Kickstart of the System section decides the machine,
+        // so a disc cannot turn it into a CD32; in Auto it can, if the Kickstart folder has
+        // both CD32 ROMs.
+        if (!config.autoEnabled()) {
+            error(Messages.t("error.cd32.drop.expert"));
+            return;
+        }
+        if (config.autoKickstartDir().isEmpty()) {
+            error(Messages.t("error.rom.folder.unset"));
+            return;
+        }
+        if (config.refreshKickstartFolder()) saveConfig();
+        for (KickstartFolder.Role role : new KickstartFolder.Role[] {
+                KickstartFolder.Role.CD32, KickstartFolder.Role.CD32_EXT }) {
+            String rom = config.autoKickstart(role);
+            if (rom.isEmpty() || !new File(rom).isFile()) {
+                error(Messages.t("error.cd32.drop.missing", romName(role),
+                        config.autoKickstartDir()));
+                return;
+            }
+        }
+        config.setCdImage(path);
+        saveConfig();
+        coldRestart();
+    }
+
     /** Switches the machine off and on from scratch (power cycle) with the current config. */
     private void coldRestart() {
         shutdownMachine();
@@ -2215,6 +2287,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         frame = display.getFrame();
         inputComponent = display.getInputComponent();
         display.setDiskDropListener(this::rememberDroppedDisk);
+        display.setCdDropListener(this::insertCdDisc);
         display.setShaderPreset(resolveShaderPath(config.shader()));
         installConfigHotkey();
     }
@@ -2268,7 +2341,8 @@ public class Amija implements RemotePlayControl, MisterControl {
         }
         try {
             File file = SaveStateManager.slotFile(slot);
-            SaveStateManager.save(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
+            SaveStateManager.save(file, processor, eventBus, agnus, gamePort1, gamePort2, config,
+                    serialPort);
             System.out.println("[STATE] saved " + file.getAbsolutePath());
             saveStateScreenshot(slot);
             return Messages.t("savestate.save.ok", slot, file.getAbsolutePath());
@@ -2307,6 +2381,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         if (rewindHistory != null) rewindHistory.close();
         MachineSnapshot snapshot = MachineSnapshot.of(processor, eventBus, agnus,
                 gamePort1, gamePort2);
+        snapshot.setLimiter(serialPort);
         final VirtualCRT crt = virtualCRT;
         rewindHistory = new RewindHistory(snapshot, agnus, processor, eventDriven,
                 crt::getFrameBuffer, videoMode == VideoMode.NTSC ? 60 : 50,
@@ -2344,6 +2419,7 @@ public class Amija implements RemotePlayControl, MisterControl {
     private void applyRewind(RewindSession session) {
         try {
             rewindHistory.restore(session.selectedEntry(), true);
+            serialPort.stateReplaced();
             // The audio queued so far belongs to the future just thrown away.
             if (paula != null) paula.getAudioRingBuffer().clear();
             System.out.println("[REWIND] went back by "
@@ -2457,6 +2533,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             SaveStateManager.load(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] loaded " + file.getAbsolutePath());
             forgetRewindHistory();
+            serialPort.stateReplaced();
             return ConfigDialog.LoadStateOutcome.done(
                     Messages.t("savestate.load.ok", slot));
         } catch (SaveStateManager.IncompatibleStateException e) {
@@ -2537,6 +2614,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             SaveStateManager.load(file, processor, eventBus, agnus, gamePort1, gamePort2, config);
             System.out.println("[STATE] loaded " + file.getAbsolutePath());
             forgetRewindHistory();
+            serialPort.stateReplaced();
             return Messages.t("savestate.load.reconfigured");
         } catch (SaveStateManager.IncompatibleStateException e) {
             return Messages.t("savestate.load.incompatible", e.getMessage());
@@ -2590,6 +2668,10 @@ public class Amija implements RemotePlayControl, MisterControl {
 
     /** Builds and starts a whole Amiga machine from {@link #config}. */
     private void bootMachine() {
+        // A boot always starts from nothing, as a fresh process would: whatever a previous
+        // machine left behind (including one whose boot failed half way) is torn down first.
+        // Without a machine this only detaches nothing.
+        shutdownMachine();
         try {
             // Apply the current language: rebuilding the display (setDrives) regenerates the
             // drag-and-drop overlay with the updated localised strings.
@@ -2681,6 +2763,11 @@ public class Amija implements RemotePlayControl, MisterControl {
                     ? new EcsAgnus(processor, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode)
                     : new OcsAgnus(processor, gary, chipRam, slowRam, kickstart, paula, denise, ciaA, ciaB, videoMode);
 
+            // CD32: Akiko, the extended ROM, the NVRAM and the disc. It has no floppy drive, no
+            // hard disk and no expansion.
+            final boolean cd32 = config.cd32Machine();
+            if (cd32) installCd32(agnus);
+
             // Fast RAM (Zorro II expansion with AutoConfig). Absent by default (0): the first
             // Zorro II RAM board is usually mapped by the Kickstart at $200000 and added to the
             // system memory, available to programs and WHDLoad. Must be connected BEFORE the
@@ -2694,7 +2781,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             // Hard disks (master/slave): every enabled unit with a valid .hdf becomes a Zorro
             // II controller with a boot ROM. The DH partitions are numbered across the units.
             // Must be connected BEFORE the CPU reset.
-            setupHardDisks(agnus);
+            if (!cd32) setupHardDisks(agnus);
 
             virtualCRT = new VirtualCRT(agnus, denise, display);
             // The remote play session survives the machine's restarts: the guest just sees
@@ -2708,7 +2795,9 @@ public class Amija implements RemotePlayControl, MisterControl {
                 virtualCRT.setMisterOutput(misterOutput);
             }
 
-            Keyboard keyboard = new Keyboard(ciaA);
+            // A CD32 may have no keyboard: then nothing talks to CIA-A's serial port and the
+            // PC's keys are lost.
+            Keyboard keyboard = config.keyboardConnected() ? new Keyboard(ciaA) : null;
             agnus.setKeyboard(keyboard);
             this.keyboard = keyboard;
 
@@ -2716,13 +2805,9 @@ public class Amija implements RemotePlayControl, MisterControl {
             // The target port and the enabled state of mouse/keyboard joystick are set right
             // after by applyPortAssignments (likewise for the real joystick).
             joystickAdapter = new AmigaJoystickKeyAdapter(frame);
-            pcKeyboard = new GatedKeyTarget(keyboard);
+            pcKeyboard = new GatedKeyTarget(keyboard != null ? keyboard : AmigaKeyTarget.UNPLUGGED);
             keyAdapter = new AmigaKeyAdapter(pcKeyboard, frame);
-            // The scale factor comes from the display, not from the config: it is the one
-            // really applied to the window (already normalised to >= 1). It brings the mouse
-            // deltas, which arrive in screen pixels, back to Amiga pixels.
-            mouseAdapter = new AmigaMouseAdapter(port1, frame,
-                    display != null ? display.getVideoScale() : 1);
+            mouseAdapter = new AmigaMouseAdapter(port1, frame);
             // The listeners go on the input component (the frame in software, the
             // heavyweight GL canvas in OpenGL: its events do not bubble up to the frame). The
             // adapters still receive the frame for focus/cursor/mouse recentring.
@@ -2751,7 +2836,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             syncZipDiskSet(null);
             FloppyDrive df0 = agnus.getDf0();
             FloppyDrive[] dfs = { df0, agnus.getDf1(), agnus.getDf2(), agnus.getDf3() };
-            for (int i = 0; i < dfs.length; i++) {
+            for (int i = 0; i < dfs.length && !cd32; i++) {
                 dfs[i].setConnected(config.driveEnabled(i));
                 String diskPath = config.driveDisk(i);
                 if (config.driveEnabled(i) && diskPath != null) {
@@ -2772,6 +2857,8 @@ public class Amija implements RemotePlayControl, MisterControl {
             // reflects the hard disks present (WHDLoad and/or master/slave, in order).
             display.setStatusLedSource(ciaA::isPowerLedOn);
             display.setHdLedSources(hdLedSources.toArray(new java.util.function.BooleanSupplier[0]));
+            final io.github.zolfrik.amija.custom.Akiko akiko = cd32 ? agnus.akiko() : null;
+            display.setCdLedSource(akiko == null ? null : akiko::ledLit);
             attachRemotePlayLed();
             attachMisterLed();
             display.setStatusLedsEnabled(config.ledsVisible());
@@ -2792,6 +2879,12 @@ public class Amija implements RemotePlayControl, MisterControl {
             }
             clock = new MasterClock(agnus, videoMode, virtualCRT, driver);
             clock.setPacer(misterOutput);
+            // The serial port: a loopback plug goes in now. A null modem cable, at either end,
+            // is only ever started by the user from the popup, never at boot.
+            serialPort.configure(config.serialDelayMs(), config.serialLanOnly());
+            serialPort.bind(agnus, clock, videoMode.getFrequency(),
+                    "loopback".equals(config.serialMode()));
+            if (display != null) display.setSerialLedSource(serialPort::serialLedState);
             final MasterClock audioClock = clock;
             paula.setAudioActiveSupplier(() -> !audioClock.isPaused());
             // If the emulation thread dies of an exception, without this hook the display
@@ -2842,8 +2935,6 @@ public class Amija implements RemotePlayControl, MisterControl {
      * partitions are numbered across the units (DH0, DH1, ...).
      */
     private void setupHardDisks(AbstractAgnus agnus) {
-        hardFiles.clear();
-        hdLedSources.clear();
         java.util.List<HdController> controllers = new java.util.ArrayList<>();
         int partitionBase = 0;
 
@@ -2915,8 +3006,58 @@ public class Amija implements RemotePlayControl, MisterControl {
         agnus.setHdControllers(controllers);
     }
 
+    /** The disc in the CD32's drive, open while the machine runs. */
+    private io.github.zolfrik.amija.custom.cd.CdImage cdImage;
+
+    /**
+     * Makes the machine just built a CD32: the extended ROM ({@code cd32.extrom.path}), the
+     * 1 KB NVRAM kept in {@code nvram/cd32.nvr} of the app home (written back at every write
+     * transfer), and the disc of {@code cd.image}, if any.
+     */
+    private void installCd32(io.github.zolfrik.amija.custom.AbstractAgnus agnus) throws IOException {
+        KickstartImage ext = KickstartImage.load(Paths.get(config.cd32ExtRomPath()));
+        System.out.println("[ROM] CD32 extended ROM: " + ext.describe());
+        java.nio.file.Path nvramFile = AppHome.resolve("nvram/cd32.nvr");
+        byte[] nvram = new byte[1024];
+        if (java.nio.file.Files.isRegularFile(nvramFile)) {
+            byte[] stored = java.nio.file.Files.readAllBytes(nvramFile);
+            System.arraycopy(stored, 0, nvram, 0, Math.min(stored.length, nvram.length));
+        }
+        io.github.zolfrik.amija.custom.I2cEeprom eeprom = new io.github.zolfrik.amija.custom.I2cEeprom(nvram);
+        eeprom.setWriteListener((offset, length) -> {
+            try {
+                java.nio.file.Files.createDirectories(nvramFile.getParent());
+                java.nio.file.Files.write(nvramFile, nvram);
+            } catch (IOException e) {
+                System.err.println("[CD32] Cannot save the NVRAM: " + e.getMessage());
+            }
+        });
+        agnus.installCd32(new io.github.zolfrik.amija.memory.ROM(ext.data()), eeprom);
+        closeCdImage();
+        if (config.cdImage() == null) {
+            System.out.println("[CD32] No disc");
+            return;
+        }
+        cdImage = io.github.zolfrik.amija.custom.cd.CdImage.open(Paths.get(config.cdImage()));
+        agnus.akiko().insert(cdImage);
+        System.out.println("[CD32] Disc: " + cdImage.name() + ", " + cdImage.tracks().size()
+                + " tracks");
+    }
+
+    private void closeCdImage() {
+        if (cdImage == null) return;
+        try {
+            cdImage.close();
+        } catch (IOException e) {
+            System.err.println("[CD32] " + e.getMessage());
+        }
+        cdImage = null;
+    }
+
     /** Stops the current machine: clock, audio, render and input listeners. */
     private void shutdownMachine() {
+        serialPort.unbind();
+        closeCdImage();
         if (clock != null) {
             clock.stop();
             clock.setSampler(null);
@@ -2956,9 +3097,15 @@ public class Amija implements RemotePlayControl, MisterControl {
             hf.flush();
         }
         hardFiles.clear();
+        // The LED sources point at the controllers of this machine. A machine built without
+        // hard disks (a CD32) never calls setupHardDisks, so they must go here, or the next
+        // display keeps showing the activity of controllers that no longer exist.
+        hdLedSources.clear();
         detachInputAdapters();
         gamePort1 = null;
         gamePort2 = null;
+        keyboard = null;
+        pcKeyboard = null;
         cpu = null;
         processor = null;
         eventBus = null;
@@ -2982,7 +3129,8 @@ public class Amija implements RemotePlayControl, MisterControl {
             if (config.hdEnabled(u)) hds.add(norm(config.hdDisk(u)));
         }
         String whd = config.whdloadEnabled() ? norm(config.whdloadFile()) : "";
-        return new ConfigDialog.DriveHardware(floppies, hds, whd);
+        String cd = config.cd32Machine() && config.cdImage() != null ? norm(config.cdImage()) : "";
+        return new ConfigDialog.DriveHardware(floppies, hds, whd, cd);
     }
 
     /**
@@ -3038,6 +3186,23 @@ public class Amija implements RemotePlayControl, MisterControl {
     }
 
     private boolean validateRom(AmigaConfig cfg) {
+        // Auto mode takes its ROMs from the Kickstart folder, brought up to date first. Once a
+        // folder is chosen, a ROM the machine needs and the folder lacks is an error that
+        // names it: the built-in ROM is only for whoever has not chosen a folder yet.
+        if (cfg.autoEnabled() && !cfg.autoKickstartDir().isEmpty()) {
+            if (cfg.refreshKickstartFolder()) saveConfig();
+            KickstartFolder.Role missing = cfg.autoMissingRole();
+            if (missing != null) {
+                error(Messages.t("error.rom.folder.missing", romName(missing),
+                        cfg.autoKickstartDir()));
+                return false;
+            }
+        }
+        // A CD32 needs its extended ROM next to the Kickstart.
+        if (cfg.cd32Machine() && !new File(cfg.cd32ExtRomPath()).isFile()) {
+            error(Messages.t("error.rom.cd32ext.missing"));
+            return false;
+        }
         String path = cfg.kickstartPath();
 
         // A machine whose Kickstart demands what the rest of it lacks is not built: the
@@ -3068,11 +3233,8 @@ public class Amija implements RemotePlayControl, MisterControl {
                 welcomeShown = true;
                 info(Messages.t("welcome.title"), Messages.t("welcome.rom"));
             } else if (cfg.autoEnabled()) {
-                // In Auto mode the path does not come from 'kickstart.path' but from one of
-                // the two boxes of the popup: saying which one is missing is the useful part.
-                error(Messages.t("error.rom.missing.auto",
-                        Messages.t(cfg.autoProfile().usesKickstart31()
-                                ? "label.kickstart31" : "label.kickstart13").replace(":", "")));
+                // In Auto mode the ROMs come from the Kickstart folder, still to be chosen.
+                error(Messages.t("error.rom.folder.unset"));
             } else {
                 error(Messages.t("error.rom.missing", AmigaConfig.FILE_NAME));
             }
@@ -3104,6 +3266,11 @@ public class Amija implements RemotePlayControl, MisterControl {
             return false;
         }
         return true;
+    }
+
+    /** What a ROM role is, for the user ("Kickstart 1.3 (34.5)"). */
+    static String romName(KickstartFolder.Role role) {
+        return Messages.t("rom.role." + role.name().toLowerCase(java.util.Locale.ROOT));
     }
 
     private void error(String message) {

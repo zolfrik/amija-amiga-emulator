@@ -24,5 +24,7 @@ package io.github.zolfrik.amija.input;
 public enum GamePortDevice {
     NONE,
     MOUSE,
-    JOYSTICK
+    JOYSTICK,
+    /** The CD32 pad: seven buttons, read one by one through a shift register in pad mode. */
+    CD32_PAD
 }
