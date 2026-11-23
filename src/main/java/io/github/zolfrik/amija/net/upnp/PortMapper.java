@@ -60,13 +60,20 @@ public final class PortMapper implements AutoCloseable {
     /** How long to wait for the answers to the M-SEARCH. */
     private static final int DISCOVERY_TIMEOUT_MS = 3000;
 
+    /**
+     * How long to wait for a router that does not answer searches to announce itself. The
+     * UPnP rules make a device repeat its announcement before half of its {@code max-age}
+     * expires; 1800 s is the common value, so a quarter of an hour covers it.
+     */
+    static final long ANNOUNCE_WAIT_MS = 16 * 60_000L;
+
     /** How long the withdrawal of the mapping is given before giving up. */
     private static final int TEARDOWN_TIMEOUT_MS = 8000;
 
     /** How the mapping appears in the router's list. */
     private static final String DESCRIPTION = "AmiJa remote play";
 
-    private static final String[] PROTOCOLS = { "TCP", "UDP" };
+    private final String[] protocols;
 
     /** How far the port opening has got. */
     public enum State {
@@ -100,6 +107,12 @@ public final class PortMapper implements AutoCloseable {
 
     private final int port;
     private final GatewayFinder finder;
+    /** Description URL of the router found in an earlier session, tried first; may be null. */
+    private final java.net.URI remembered;
+    /** Description URL of the router that answered this time, to be remembered. */
+    private volatile java.net.URI found;
+    /** True while no router answered the search and the announcements are awaited. */
+    private volatile boolean awaitingAnnouncement;
 
     private volatile State state = State.OFF;
     private volatile String externalIp;
@@ -111,13 +124,42 @@ public final class PortMapper implements AutoCloseable {
     private Thread worker;
 
     public PortMapper(int port) {
-        this(port, null);
+        this(port, true, null, null);
+    }
+
+    /**
+     * @param remembered description URL of the router found in an earlier session, tried
+     *                   before any search; {@code null} if none
+     */
+    public PortMapper(int port, java.net.URI remembered) {
+        this(port, true, null, remembered);
+    }
+
+    /** @param udp whether UDP is mapped too; {@code false} maps TCP only */
+    public PortMapper(int port, boolean udp, java.net.URI remembered) {
+        this(port, udp, null, remembered);
     }
 
     /** @param finder how to find the router; {@code null} = SSDP, i.e. the real case */
     PortMapper(int port, GatewayFinder finder) {
+        this(port, true, finder, null);
+    }
+
+    private PortMapper(int port, boolean udp, GatewayFinder finder, java.net.URI remembered) {
         this.port = port;
+        this.protocols = udp ? new String[] { "TCP", "UDP" } : new String[] { "TCP" };
         this.finder = finder;
+        this.remembered = remembered;
+    }
+
+    /** The description URL of the router that answered, worth remembered; or {@code null}. */
+    public java.net.URI foundDescription() {
+        return found;
+    }
+
+    /** True while no router answered the search and its announcement is being awaited. */
+    public boolean awaitingAnnouncement() {
+        return awaitingAnnouncement;
     }
 
     /** Starts searching and opening. Returns at once. */
@@ -243,7 +285,7 @@ public final class PortMapper implements AutoCloseable {
 
     /** Opens TCP and UDP. {@code false} if the router refuses: the state already says so. */
     private boolean map(IgdClient igd) {
-        for (String protocol : PROTOCOLS) {
+        for (String protocol : protocols) {
             try {
                 igd.addPortMapping(protocol, port, LEASE_SECONDS, DESCRIPTION);
             } catch (IgdClient.UpnpException e) {
@@ -299,7 +341,7 @@ public final class PortMapper implements AutoCloseable {
     }
 
     private void removeMapping(IgdClient igd) {
-        for (String protocol : PROTOCOLS) {
+        for (String protocol : protocols) {
             try {
                 igd.deletePortMapping(protocol, port);
             } catch (IOException e) {
@@ -310,25 +352,69 @@ public final class PortMapper implements AutoCloseable {
         RemotePlaySettings.log("UPnP: mapping of port %d withdrawn", port);
     }
 
-    /** The first gateway that answers and can map. */
+    /**
+     * The first gateway that can map: the one remembered from an earlier session, then the
+     * ones answering a search, then the first one announcing itself within
+     * {@link #ANNOUNCE_WAIT_MS}.
+     */
     private IgdClient findGateway() {
         if (finder != null) {
             return finder.find();
         }
-        List<SsdpDiscovery.Gateway> candidates = SsdpDiscovery.search(DISCOVERY_TIMEOUT_MS);
-        for (SsdpDiscovery.Gateway candidate : candidates) {
+        if (remembered != null) {
+            SsdpDiscovery.Gateway g = SsdpDiscovery.gatewayAt(remembered);
+            IgdClient igd = g == null ? null : tryGateway(g);
+            if (igd != null) {
+                return igd;
+            }
+        }
+        for (SsdpDiscovery.Gateway candidate : SsdpDiscovery.search(DISCOVERY_TIMEOUT_MS)) {
             if (closed) {
                 return null;
             }
-            try {
-                return IgdClient.connect(candidate);
-            } catch (IOException e) {
-                // Any UPnP device (a printer, a smart TV) answers the M-SEARCH and cannot map
-                // anything. Not an error: try the next.
-                RemotePlaySettings.log("UPnP: %s is not a usable gateway (%s)",
-                        candidate.descriptionUrl(), e.getMessage());
+            IgdClient igd = tryGateway(candidate);
+            if (igd != null) {
+                return igd;
             }
         }
-        return null;
+        awaitingAnnouncement = true;
+        try {
+            long deadline = System.nanoTime() + ANNOUNCE_WAIT_MS * 1_000_000L;
+            RemotePlaySettings.say("UPnP: no router answered the search, waiting for one"
+                    + " to announce itself");
+            while (!closed) {
+                long left = (deadline - System.nanoTime()) / 1_000_000L;
+                if (left <= 0) {
+                    return null;
+                }
+                SsdpDiscovery.Gateway g = SsdpDiscovery.awaitAnnouncement(left, () -> closed);
+                if (g == null) {
+                    return null;
+                }
+                IgdClient igd = tryGateway(g);
+                if (igd != null) {
+                    return igd;
+                }
+            }
+            return null;
+        } finally {
+            awaitingAnnouncement = false;
+        }
+    }
+
+    /**
+     * The control point of a gateway, or {@code null} if it is not one that maps: any UPnP
+     * device (a printer, a smart TV) answers a search and cannot map anything.
+     */
+    private IgdClient tryGateway(SsdpDiscovery.Gateway candidate) {
+        try {
+            IgdClient igd = IgdClient.connect(candidate);
+            found = candidate.descriptionUrl();
+            return igd;
+        } catch (IOException e) {
+            RemotePlaySettings.log("UPnP: %s is not a usable gateway (%s)",
+                    candidate.descriptionUrl(), e.getMessage());
+            return null;
+        }
     }
 }

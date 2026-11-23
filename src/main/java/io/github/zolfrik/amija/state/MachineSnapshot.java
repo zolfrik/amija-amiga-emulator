@@ -20,12 +20,12 @@
 
 package io.github.zolfrik.amija.state;
 
-import io.github.zolfrik.amija.cpu.Processor;
-import io.github.zolfrik.amija.custom.AbstractAgnus;
-import io.github.zolfrik.amija.custom.AbstractDenise;
-import io.github.zolfrik.amija.custom.EventCpuBus;
+import io.github.zolfrik.amija.hardware.common.cpu.Processor;
+import io.github.zolfrik.amija.hardware.custom.AbstractAgnus;
+import io.github.zolfrik.amija.hardware.custom.AbstractDenise;
+import io.github.zolfrik.amija.hardware.custom.EventCpuBus;
 import io.github.zolfrik.amija.input.GamePort;
-import io.github.zolfrik.amija.memory.RAM;
+import io.github.zolfrik.amija.hardware.common.memory.RAM;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.reflect.Array;

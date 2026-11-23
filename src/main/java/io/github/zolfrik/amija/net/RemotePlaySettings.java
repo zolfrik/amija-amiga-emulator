@@ -26,11 +26,14 @@ package io.github.zolfrik.amija.net;
  * <pre>
  *   -Damija.remoteplay.host=7788             hosts on the given port
  *   -Damija.remoteplay.join=192.168.1.20:7788   joins the given host
+ *   -Damija.remoteplay.join=AMJ-XXXX-...     joins through an invitation (no joincode needed)
  *   -Damija.remoteplay.watch=192.168.1.20:7788  joins the given host as a spectator,
  *                                            with the spectator code as joincode
  *   -Damija.remoteplay.joincode=K7M2-Q4XZ    required to join, optional to host
  *                                            (one is generated if missing)
  *   -Damija.remoteplay.bind=192.168.1.20     interface to listen on (empty = all)
+ *   -Damija.remoteplay.access=internet       lan | internet: who may join when hosting
+ *                                            (default: remoteplay.access of the configuration)
  *   -Damija.remoteplay.log=true              traces handshake, session and statistics
  *   -Damija.remoteplay.guestport=1           game port driven by the guest (0 or 1)
  *   -Damija.remoteplay.guestkeyboard=true    the guest shares the keyboard
@@ -63,7 +66,7 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
                                  String bindAddress, int guestGamePort,
                                  boolean guestKeyboard, boolean guestAllowReset,
                                  int audioFormat, int maxSpectators, String spectatorCode,
-                                 boolean spectator) {
+                                 boolean spectator, InviteCode invite) {
 
     public enum Mode { OFF, HOST, GUEST }
 
@@ -126,7 +129,25 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
 
         if (host != null) {
             return new RemotePlaySettings(Mode.HOST, null, parsePort(host), joinCode, bind,
-                    guestPort, keyboard, allowReset, audio, spectators, spectatorCode, false);
+                    guestPort, keyboard, allowReset, audio, spectators, spectatorCode, false,
+                    null);
+        }
+        if (join != null && InviteCode.looksLikeInvite(join)) {
+            InviteCode invite = parseInvite(join);
+            if (invite.role() == InviteCode.ROLE_NULL_MODEM) {
+                throw new IllegalArgumentException(
+                        "this is a null modem invitation, not a remote play one");
+            }
+            // The invitation's role decides how the guest joins: a player invitation carries
+            // the player's code, which cannot be used to watch.
+            if (spectator && invite.role() != InviteCode.ROLE_SPECTATOR) {
+                throw new IllegalArgumentException(
+                        "amija.remoteplay.watch needs a spectator invitation; this one is for"
+                        + " the player (use amija.remoteplay.join)");
+            }
+            boolean watching = invite.role() == InviteCode.ROLE_SPECTATOR;
+            return new RemotePlaySettings(Mode.GUEST, null, 0, invite.displayJoinCode(), bind,
+                    guestPort, keyboard, allowReset, audio, 0, null, watching, invite);
         }
         if (join != null) {
             int colon = join.lastIndexOf(':');
@@ -138,7 +159,7 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
                         + " the code shown by the host");
             }
             return new RemotePlaySettings(Mode.GUEST, address, port, joinCode, bind,
-                    guestPort, keyboard, allowReset, audio, 0, null, spectator);
+                    guestPort, keyboard, allowReset, audio, 0, null, spectator, null);
         }
         return off();
     }
@@ -146,11 +167,40 @@ public record RemotePlaySettings(Mode mode, String address, int port, String joi
     /** Remote play off: the normal case. */
     public static RemotePlaySettings off() {
         return new RemotePlaySettings(Mode.OFF, null, 0, null, null,
-                DEFAULT_GUEST_GAME_PORT, true, false, DEFAULT_AUDIO_FORMAT, 0, null, false);
+                DEFAULT_GUEST_GAME_PORT, true, false, DEFAULT_AUDIO_FORMAT, 0, null, false,
+                null);
     }
 
     public boolean isOff() {
         return mode == Mode.OFF;
+    }
+
+    /**
+     * Who may join when hosting: the {@code amija.remoteplay.access} property when it is set,
+     * otherwise the configuration's choice.
+     *
+     * @return {@code true} for the Internet, {@code false} for the local network only
+     */
+    public static boolean internetAccess(boolean configured) {
+        String v = trimmed("amija.remoteplay.access");
+        if (v == null) {
+            return configured;
+        }
+        return switch (v.toLowerCase(java.util.Locale.ROOT)) {
+            case "internet" -> true;
+            case "lan" -> false;
+            default -> throw new IllegalArgumentException(
+                    "amija.remoteplay.access takes lan or internet, not: " + v);
+        };
+    }
+
+    private static InviteCode parseInvite(String text) {
+        try {
+            return InviteCode.parse(text);
+        } catch (InviteCode.InvalidInviteException e) {
+            throw new IllegalArgumentException("amija.remoteplay.join: unusable invitation ("
+                    + e.getMessage() + ")", e);
+        }
     }
 
     private static String trimmed(String key) {

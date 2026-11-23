@@ -33,7 +33,7 @@ import java.util.List;
  * <p>Purpose: launching games installed on .hdf (and WHDLoad) at minimal implementation cost,
  * favouring performance. The file is loaded entirely into a {@code byte[]}; the driver's
  * reads/writes are plain memory copies (no cycle-exact emulation of the SCSI/IDE bus). The
- * AmigaOS driver is provided by {@link io.github.zolfrik.amija.custom.HdController}.
+ * AmigaOS driver is provided by {@link io.github.zolfrik.amija.hardware.custom.HdController}.
  *
  * <p>Two formats are recognised:
  * <ul>
@@ -271,7 +271,7 @@ public final class HardFile {
      * Raw byte array of the image, for the host driver's block transfers
      * ({@code System.arraycopy} instead of a byte-by-byte copy). Used as the source of
      * disk -> RAM reads and as the destination of RAM -> disk writes; the caller
-     * ({@link io.github.zolfrik.amija.custom.HdController}) has already checked the range and
+     * ({@link io.github.zolfrik.amija.hardware.custom.HdController}) has already checked the range and
      * the read-only flag.
      */
     public byte[] rawData() { return data; }

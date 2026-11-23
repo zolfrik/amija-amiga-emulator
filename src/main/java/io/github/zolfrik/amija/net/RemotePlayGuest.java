@@ -118,20 +118,60 @@ public final class RemotePlayGuest implements AutoCloseable {
                                           NetImpairment impairment,
                                           VideoReceiver.FrameSink sink) throws IOException {
         Socket socket = new Socket();
-        socket.connect(new InetSocketAddress(host, port), Handshake.HANDSHAKE_TIMEOUT_MS);
-        ControlChannel channel = new ControlChannel(socket);
-        Handshake.Session negotiated;
         try {
-            negotiated = Handshake.connect(channel, joinCode, role);
+            socket.connect(new InetSocketAddress(host, port), Handshake.HANDSHAKE_TIMEOUT_MS);
         } catch (IOException e) {
+            socket.close();
+            throw e;
+        }
+        return handshake(socket, joinCode, role, -1, impairment, sink);
+    }
+
+    /**
+     * Connects through an invitation: every address it carries is tried
+     * ({@link CandidateDialer}), the handshake runs once on the first that answers, and the
+     * media goes to that candidate's UDP port, which a router mapping may have made different
+     * from the one the host listens on.
+     *
+     * @throws CandidateDialer.AllFailedException if no address answered, with every cause
+     * @throws Handshake.RejectedException       if the host refused, with the reason to show
+     */
+    public static RemotePlayGuest connect(InviteCode invite, NetImpairment impairment,
+                                          VideoReceiver.FrameSink sink) throws IOException {
+        int role = switch (invite.role()) {
+            case InviteCode.ROLE_PLAYER -> RemotePlayProtocol.ROLE_PLAYER;
+            case InviteCode.ROLE_SPECTATOR -> RemotePlayProtocol.ROLE_SPECTATOR;
+            default -> throw new IllegalArgumentException(
+                    "a null modem invitation does not open a stream session");
+        };
+        return CandidateDialer.connect(invite.candidates(), Handshake.HANDSHAKE_TIMEOUT_MS,
+                (socket, candidate) -> handshake(socket, invite.joinCode(), role,
+                        candidate.udpPort(), impairment, sink));
+    }
+
+    /**
+     * The handshake on a connected socket, then the session.
+     *
+     * @param mediaPort UDP port of the host, or -1 to use the one the WELCOME announces
+     */
+    private static RemotePlayGuest handshake(Socket socket, String joinCode, int role,
+                                             int mediaPort, NetImpairment impairment,
+                                             VideoReceiver.FrameSink sink) throws IOException {
+        ControlChannel channel = new ControlChannel(socket);
+        try {
+            Handshake.Session negotiated = Handshake.connect(channel, joinCode, role);
+            InetSocketAddress media = new InetSocketAddress(socket.getInetAddress(),
+                    mediaPort > 0 ? mediaPort : negotiated.mediaPort());
+            return new RemotePlayGuest(channel, negotiated, media, impairment, sink);
+        } catch (IOException | RuntimeException e) {
             channel.close();
             throw e;
         }
-        return new RemotePlayGuest(channel, negotiated, host, impairment, sink);
     }
 
-    private RemotePlayGuest(ControlChannel control, Handshake.Session session, String host,
-                            NetImpairment impairment, VideoReceiver.FrameSink sink)
+    private RemotePlayGuest(ControlChannel control, Handshake.Session session,
+                            InetSocketAddress mediaTarget, NetImpairment impairment,
+                            VideoReceiver.FrameSink sink)
             throws IOException {
         this.control = control;
         this.session = session;
@@ -141,7 +181,7 @@ public final class RemotePlayGuest implements AutoCloseable {
                 session.isSpectator() ? ReferenceRing.SPECTATOR_SLOTS : ReferenceRing.SLOTS);
         this.mediaSocket = new DatagramSocket();
         this.media = new MediaLink(mediaSocket, session.cipher(Handshake.DIRECTION_GUEST),
-                new InetSocketAddress(host, session.mediaPort()), this.impairment);
+                mediaTarget, this.impairment);
         this.media.setTimeout(POLL_MS);
 
         outgoing.clear();
@@ -173,14 +213,14 @@ public final class RemotePlayGuest implements AutoCloseable {
         };
 
         if (session.isSpectator()) {
-            RemotePlaySettings.say("connected to %s:%d as a spectator — video %dx%d, audio %s",
-                    host, session.mediaPort(), session.width(), session.height(),
+            RemotePlaySettings.say("connected to %s as a spectator, video %dx%d, audio %s",
+                    mediaTarget, session.width(), session.height(),
                     audioReceiver == null ? "off"
                             : AudioBlockHeader.formatName(session.audioFormat()));
         } else {
-            RemotePlaySettings.say("connected to %s:%d — video %dx%d, audio %s, game port %d,"
+            RemotePlaySettings.say("connected to %s, video %dx%d, audio %s, game port %d,"
                     + " keyboard %s",
-                    host, session.mediaPort(), session.width(), session.height(),
+                    mediaTarget, session.width(), session.height(),
                     audioReceiver == null ? "off"
                             : AudioBlockHeader.formatName(session.audioFormat()),
                     session.guestGamePort(), session.keyboardShared() ? "shared" : "host only");

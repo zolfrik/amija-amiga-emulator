@@ -14,6 +14,7 @@
 
 - OCS, ECS and AGA chipsets, PAL and NTSC - AGA on an emulated A1200 board
 - CD32: discs as .cue, .iso or zip, CD audio, the CD32 pad
+- CDTV: its discs, front panel, battery-backed memory and optional keyboard
 - 68000, 68010 and 68020 processors
 - automatic mode: the machine is configured from the media you load, with the right Kickstart picked from your ROM folder
 - floppy drives DF0-DF3, ADF (standard and extended) and IPF images, multi-disk sets in a .zip

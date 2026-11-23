@@ -21,7 +21,7 @@
 package io.github.zolfrik.amija.whdload;
 
 import io.github.zolfrik.amija.common.AppHome;
-import io.github.zolfrik.amija.common.VideoMode;
+import io.github.zolfrik.amija.hardware.custom.VideoMode;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -141,6 +141,8 @@ public final class WhdLoadManager {
     private final List<Path> kickstartDirs = new ArrayList<>();
     /** Content of the {@code S:WHDLoad.prefs} file to write; if {@code null} the fallback is used. */
     private String prefsContent;
+    /** False to launch WHDLoad without {@code PRELOAD}, even when the icon asks for it. */
+    private boolean preload = true;
 
     public WhdLoadManager() {
         this(AppHome.resolve(DEFAULT_RESOURCE_DIR), AppHome.resolve(DEFAULT_CACHE_DIR),
@@ -175,6 +177,17 @@ public final class WhdLoadManager {
      */
     public WhdLoadManager withPrefs(String content) {
         this.prefsContent = content;
+        return this;
+    }
+
+    /**
+     * Whether WHDLoad is launched with {@code PRELOAD} (the default, added when the icon does
+     * not ask for it). {@code false} drops it, the icon's included: the game's files are then
+     * read from the disk when the game asks for them, which takes time, instead of being
+     * copied from memory at once.
+     */
+    public WhdLoadManager withPreload(boolean preload) {
+        this.preload = preload;
         return this;
     }
 
@@ -222,8 +235,13 @@ public final class WhdLoadManager {
         return found;
     }
 
-    /** Memory of the answers of {@link #slaveFlags}, per archive + modification date. */
-    private static final Map<String, Integer> slaveFlagsCache =
+    /** What the slaves of an archive declare: their names and their {@code ws_Flags}. */
+    private record SlaveInfo(java.util.List<String> names, int flags) {
+        static final SlaveInfo NONE = new SlaveInfo(java.util.List.of(), 0);
+    }
+
+    /** Memory of the answers of {@link #slaveInfo}, per archive + modification date. */
+    private static final Map<String, SlaveInfo> slaveInfoCache =
             new java.util.concurrent.ConcurrentHashMap<>();
 
     /** WHDLF_Req68020: bit 4 of the slave's {@code ws_Flags}, a 68020 or better is required. */
@@ -233,29 +251,48 @@ public final class WhdLoadManager {
     private static final int WHDLF_REQAGA = 0x0020;
 
     /**
-     * The {@code ws_Flags} of the slaves of the WHDLoad archive {@code lhaPath}, OR-ed
-     * together: the word that follows {@code ws_Version} after the {@code WHDLOADS}
-     * identifier of each {@code .slave} file. 0 when the archive cannot be read: not knowing
-     * is a normal outcome.
+     * The slaves of the WHDLoad archive {@code lhaPath}: their file names without folder and
+     * without {@code .slave}, and their {@code ws_Flags} OR-ed together (the word that follows
+     * {@code ws_Version} after the {@code WHDLOADS} identifier). Nothing when the archive
+     * cannot be read: not knowing is a normal outcome.
      */
-    private static int slaveFlags(String lhaPath) {
-        if (lhaPath == null || lhaPath.isEmpty()) return 0;
+    private static SlaveInfo slaveInfo(String lhaPath) {
+        if (lhaPath == null || lhaPath.isEmpty()) return SlaveInfo.NONE;
         String key = lhaPath + '\0' + new java.io.File(lhaPath).lastModified();
-        Integer cached = slaveFlagsCache.get(key);
+        SlaveInfo cached = slaveInfoCache.get(key);
         if (cached != null) return cached;
 
         int flags = 0;
+        java.util.List<String> names = new java.util.ArrayList<>();
         try {
-            for (byte[] slave : LhaExtractor.extractBySuffix(lhaPath, ".slave").values()) {
+            for (Map.Entry<String, byte[]> e : LhaExtractor.extractBySuffix(lhaPath, ".slave").entrySet()) {
+                String path = e.getKey();
+                String name = path.substring(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
+                names.add(name.substring(0, name.length() - ".slave".length()));
+                byte[] slave = e.getValue();
                 int id = indexOf(slave, "WHDLOADS".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
                 if (id < 0 || id + 12 > slave.length) continue;
                 flags |= ((slave[id + 10] & 0xFF) << 8) | (slave[id + 11] & 0xFF);
             }
         } catch (IOException | RuntimeException e) {
-            return 0;
+            return SlaveInfo.NONE;
         }
-        slaveFlagsCache.put(key, flags);
-        return flags;
+        SlaveInfo info = new SlaveInfo(java.util.List.copyOf(names), flags);
+        slaveInfoCache.put(key, info);
+        return info;
+    }
+
+    private static int slaveFlags(String lhaPath) {
+        return slaveInfo(lhaPath).flags();
+    }
+
+    /**
+     * The names of the slaves in the WHDLoad archive {@code lhaPath}, without folder and
+     * without the {@code .slave} extension (e.g. {@code Speedball2}): what identifies the
+     * game whatever the archive is called. Empty when the archive cannot be read.
+     */
+    public static java.util.List<String> slaveNames(String lhaPath) {
+        return slaveInfo(lhaPath).names();
     }
 
     /**
@@ -318,7 +355,8 @@ public final class WhdLoadManager {
         Path meta = cacheDir.resolve(baseName + ".hdf.meta");
 
         String wantMeta = BUILD_VERSION + ":" + Files.getLastModifiedTime(lha).toMillis()
-                + ":" + Files.size(lha);
+                + ":" + Files.size(lha) + ":" + (preload ? "preload" : "nopreload")
+                + ":" + (prefsContent == null ? 0 : prefsContent.hashCode());
         if (Files.isRegularFile(hdf) && Files.isRegularFile(meta)
                 && wantMeta.equals(Files.readString(meta).trim())) {
             return hdf;   // cache valida
@@ -594,14 +632,18 @@ public final class WhdLoadManager {
         }
         sb.append("CD \"").append(cd).append("\"\n");
         sb.append("C:WHDLoad \"").append(slaveName).append('"');
-        boolean preload = false;
+        boolean asked = false;
         for (String opt : options) {
-            if (opt.equalsIgnoreCase("PRELOAD")) preload = true;
+            if (opt.equalsIgnoreCase("PRELOAD")) {
+                asked = true;
+                if (!preload) continue;
+            }
             sb.append(' ').append(quoteArg(opt));
         }
         // PRELOAD loads everything into memory once: it avoids disk accesses during the
-        // game. Added only if the icon does not ask for it already.
-        if (!preload) sb.append(" PRELOAD");
+        // game. Added only if the icon does not ask for it already, and dropped when the
+        // game database says the game needs its files read from the disk.
+        if (preload && !asked) sb.append(" PRELOAD");
         sb.append('\n');
         return sb.toString();
     }

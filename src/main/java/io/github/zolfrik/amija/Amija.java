@@ -27,36 +27,38 @@ import io.github.zolfrik.amija.config.CommandLine;
 import io.github.zolfrik.amija.config.HardwareRules;
 import io.github.zolfrik.amija.display.AmigaWindowMode;
 import io.github.zolfrik.amija.common.AppHome;
-import io.github.zolfrik.amija.common.BusRequest;
-import io.github.zolfrik.amija.common.Chipset;
-import io.github.zolfrik.amija.common.BusResponse;
-import io.github.zolfrik.amija.common.CIAPinSet;
-import io.github.zolfrik.amija.common.MOS8520;
+import io.github.zolfrik.amija.hardware.common.cpu.BusRequest;
+import io.github.zolfrik.amija.hardware.custom.Chipset;
+import io.github.zolfrik.amija.hardware.common.cpu.BusResponse;
+import io.github.zolfrik.amija.hardware.common.CIAPinSet;
+import io.github.zolfrik.amija.hardware.common.MOS8520;
 import io.github.zolfrik.amija.common.MasterClock;
-import io.github.zolfrik.amija.common.VirtualCRT;
-import io.github.zolfrik.amija.common.VideoMode;
+import io.github.zolfrik.amija.hardware.common.VirtualCRT;
+import io.github.zolfrik.amija.hardware.custom.VideoMode;
 import io.github.zolfrik.amija.common.WindowsDpiAwareness;
-import io.github.zolfrik.amija.cpu.AbstractMotorola;
-import io.github.zolfrik.amija.custom.AbstractAgnus;
-import io.github.zolfrik.amija.custom.OcsAgnus;
-import io.github.zolfrik.amija.custom.EcsAgnus;
-import io.github.zolfrik.amija.custom.AmigaJoystickKeyAdapter;
-import io.github.zolfrik.amija.custom.AmigaKeyAdapter;
-import io.github.zolfrik.amija.custom.AmigaMouseAdapter;
-import io.github.zolfrik.amija.custom.Keyboard;
-import io.github.zolfrik.amija.custom.AbstractDenise;
-import io.github.zolfrik.amija.custom.OcsDenise;
-import io.github.zolfrik.amija.custom.EcsDenise;
-import io.github.zolfrik.amija.custom.AgaAgnus;
-import io.github.zolfrik.amija.custom.AgaDenise;
-import io.github.zolfrik.amija.custom.DiskImage;
-import io.github.zolfrik.amija.custom.FastRam;
-import io.github.zolfrik.amija.custom.FloppyDrive;
-import io.github.zolfrik.amija.custom.HdController;
+import io.github.zolfrik.amija.hardware.common.cpu.AbstractMotorola;
+import io.github.zolfrik.amija.hardware.custom.AbstractAgnus;
+import io.github.zolfrik.amija.hardware.custom.OcsAgnus;
+import io.github.zolfrik.amija.hardware.custom.EcsAgnus;
+import io.github.zolfrik.amija.input.AmigaJoystickKeyAdapter;
+import io.github.zolfrik.amija.input.AmigaKeyAdapter;
+import io.github.zolfrik.amija.input.AmigaMouseAdapter;
+import io.github.zolfrik.amija.hardware.custom.Keyboard;
+import io.github.zolfrik.amija.hardware.custom.AbstractDenise;
+import io.github.zolfrik.amija.hardware.custom.OcsDenise;
+import io.github.zolfrik.amija.hardware.custom.EcsDenise;
+import io.github.zolfrik.amija.hardware.custom.AgaAgnus;
+import io.github.zolfrik.amija.hardware.custom.AgaDenise;
+import io.github.zolfrik.amija.media.DiskImage;
+import io.github.zolfrik.amija.hardware.custom.FastRam;
+import io.github.zolfrik.amija.hardware.custom.FloppyDrive;
+import io.github.zolfrik.amija.hardware.custom.HdController;
 import io.github.zolfrik.amija.memory.BuiltinRom;
 import io.github.zolfrik.amija.memory.HardFile;
 import io.github.zolfrik.amija.net.AudioBlockHeader;
+import io.github.zolfrik.amija.net.CandidateDialer;
 import io.github.zolfrik.amija.net.Handshake;
+import io.github.zolfrik.amija.net.InviteCode;
 import io.github.zolfrik.amija.net.JoinCode;
 import io.github.zolfrik.amija.net.NetImpairment;
 import io.github.zolfrik.amija.net.RemotePlayControl;
@@ -65,16 +67,16 @@ import io.github.zolfrik.amija.net.RemotePlayHost;
 import io.github.zolfrik.amija.net.RemotePlayProtocol;
 import io.github.zolfrik.amija.net.RemotePlaySettings;
 import io.github.zolfrik.amija.net.VideoReceiver;
-import io.github.zolfrik.amija.custom.audio.JavaSoundAudioOutput;
+import io.github.zolfrik.amija.audio.JavaSoundAudioOutput;
 import io.github.zolfrik.amija.net.mister.GroovyModeline;
 import io.github.zolfrik.amija.net.mister.MisterControl;
 import io.github.zolfrik.amija.net.mister.MisterOutput;
 import io.github.zolfrik.amija.net.mister.MisterSettings;
-import io.github.zolfrik.amija.net.upnp.PortMapper;
+import io.github.zolfrik.amija.net.nat.HostExposure;
 import io.github.zolfrik.amija.whdload.WhdLoadManager;
-import io.github.zolfrik.amija.custom.audio.FloppySound;
-import io.github.zolfrik.amija.custom.Gary;
-import io.github.zolfrik.amija.custom.Paula;
+import io.github.zolfrik.amija.audio.FloppySound;
+import io.github.zolfrik.amija.hardware.custom.Gary;
+import io.github.zolfrik.amija.hardware.custom.Paula;
 import io.github.zolfrik.amija.display.AmigaDisplay;
 import io.github.zolfrik.amija.display.ConfigDialog;
 import io.github.zolfrik.amija.display.render.RendererType;
@@ -90,8 +92,8 @@ import io.github.zolfrik.amija.input.PortDevice;
 import io.github.zolfrik.amija.input.RemoteInputApplier;
 import io.github.zolfrik.amija.input.RemoteInputSender;
 import io.github.zolfrik.amija.memory.KickstartImage;
-import io.github.zolfrik.amija.memory.RAM;
-import io.github.zolfrik.amija.memory.ROM;
+import io.github.zolfrik.amija.hardware.common.memory.RAM;
+import io.github.zolfrik.amija.hardware.common.memory.ROM;
 import io.github.zolfrik.amija.state.MachineSnapshot;
 import io.github.zolfrik.amija.state.RewindHistory;
 import io.github.zolfrik.amija.state.SaveStateManager;
@@ -184,13 +186,13 @@ public class Amija implements RemotePlayControl, MisterControl {
     /** The clocked processor; null when the processor is event-driven. */
     private AbstractMotorola cpu;
     /** The processor, whatever drives it. */
-    private io.github.zolfrik.amija.cpu.Processor processor;
+    private io.github.zolfrik.amija.hardware.common.cpu.Processor processor;
     /** The rewind history of the running machine; {@code null} without a machine. */
     private RewindHistory rewindHistory;
     /** What the open F12 popup shows of the rewind history; {@code null} outside it. */
     private RewindSession rewindSession;
     /** The bus of an event-driven processor; null when the processor is clocked. */
-    private io.github.zolfrik.amija.custom.EventCpuBus eventBus;
+    private io.github.zolfrik.amija.hardware.custom.EventCpuBus eventBus;
     private AbstractAgnus agnus;
     private Keyboard keyboard;
     private AmigaMouseAdapter mouseAdapter;
@@ -212,8 +214,10 @@ public class Amija implements RemotePlayControl, MisterControl {
     /** Output to a MiSTer running the Groovy core, or {@code null}. Survives machine rebuilds. */
     private volatile MisterOutput misterOutput;
     /** Port forwarding on the router while hosting (section 7.1); null if not requested. */
-    private volatile PortMapper portMapper;
-    private Thread routerCloser;
+    /** What makes the stream host reachable; null while not hosting. */
+    private volatile HostExposure hostExposure;
+    /** The last exposure withdrawn, for the shutdown hook to wait on. */
+    private volatile HostExposure closingExposure;
     private volatile RemotePlayGuest remotePlayGuest;
     private RemotePlaySettings remotePlaySettings = RemotePlaySettings.off();
     /** The serial port of the machine and what is plugged into it. */
@@ -411,7 +415,6 @@ public class Amija implements RemotePlayControl, MisterControl {
         // A disk dropped on a drive updates the config in memory, so the F12 popup shows the
         // path in that drive (and saves it if the user confirms with OK).
         display.setDiskDropListener(this::rememberDroppedDisk);
-        display.setCdDropListener(this::insertCdDisc);
         display.setShaderPreset(resolveShaderPath(config.shader()));
         installConfigHotkey();
 
@@ -473,17 +476,21 @@ public class Amija implements RemotePlayControl, MisterControl {
             return;
         }
         try {
-            remotePlayHost = new RemotePlayHost(settings.port(), settings.bindAddress(),
-                    settings.joinCode(), VirtualCRT.RAW_WIDTH, VirtualCRT.RAW_HEIGHT,
-                    NetImpairment.fromSystemProperties(),
-                    settings.guestGamePort(), settings.guestKeyboard(),
-                    settings.audioFormat(), config.remotePlayLanOnly(),
-                    settings.maxSpectators(), settings.spectatorCode());
+            boolean internet = RemotePlaySettings.internetAccess(config.remotePlayInternet());
+            remotePlayHost = RemotePlayHost.openPreferred(settings.port(),
+                    port -> new RemotePlayHost(port, settings.bindAddress(),
+                            settings.joinCode(), VirtualCRT.RAW_WIDTH, VirtualCRT.RAW_HEIGHT,
+                            NetImpairment.fromSystemProperties(),
+                            settings.guestGamePort(), settings.guestKeyboard(),
+                            settings.audioFormat(), !internet,
+                            settings.maxSpectators(), settings.spectatorCode()));
+            hostingInternet = internet;
             remotePlaySettings = settings;
             remotePlayHost.start();
             attachRemoteInput();
             attachRemotePlayLed();
             openRouterPort(remotePlayHost.port());
+            sayInvite();
             virtualCRT.setRemotePlayHost(remotePlayHost);
         } catch (IOException e) {
             System.err.println("[NET] cannot host on port " + settings.port()
@@ -702,54 +709,112 @@ public class Amija implements RemotePlayControl, MisterControl {
     }
 
     /**
-     * Asks the router to forward the port, if the user wants it (section 7.1).
+     * Makes the host's port reachable as the user chose: from the local network only, or from
+     * the Internet too, which asks the router, STUN and the firewall (section 7.1, R1 plan).
      *
-     * <p>Not with <b>local network only</b> on, and not as a formality: that option says
-     * "nobody gets in from outside", and whoever came in through the newly opened port would
-     * be refused by the host an instant later. It would be a port open on the home router
-     * for a connection that cannot work, the opposite of what both options promise.
+     * <p>Not with <b>local network only</b>, and not as a formality: that choice says
+     * "nobody gets in from outside", and whoever came in through a newly opened port would be
+     * refused by the host an instant later.
      */
     private void openRouterPort(int port) {
         closeRouterPort();
-        if (!config.remotePlayUpnp() || config.remotePlayLanOnly()) {
+        HostExposure exposure = new HostExposure(port, exposureOptions(hostingInternet, true));
+        hostExposure = exposure;
+        exposure.start();
+    }
+
+    /** The exposure settings of the configuration, for the stream or the null modem. */
+    private HostExposure.Options exposureOptions(boolean internet, boolean udp) {
+        return new HostExposure.Options(internet, udp, config.remotePlayBind(),
+                config.remotePlayIpv6(),
+                config.remotePlayStun() ? config.remotePlayStunServers() : java.util.List.of(),
+                rememberedUpnpGateway(), this::rememberUpnpGateway);
+    }
+
+    /**
+     * Prints the invitation on the console, as the host already prints the join code it
+     * contains. The public address joins it only once the router has answered, so this one
+     * is for the local network; the popup shows the current one.
+     */
+    private void sayInvite() {
+        String invite = invite();
+        if (invite != null) {
+            RemotePlaySettings.say("invitation %s", invite);
+        }
+        String watch = spectatorInvite();
+        if (watch != null) {
+            RemotePlaySettings.say("spectator invitation %s", watch);
+        }
+    }
+
+    @Override
+    public boolean firewallFixOffered() {
+        HostExposure e = hostExposure;
+        return remotePlayHost != null && e != null && e.firewallFixOffered();
+    }
+
+    @Override
+    public String firewallCommand() {
+        return HostExposure.firewallCommand();
+    }
+
+    @Override
+    public void allowInFirewall() {
+        HostExposure e = hostExposure;
+        if (e != null) {
+            e.allowInFirewall();
+        }
+    }
+
+    /** The UPnP router found in an earlier session, tried before any search; or null. */
+    private java.net.URI rememberedUpnpGateway() {
+        String url = config.remotePlayUpnpGateway();
+        if (url.isEmpty()) {
+            return null;
+        }
+        try {
+            return new java.net.URI(url);
+        } catch (java.net.URISyntaxException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Remembers the UPnP router that mapped the port, so the next session reaches it at once
+     * even if it answers no search. Not a secret: the address of a device on the home network.
+     */
+    private void rememberUpnpGateway(java.net.URI found) {
+        if (found == null || found.toString().equals(config.remotePlayUpnpGateway())) {
             return;
         }
-        portMapper = new PortMapper(port);
-        portMapper.open();
+        SwingUtilities.invokeLater(() -> {
+            config.setRemotePlayUpnpGateway(found.toString());
+            saveConfig();
+        });
     }
 
     /** Withdraws the mapping. Called by every path that stops hosting. */
     private void closeRouterPort() {
-        PortMapper mapper = portMapper;
-        if (mapper == null) {
+        HostExposure e = hostExposure;
+        if (e == null) {
             return;
         }
-        portMapper = null;
-        // On its own thread: the removal talks to the router and can take seconds, and the
-        // one closing the listener is almost always the EDT inside the popup.
-        routerCloser = new Thread(mapper::close, "amija-remoteplay-upnp-close");
-        routerCloser.setDaemon(true);
-        routerCloser.start();
+        hostExposure = null;
+        e.close();
+        closingExposure = e;
     }
 
     /**
-     * Waits until the mapping has really been withdrawn. <b>Only for the shutdown hook.</b>
-     *
-     * <p>A daemon thread talking to the router is killed when the JVM exits, and the port
-     * would stay open: this gives it time to finish. Not much, though: if the router does
-     * not answer, a clean exit is better than a close that looks stuck, and the port closes
-     * by itself when the lease expires, which is why there is a lease.
+     * Waits until the mappings have really been withdrawn, of the stream host and of the null
+     * modem. <b>Only for the shutdown hook.</b> Not long: if the router does not answer, a
+     * clean exit is better than one that looks stuck, and the lease closes the port anyway.
      */
     private void awaitRouterPortClosed() {
-        Thread closer = routerCloser;
-        if (closer == null) {
-            return;
+        HostExposure e = closingExposure;
+        if (e != null) {
+            e.awaitClosed(3000);
         }
-        try {
-            closer.join(3000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        serialPort.awaitExposureClosed(3000);
     }
 
     /**
@@ -762,13 +827,19 @@ public class Amija implements RemotePlayControl, MisterControl {
      */
     private void joinRemoteHost(RemotePlaySettings settings) {
         try {
-            remotePlayGuest = RemotePlayGuest.connect(settings.address(), settings.port(),
-                    settings.joinCode(), settings.spectator()
-                            ? RemotePlayProtocol.ROLE_SPECTATOR : RemotePlayProtocol.ROLE_PLAYER,
-                    NetImpairment.fromSystemProperties(), guestFrameSink());
+            remotePlayGuest = settings.invite() != null
+                    ? RemotePlayGuest.connect(settings.invite(),
+                            NetImpairment.fromSystemProperties(), guestFrameSink())
+                    : RemotePlayGuest.connect(settings.address(), settings.port(),
+                            settings.joinCode(), settings.spectator()
+                                    ? RemotePlayProtocol.ROLE_SPECTATOR
+                                    : RemotePlayProtocol.ROLE_PLAYER,
+                            NetImpairment.fromSystemProperties(), guestFrameSink());
         } catch (IOException e) {
             String message = Messages.t("msg.remoteplay.joinfailed",
-                    settings.address() + ":" + settings.port(), joinFailureCause(e));
+                    settings.invite() != null ? Messages.t("msg.remoteplay.invite.target")
+                            : settings.address() + ":" + settings.port(),
+                    joinFailureCause(e));
             remotePlayLastError = message;
             reportRemotePlayProblem(message);
             // Our own machine is better than an empty window: from there the user can retry
@@ -882,6 +953,20 @@ public class Amija implements RemotePlayControl, MisterControl {
                         Messages.t("msg.remoteplay.reject.nospectators");
                 default -> String.valueOf(rejected.getMessage());
             };
+        }
+        if (e instanceof CandidateDialer.AllFailedException all) {
+            StringBuilder sb = new StringBuilder();
+            for (CandidateDialer.Attempt a : all.attempts()) {
+                sb.append("\n  ").append(a.candidate().endpoint()).append(" (")
+                        .append(Messages.t("msg.remoteplay.scope."
+                                + a.candidate().scope().name().toLowerCase(java.util.Locale.ROOT)))
+                        .append("): ").append(joinFailureCause(a.failure()));
+            }
+            if (all.publicUnreachable()) {
+                sb.append('\n')
+                        .append(Messages.t("msg.remoteplay.cause.publicunreachable"));
+            }
+            return sb.toString();
         }
         if (e instanceof java.net.UnknownHostException) {
             return Messages.t("msg.remoteplay.cause.unknownhost");
@@ -1092,6 +1177,15 @@ public class Amija implements RemotePlayControl, MisterControl {
     }
 
     @Override
+    public boolean keyboardShared() {
+        RemotePlayGuest guest = remotePlayGuest;
+        if (guest != null) {
+            return guest.isAlive() && guest.keyboardShared();
+        }
+        return remotePlayHost != null && remotePlaySettings.guestKeyboard();
+    }
+
+    @Override
     public boolean isJoining() {
         return joining;
     }
@@ -1102,45 +1196,55 @@ public class Amija implements RemotePlayControl, MisterControl {
     }
 
     @Override
+    public String invite() {
+        RemotePlayHost host = remotePlayHost;
+        return host == null ? null : buildInvite(host, InviteCode.ROLE_PLAYER, host.joinCode());
+    }
+
+    @Override
+    public String spectatorInvite() {
+        RemotePlayHost host = remotePlayHost;
+        return host == null || host.spectatorCode() == null ? null
+                : buildInvite(host, InviteCode.ROLE_SPECTATOR, host.spectatorCode());
+    }
+
+    /**
+     * The invitation for a role: the local address, and the public one once the router has
+     * confirmed the mapping. {@code null} if no address can be stated.
+     */
+    private String buildInvite(RemotePlayHost host, int role, String code) {
+        HostExposure e = hostExposure;
+        java.util.List<InviteCode.Candidate> candidates = e != null ? e.candidates()
+                : new HostExposure(host.port(), exposureOptions(false, true)).candidates();
+        return candidates.isEmpty() ? null
+                : new InviteCode(role, code, candidates).format();
+    }
+
+    @Override
     public String lanAddress() {
         if (remotePlayHost == null) return null;
-        return localAddress() + ":" + remotePlayHost.port();
+        HostExposure e = hostExposure;
+        return (e != null ? e.lanAddress() : localAddress()) + ":" + remotePlayHost.port();
     }
 
     @Override
     public String internetAddress() {
-        // The router says it, it is not guessed: a made-up address sends the user looking for
-        // the problem where it is not. Until UPnP has answered, say nothing.
-        PortMapper mapper = portMapper;
-        return mapper == null || mapper.state() != PortMapper.State.MAPPED
-                ? null : mapper.externalAddress();
+        // The router says it, it is not guessed: until it has answered, say nothing.
+        HostExposure e = hostExposure;
+        return e == null ? null : e.internetAddress();
     }
 
-    /**
-     * How far the port opening on the router has got, as a readable line.
-     *
-     * <p>{@code null} when there is nothing to say, i.e. when UPnP was not requested: a
-     * "not requested" line would be noise in a popup that already has many.
-     */
+    /** How far the port opening on the router has got, in full; {@code null} if not hosting. */
     @Override
     public String routerStatus() {
-        PortMapper mapper = portMapper;
-        if (mapper == null) {
-            // With local network only on, the port is deliberately not requested, and it is
-            // worth saying: it is the difference between "UPnP failed" and "I did not ask".
-            return isHosting() && config.remotePlayUpnp() && config.remotePlayLanOnly()
-                    ? Messages.t("msg.remoteplay.upnp.lanonly") : null;
-        }
-        return switch (mapper.state()) {
-            case SEARCHING -> Messages.t("msg.remoteplay.upnp.searching");
-            case MAPPED -> Messages.t("msg.remoteplay.upnp.mapped", mapper.externalAddress());
-            case NO_GATEWAY -> Messages.t("msg.remoteplay.upnp.nogateway");
-            case REFUSED -> Messages.t("msg.remoteplay.upnp.refused",
-                    String.valueOf(mapper.detail()));
-            case CARRIER_NAT -> Messages.t("msg.remoteplay.upnp.cgnat",
-                    String.valueOf(mapper.externalIp()));
-            case OFF -> null;
-        };
+        HostExposure e = hostExposure;
+        return remotePlayHost == null || e == null ? null : e.routerDetail();
+    }
+
+    @Override
+    public String reachability() {
+        HostExposure e = hostExposure;
+        return remotePlayHost == null || e == null ? null : e.reachability();
     }
 
     @Override
@@ -1187,17 +1291,20 @@ public class Amija implements RemotePlayControl, MisterControl {
                     config.remotePlayPort(), null, config.remotePlayBind(),
                     config.remotePlayGuestPort(), config.remotePlayGuestKeyboard(),
                     config.remotePlayGuestAllowReset(), audioFormatFromConfig(),
-                    config.remotePlaySpectatorsMax(), null, false);
-            remotePlayHost = new RemotePlayHost(remotePlaySettings.port(),
-                    remotePlaySettings.bindAddress(), null,
-                    VirtualCRT.RAW_WIDTH, VirtualCRT.RAW_HEIGHT,
-                    NetImpairment.fromSystemProperties(),
-                    remotePlaySettings.guestGamePort(), remotePlaySettings.guestKeyboard(),
-                    remotePlaySettings.audioFormat(), config.remotePlayLanOnly(),
-                    remotePlaySettings.maxSpectators(), null);
+                    config.remotePlaySpectatorsMax(), null, false, null);
+            boolean internet = config.remotePlayInternet();
+            RemotePlaySettings rs = remotePlaySettings;
+            remotePlayHost = RemotePlayHost.openPreferred(rs.port(),
+                    port -> new RemotePlayHost(port, rs.bindAddress(), null,
+                            VirtualCRT.RAW_WIDTH, VirtualCRT.RAW_HEIGHT,
+                            NetImpairment.fromSystemProperties(),
+                            rs.guestGamePort(), rs.guestKeyboard(), rs.audioFormat(), !internet,
+                            rs.maxSpectators(), null));
+            hostingInternet = internet;
             remotePlayHost.start();
             attachRemoteInput();
             openRouterPort(remotePlayHost.port());
+            sayInvite();
             if (virtualCRT != null) virtualCRT.setRemotePlayHost(remotePlayHost);
             return null;
         } catch (IOException e) {
@@ -1228,6 +1335,9 @@ public class Amija implements RemotePlayControl, MisterControl {
         return remotePlayHost == null ? 0 : remotePlayHost.spectatorCount();
     }
 
+    /** Whether the running host accepts guests from the Internet; fixed when it starts. */
+    private volatile boolean hostingInternet;
+
     /** Role of the join in flight; read by the connecting thread. */
     private volatile boolean joinAsSpectator;
 
@@ -1242,11 +1352,30 @@ public class Amija implements RemotePlayControl, MisterControl {
         if (address == null || address.isBlank()) {
             return Messages.t("msg.remoteplay.noaddress");
         }
-        if (!JoinCode.isWellFormed(code)) {
+        InviteCode invite = null;
+        if (InviteCode.looksLikeInvite(address)) {
+            // Checked here, before any network: a damaged invitation is a copying problem,
+            // and sending the user to look at the router for it would be wrong.
+            try {
+                invite = InviteCode.parse(address);
+            } catch (InviteCode.InvalidInviteException e) {
+                return Messages.t(switch (e.problem()) {
+                    case CORRUPTED -> "msg.remoteplay.invite.corrupted";
+                    case VERSION -> "msg.remoteplay.invite.version";
+                    case MALFORMED -> "msg.remoteplay.invite.malformed";
+                });
+            }
+            if (invite.role() == InviteCode.ROLE_NULL_MODEM) {
+                return Messages.t("msg.remoteplay.invite.nullmodem");
+            }
+            spectator = invite.role() == InviteCode.ROLE_SPECTATOR;
+        } else if (!JoinCode.isWellFormed(code)) {
             return Messages.t("msg.remoteplay.badcode");
         }
-        final String host = address.trim();
-        final String joinCode = code.trim();
+        final InviteCode chosen = invite;
+        final String host = invite != null ? Messages.t("msg.remoteplay.invite.target")
+                                           : address.trim();
+        final String joinCode = invite != null ? invite.displayJoinCode() : code.trim();
         synchronized (this) {
             joinCancelled = false;
         }
@@ -1254,7 +1383,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         joinAsSpectator = spectator;
         remotePlayLastError = null;
         joining = true;
-        Thread connect = new Thread(() -> connectToHost(host, joinCode),
+        Thread connect = new Thread(() -> connectToHost(host, joinCode, chosen),
                 "amija-remoteplay-connect");
         connect.setDaemon(true);
         connect.start();
@@ -1273,24 +1402,29 @@ public class Amija implements RemotePlayControl, MisterControl {
      * while the popup is still open, the most direct way to show that it works. Unmounting
      * it happens only with the user's OK.
      */
-    private void connectToHost(String address, String joinCode) {
+    private void connectToHost(String address, String joinCode, InviteCode invite) {
         int colon = address.lastIndexOf(':');
-        String hostPart = colon > 0 ? address.substring(0, colon) : address;
-        int port = colon > 0 ? parsePortOrDefault(address.substring(colon + 1))
-                             : config.remotePlayPort();
+        String hostPart = invite != null ? null
+                : colon > 0 ? address.substring(0, colon) : address;
+        int port = invite != null ? 0
+                : colon > 0 ? parsePortOrDefault(address.substring(colon + 1))
+                            : config.remotePlayPort();
         RemotePlaySettings settings = new RemotePlaySettings(
                 RemotePlaySettings.Mode.GUEST, hostPart, port, joinCode,
                 config.remotePlayBind(), config.remotePlayGuestPort(),
                 config.remotePlayGuestKeyboard(), config.remotePlayGuestAllowReset(),
-                audioFormatFromConfig(), 0, null, joinAsSpectator);
+                audioFormatFromConfig(), 0, null, joinAsSpectator, invite);
 
         RemotePlayGuest guest = null;
         String failure = null;
         try {
-            guest = RemotePlayGuest.connect(hostPart, port, joinCode,
-                    settings.spectator() ? RemotePlayProtocol.ROLE_SPECTATOR
-                            : RemotePlayProtocol.ROLE_PLAYER,
-                    NetImpairment.fromSystemProperties(), guestFrameSink());
+            guest = invite != null
+                    ? RemotePlayGuest.connect(invite, NetImpairment.fromSystemProperties(),
+                            guestFrameSink())
+                    : RemotePlayGuest.connect(hostPart, port, joinCode,
+                            settings.spectator() ? RemotePlayProtocol.ROLE_SPECTATOR
+                                    : RemotePlayProtocol.ROLE_PLAYER,
+                            NetImpairment.fromSystemProperties(), guestFrameSink());
         } catch (IOException e) {
             failure = Messages.t("msg.remoteplay.joinfailed", address, joinFailureCause(e));
         }
@@ -1310,7 +1444,10 @@ public class Amija implements RemotePlayControl, MisterControl {
                 // synchronises on, so everything it will read after seeing it set, starting
                 // with the session parameters, must already be written.
                 remotePlaySettings = settings;
-                config.setRemotePlayLastHost(address);
+                if (invite == null) {
+                    // The invitation holds the code: it is never written to disk.
+                    config.setRemotePlayLastHost(address);
+                }
                 remotePlayGuest = guest;
             }
             remotePlayLastError = failure;
@@ -1375,21 +1512,13 @@ public class Amija implements RemotePlayControl, MisterControl {
     }
 
     /**
-     * The address of this machine on the local network.
-     *
-     * <p>The trick of {@code connect} on an external address (section 7.2): it sends not a
-     * single byte (UDP establishes nothing) but forces the system to choose the interface it
-     * would go out through, which is the right one to show.
-     * {@code InetAddress.getLocalHost()} on a machine with several adapters often returns
-     * the wrong one.
+     * The address of this machine on the local network: the interface chosen with
+     * {@code remoteplay.bind}, or the one of the default route.
      */
     private String localAddress() {
-        try (java.net.DatagramSocket probe = new java.net.DatagramSocket()) {
-            probe.connect(java.net.InetAddress.getByName("8.8.8.8"), 53);
-            return probe.getLocalAddress().getHostAddress();
-        } catch (Exception e) {
-            return "127.0.0.1";
-        }
+        String bind = config.remotePlayBind();
+        return bind.isEmpty() ? io.github.zolfrik.amija.net.nat.LocalAddresses.primaryIpv4Text()
+                              : bind;
     }
 
     /**
@@ -1577,7 +1706,7 @@ public class Amija implements RemotePlayControl, MisterControl {
         int oldMonitorIndex = config.monitorIndex();
         VideoMode oldVideoMode = config.videoMode();
         Chipset oldChipset = config.chipset();
-        io.github.zolfrik.amija.cpu.CpuModel oldCpuModel = config.cpuModel();
+        io.github.zolfrik.amija.hardware.common.cpu.CpuModel oldCpuModel = config.cpuModel();
         RendererType oldRenderer = config.renderer();
         String oldShader = config.shader();
         // Machine parameters that take effect only at construction: if they change, the
@@ -1591,8 +1720,7 @@ public class Amija implements RemotePlayControl, MisterControl {
 
         boolean oldAuto = config.autoEnabled();
         String oldCdImage = String.valueOf(config.cdImage());
-        String oldCd32Roms = config.cd32KickstartPath() + "|" + config.cd32ExtRomPath()
-                + "|" + config.cd32Keyboard();
+        String oldCdRoms = cdMachineRoms();
 
         rewindSession = openRewindSession();
         ConfigDialog.Result result = ConfigDialog.show(frame, config,
@@ -1622,6 +1750,7 @@ public class Amija implements RemotePlayControl, MisterControl {
                     relaunchApplication(); // does not return if the relaunch succeeds
                 }
                 applyRuntimeInputConfig();
+                if (display != null) display.setStatusLedsEnabled(config.ledsVisible());
                 boolean windowChanged =
                         displayConfigChanged(oldOverscan, oldIntegerScaling, oldWindowMode,
                                 oldMonitorIndex)
@@ -1636,12 +1765,10 @@ public class Amija implements RemotePlayControl, MisterControl {
                 // holds while the mode stays the same: switching Expert on or off redefines
                 // the machine from scratch, and there the restart is the point.
                 boolean deferHardware = oldAuto && config.autoEnabled();
-                // A disc in or out of the CD drive changes the machine itself (CD32 or not);
-                // so do the CD32's ROMs and keyboard, on a CD32.
+                // A disc in or out of the CD drive changes the machine itself (CD32, CDTV or
+                // neither); so do the ROMs and the keyboard of a CD32 or a CDTV.
                 boolean cdChanged = !oldCdImage.equals(String.valueOf(config.cdImage()))
-                        || (config.cd32Machine() && !oldCd32Roms.equals(
-                                config.cd32KickstartPath() + "|" + config.cd32ExtRomPath()
-                                + "|" + config.cd32Keyboard()));
+                        || (config.cdMachine() && !oldCdRoms.equals(cdMachineRoms()));
                 boolean needsColdRestart = windowChanged || cdChanged
                         || (!deferHardware
                             && (oldChipset != config.chipset()
@@ -1724,6 +1851,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             case SOFT_RESET -> {
                 saveConfig();
                 applyRuntimeInputConfig();
+                if (display != null) display.setStatusLedsEnabled(config.ledsVisible());
                 if (processor != null) processor.reset();
                 resumeOrStart();
             }
@@ -2214,51 +2342,39 @@ public class Amija implements RemotePlayControl, MisterControl {
     }
 
     /**
-     * A CD image dropped on the window. On a running CD32 the disc is changed in the drive,
-     * which notices within two seconds. In Auto any other machine is switched off and back on
-     * as a CD32 with that disc ({@code cd.image}, saved), if the Kickstart folder has the two
-     * CD32 ROMs; otherwise, and in Expert, the user is told why it cannot.
+     * What a restart of a CD32, a CDTV or an A570 depends on beyond the disc: its ROMs, its
+     * keyboard, and whether the CDTV ROM builds an A570.
+     */
+    private String cdMachineRoms() {
+        return config.cd32KickstartPath() + "|" + config.cd32ExtRomPath() + "|" + config.cd32Keyboard()
+                + "|" + config.cdtvExtRomPath() + "|" + config.cdtvKeyboard() + "|" + config.cdtvMachine()
+                + "|" + config.a570Machine();
+    }
+
+    /**
+     * A CD image dropped on the window of a CD machine, already checked by the display to be
+     * one this machine takes ({@link #cdDriveTakes}). The machine restarts from power-on with
+     * the new disc and nothing else changed, as when the disc is changed in the F12 popup.
      */
     private void insertCdDisc(String path) {
-        if (agnus != null && agnus.isCd32Board()) {
-            try {
-                io.github.zolfrik.amija.custom.cd.CdImage next =
-                        io.github.zolfrik.amija.custom.cd.CdImage.open(Paths.get(path));
-                agnus.akiko().insert(next);
-                closeCdImage();
-                cdImage = next;
-                config.setCdImage(path);
-                saveConfig();
-                System.out.println("[CD32] Disc changed: " + next.name());
-            } catch (IOException e) {
-                error(Messages.t("error.boot", e.getMessage()));
-            }
-            return;
-        }
-        // Not a CD32 now. In Expert the Kickstart of the System section decides the machine,
-        // so a disc cannot turn it into a CD32; in Auto it can, if the Kickstart folder has
-        // both CD32 ROMs.
-        if (!config.autoEnabled()) {
-            error(Messages.t("error.cd32.drop.expert"));
-            return;
-        }
-        if (config.autoKickstartDir().isEmpty()) {
-            error(Messages.t("error.rom.folder.unset"));
-            return;
-        }
-        if (config.refreshKickstartFolder()) saveConfig();
-        for (KickstartFolder.Role role : new KickstartFolder.Role[] {
-                KickstartFolder.Role.CD32, KickstartFolder.Role.CD32_EXT }) {
-            String rom = config.autoKickstart(role);
-            if (rom.isEmpty() || !new File(rom).isFile()) {
-                error(Messages.t("error.cd32.drop.missing", romName(role),
-                        config.autoKickstartDir()));
-                return;
-            }
-        }
+        if (agnus == null || (!agnus.isCd32Board() && agnus.cdtvDmac() == null)) return;
         config.setCdImage(path);
         saveConfig();
         coldRestart();
+    }
+
+    /**
+     * True when the CD machine running takes the disc in {@code path} without becoming another
+     * machine. In Expert the ROMs decide the machine: any disc made for it
+     * ({@link io.github.zolfrik.amija.media.CdImage#madeFor}). In Auto the disc decides it, so
+     * only a disc Auto builds this same machine for
+     * ({@link io.github.zolfrik.amija.media.CdImage#console}).
+     */
+    private boolean cdDriveTakes(java.nio.file.Path path,
+                                 io.github.zolfrik.amija.media.CdImage.Console running) {
+        return config.autoEnabled()
+                ? io.github.zolfrik.amija.media.CdImage.console(path) == running
+                : io.github.zolfrik.amija.media.CdImage.madeFor(path, running);
     }
 
     /** Switches the machine off and on from scratch (power cycle) with the current config. */
@@ -2287,7 +2403,6 @@ public class Amija implements RemotePlayControl, MisterControl {
         frame = display.getFrame();
         inputComponent = display.getInputComponent();
         display.setDiskDropListener(this::rememberDroppedDisk);
-        display.setCdDropListener(this::insertCdDisc);
         display.setShaderPreset(resolveShaderPath(config.shader()));
         installConfigHotkey();
     }
@@ -2710,9 +2825,9 @@ public class Amija implements RemotePlayControl, MisterControl {
             }
 
             // 2. CPU and bus.
-            io.github.zolfrik.amija.cpu.CpuModel cpuModel = config.cpuModel();
+            io.github.zolfrik.amija.hardware.common.cpu.CpuModel cpuModel = config.cpuModel();
             System.out.println("[CONFIG] CPU: " + cpuModel);
-            io.github.zolfrik.amija.cpu.event.EventCpu eventCpu = null;
+            io.github.zolfrik.amija.hardware.common.cpu.event.EventCpu eventCpu = null;
             if (cpuModel.isEventDriven()) {
                 eventCpu = cpuModel.createEventCpu();
                 cpu = null;
@@ -2733,7 +2848,10 @@ public class Amija implements RemotePlayControl, MisterControl {
             final boolean ecs = chipset.isEcs();
             System.out.println("[CONFIG] Chipset: " + chipset);
             final boolean aga = chipset.isAga();
-            AbstractDenise denise = aga ? new AgaDenise() : ecs ? new EcsDenise() : new OcsDenise();
+            // The CDTV pairs the ECS Agnus with the OCS Denise; so does the A500 an A570 needs.
+            final boolean cdtv = config.cdtvMachine();
+            final boolean a570 = config.a570Machine();
+            AbstractDenise denise = aga ? new AgaDenise() : ecs && !cdtv ? new EcsDenise() : new OcsDenise();
             paula = new Paula();
             attachMisterAudio();
             paula.startAudioOutput();
@@ -2767,6 +2885,10 @@ public class Amija implements RemotePlayControl, MisterControl {
             // hard disk and no expansion.
             final boolean cd32 = config.cd32Machine();
             if (cd32) installCd32(agnus);
+            // CDTV: the DMAC, the extended ROM, the battery-backed RAM and the disc. No floppy
+            // drive and no hard disk. The A570 brings the same to an A500, which keeps its
+            // floppy drives.
+            if (cdtv) installCdtv(agnus, a570);
 
             // Fast RAM (Zorro II expansion with AutoConfig). Absent by default (0): the first
             // Zorro II RAM board is usually mapped by the Kickstart at $200000 and added to the
@@ -2781,7 +2903,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             // Hard disks (master/slave): every enabled unit with a valid .hdf becomes a Zorro
             // II controller with a boot ROM. The DH partitions are numbered across the units.
             // Must be connected BEFORE the CPU reset.
-            if (!cd32) setupHardDisks(agnus);
+            if (!cd32 && !cdtv) setupHardDisks(agnus);
 
             virtualCRT = new VirtualCRT(agnus, denise, display);
             // The remote play session survives the machine's restarts: the guest just sees
@@ -2805,8 +2927,14 @@ public class Amija implements RemotePlayControl, MisterControl {
             // The target port and the enabled state of mouse/keyboard joystick are set right
             // after by applyPortAssignments (likewise for the real joystick).
             joystickAdapter = new AmigaJoystickKeyAdapter(frame);
-            pcKeyboard = new GatedKeyTarget(keyboard != null ? keyboard : AmigaKeyTarget.UNPLUGGED);
+            // The CDTV's front panel buttons travel as key codes, keyboard or not. The A570
+            // has no such buttons: its only one ejects the caddy.
+            final boolean cdtvPanel = cdtv && !a570;
+            AmigaKeyTarget keys = keyboard != null ? keyboard : AmigaKeyTarget.UNPLUGGED;
+            if (cdtvPanel) keys = new io.github.zolfrik.amija.input.CdtvPanelKeyTarget(keys, agnus.cdtvDmac());
+            pcKeyboard = new GatedKeyTarget(keys);
             keyAdapter = new AmigaKeyAdapter(pcKeyboard, frame);
+            keyAdapter.setCdtvPanelKeys(cdtvPanel);
             mouseAdapter = new AmigaMouseAdapter(port1, frame);
             // The listeners go on the input component (the frame in software, the
             // heavyweight GL canvas in OpenGL: its events do not bubble up to the frame). The
@@ -2836,7 +2964,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             syncZipDiskSet(null);
             FloppyDrive df0 = agnus.getDf0();
             FloppyDrive[] dfs = { df0, agnus.getDf1(), agnus.getDf2(), agnus.getDf3() };
-            for (int i = 0; i < dfs.length && !cd32; i++) {
+            for (int i = 0; i < dfs.length && !cd32 && (!cdtv || a570); i++) {
                 dfs[i].setConnected(config.driveEnabled(i));
                 String diskPath = config.driveDisk(i);
                 if (config.driveEnabled(i) && diskPath != null) {
@@ -2849,6 +2977,16 @@ public class Amija implements RemotePlayControl, MisterControl {
                 }
             }
             display.setDrives(dfs[0], dfs[1], dfs[2], dfs[3]);
+            // A drop changes removable media only: floppies on a floppy machine, discs made for
+            // it on a CD machine; an A500 with an A570 takes both.
+            if (cd32 || cdtv) {
+                final io.github.zolfrik.amija.media.CdImage.Console console = cd32
+                        ? io.github.zolfrik.amija.media.CdImage.Console.CD32
+                        : io.github.zolfrik.amija.media.CdImage.Console.CDTV;
+                display.setCdDrive(p -> cdDriveTakes(p, console), this::insertCdDisc);
+            } else {
+                display.setCdDrive(null, null);
+            }
             // From here on this is the hardware in force: what the popup can no longer change
             // without a restart.
             activeHardware = captureDriveHardware();
@@ -2857,8 +2995,9 @@ public class Amija implements RemotePlayControl, MisterControl {
             // reflects the hard disks present (WHDLoad and/or master/slave, in order).
             display.setStatusLedSource(ciaA::isPowerLedOn);
             display.setHdLedSources(hdLedSources.toArray(new java.util.function.BooleanSupplier[0]));
-            final io.github.zolfrik.amija.custom.Akiko akiko = cd32 ? agnus.akiko() : null;
-            display.setCdLedSource(akiko == null ? null : akiko::ledLit);
+            final io.github.zolfrik.amija.hardware.custom.Akiko akiko = cd32 ? agnus.akiko() : null;
+            final io.github.zolfrik.amija.hardware.custom.CdtvDmac dmac = cdtv ? agnus.cdtvDmac() : null;
+            display.setCdLedSource(akiko != null ? akiko::ledLit : dmac != null ? dmac::ledLit : null);
             attachRemotePlayLed();
             attachMisterLed();
             display.setStatusLedsEnabled(config.ledsVisible());
@@ -2872,7 +3011,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             // An event-driven processor runs on its own bus, which advances the chipset.
             io.github.zolfrik.amija.common.ClockDriver driver = null;
             if (eventCpu != null) {
-                eventBus = new io.github.zolfrik.amija.custom.EventCpuBus(agnus, cpuModel);
+                eventBus = new io.github.zolfrik.amija.hardware.custom.EventCpuBus(agnus, cpuModel);
                 eventBus.setVirtualCRT(virtualCRT);
                 eventCpu.attach(eventBus);
                 driver = eventBus.driver(eventCpu);
@@ -2881,7 +3020,8 @@ public class Amija implements RemotePlayControl, MisterControl {
             clock.setPacer(misterOutput);
             // The serial port: a loopback plug goes in now. A null modem cable, at either end,
             // is only ever started by the user from the popup, never at boot.
-            serialPort.configure(config.serialDelayMs(), config.serialLanOnly());
+            serialPort.configure(config.serialDelayMs(),
+                    internet -> exposureOptions(internet, false));
             serialPort.bind(agnus, clock, videoMode.getFrequency(),
                     "loopback".equals(config.serialMode()));
             if (display != null) display.setSerialLedSource(serialPort::serialLedState);
@@ -2946,6 +3086,7 @@ public class Amija implements RemotePlayControl, MisterControl {
                 WhdLoadManager whd = new WhdLoadManager();
                 // WHDLoad.prefs generated from the whdload.prefs.* section of amiga.properties.
                 whd.withPrefs(config.whdloadPrefsContent());
+                whd.withPreload(config.whdloadPreload());
                 // Give WHDLoad the Kickstart ROMs found next to the one in use (many OCS
                 // slaves need e.g. KS 1.3): matched by CRC32.
                 String ksPath = config.kickstartPath();
@@ -3007,14 +3148,14 @@ public class Amija implements RemotePlayControl, MisterControl {
     }
 
     /** The disc in the CD32's drive, open while the machine runs. */
-    private io.github.zolfrik.amija.custom.cd.CdImage cdImage;
+    private io.github.zolfrik.amija.media.CdImage cdImage;
 
     /**
      * Makes the machine just built a CD32: the extended ROM ({@code cd32.extrom.path}), the
      * 1 KB NVRAM kept in {@code nvram/cd32.nvr} of the app home (written back at every write
      * transfer), and the disc of {@code cd.image}, if any.
      */
-    private void installCd32(io.github.zolfrik.amija.custom.AbstractAgnus agnus) throws IOException {
+    private void installCd32(io.github.zolfrik.amija.hardware.custom.AbstractAgnus agnus) throws IOException {
         KickstartImage ext = KickstartImage.load(Paths.get(config.cd32ExtRomPath()));
         System.out.println("[ROM] CD32 extended ROM: " + ext.describe());
         java.nio.file.Path nvramFile = AppHome.resolve("nvram/cd32.nvr");
@@ -3023,7 +3164,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             byte[] stored = java.nio.file.Files.readAllBytes(nvramFile);
             System.arraycopy(stored, 0, nvram, 0, Math.min(stored.length, nvram.length));
         }
-        io.github.zolfrik.amija.custom.I2cEeprom eeprom = new io.github.zolfrik.amija.custom.I2cEeprom(nvram);
+        io.github.zolfrik.amija.hardware.common.I2cEeprom eeprom = new io.github.zolfrik.amija.hardware.common.I2cEeprom(nvram);
         eeprom.setWriteListener((offset, length) -> {
             try {
                 java.nio.file.Files.createDirectories(nvramFile.getParent());
@@ -3032,15 +3173,53 @@ public class Amija implements RemotePlayControl, MisterControl {
                 System.err.println("[CD32] Cannot save the NVRAM: " + e.getMessage());
             }
         });
-        agnus.installCd32(new io.github.zolfrik.amija.memory.ROM(ext.data()), eeprom);
+        agnus.installCd32(new io.github.zolfrik.amija.hardware.common.memory.ROM(ext.data()), eeprom);
         closeCdImage();
         if (config.cdImage() == null) {
             System.out.println("[CD32] No disc");
             return;
         }
-        cdImage = io.github.zolfrik.amija.custom.cd.CdImage.open(Paths.get(config.cdImage()));
+        cdImage = io.github.zolfrik.amija.media.CdImage.open(Paths.get(config.cdImage()));
         agnus.akiko().insert(cdImage);
         System.out.println("[CD32] Disc: " + cdImage.name() + ", " + cdImage.tracks().size()
+                + " tracks");
+    }
+
+    /**
+     * Makes the machine just built a CDTV: the extended ROM ({@code cdtv.extrom.path}), the
+     * battery-backed RAM kept in {@code nvram/cdtv.nvr} of the app home (32 KB, written back
+     * at every byte that changes), and the disc of {@code cd.image}, if any. With {@code a570}
+     * the machine is an A500 with an A570, whose bookmark memory is kept in
+     * {@code nvram/a570.nvr}.
+     */
+    private void installCdtv(io.github.zolfrik.amija.hardware.custom.AbstractAgnus agnus, boolean a570)
+            throws IOException {
+        KickstartImage ext = KickstartImage.load(Paths.get(config.cdtvExtRomPath()));
+        System.out.println("[ROM] CDTV extended ROM: " + ext.describe() + (a570 ? " (A570)" : ""));
+        java.nio.file.Path nvramFile = AppHome.resolve(a570 ? "nvram/a570.nvr" : "nvram/cdtv.nvr");
+        byte[] nvram = new byte[32768];
+        if (java.nio.file.Files.isRegularFile(nvramFile)) {
+            byte[] stored = java.nio.file.Files.readAllBytes(nvramFile);
+            System.arraycopy(stored, 0, nvram, 0, Math.min(stored.length, nvram.length));
+        }
+        io.github.zolfrik.amija.hardware.custom.CdtvDmac dmac = new io.github.zolfrik.amija.hardware.custom.CdtvDmac();
+        agnus.installCdtv(new io.github.zolfrik.amija.hardware.common.memory.ROM(ext.data()), dmac, nvram,
+                offset -> {
+                    try {
+                        java.nio.file.Files.createDirectories(nvramFile.getParent());
+                        java.nio.file.Files.write(nvramFile, nvram);
+                    } catch (IOException e) {
+                        System.err.println("[CDTV] Cannot save the battery-backed RAM: " + e.getMessage());
+                    }
+                });
+        closeCdImage();
+        if (config.cdImage() == null) {
+            System.out.println("[CDTV] No disc");
+            return;
+        }
+        cdImage = io.github.zolfrik.amija.media.CdImage.open(Paths.get(config.cdImage()));
+        dmac.insert(cdImage);
+        System.out.println("[CDTV] Disc: " + cdImage.name() + ", " + cdImage.tracks().size()
                 + " tracks");
     }
 
@@ -3129,7 +3308,7 @@ public class Amija implements RemotePlayControl, MisterControl {
             if (config.hdEnabled(u)) hds.add(norm(config.hdDisk(u)));
         }
         String whd = config.whdloadEnabled() ? norm(config.whdloadFile()) : "";
-        String cd = config.cd32Machine() && config.cdImage() != null ? norm(config.cdImage()) : "";
+        String cd = config.cdMachine() && config.cdImage() != null ? norm(config.cdImage()) : "";
         return new ConfigDialog.DriveHardware(floppies, hds, whd, cd);
     }
 
@@ -3201,6 +3380,11 @@ public class Amija implements RemotePlayControl, MisterControl {
         // A CD32 needs its extended ROM next to the Kickstart.
         if (cfg.cd32Machine() && !new File(cfg.cd32ExtRomPath()).isFile()) {
             error(Messages.t("error.rom.cd32ext.missing"));
+            return false;
+        }
+        // A CDTV needs its extended ROM next to the Kickstart.
+        if (cfg.cdtvMachine() && !new File(cfg.cdtvExtRomPath()).isFile()) {
+            error(Messages.t("error.rom.cdtvext.missing"));
             return false;
         }
         String path = cfg.kickstartPath();

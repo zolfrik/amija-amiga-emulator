@@ -189,6 +189,21 @@ public final class Handshake {
         }
     }
 
+    /**
+     * The peer closed the connection without sending a byte.
+     *
+     * <p>Not an attempt at the code: nothing was tried and nothing was computed. It is what a
+     * guest does with the connections it opened in parallel and did not use
+     * ({@link CandidateDialer}), so the host must not count it against that address.
+     */
+    public static final class ClosedBeforeHelloException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        public ClosedBeforeHelloException(IOException cause) {
+            super("closed before the HELLO", cause);
+        }
+    }
+
     private Handshake() {
     }
 
@@ -225,7 +240,17 @@ public final class Handshake {
     public static Session accept(ControlChannel ch, Admitter admitter) throws IOException {
         ch.setTimeout(HANDSHAKE_TIMEOUT_MS);
 
-        ControlChannel.Message hello = ch.expect(RemotePlayProtocol.CTRL_HELLO);
+        ControlChannel.Message hello;
+        try {
+            hello = ch.expect(RemotePlayProtocol.CTRL_HELLO);
+        } catch (java.net.SocketTimeoutException e) {
+            throw e;
+        } catch (IOException e) {
+            if (!ch.receivedAny()) {
+                throw new ClosedBeforeHelloException(e);
+            }
+            throw e;
+        }
         ByteBuffer hb = hello.body();
         int proto;
         int role;

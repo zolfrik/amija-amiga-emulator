@@ -37,7 +37,7 @@ import java.util.zip.CRC32;
  * <p>The dumps around are not "clean" images: the same ROM circulates in files with extra
  * headers, appended tails, duplicated or encrypted halves. Loading them as they were meant
  * either a flat refusal (size not allowed by
- * {@link io.github.zolfrik.amija.custom.Gary#setRomSize(int)}) or a black screen with no
+ * {@link io.github.zolfrik.amija.hardware.custom.Gary#setRomSize(int)}) or a black screen with no
  * explanation. This class recognises the variants, brings the image back to the canonical
  * form (a power of two, which the hardware mirroring requires) and tells the user whether
  * it makes sense in the Kickstart socket.
@@ -404,6 +404,28 @@ public final class KickstartImage {
     public boolean isCd32ExtendedRom() {
         return data.length == 512 * 1024 && romVersion() == 40 && romRevision() == 60
                 && hasResident(data, CD32_EXTENDED_BASE, "cdstrap");
+    }
+
+    /** Base address of the CDTV's extended ROM. */
+    public static final int CDTV_EXTENDED_BASE = 0xF00000;
+
+    /**
+     * True for a CDTV extended ROM: 256 KB holding {@code cdtv.device} linked for
+     * {@code $F00000}, where the CDTV maps it. The 8-bit halves of a pair of chips are not.
+     */
+    public boolean isCdtvExtendedRom() {
+        return data.length == 256 * 1024 && hasResident(data, CDTV_EXTENDED_BASE, "cdtv.device");
+    }
+
+    /** {@link #isCdtvExtendedRom()} of a file; false when the path is empty or unreadable. */
+    public static boolean isCdtvExtendedRom(String path) {
+        if (path == null || path.isBlank()) return false;
+        try {
+            Path p = Path.of(path.trim());
+            return Files.isRegularFile(p) && load(p).isCdtvExtendedRom();
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
     }
 
     /** CRC32 of the normalised image: the same for a dump, its overdump and its encrypted copy. */

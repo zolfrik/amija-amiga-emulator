@@ -28,6 +28,8 @@ import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.InterfaceAddress;
+import java.net.MulticastSocket;
 import java.net.NetworkInterface;
 import java.net.SocketTimeoutException;
 import java.net.URI;
@@ -58,6 +60,13 @@ import java.util.Map;
  * router as the mapping's destination, and the only one known for sure to be on the same
  * network as whoever answered (no need to guess with a {@code connect} toward the outside,
  * as in section 7.2: the answer proves it).
+ *
+ * <h2>Some routers never answer: they only announce</h2>
+ * A gateway is supposed to answer an M-SEARCH, and some do not, ever: they only multicast a
+ * {@code NOTIFY ssdp:alive} every few minutes (measured on a ZyXEL VMG8825, whose IGD answers
+ * no search at all, {@code docs/remote-play-r1-plan.md} M3). {@link #awaitAnnouncement} listens
+ * for those, and a description URL found once can be tried again directly
+ * ({@link #gatewayAt}), which is what an operating system's SSDP cache does too.
  *
  * <h2>Asked several times, and of several targets</h2>
  * UDP does not guarantee delivery, and a lost M-SEARCH is a feature that "does not work".
@@ -97,6 +106,16 @@ public final class SsdpDiscovery {
         "urn:schemas-upnp-org:service:WANIPConnection:1",
         "urn:schemas-upnp-org:service:WANPPPConnection:1",
     };
+
+    /** The notification types that announce a gateway able to map ports. */
+    private static final String[] GATEWAY_TYPES = {
+        "urn:schemas-upnp-org:device:InternetGatewayDevice:",
+        "urn:schemas-upnp-org:service:WANIPConnection:",
+        "urn:schemas-upnp-org:service:WANPPPConnection:",
+    };
+
+    /** How often the announcement listener checks whether it was cancelled. */
+    private static final int LISTEN_POLL_MS = 500;
 
     private SsdpDiscovery() {
     }
@@ -276,6 +295,167 @@ public final class SsdpDiscovery {
                 + "MX: " + MX_SECONDS + "\r\n"
                 + "ST: " + searchTarget + "\r\n"
                 + "\r\n";
+    }
+
+    /**
+     * Waits for a gateway to announce itself with a {@code NOTIFY ssdp:alive}.
+     *
+     * <p>Listens on the SSDP group from every IPv4 interface, sharing port 1900 with whoever
+     * else listens there (the system's own SSDP service). Only announcements of a gateway type
+     * count, and their {@code LOCATION} passes the same check as an answer to a search.
+     *
+     * @param timeoutMs how long to wait at most
+     * @param cancelled polled while waiting: {@code true} stops at once
+     * @return the gateway, or {@code null} if none announced itself in time
+     */
+    public static Gateway awaitAnnouncement(long timeoutMs,
+                                            java.util.function.BooleanSupplier cancelled) {
+        long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+        try (MulticastSocket socket = new MulticastSocket(null)) {
+            socket.setReuseAddress(true);
+            socket.bind(new InetSocketAddress(SSDP_PORT));
+            InetSocketAddress group = new InetSocketAddress(
+                    InetAddress.getByName(SSDP_ADDRESS), SSDP_PORT);
+            int joined = 0;
+            for (NetworkInterface nic : multicastInterfaces()) {
+                try {
+                    socket.joinGroup(group, nic);
+                    joined++;
+                } catch (IOException e) {
+                    RemotePlaySettings.log("SSDP group not joinable on %s: %s",
+                            nic.getName(), e.getMessage());
+                }
+            }
+            if (joined == 0) {
+                return null;
+            }
+            socket.setSoTimeout(LISTEN_POLL_MS);
+            byte[] buffer = new byte[RECEIVE_BUFFER];
+            while (!cancelled.getAsBoolean() && System.nanoTime() - deadline < 0) {
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                try {
+                    socket.receive(packet);
+                } catch (SocketTimeoutException e) {
+                    continue;
+                }
+                String text = new String(packet.getData(), packet.getOffset(),
+                        packet.getLength(), StandardCharsets.US_ASCII);
+                Gateway g = fromAnnouncement(text, packet.getAddress());
+                if (g != null) {
+                    RemotePlaySettings.say("UPnP: the router announced itself at %s",
+                            g.descriptionUrl());
+                    return g;
+                }
+            }
+        } catch (IOException e) {
+            RemotePlaySettings.log("SSDP announcements cannot be heard: %s", e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * The gateway a {@code NOTIFY} announces, or {@code null} if it is not a live gateway
+     * announcement or its {@code LOCATION} is not to be trusted.
+     */
+    static Gateway fromAnnouncement(String text, InetAddress sender) {
+        if (!text.regionMatches(true, 0, "NOTIFY ", 0, 7)) {
+            return null;
+        }
+        String nts = header(text, "NTS");
+        String nt = header(text, "NT");
+        String location = header(text, "LOCATION");
+        if (nts == null || !nts.equalsIgnoreCase("ssdp:alive") || nt == null
+                || location == null || !isGatewayType(nt)) {
+            return null;
+        }
+        try {
+            URI url = new URI(location.trim());
+            if (!isTrustworthy(url, sender)) {
+                return null;
+            }
+            InetAddress local = localAddressFacing(sender);
+            return local == null ? null : new Gateway(url, local);
+        } catch (URISyntaxException e) {
+            return null;
+        }
+    }
+
+    /**
+     * A gateway at a description URL remembered from an earlier session, or {@code null} if
+     * that URL can no longer be trusted: it must be plain {@code http(s)} on a literal address
+     * of a network this machine is on now.
+     */
+    public static Gateway gatewayAt(URI descriptionUrl) {
+        if (descriptionUrl == null || descriptionUrl.getScheme() == null
+                || !(descriptionUrl.getScheme().equalsIgnoreCase("http")
+                        || descriptionUrl.getScheme().equalsIgnoreCase("https"))) {
+            return null;
+        }
+        String host = descriptionUrl.getHost();
+        if (host == null || !host.matches("[0-9.]+")) {
+            return null;   // a name would have to be resolved: only literals are remembered
+        }
+        try {
+            InetAddress router = InetAddress.getByName(host);
+            InetAddress local = localAddressFacing(router);
+            return local == null ? null : new Gateway(descriptionUrl, local);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static boolean isGatewayType(String nt) {
+        for (String type : GATEWAY_TYPES) {
+            if (nt.regionMatches(true, 0, type, 0, type.length())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** This machine's IPv4 address on the subnet {@code peer} belongs to, or {@code null}. */
+    static InetAddress localAddressFacing(InetAddress peer) {
+        if (!(peer instanceof Inet4Address)) {
+            return null;
+        }
+        for (NetworkInterface nic : multicastInterfaces()) {
+            for (InterfaceAddress ia : nic.getInterfaceAddresses()) {
+                InetAddress mine = ia.getAddress();
+                if (mine instanceof Inet4Address && !mine.equals(peer)
+                        && samePrefix(mine.getAddress(), peer.getAddress(),
+                                ia.getNetworkPrefixLength())) {
+                    return mine;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean samePrefix(byte[] a, byte[] b, int prefix) {
+        if (prefix <= 0 || prefix > 32) {
+            return false;
+        }
+        int mask = prefix == 32 ? -1 : ~((1 << (32 - prefix)) - 1);
+        int x = ((a[0] & 0xFF) << 24) | ((a[1] & 0xFF) << 16) | ((a[2] & 0xFF) << 8) | (a[3] & 0xFF);
+        int y = ((b[0] & 0xFF) << 24) | ((b[1] & 0xFF) << 16) | ((b[2] & 0xFF) << 8) | (b[3] & 0xFF);
+        return (x & mask) == (y & mask);
+    }
+
+    /** Interfaces that are up, not loopback, and can multicast. */
+    private static List<NetworkInterface> multicastInterfaces() {
+        List<NetworkInterface> list = new ArrayList<>();
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface nic = interfaces.nextElement();
+                if (nic.isUp() && !nic.isLoopback() && nic.supportsMulticast()) {
+                    list.add(nic);
+                }
+            }
+        } catch (IOException e) {
+            RemotePlaySettings.log("interface list unavailable: %s", e.getMessage());
+        }
+        return list;
     }
 
     /**

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.9.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.8.0...v0.9.0) - 2026-11-23
+
+### Added
+
+* **CDTV**: discs as .cue, .iso or zip, CD audio, the front panel and battery-backed memory.
+* A built-in list of games that need settings other than their automatic profile.
+
+### Changed
+
+* Remote play: invitations, play over the Internet and a simpler setup.
+* Drag and drop changes the media, never the machine.
+* Automatic floppy profile: ECS with 1 MB of Chip RAM plus 512 KB of Slow RAM.
+
+### Fixed
+
+* CD32 disc recognition, CD audio and timing.
+* Minor bugfixing.
+
 ## [0.8.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.7.0...v0.8.0) - 2026-11-18
 
 ### Added

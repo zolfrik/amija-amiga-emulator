@@ -63,7 +63,9 @@ public final class KickstartFolder {
         /** The CD32's Kickstart (40.60). */
         CD32(0x1e62d4a5L),
         /** The CD32's extended ROM (40.60). */
-        CD32_EXT(0x87746be2L);
+        CD32_EXT(0x87746be2L),
+        /** The CDTV's extended ROM: the 1.0 the CDTVs were sold with. */
+        CDTV_EXT(0x42baa124L);
 
         /** CRC32 of the known good dump. */
         public final long knownCrc;
@@ -154,6 +156,7 @@ public final class KickstartFolder {
     /** The role an image can play, or null. */
     static Role roleOf(KickstartImage img) {
         if (img.isCd32ExtendedRom()) return Role.CD32_EXT;
+        if (img.isCdtvExtendedRom()) return Role.CDTV_EXT;
         if (!img.isSocketRom() || !img.isChecksumValid()) return null;
         if (OTHER_MACHINES.contains(img.crc32())) return null;
         int v = img.romVersion(), r = img.romRevision();

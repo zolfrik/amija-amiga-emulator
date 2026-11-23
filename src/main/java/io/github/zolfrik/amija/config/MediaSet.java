@@ -20,7 +20,7 @@
 
 package io.github.zolfrik.amija.config;
 
-import io.github.zolfrik.amija.custom.DiskImage;
+import io.github.zolfrik.amija.media.DiskImage;
 import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
@@ -70,7 +70,7 @@ public final class MediaSet {
             // A zip is a CD32 disc when it holds a .cue or an .iso, floppies otherwise.
             if (name.endsWith(".zip")) {
                 try {
-                    return io.github.zolfrik.amija.custom.cd.CdImage.isDisc(java.nio.file.Path.of(file))
+                    return io.github.zolfrik.amija.media.CdImage.isDisc(java.nio.file.Path.of(file))
                             ? CD : FLOPPY;
                 } catch (RuntimeException e) {
                     return FLOPPY;

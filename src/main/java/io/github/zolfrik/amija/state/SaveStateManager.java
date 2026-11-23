@@ -23,14 +23,14 @@ package io.github.zolfrik.amija.state;
 import io.github.zolfrik.amija.common.AppHome;
 import io.github.zolfrik.amija.common.MasterClock;
 import io.github.zolfrik.amija.config.AmigaConfig;
-import io.github.zolfrik.amija.cpu.Processor;
-import io.github.zolfrik.amija.cpu.event.EventCpu;
-import io.github.zolfrik.amija.custom.EventCpuBus;
-import io.github.zolfrik.amija.custom.AbstractAgnus;
-import io.github.zolfrik.amija.custom.FastRam;
+import io.github.zolfrik.amija.hardware.common.cpu.Processor;
+import io.github.zolfrik.amija.hardware.common.cpu.event.EventCpu;
+import io.github.zolfrik.amija.hardware.custom.EventCpuBus;
+import io.github.zolfrik.amija.hardware.custom.AbstractAgnus;
+import io.github.zolfrik.amija.hardware.custom.FastRam;
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.input.GamePort;
-import io.github.zolfrik.amija.memory.RAM;
+import io.github.zolfrik.amija.hardware.common.memory.RAM;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -87,9 +87,12 @@ public final class SaveStateManager {
      * {@code amiga.properties}. 3: adds the AutoConfig boards (FastRam, HdController) to the
      * roots, so the dynamic memory map is rebuilt on load. 4: adds Gayle. Slots of an earlier
      * version no longer load: they are a single snapshot, redone by pressing "Save State"
-     * again. 5: adds the CD32's Akiko, NVRAM and audio player.
+     * again. 5: adds the CD32's Akiko, NVRAM and audio player. 6: the components moved to
+     * the {@code hardware} packages, and the slot names every root by its class. 7: adds the
+     * CDTV's DMAC and its drive's audio player; Paula keeps the queue order of its deferred
+     * interrupt events.
      */
-    private static final int VERSION = 5;
+    private static final int VERSION = 7;
 
     /** How many state slots exist. They are numbered from 1 to {@code SLOT_COUNT}. */
     public static final int SLOT_COUNT = 5;
@@ -407,7 +410,7 @@ public final class SaveStateManager {
         Object denise = field(agnus, "denise");
         // Lines may still be rendering behind the beam: the renderer's state is read or
         // overwritten only once it has caught up.
-        if (denise instanceof io.github.zolfrik.amija.custom.AbstractDenise d) d.syncRendering();
+        if (denise instanceof io.github.zolfrik.amija.hardware.custom.AbstractDenise d) d.syncRendering();
         add(roots, denise);
         // Denise's end-of-line half: the state it carries from one line to the next
         // (start-of-line snapshots, window flip-flop, plane maximum, collision bits).
@@ -432,6 +435,13 @@ public final class SaveStateManager {
             add(roots, akiko);
             add(roots, field(akiko, "nvram"));
             add(roots, field(akiko, "player"));
+        }
+        // CDTV: the DMAC with its 6525 and drive, and the drive's audio player. The
+        // battery-backed RAM is an array of Agnus's.
+        Object dmac = field(agnus, "cdtvDmac");
+        if (dmac != null) {
+            add(roots, dmac);
+            add(roots, field(dmac, "player"));
         }
         add(roots, port1);
         add(roots, port2);

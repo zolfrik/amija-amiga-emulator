@@ -50,20 +50,29 @@ public interface SerialControl {
     /** Address and port to give to the other end, while hosting; null otherwise. */
     String serialLanAddress();
 
+    /** The invitation to give to the other end, while hosting; null otherwise. */
+    String serialInvite();
+
+    /** Whether and how the listening end can be reached, in one line; null if not hosting. */
+    String serialReachability();
+
     /** One line on what the port is doing, for the popup. */
     String serialStatus();
 
     /**
      * Starts listening for the other end.
      *
-     * @param port    TCP port to listen on
-     * @param lanOnly whether to refuse connections from outside the local network
+     * @param port     preferred TCP port; the next free one is taken when it is busy
+     * @param internet whether to accept the Internet too (and open the port on the router),
+     *                 instead of the local network only
      * @return null if started, otherwise why not
      */
-    String startSerialHost(int port, boolean lanOnly);
+    String startSerialHost(int port, boolean internet);
 
     /**
-     * Connects to a listening instance, in the background: {@link #serialStatus} tells how it went.
+     * Connects to a listening instance, in the background: {@link #serialStatus} tells how it
+     * went. {@code address} may be a null modem invitation, and then port and code are not
+     * used.
      *
      * @return null if the attempt started, otherwise why not
      */

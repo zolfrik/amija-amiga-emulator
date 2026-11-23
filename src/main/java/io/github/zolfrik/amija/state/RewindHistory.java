@@ -21,10 +21,10 @@
 package io.github.zolfrik.amija.state;
 
 import io.github.zolfrik.amija.common.MasterClock;
-import io.github.zolfrik.amija.common.VirtualCRT;
-import io.github.zolfrik.amija.cpu.Processor;
-import io.github.zolfrik.amija.custom.AbstractAgnus;
-import io.github.zolfrik.amija.memory.RAM;
+import io.github.zolfrik.amija.hardware.common.VirtualCRT;
+import io.github.zolfrik.amija.hardware.common.cpu.Processor;
+import io.github.zolfrik.amija.hardware.custom.AbstractAgnus;
+import io.github.zolfrik.amija.hardware.common.memory.RAM;
 
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;

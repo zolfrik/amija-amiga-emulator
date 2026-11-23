@@ -28,9 +28,9 @@ import static io.github.zolfrik.amija.display.UiScaling.px;
 import io.github.zolfrik.amija.assets.AssetCatalog;
 import io.github.zolfrik.amija.assets.AssetPackage;
 import io.github.zolfrik.amija.common.AppHome;
-import io.github.zolfrik.amija.common.Chipset;
-import io.github.zolfrik.amija.cpu.CpuModel;
-import io.github.zolfrik.amija.common.VideoMode;
+import io.github.zolfrik.amija.hardware.custom.Chipset;
+import io.github.zolfrik.amija.hardware.common.cpu.CpuModel;
+import io.github.zolfrik.amija.hardware.custom.VideoMode;
 import io.github.zolfrik.amija.config.AmigaConfig;
 import io.github.zolfrik.amija.config.MediaSet;
 import io.github.zolfrik.amija.config.MediaSet.Kind;
@@ -164,6 +164,8 @@ public final class ConfigDialog {
      * grow it without end.
      */
     private static final int TOOLTIP_DISMISS_MS = 8000;
+    /** Whether the popup offers the A500 with an A570 CD drive (built, not yet released). */
+    private static final boolean A570_OFFERED = false;
 
     // A method, not a constant: the size depends on the interface scale, which must be read
     // when the component is built, not when the class loads.
@@ -283,6 +285,23 @@ public final class ConfigDialog {
         tip("cd32.extrom", cdExtLabel, cdExt);
         addRow(system, 2, cdExtLabel, cdExt, cdExtBrowse);
 
+        // The CDTV's extended ROM: in Expert, unless the Kickstart is the CD32's. A CDTV
+        // extended ROM here makes the machine a CDTV; empty, it is an Amiga without one.
+        JLabel cdtvExtLabel = label(Messages.t("cdtv.extrom"));
+        JTextField cdtvExt = textField(config.storedCdtvExtRomPath());
+        JButton cdtvExtBrowse = browseButton();
+        cdtvExtBrowse.addActionListener(e -> browse(dialog, config, BrowseKind.ROM, cdtvExt,
+                Messages.t("chooser.cdtvrom"), "rom", "bin"));
+        tip("cdtv.extrom", cdtvExtLabel, cdtvExt);
+        addRow(system, 4, cdtvExtLabel, cdtvExt, cdtvExtBrowse);
+
+        // With a CDTV extended ROM: the machine is a CDTV, or an A500 with the A570 CD drive.
+        // The A570 is not offered yet: the box stays hidden and unticked, so saving the
+        // popup turns cdtv.a570 off.
+        JCheckBox a570Check = check(Messages.t("cdtv.a570"), A570_OFFERED && config.cdtvA570());
+        tip("cdtv.a570", a570Check);
+        addRow(system, 5, a570Check, null, null);
+
         // The folder of Kickstart ROMs the automatic configuration picks from: visible only
         // with Expert off, i.e. when the emulator makes that choice. The label explains the
         // setting; the field's tooltip says what was found there for each machine. The folder
@@ -374,29 +393,29 @@ public final class ConfigDialog {
                 return this;
             }
         });
-        JLabel cpuLabel = addRow(system, 5, "label.cpu", cpuCombo, null);
+        JLabel cpuLabel = addRow(system, 6, "label.cpu", cpuCombo, null);
 
         // OCS/ECS/AGA chipset: like the processor, a change requires a cold restart.
         JComboBox<Chipset> chipsetCombo = new JComboBox<>(Chipset.values());
         chipsetCombo.setSelectedItem(config.chipset());
         chipsetCombo.setMaximumSize(dim(160, 26));
-        JLabel chipsetLabel = addRow(system, 6, "label.chipset", chipsetCombo, null);
+        JLabel chipsetLabel = addRow(system, 7, "label.chipset", chipsetCombo, null);
 
         JComboBox<Integer> chipCombo = kbCombo(CHIP_RAM_OPTIONS, config.chipRamKb());
-        JLabel chipLabel = addRow(system, 7, "label.chipram", chipCombo, null);
+        JLabel chipLabel = addRow(system, 8, "label.chipram", chipCombo, null);
 
         JComboBox<Integer> slowCombo = kbCombo(SLOW_RAM_OPTIONS, config.slowRamKb());
-        JLabel slowLabel = addRow(system, 8, "label.slowram", slowCombo, null);
+        JLabel slowLabel = addRow(system, 9, "label.slowram", slowCombo, null);
 
         JComboBox<Integer> fastCombo = kbCombo(FAST_RAM_OPTIONS, config.fastRamKb());
-        JLabel fastLabel = addRow(system, 9, "label.fastram", fastCombo, null);
+        JLabel fastLabel = addRow(system, 10, "label.fastram", fastCombo, null);
 
         // PAL/NTSC video mode: changing it requires restarting the emulator (handled by
         // Amija: an OK with a different mode forces a cold restart).
         JComboBox<VideoMode> videoModeCombo = new JComboBox<>(VideoMode.values());
         videoModeCombo.setSelectedItem(config.videoMode());
         videoModeCombo.setMaximumSize(dim(160, 26));
-        JLabel videoLabel = addRow(system, 10, "label.videomode", videoModeCombo, null);
+        JLabel videoLabel = addRow(system, 11, "label.videomode", videoModeCombo, null);
 
         // -------------------------------------------------------------------
         // Section: Game ports
@@ -437,6 +456,11 @@ public final class ConfigDialog {
         JCheckBox cdKeyboard = check(Messages.t("cd32.keyboard"), config.cd32Keyboard());
         tip("cd32.keyboard", cdKeyboard);
         addRow(ports, 3, cdKeyboard, null, null);
+
+        // A keyboard plugged into the CDTV: shown only when the machine is one (see syncAuto).
+        JCheckBox cdtvKeyboard = check(Messages.t("cdtv.keyboard"), config.cdtvKeyboard());
+        tip("cdtv.keyboard", cdtvKeyboard);
+        addRow(ports, 4, cdtvKeyboard, null, null);
 
         port0Keys.addActionListener(e -> JoystickKeysDialog.show(dialog, 0, joyKeyMaps));
         // On a CD32 the joystick port holds the pad: its keyboard keys carry the pad's names,
@@ -730,6 +754,29 @@ public final class ConfigDialog {
         // -------------------------------------------------------------------
         // Whether the Kickstart field names the CD32's Kickstart; the file is read again only
         // when the text changes.
+        String[] cdtvChecked = { null };
+        boolean[] cdtvRom = { false };
+        java.util.function.BooleanSupplier extIsCdtv = () -> {
+            String path = cdtvExt.getText().trim();
+            if (!path.equals(cdtvChecked[0])) {
+                cdtvChecked[0] = path;
+                cdtvRom[0] = KickstartImage.isCdtvExtendedRom(path);
+            }
+            return cdtvRom[0];
+        };
+        // The console the disc of the Auto list is made for, read again only when it changes.
+        String[] discChecked = { null };
+        boolean[] discCdtv = { false };
+        java.util.function.BooleanSupplier listHasCdtvDisc = () -> {
+            String path = driveList.cdPath();
+            if (path == null) return false;
+            if (!path.equals(discChecked[0])) {
+                discChecked[0] = path;
+                discCdtv[0] = io.github.zolfrik.amija.media.CdImage.console(java.nio.file.Path.of(path))
+                        == io.github.zolfrik.amija.media.CdImage.Console.CDTV;
+            }
+            return discCdtv[0];
+        };
         String[] kickChecked = { null };
         boolean[] kickCd32 = { false };
         java.util.function.BooleanSupplier kickIsCd32 = () -> {
@@ -747,29 +794,41 @@ public final class ConfigDialog {
             // under it, the CD32 section appears, and what the CD32 fixes or lacks goes
             // away (processor, chipset, the three RAMs, floppy drives, hard disks, WHDLoad).
             boolean cd32 = !simple && kickIsCd32.getAsBoolean();
+            // In Expert a CDTV extended ROM makes the machine a CDTV, with the same rows gone.
+            boolean cdtv = !simple && !cd32 && extIsCdtv.getAsBoolean();
+            // An A500 with an A570 keeps its floppy drives, its keyboard and its Fast RAM.
+            boolean a570 = cdtv && a570Check.isSelected();
+            boolean cdMachine = cd32 || cdtv;
             expertCheck.setToolTipText(expertTip(config, simple));
             setRowVisible(!simple, kickLabel, kickField, kickBrowse);
             setRowVisible(cd32, cdExtLabel, cdExt, cdExtBrowse);
+            setRowVisible(!simple && !cd32, cdtvExtLabel, cdtvExt, cdtvExtBrowse);
+            a570Check.setVisible(A570_OFFERED && cdtv);
             setRowVisible(simple, ksDirLabel, ksDirField, ksDirBrowse);
             // Outside Expert the emulator decides the hardware: the rows are not needed.
-            setRowVisible(!simple && !cd32, chipLabel, chipCombo);
-            setRowVisible(!simple && !cd32, slowLabel, slowCombo);
-            setRowVisible(!simple && !cd32, fastLabel, fastCombo);
+            setRowVisible(!simple && !cdMachine, chipLabel, chipCombo);
+            setRowVisible(!simple && !cdMachine, slowLabel, slowCombo);
+            setRowVisible(!simple && (!cdMachine || a570), fastLabel, fastCombo);
             setRowVisible(!simple, videoLabel, videoModeCombo);
-            setRowVisible(!simple && !cd32, chipsetLabel, chipsetCombo);
-            setRowVisible(!simple && !cd32, cpuLabel, cpuCombo);
+            setRowVisible(!simple && !cdMachine, chipsetLabel, chipsetCombo);
+            setRowVisible(!simple && !cdMachine, cpuLabel, cpuCombo);
             // A single list instead of the three sections per media type.
             media.setVisible(simple);
-            drives.setVisible(!simple && !cd32);
-            hds.setVisible(!simple && !cd32);
-            whd.setVisible(!simple && !cd32);
-            // In Auto a CD32 disc goes in the list of drives like any other medium.
-            cd32Panel.setVisible(cd32);
+            drives.setVisible(!simple && (!cdMachine || a570));
+            hds.setVisible(!simple && !cdMachine);
+            whd.setVisible(!simple && !cdMachine);
+            // In Auto a CD disc goes in the list of drives like any other medium.
+            cd32Panel.setVisible(cdMachine);
+            setSectionTitle(cd32Panel, Messages.t(cdtv ? "section.cdtv" : "section.cd32"));
+            cdLabel.setText(Messages.t(cdtv ? "cdtv.disc" : "cd32.disc"));
+            tip(cdtv ? "cdtv.disc" : "cd32.disc", cdLabel, cdDisc);
             // The CD32 keyboard: in Expert with the CD32 Kickstart, in Auto with a CD32 disc in
-            // the list (the machine Auto builds then boots the CD32 Kickstart). A guest has no
-            // machine of its own.
-            cd32Machine[0] = cd32 || (simple && driveList.hasCd());
+            // the list (the machine Auto builds then boots the CD32 Kickstart); the CDTV one
+            // likewise. A guest has no machine of its own.
+            boolean autoCdtv = simple && driveList.hasCd() && listHasCdtvDisc.getAsBoolean();
+            cd32Machine[0] = cd32 || (simple && driveList.hasCd() && !autoCdtv);
             cdKeyboard.setVisible(!guestPopup && cd32Machine[0]);
+            cdtvKeyboard.setVisible(!guestPopup && ((cdtv && !a570) || autoCdtv));
             // The joystick port's names and its "..." follow the machine.
             syncPorts.run();
             port1Combo.repaint();
@@ -783,12 +842,15 @@ public final class ConfigDialog {
         // The list tells when a CD32 disc comes or goes.
         driveList.setOnChange(syncAuto);
 
-        // The Kickstart field is checked again at every edit (browse or typing).
-        kickField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+        // The Kickstart and CDTV extended ROM fields are checked again at every edit.
+        javax.swing.event.DocumentListener resync = new javax.swing.event.DocumentListener() {
             @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { syncAuto.run(); }
             @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { syncAuto.run(); }
             @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { syncAuto.run(); }
-        });
+        };
+        kickField.getDocument().addDocumentListener(resync);
+        cdtvExt.getDocument().addDocumentListener(resync);
+        a570Check.addActionListener(e -> syncAuto.run());
 
         expertCheck.addActionListener(e -> {
             if (simpleMode.getAsBoolean()) {
@@ -1039,7 +1101,20 @@ public final class ConfigDialog {
                 : RemotePlaySection.build(config, remotePlay,
                         remotePlay.isGuest() ? null : serial,
                         title -> section(title, "remoteplay", config),
-                        widgets(dialog, result), syncPorts);
+                        widgets(dialog, result), syncPorts,
+                        new RemotePlaySection.Ports() {
+                            @Override public java.awt.Window owner() { return dialog; }
+                            @Override public PortDevice device(int port) {
+                                Object d = (port == 0 ? port0Combo : port1Combo).getSelectedItem();
+                                return d instanceof PortDevice pd ? pd : PortDevice.NONE;
+                            }
+                            @Override public JoystickKeyMap keys(int port) {
+                                return joyKeyMaps[port];
+                            }
+                            @Override public boolean cd32Pad(int port) {
+                                return port == 1 && cd32Machine[0];
+                            }
+                        });
 
         // -------------------------------------------------------------------
         // Section: MiSTer (docs/groovy-mister-plan.md Phase 7). A guest has no machine whose
@@ -1181,6 +1256,9 @@ public final class ConfigDialog {
             (simpleMode.getAsBoolean() ? driveList.toMediaState() : classicMedia.get()).toConfig(cfg);
             cfg.setCd32ExtRomPath(cdExt.getText().trim());
             cfg.setCd32Keyboard(cdKeyboard.isSelected());
+            cfg.setCdtvExtRomPath(cdtvExt.getText().trim());
+            cfg.setCdtvKeyboard(cdtvKeyboard.isSelected());
+            cfg.setCdtvA570(a570Check.isSelected());
             cfg.setFloppySoundVolume((Integer) soundSpinner.getValue());
             cfg.setLedsVisible(ledCheck.isSelected());
             cfg.setOverscanEnabled(overscanCheck.isSelected());
@@ -1837,6 +1915,12 @@ public final class ConfigDialog {
             }
 
             @Override
+            public void addCheckRow(JComponent panel, int row, String key, JCheckBox check) {
+                ConfigDialog.tip(key, check);
+                ConfigDialog.addRow((JPanel) panel, row, check, null, null);
+            }
+
+            @Override
             public void setRowVisible(boolean visible, java.util.List<JComponent> comps) {
                 ConfigDialog.setRowVisible(visible, comps.toArray(new JComponent[0]));
             }
@@ -2004,6 +2088,17 @@ public final class ConfigDialog {
             g2.setColor(getTitleColor());
             g2.fillPolygon(tri);
             g2.dispose();
+        }
+    }
+
+    /** Changes the title of a section made by {@link #section(String)}. */
+    private static void setSectionTitle(JPanel section, String title) {
+        if (section.getBorder() instanceof javax.swing.border.CompoundBorder outer
+                && outer.getInsideBorder() instanceof javax.swing.border.CompoundBorder inner
+                && inner.getOutsideBorder() instanceof TitledBorder tb
+                && !title.equals(tb.getTitle())) {
+            tb.setTitle(title);
+            section.repaint();
         }
     }
 
@@ -2364,7 +2459,7 @@ public final class ConfigDialog {
 
     /** True for the individual disks of a multi-disk zip as well ({@code <zip>!<n>}). */
     private static boolean isZipPath(String path) {
-        return io.github.zolfrik.amija.custom.DiskImage.isZipDisk(path);
+        return io.github.zolfrik.amija.media.DiskImage.isZipDisk(path);
     }
 
     /**
@@ -2496,10 +2591,15 @@ public final class ConfigDialog {
 
         /** True if the list holds a CD32 disc: the machine will be a CD32. */
         boolean hasCd() {
+            return cdPath() != null;
+        }
+
+        /** The disc of the list, or null. */
+        String cdPath() {
             for (Item item : items) {
-                if (item.kind == Kind.CD) return true;
+                if (item.kind == Kind.CD) return item.path;
             }
-            return false;
+            return null;
         }
 
         /** The media of the list, spread over the machine's drives. */
@@ -2515,7 +2615,7 @@ public final class ConfigDialog {
                     && disk.regionMatches(true, 0, zipPath, 0, zipPath.length())
                     && disk.length() > zipPath.length()
                     && disk.charAt(zipPath.length())
-                        == io.github.zolfrik.amija.custom.DiskImage.ZIP_ENTRY_SEPARATOR;
+                        == io.github.zolfrik.amija.media.DiskImage.ZIP_ENTRY_SEPARATOR;
         }
 
         /**

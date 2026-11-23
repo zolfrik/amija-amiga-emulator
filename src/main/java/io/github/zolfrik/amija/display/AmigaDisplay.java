@@ -21,7 +21,8 @@
 package io.github.zolfrik.amija.display;
 
 import io.github.zolfrik.amija.common.AppHome;
-import io.github.zolfrik.amija.custom.FloppyDrive;
+import io.github.zolfrik.amija.hardware.custom.FloppyDrive;
+import io.github.zolfrik.amija.hardware.custom.VideoMode;
 import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.display.render.gl.GlDisplaySurface;
 
@@ -144,11 +145,10 @@ public class AmigaDisplay {
     private final int frameWidth;
     private final int frameHeight;
 
-    // First visible raster line (end of VBlank). The image is anchored at the top on this
-    // line, with no vertical centring (minimum first line = 26). Same as
-    // VirtualCRT.REGRESSION_CROP_Y (declared again here so the display package does not
-    // depend on common).
-    private static final int DISPLAY_TOP_LINE = 26;
+    // Raster line at the top of the frame. The image is anchored at the top on this line,
+    // with no vertical centring: the end of VBlank (26) with overscan, the top of the
+    // standard display window (44) without.
+    private final int displayTopLine;
     // COMPOSITION size: the one at which Java2D composes image + LEDs + counters, always
     // the native frame. It never grows with integer scaling: the enlargement is the last
     // blit and nothing else (see videoScale).
@@ -219,11 +219,71 @@ public class AmigaDisplay {
     // Notification (absolute path, drive index 0..3) when a disk is inserted by
     // drag-and-drop, so the caller can update the configuration (see F12).
     private volatile ObjIntConsumer<String> diskDropListener;
-    /** Receives a dropped CD image (a disc for the CD32), anywhere in the window. */
-    private volatile java.util.function.Consumer<String> cdDropListener;
+    // The CD drive of a CD machine (CD32, CDTV): which discs it takes and who inserts them.
+    // Both null on a floppy machine, where a drop goes to a floppy drive only.
+    private volatile java.util.function.Predicate<java.nio.file.Path> cdAccepts;
+    private volatile java.util.function.Consumer<String> cdInsert;
+    // During a drag on a CD machine: the dragged file the drive takes, null if none.
+    private volatile File cdDragDisc;
+    // During a drag: true when it goes to the CD drive. On a machine with both a CD drive and
+    // floppy drives (an A500 with an A570) a CD image goes to the CD drive, anything else to
+    // the floppy drives.
+    private volatile boolean cdDrag;
 
-    public void setCdDropListener(java.util.function.Consumer<String> listener) {
-        this.cdDropListener = listener;
+    /**
+     * Makes the window the drop target of a CD drive: a dragged disc is offered to
+     * {@code accepts} and, if taken, handed to {@code insert} (absolute path). Null for both
+     * on a machine without a CD drive.
+     */
+    public void setCdDrive(java.util.function.Predicate<java.nio.file.Path> accepts,
+                           java.util.function.Consumer<String> insert) {
+        this.cdAccepts = accepts;
+        this.cdInsert = insert;
+        prebuildOverlayCacheAsync();
+    }
+
+    private boolean hasCdDrive() {
+        return cdInsert != null;
+    }
+
+    /** True when at least one floppy drive is connected. */
+    private boolean hasFloppyDrive() {
+        FloppyDrive[] d = drives;
+        if (d == null) return false;
+        for (FloppyDrive f : d) {
+            if (f != null && f.isConnected()) return true;
+        }
+        return false;
+    }
+
+    /** True when a drag of {@code files} goes to the CD drive. */
+    private boolean goesToCdDrive(List<File> files) {
+        if (!hasCdDrive()) return false;
+        if (!hasFloppyDrive()) return true;
+        if (files == null) return false;
+        for (File f : files) {
+            if (io.github.zolfrik.amija.media.CdImage.isDisc(f.toPath())) return true;
+        }
+        return false;
+    }
+
+    /** First dragged file the CD drive takes, or null. */
+    private File acceptedDisc(List<File> files) {
+        java.util.function.Predicate<java.nio.file.Path> accepts = cdAccepts;
+        if (files == null || accepts == null) return null;
+        for (File f : files) {
+            if (io.github.zolfrik.amija.media.CdImage.isDisc(f.toPath()) && accepts.test(f.toPath())) return f;
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<File> draggedFiles(java.awt.datatransfer.Transferable t) {
+        try {
+            return (List<File>) t.getTransferData(DataFlavor.javaFileListFlavor);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** Registers the listener notified when a disk is dropped on a drive. */
@@ -356,6 +416,7 @@ public class AmigaDisplay {
         this.screenDevice = screenDeviceFor(monitorIndex);
         this.frameWidth  = frameWidth;
         this.frameHeight = frameHeight;
+        this.displayTopLine = VideoMode.displayTopLineForWidth(frameWidth);
         this.windowWidth = frameWidth;
         this.windowHeight = frameHeight;
         this.windowMode = windowMode == null ? AmigaWindowMode.WINDOWED : windowMode;
@@ -384,7 +445,7 @@ public class AmigaDisplay {
         AppIcons.applyToTaskbar();
 
         GlDisplaySurface surface = (this.renderer == RendererType.OPENGL)
-                ? createGlSurface(frameWidth, frameHeight) : null;
+                ? createGlSurface(frameWidth, frameHeight, displayTopLine) : null;
         DisplayPanel lbl = null;
         Component input;
         Component dnd;
@@ -431,9 +492,10 @@ public class AmigaDisplay {
     }
 
     /** Creates the GL backend, falling back on software (null) if not available. */
-    private static GlDisplaySurface createGlSurface(int frameWidth, int frameHeight) {
+    private static GlDisplaySurface createGlSurface(int frameWidth, int frameHeight,
+                                                    int displayTopLine) {
         try {
-            return new GlDisplaySurface(frameWidth, frameHeight);
+            return new GlDisplaySurface(frameWidth, frameHeight, displayTopLine);
         } catch (Throwable t) {
             System.err.println("[GL] OpenGL backend unavailable, using "
                     + "software rendering: " + t);
@@ -874,14 +936,14 @@ public class AmigaDisplay {
 
             int imgX, imgY;
             FrameInfo fi = lastFrameInfo;
-            // VERTICAL: no centring. The image is anchored at the top on the first visible
-            // line (end of VBlank = line 26). The beam starts there and goes down; what
+            // VERTICAL: no centring. The image is anchored at the top on displayTopLine
+            // (line 26 with overscan, 44 without). The beam starts there and goes down; what
             // exceeds at the bottom stays out (overscan), but the content at the top is
             // never pushed down or cut. Centring vertically on the DIW pushed up the games
             // that open the DIW over the whole overscan but draw a sub-region (It Came From
             // The Desert) and could cut the bottom edge.
             // HORIZONTAL: centred on the DIW centre.
-            imgY = -(DISPLAY_TOP_LINE * 2);
+            imgY = -(displayTopLine * 2);
             if (fi != null && fi.visibleWidth() > 0) {
                 int visCenterX = fi.visibleX() + fi.visibleWidth() / 2;
                 imgX = frameWidth / 2 - visCenterX;
@@ -1321,6 +1383,9 @@ public class AmigaDisplay {
             @Override
             public void dragEnter(DropTargetDragEvent e) {
                 if (!isFileDrag(e)) { e.rejectDrag(); return; }
+                List<File> files = draggedFiles(e.getTransferable());
+                cdDrag = goesToCdDrive(files);
+                cdDragDisc = cdDrag ? acceptedDisc(files) : null;
                 beginDragOverlay();
                 hoverQuadrant = quadrantAt(e.getLocation());
                 updateDragAcceptance(e);
@@ -1362,12 +1427,14 @@ public class AmigaDisplay {
         return e.isDataFlavorSupported(DataFlavor.javaFileListFlavor);
     }
 
-    /** Accepts the drag (copy cursor) only if the quadrant points to a connected drive. */
+    /**
+     * Accepts the drag (copy cursor) only where the media can go: on a CD machine anywhere,
+     * for a disc made for it; on a floppy machine on a quadrant of a connected drive.
+     */
     private void updateDragAcceptance(DropTargetDragEvent e) {
         FloppyDrive d = driveAt(hoverQuadrant);
-        // A machine without floppy drives (the CD32) takes a disc anywhere.
-        boolean noDrives = cdDropListener != null && !anyDriveConnected();
-        if ((d != null && d.isConnected()) || noDrives) {
+        boolean ok = cdDrag ? cdDragDisc != null : d != null && d.isConnected();
+        if (ok) {
             e.acceptDrag(DnDConstants.ACTION_COPY);
         } else {
             e.rejectDrag(); // show the "no-drop" cursor on the drives not available
@@ -1446,7 +1513,7 @@ public class AmigaDisplay {
             cache = buildOverlayCache();
             overlayFgCache = cache;
         }
-        BufferedImage fg = cache[hoverQuadrant + 1];
+        BufferedImage fg = cdDrag ? cache[cdDragDisc != null ? 5 : 6] : cache[hoverQuadrant + 1];
 
         BufferedImage canvas = new BufferedImage(windowWidth, windowHeight,
                 BufferedImage.TYPE_INT_RGB);
@@ -1516,7 +1583,13 @@ public class AmigaDisplay {
      * a drive not connected) reuse the "no hover" layer.
      */
     private BufferedImage[] buildOverlayCache() {
-        BufferedImage[] cache = new BufferedImage[5];
+        BufferedImage[] cache = new BufferedImage[7];
+        if (hasCdDrive()) {
+            // The CD drive: one card, for a disc the drive takes (5) or not (6).
+            cache[5] = renderCdForeground(true);
+            cache[6] = renderCdForeground(false);
+            if (!hasFloppyDrive()) return cache;
+        }
         cache[0] = renderOverlayForeground(-1);          // no quadrant hovered
         for (int i = 0; i < 4; i++) {
             FloppyDrive d = driveAt(i);
@@ -1608,6 +1681,68 @@ public class AmigaDisplay {
         drawCentered(g, sub, cx, cy + 52);
     }
 
+    /** The foreground of a CD machine's drop: veil and one card for its CD drive. */
+    private BufferedImage renderCdForeground(boolean accepted) {
+        BufferedImage img = new BufferedImage(windowWidth, windowHeight,
+                BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        g.setColor(DIM_VEIL);
+        g.fillRect(0, 0, windowWidth, windowHeight);
+        paintCdCard(g, accepted);
+        g.dispose();
+        return img;
+    }
+
+    /**
+     * The single drop target of a CD machine: card, disc glyph, label. Green for a disc the
+     * drive takes, red and dashed for one made for another machine or not a disc at all.
+     */
+    private void paintCdCard(Graphics2D g, boolean accepted) {
+        Color accent   = accepted ? OK_ACCENT : BAD_ACCENT;
+        Color accentHi = accepted ? OK_ACCENT_HI : BAD_ACCENT;
+        int margin = 24;
+        RoundRectangle2D card = new RoundRectangle2D.Float(margin, margin,
+                windowWidth - 2 * margin, windowHeight - 2 * margin, 30, 30);
+        g.setColor(withAlpha(accent, accepted ? 64 : 20));
+        g.fill(card);
+        if (accepted) {
+            g.setColor(withAlpha(accentHi, 80));
+            g.setStroke(new BasicStroke(11f));
+            g.draw(card);
+            g.setStroke(new BasicStroke(3.5f));
+        } else {
+            g.setStroke(new BasicStroke(2.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND,
+                    0f, new float[]{11f, 9f}, 0f));
+        }
+        g.setColor(accentHi);
+        g.draw(card);
+
+        int cx = windowWidth / 2, cy = windowHeight / 2;
+        int r = Math.max(30, Math.min(windowWidth, windowHeight) / 8);
+        int dy = cy - r / 2 - 10;
+        g.setColor(withAlpha(accent, 55));
+        g.fill(new java.awt.geom.Ellipse2D.Float(cx - r, dy - r, 2 * r, 2 * r));
+        g.setColor(accent);
+        g.setStroke(new BasicStroke(2.4f));
+        g.draw(new java.awt.geom.Ellipse2D.Float(cx - r, dy - r, 2 * r, 2 * r));
+        int hole = Math.max(5, r / 5);
+        g.draw(new java.awt.geom.Ellipse2D.Float(cx - hole, dy - hole, 2 * hole, 2 * hole));
+        g.setColor(withAlpha(Color.WHITE, 60));
+        g.draw(new java.awt.geom.Arc2D.Float(cx - r * 0.7f, dy - r * 0.7f, r * 1.4f, r * 1.4f,
+                20, 70, java.awt.geom.Arc2D.OPEN));
+
+        g.setFont(overlayFont.deriveFont(Font.BOLD, 46f));
+        g.setColor(accentHi);
+        drawCentered(g, "CD", cx, dy + r + 40);
+        g.setFont(overlayFont.deriveFont(Font.PLAIN, 15f));
+        g.setColor(accepted ? withAlpha(Color.WHITE, 180) : withAlpha(BAD_ACCENT, 200));
+        drawCentered(g, io.github.zolfrik.amija.i18n.Messages.t(
+                accepted ? "overlay.cd.drop" : "overlay.cd.wrong"), cx, dy + r + 74);
+    }
+
     /** Stylised glyph of a 3.5" floppy centred at (cx,cy). */
     private void drawFloppyGlyph(Graphics2D g, int cx, int cy, int s, Color accent, boolean connected) {
         int w = (int) (s * 0.86), h = s;
@@ -1687,30 +1822,29 @@ public class AmigaDisplay {
         }
     }
 
-    /** Completes a drop: validates quadrant and file, then inserts the disk in the drive. */
+    /**
+     * Completes a drop. A drop only changes removable media: a disc made for the machine into
+     * the CD drive of a CD machine, a floppy into the connected drive under the cursor of a
+     * floppy machine. Anything else is refused.
+     */
     private void handleDrop(DropTargetDropEvent e) {
-        if (cdDropListener != null && e.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
-            try {
+        if (cdDrag) {
+            java.util.function.Consumer<String> insert = cdInsert;
+            if (insert == null || cdDragDisc == null
+                    || !e.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                e.rejectDrop();
+            } else {
+                // The data of a drop from another process can be read only once it is accepted.
                 e.acceptDrop(DnDConstants.ACTION_COPY);
-                @SuppressWarnings("unchecked")
-                List<File> files = (List<File>) e.getTransferable()
-                        .getTransferData(DataFlavor.javaFileListFlavor);
-                for (File f : files) {
-                    if (io.github.zolfrik.amija.custom.cd.CdImage.isDisc(f.toPath())) {
-                        java.util.function.Consumer<String> l = cdDropListener;
-                        String path = f.getAbsolutePath();
-                        javax.swing.SwingUtilities.invokeLater(() -> l.accept(path));
-                        e.dropComplete(true);
-                        endDragOverlay();
-                        return;
-                    }
+                File disc = acceptedDisc(draggedFiles(e.getTransferable()));
+                if (disc != null) {
+                    String path = disc.getAbsolutePath();
+                    javax.swing.SwingUtilities.invokeLater(() -> insert.accept(path));
                 }
-                handleFloppyDrop(e, files);
-            } catch (Exception ex) {
-                System.err.println("[DND] Error receiving the file: " + ex.getMessage());
-                e.dropComplete(false);
-                endDragOverlay();
+                e.dropComplete(disc != null);
             }
+            cdDragDisc = null;
+            endDragOverlay();
             return;
         }
         int q = quadrantAt(e.getLocation());
@@ -1739,27 +1873,8 @@ public class AmigaDisplay {
         endDragOverlay();
     }
 
-    /** A drop already accepted that is not a disc: a floppy for the quadrant under the mouse. */
-    private void handleFloppyDrop(DropTargetDropEvent e, List<File> files) {
-        int q = quadrantAt(e.getLocation());
-        FloppyDrive drive = driveAt(q);
-        File disk = firstSupportedDisk(files);
-        boolean ok = drive != null && drive.isConnected() && disk != null;
-        if (ok) handleDiskDrop(drive, q, disk);
-        e.dropComplete(ok);
-        endDragOverlay();
-    }
-
-    private boolean anyDriveConnected() {
-        for (int q = 0; q < 4; q++) {
-            FloppyDrive d = driveAt(q);
-            if (d != null && d.isConnected()) return true;
-        }
-        return false;
-    }
-
     /**
-     * First .adf/.ipf/.zip file of the dragged list, or null.
+     * First floppy of the dragged list (.adf, .ipf, or a .zip that is not a CD image), or null.
      *
      * <p>{@code Locale.ROOT} and not the system language: in Turkish the lower case of
      * {@code 'I'} is a dotless i, so {@code "GIOCO.IPF"} would not match {@code ".ipf"}: a
@@ -1770,7 +1885,8 @@ public class AmigaDisplay {
         if (files == null) return null;
         for (File f : files) {
             String n = f.getName().toLowerCase(java.util.Locale.ROOT);
-            if (n.endsWith(".adf") || n.endsWith(".ipf") || n.endsWith(".zip")) return f;
+            if (n.endsWith(".adf") || n.endsWith(".ipf")) return f;
+            if (n.endsWith(".zip") && !io.github.zolfrik.amija.media.CdImage.isDisc(f.toPath())) return f;
         }
         return null;
     }

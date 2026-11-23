@@ -72,8 +72,8 @@ public final class GlDisplaySurface {
     /** Height of the RAW framebuffer (312). */
     public static final int RAW_H = 312;
 
-    /** First visible raster line (end of VBlank), as {@code AmigaDisplay.DISPLAY_TOP_LINE}. */
-    private static final int DISPLAY_TOP_LINE = 26;
+    // Raster line at the top of the crop (26 with overscan, 44 without).
+    private final int displayTopLine;
 
     // Logical size of the crop (e.g. 724x576 PAL overscan): defines the source rectangle cut
     // from the RAW and the target aspect ratio of the viewport.
@@ -144,8 +144,9 @@ public final class GlDisplaySurface {
     private boolean dragDirty;
     private int dragTex, dragTexW, dragTexH;
 
-    public GlDisplaySurface(int frameWidth, int frameHeight) {
+    public GlDisplaySurface(int frameWidth, int frameHeight, int displayTopLine) {
         this.frameWidth = frameWidth;
+        this.displayTopLine = displayTopLine;
         this.frameHeight = frameHeight;
         this.origW = frameWidth;
         this.origH = frameHeight / 2;
@@ -236,9 +237,9 @@ public final class GlDisplaySurface {
                     ? info.visibleX() + info.visibleWidth() / 2
                     : RAW_W / 2;
             // Same arithmetic as AmigaDisplay.composeLogicalFrameCanvas:
-            // a frameWidth-wide window centred on the DIW centre, anchored at line 26.
+            // a frameWidth-wide window centred on the DIW centre, anchored at displayTopLine.
             pendingSrcX0 = visCenterX - frameWidth / 2;
-            pendingSrcY0 = DISPLAY_TOP_LINE;
+            pendingSrcY0 = displayTopLine;
             pendingSrcW = frameWidth;
             pendingSrcH = frameHeight / 2;
             pendingLores = lores;

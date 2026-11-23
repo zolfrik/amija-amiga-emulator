@@ -1,0 +1,15 @@
+# AmiJa game database: games whose Auto profile is known to be wrong.
+#
+# One entry per line:   <format> <key> <setting>=<value> ...   # why
+#
+#   format   whdload   key = slave file name without ".slave", any case
+#            floppy    key = title of the disk image file: what comes before the first
+#                      "(" or "[", lower case, letters and digits only
+#   setting  cpu=68000|68010|68020   chipset=OCS|ECS|AGA   fastram=<KB>
+#
+# An entry applies only in Auto mode and wins over everything Auto derives, the
+# slave's own flags included. Every entry is backed by a bot in the private test
+# suite (sweep/gamedb) that reaches the game's gameplay with that configuration.
+
+# Floppies
+floppy fifainternationalsoccer fastram=2048   # "insufficient FAST memory" without it

@@ -22,9 +22,14 @@ package io.github.zolfrik.amija.net.serial;
 
 import io.github.zolfrik.amija.common.ExternalPacer;
 import io.github.zolfrik.amija.common.MasterClock;
-import io.github.zolfrik.amija.custom.AbstractAgnus;
+import io.github.zolfrik.amija.hardware.custom.AbstractAgnus;
 import io.github.zolfrik.amija.i18n.Messages;
+import io.github.zolfrik.amija.net.AuthThrottle;
+import io.github.zolfrik.amija.net.CandidateDialer;
+import io.github.zolfrik.amija.net.InviteCode;
 import io.github.zolfrik.amija.net.JoinCode;
+import io.github.zolfrik.amija.net.nat.HostExposure;
+import io.github.zolfrik.amija.net.nat.LocalAddresses;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -54,6 +59,15 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
     /** The most the joining end bends its speed to stay in the middle of its window. */
     private static final double MAX_TRIM = 0.005;
     private static final int CONNECT_TIMEOUT_MS = 8_000;
+    /** Handshakes in flight at once; beyond them the newcomer is refused at once. */
+    private static final int HANDSHAKE_THREADS = 3;
+    /** Overall limit of one handshake, the measure of the round trip included. */
+    private static final int HANDSHAKE_BUDGET_MS = 15_000;
+    /** How fast the join code may be got wrong, per address. */
+    private final AuthThrottle throttle = new AuthThrottle();
+
+    /** Ports tried from the preferred one upward before taking any free one. */
+    private static final int PORT_ATTEMPTS = 10;
 
     private final BooleanSupplier pacerTaken;
 
@@ -64,7 +78,12 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
 
     private volatile ServerSocket server;
     private volatile String joinCode;
-    private volatile boolean lanOnly;
+    /** Whether the listening end accepts peers from the Internet too. */
+    private volatile boolean internet;
+    /** The exposure settings for a given choice of Internet; null = local network defaults. */
+    private volatile java.util.function.Function<Boolean, HostExposure.Options> exposureOptions;
+    private volatile HostExposure exposure;
+    private volatile HostExposure closingExposure;
     private volatile long forcedDelayNs;
     private volatile boolean joining;
     private volatile String joiningAddress;
@@ -289,10 +308,22 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
     // The popup
     // =====================================================================
 
-    /** Sets what the next session uses: the delay to force in milliseconds (0 = measured) and the LAN rule. */
-    public void configure(int delayMs, boolean lanOnly) {
+    /**
+     * Sets what the next session uses: the delay to force in milliseconds (0 = measured), and
+     * how the listening end is exposed for a given choice of Internet (router mapping of TCP
+     * only, STUN, IPv6, firewall), the same settings as the stream host.
+     *
+     * @param exposure {@code null} for a local-network host with no extras
+     */
+    public void configure(int delayMs,
+                          java.util.function.Function<Boolean, HostExposure.Options> exposure) {
         this.forcedDelayNs = Math.max(0, delayMs) * 1_000_000L;
-        this.lanOnly = lanOnly;
+        this.exposureOptions = exposure;
+    }
+
+    /** Only the delay; the listening end stays on the local network. */
+    public void configure(int delayMs) {
+        configure(delayMs, null);
     }
 
     @Override
@@ -309,7 +340,35 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
     @Override
     public String serialLanAddress() {
         ServerSocket s = server;
-        return s == null ? null : localAddress() + ":" + s.getLocalPort();
+        HostExposure e = exposure;
+        return s == null ? null
+                : (e != null ? e.lanAddress() : localAddress()) + ":" + s.getLocalPort();
+    }
+
+    @Override
+    public String serialInvite() {
+        ServerSocket s = server;
+        HostExposure e = exposure;
+        String code = joinCode;
+        if (s == null || e == null || code == null) {
+            return null;
+        }
+        java.util.List<InviteCode.Candidate> c = e.candidates();
+        return c.isEmpty() ? null : new InviteCode(InviteCode.ROLE_NULL_MODEM, code, c).format();
+    }
+
+    @Override
+    public String serialReachability() {
+        HostExposure e = exposure;
+        return server == null || e == null ? null : e.reachability();
+    }
+
+    /** Waits for the router mapping to be withdrawn; only for the shutdown hook. */
+    public void awaitExposureClosed(long millis) {
+        HostExposure e = closingExposure;
+        if (e != null) {
+            e.awaitClosed(millis);
+        }
     }
 
     @Override
@@ -329,17 +388,25 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
         return Messages.t(loopback ? "msg.serial.loopback" : "msg.serial.off");
     }
 
-    /** Starts listening on {@code port}; see {@link SerialControl#startSerialHost(int, boolean)}. */
+    /**
+     * Starts listening on {@code port}, or on one of the next few when it is taken, or on any
+     * free one: the invitation carries the port. 0 asks for a free one at once.
+     */
     public synchronized String startHost(int port) {
         if (server != null) return null;
         if (agnus == null) return Messages.t("msg.serial.nomachine");
         try {
-            ServerSocket s = new ServerSocket();
-            s.setReuseAddress(true);
-            s.bind(new InetSocketAddress(port), 2);
+            ServerSocket s = bindPreferred(port);
             joinCode = JoinCode.generate();
             server = s;
             message = null;
+            java.util.function.Function<Boolean, HostExposure.Options> opts = exposureOptions;
+            HostExposure e = new HostExposure(s.getLocalPort(), opts != null
+                    ? opts.apply(internet)
+                    : new HostExposure.Options(false, false, "", false, java.util.List.of(),
+                            null, null));
+            exposure = e;
+            e.start();
             Thread t = new Thread(() -> acceptLoop(s), "AmiJa-serial-accept");
             t.setDaemon(true);
             t.start();
@@ -350,35 +417,138 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
     }
 
     @Override
-    public synchronized String startSerialHost(int port, boolean lanOnly) {
-        if (server == null) this.lanOnly = lanOnly;
+    public synchronized String startSerialHost(int port, boolean internet) {
+        if (server == null) this.internet = internet;
         return startHost(port);
     }
 
+    private static ServerSocket bindPreferred(int preferred) throws IOException {
+        IOException first = null;
+        if (preferred > 0) {
+            for (int i = 0; i < PORT_ATTEMPTS && preferred + i <= 65535; i++) {
+                try {
+                    return bind(preferred + i);
+                } catch (IOException e) {
+                    if (first == null) first = e;
+                }
+            }
+        }
+        try {
+            return bind(0);
+        } catch (IOException e) {
+            if (first != null) e.addSuppressed(first);
+            throw e;
+        }
+    }
+
+    private static ServerSocket bind(int port) throws IOException {
+        ServerSocket s = new ServerSocket();
+        try {
+            s.bind(new InetSocketAddress(port), 8);
+            return s;
+        } catch (IOException e) {
+            s.close();
+            throw e;
+        }
+    }
+
+    /**
+     * Accepts connections and hands each to a handshake thread of its own.
+     *
+     * <p>The same defences as the stream host, which this end needs as soon as it can be
+     * reached from the Internet: the accepting thread never waits for a peer (a silent one
+     * would otherwise hold the door for the whole handshake timeout), at most
+     * {@value #HANDSHAKE_THREADS} handshakes run at once, each within
+     * {@value #HANDSHAKE_BUDGET_MS} ms, and a peer that gets the code wrong too often is
+     * refused before the key derivation ({@link AuthThrottle}, per address, per /64 for IPv6).
+     * A connection closed before sending a byte is not an attempt at the code.
+     */
     private void acceptLoop(ServerSocket s) {
-        while (!s.isClosed()) {
-            Socket socket;
+        java.util.concurrent.ThreadPoolExecutor handshakes =
+                new java.util.concurrent.ThreadPoolExecutor(0, HANDSHAKE_THREADS, 30L,
+                        java.util.concurrent.TimeUnit.SECONDS,
+                        new java.util.concurrent.SynchronousQueue<>(), r -> {
+                            Thread t = new Thread(r, "AmiJa-serial-handshake");
+                            t.setDaemon(true);
+                            return t;
+                        });
+        try {
+            while (!s.isClosed()) {
+                Socket socket;
+                try {
+                    socket = s.accept();
+                } catch (IOException e) {
+                    return;
+                }
+                InetAddress peer = socket.getInetAddress();
+                if (link != null || pendingLink != null) {
+                    closeQuietly(socket);   // one cable, one other end
+                    continue;
+                }
+                if (!internet && !LocalAddresses.isLocalNetwork(peer)) {
+                    closeQuietly(socket);
+                    message = Messages.t("msg.serial.refused.lan", peer.getHostAddress());
+                    continue;
+                }
+                if (throttle.retryAfterMillis(peer) > 0) {
+                    closeQuietly(socket);   // too many wrong codes: no derivation for it
+                    continue;
+                }
+                String code = joinCode;
+                if (code == null) {
+                    closeQuietly(socket);   // hosting is stopping
+                    continue;
+                }
+                try {
+                    handshakes.execute(() -> handshake(socket, peer, code));
+                } catch (java.util.concurrent.RejectedExecutionException e) {
+                    closeQuietly(socket);   // every handshake thread busy: refused at once
+                }
+            }
+        } finally {
+            handshakes.shutdownNow();
+        }
+    }
+
+    /** One handshake, on its own thread, closed by a deadline if it does not complete. */
+    private void handshake(Socket socket, InetAddress peer, String code) {
+        java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread deadline = new Thread(() -> {
             try {
-                socket = s.accept();
-            } catch (IOException e) {
+                Thread.sleep(HANDSHAKE_BUDGET_MS);
+            } catch (InterruptedException e) {
                 return;
             }
-            if (link != null || pendingLink != null) {
-                closeQuietly(socket);   // one cable, one other end
-                continue;
+            if (done.compareAndSet(false, true)) {
+                closeQuietly(socket);   // wakes the blocked read with an exception
             }
-            if (lanOnly && !isLocal(socket.getInetAddress())) {
-                closeQuietly(socket);
-                message = Messages.t("msg.serial.refused.lan", socket.getInetAddress().getHostAddress());
-                continue;
+        }, "AmiJa-serial-handshake-deadline");
+        deadline.setDaemon(true);
+        deadline.start();
+        try {
+            TcpLink l = TcpLink.host(socket, code, hz, forcedDelayNs);
+            if (!done.compareAndSet(false, true)) {
+                l.close();
+                return;
             }
-            try {
-                TcpLink l = TcpLink.host(socket, joinCode, hz, forcedDelayNs);
+            deadline.interrupt();
+            throttle.recordSuccess(peer);
+            synchronized (this) {
+                if (link != null || pendingLink != null || server == null) {
+                    l.close();   // another handshake got there first, or hosting stopped
+                    return;
+                }
                 pendingIsHost = true;
                 pendingLink = l;
-            } catch (IOException e) {
-                message = Messages.t("msg.serial.refused", String.valueOf(e.getMessage()));
             }
+        } catch (io.github.zolfrik.amija.net.Handshake.ClosedBeforeHelloException e) {
+            done.set(true);
+            deadline.interrupt();
+        } catch (IOException e) {
+            done.set(true);
+            deadline.interrupt();
+            throttle.recordFailure(peer);
+            message = Messages.t("msg.serial.refused", String.valueOf(e.getMessage()));
         }
     }
 
@@ -386,6 +556,9 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
     public synchronized String joinSerial(String address, int port, String code) {
         if (agnus == null) return Messages.t("msg.serial.nomachine");
         if (link != null || pendingLink != null || joining) return Messages.t("msg.serial.busy");
+        if (InviteCode.looksLikeInvite(address)) {
+            return joinInvite(address);
+        }
         String normalised = JoinCode.normalise(code);
         if (address == null || address.isBlank() || !JoinCode.isWellFormed(normalised)) {
             return Messages.t("msg.serial.badinput");
@@ -413,11 +586,62 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
         return null;
     }
 
+    /** Joins through an invitation: every address it carries is tried, the first that answers wins. */
+    private String joinInvite(String text) {
+        InviteCode invite;
+        try {
+            invite = InviteCode.parse(text);
+        } catch (InviteCode.InvalidInviteException e) {
+            return Messages.t(switch (e.problem()) {
+                case CORRUPTED -> "msg.remoteplay.invite.corrupted";
+                case VERSION -> "msg.remoteplay.invite.version";
+                case MALFORMED -> "msg.remoteplay.invite.malformed";
+            });
+        }
+        if (invite.role() != InviteCode.ROLE_NULL_MODEM) {
+            return Messages.t("msg.serial.invite.stream");
+        }
+        joining = true;
+        joiningAddress = Messages.t("msg.remoteplay.invite.target");
+        message = null;
+        final long myHz = hz;
+        Thread t = new Thread(() -> {
+            try {
+                TcpLink l = CandidateDialer.connect(invite.candidates(), CONNECT_TIMEOUT_MS,
+                        (s, c) -> TcpLink.join(s, invite.joinCode(), myHz, forcedDelayNs));
+                pendingIsHost = false;
+                pendingLink = l;
+            } catch (CandidateDialer.AllFailedException e) {
+                StringBuilder sb = new StringBuilder();
+                for (CandidateDialer.Attempt a : e.attempts()) {
+                    if (sb.length() > 0) sb.append("; ");
+                    sb.append(a.candidate().endpoint()).append(' ')
+                            .append(String.valueOf(a.failure().getMessage()));
+                }
+                message = Messages.t("msg.serial.joinfailed", joiningAddress, sb.toString());
+            } catch (IOException e) {
+                message = Messages.t("msg.serial.joinfailed", joiningAddress,
+                        String.valueOf(e.getMessage()));
+            } finally {
+                joining = false;
+            }
+        }, "AmiJa-serial-join");
+        t.setDaemon(true);
+        t.start();
+        return null;
+    }
+
     @Override
     public synchronized void stopSerial() {
         ServerSocket s = server;
         server = null;
         joinCode = null;
+        HostExposure e = exposure;
+        exposure = null;
+        if (e != null) {
+            e.close();
+            closingExposure = e;
+        }
         if (s != null) closeQuietly(s);
         dropLink(SerialLinkProtocol.BYE_CLOSED, null);
         message = null;
@@ -441,16 +665,7 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
         }
     }
 
-    private static boolean isLocal(InetAddress a) {
-        return a.isLoopbackAddress() || a.isSiteLocalAddress() || a.isLinkLocalAddress();
-    }
-
     private static String localAddress() {
-        try (java.net.DatagramSocket probe = new java.net.DatagramSocket()) {
-            probe.connect(InetAddress.getByName("8.8.8.8"), 53);
-            return probe.getLocalAddress().getHostAddress();
-        } catch (Exception e) {
-            return "127.0.0.1";
-        }
+        return io.github.zolfrik.amija.net.nat.LocalAddresses.primaryIpv4Text();
     }
 }

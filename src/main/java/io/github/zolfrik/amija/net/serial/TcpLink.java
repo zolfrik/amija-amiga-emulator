@@ -132,7 +132,18 @@ public final class TcpLink implements LinkCore.Transport, AutoCloseable {
         ControlChannel ch = new ControlChannel(socket);
         try {
             ch.setTimeout(HANDSHAKE_TIMEOUT_MS);
-            ControlChannel.Message hello = ch.expect(SerialLinkProtocol.MSG_HELLO);
+            ControlChannel.Message hello;
+            try {
+                hello = ch.expect(SerialLinkProtocol.MSG_HELLO);
+            } catch (java.net.SocketTimeoutException e) {
+                throw e;
+            } catch (IOException e) {
+                // Closed without a byte: not an attempt at the code (see Handshake).
+                if (!ch.receivedAny()) {
+                    throw new io.github.zolfrik.amija.net.Handshake.ClosedBeforeHelloException(e);
+                }
+                throw e;
+            }
             ByteBuffer hb = hello.body();
             byte[] nonce = new byte[SessionCrypto.NONCE_BYTES];
             long peerHz;

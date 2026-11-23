@@ -20,8 +20,8 @@
 
 package io.github.zolfrik.amija.config;
 
-import io.github.zolfrik.amija.cpu.CpuModel;
-import io.github.zolfrik.amija.custom.FastRam;
+import io.github.zolfrik.amija.hardware.common.cpu.CpuModel;
+import io.github.zolfrik.amija.hardware.custom.FastRam;
 import io.github.zolfrik.amija.i18n.Messages;
 import io.github.zolfrik.amija.memory.KickstartImage;
 import io.github.zolfrik.amija.memory.KickstartImage.CpuRequirement;

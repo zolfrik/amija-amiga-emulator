@@ -20,10 +20,12 @@
 
 package io.github.zolfrik.amija.config;
 
+import io.github.zolfrik.amija.media.CdImage;
+
 import io.github.zolfrik.amija.common.AppHome;
-import io.github.zolfrik.amija.common.Chipset;
-import io.github.zolfrik.amija.cpu.CpuModel;
-import io.github.zolfrik.amija.common.VideoMode;
+import io.github.zolfrik.amija.hardware.custom.Chipset;
+import io.github.zolfrik.amija.hardware.common.cpu.CpuModel;
+import io.github.zolfrik.amija.hardware.custom.VideoMode;
 import io.github.zolfrik.amija.display.AmigaWindowMode;
 import io.github.zolfrik.amija.display.render.RendererType;
 import io.github.zolfrik.amija.input.JoystickAction;
@@ -91,9 +93,11 @@ public final class AmigaConfig {
     private static final String K_AUTO_KS31_A1200 = "auto.kickstart31.a1200.path";
     private static final String K_AUTO_CD32_KS    = "auto.cd32.kickstart.path";
     private static final String K_AUTO_CD32_EXT   = "auto.cd32.extrom.path";
+    private static final String K_AUTO_CDTV_EXT   = "auto.cdtv.extrom.path";
     /** Derived keys, in the order of {@link KickstartFolder.Role}. */
     private static final String[] AUTO_ROM_KEYS = {
-            K_AUTO_KS13, K_AUTO_KS31, K_AUTO_KS31_A1200, K_AUTO_CD32_KS, K_AUTO_CD32_EXT };
+            K_AUTO_KS13, K_AUTO_KS31, K_AUTO_KS31_A1200, K_AUTO_CD32_KS, K_AUTO_CD32_EXT,
+            K_AUTO_CDTV_EXT };
 
     private static final String K_KICKSTART   = "kickstart.path";
     private static final String K_CHIPRAM_KB  = "chipram.kb";
@@ -110,6 +114,9 @@ public final class AmigaConfig {
     private static final String K_CD_IMAGE     = "cd.image";
     private static final String K_CD32_EXTROM  = "cd32.extrom.path";
     private static final String K_CD32_KEYBOARD = "cd32.keyboard";
+    private static final String K_CDTV_EXTROM  = "cdtv.extrom.path";
+    private static final String K_CDTV_KEYBOARD = "cdtv.keyboard";
+    private static final String K_CDTV_A570    = "cdtv.a570";
     private static final String K_LAST_MEDIA_DIR  = "chooser.media.lastDirectory";
     private static final String K_LAST_FLOPPY_DIR = "chooser.floppy.lastDirectory";
     private static final String K_LAST_ROM_DIR    = "chooser.rom.lastDirectory";
@@ -151,9 +158,12 @@ public final class AmigaConfig {
     // Remote play (docs/remote-play-plan.md section 10). The join code is NOT saved to the
     // file: it is a session secret and is regenerated at every start of the host.
     private static final String K_RP_PORT = "remoteplay.port";
-    private static final String K_RP_UPNP = "remoteplay.upnp";
+    private static final String K_RP_ACCESS = "remoteplay.access";
     private static final String K_RP_BIND = "remoteplay.bind";
-    private static final String K_RP_LAN_ONLY = "remoteplay.lan.only";
+    private static final String K_RP_UPNP_GATEWAY = "remoteplay.upnp.gateway";
+    private static final String K_RP_IPV6 = "remoteplay.ipv6";
+    private static final String K_RP_STUN = "remoteplay.stun";
+    private static final String K_RP_STUN_SERVERS = "remoteplay.stun.servers";
     private static final String K_RP_GUEST_PORT = "remoteplay.guest.port";
     private static final String K_RP_GUEST_KEYBOARD = "remoteplay.guest.keyboard";
     private static final String K_RP_GUEST_ALLOWRESET = "remoteplay.guest.allowreset";
@@ -177,7 +187,6 @@ public final class AmigaConfig {
     private static final String K_SERIAL_ADDRESS = "serial.link.address";
     private static final String K_SERIAL_PORT = "serial.link.port";
     private static final String K_SERIAL_DELAY = "serial.link.delay.ms";
-    private static final String K_SERIAL_LANONLY = "serial.link.lanonly";
     /** Default port of the null modem cable: not the one of remote play, the two can run together. */
     public static final int DEFAULT_SERIAL_PORT = 7789;
 
@@ -266,9 +275,15 @@ public final class AmigaConfig {
         }
     }
 
-    /** Floppy only: the stock OCS configuration almost every game expects. */
+    /**
+     * Floppy only: an A500 with the ECS Agnus, 1 MB of Chip RAM and the 512 KB trapdoor
+     * expansion as Slow RAM, with the 68000 and Kickstart 1.3. The original games run on it as
+     * on a stock 512 + 512 KB machine, and the later ones that need 1 MB of Chip RAM
+     * ("Not enough memory", a guru at startup) run too. No Fast RAM: a game that wants it is
+     * an exception of the game database.
+     */
     private static final AutoDefaults AUTO_FLOPPY =
-            new AutoDefaults("auto.floppy.", 512, 512, 0, Chipset.OCS, CpuModel.M68000E);
+            new AutoDefaults("auto.floppy.", 1024, 512, 0, Chipset.ECS, CpuModel.M68000E);
 
     /**
      * Hard disk or WHDLoad active: the expanded machine that software requires.
@@ -606,6 +621,10 @@ public final class AmigaConfig {
         p.setProperty(K_CD_IMAGE, "");
         p.setProperty(K_CD32_EXTROM, "");
         p.setProperty(K_CD32_KEYBOARD, "false");
+        // CDTV: no extended ROM named (no CDTV in Expert), no keyboard.
+        p.setProperty(K_CDTV_EXTROM, "");
+        p.setProperty(K_CDTV_KEYBOARD, "false");
+        p.setProperty(K_CDTV_A570, "false");
         p.setProperty(K_LAST_MEDIA_DIR, "");
         p.setProperty(K_LAST_FLOPPY_DIR, "");
         p.setProperty(K_LAST_ROM_DIR, "");
@@ -645,9 +664,12 @@ public final class AmigaConfig {
         // Remote play: off until the user presses "Host" in the popup. The keys are there
         // anyway, because a missing key is a feature the user does not know exists.
         p.setProperty(K_RP_PORT, "7788");
-        p.setProperty(K_RP_UPNP, "true");
+        p.setProperty(K_RP_ACCESS, "lan");
         p.setProperty(K_RP_BIND, "");
-        p.setProperty(K_RP_LAN_ONLY, "true");
+        p.setProperty(K_RP_UPNP_GATEWAY, "");
+        p.setProperty(K_RP_IPV6, "true");
+        p.setProperty(K_RP_STUN, "true");
+        p.setProperty(K_RP_STUN_SERVERS, io.github.zolfrik.amija.net.nat.StunClient.DEFAULT_SERVERS);
         p.setProperty(K_RP_GUEST_PORT, "1");             // the joystick port to the guest
         p.setProperty(K_RP_GUEST_KEYBOARD, "true");
         p.setProperty(K_RP_GUEST_ALLOWRESET, "false");
@@ -669,7 +691,6 @@ public final class AmigaConfig {
         p.setProperty(K_SERIAL_ADDRESS, "");
         p.setProperty(K_SERIAL_PORT, Integer.toString(DEFAULT_SERIAL_PORT));
         p.setProperty(K_SERIAL_DELAY, "auto");
-        p.setProperty(K_SERIAL_LANONLY, "true");
         // WHDLoad parameters (section whdload.prefs.*): defaults as in the stock WHDLoad.prefs.
         for (WhdPref pref : WHD_PREFS) {
             p.setProperty(pref.key(), pref.def());
@@ -758,6 +779,8 @@ public final class AmigaConfig {
         if (!autoEnabled()) return null;
         java.util.List<KickstartFolder.Role> needed = cd32Machine()
                 ? java.util.List.of(KickstartFolder.Role.CD32, KickstartFolder.Role.CD32_EXT)
+                : cdtvMachine()
+                ? java.util.List.of(KickstartFolder.Role.KS13, KickstartFolder.Role.CDTV_EXT)
                 : java.util.List.of(autoProfile().kickstartRole());
         for (KickstartFolder.Role role : needed) {
             String rom = autoKickstart(role);
@@ -834,22 +857,60 @@ public final class AmigaConfig {
      * @param activeFiles files in use, for the PAL/NTSC and AGA derivations
      */
     private AutoProfile autoProfile(boolean expanded, java.util.List<String> activeFiles) {
-        final boolean aga = agaRequired(activeFiles);
+        // A game database entry wins over what the medium says: it is measured on that game.
+        GameDatabase.Entry exception = gameException();
+        Chipset forcedChipset = exception == null ? null : exception.chipset();
+        CpuModel forcedCpu = exception == null ? null : exception.cpu();
+        final boolean aga = forcedChipset != null ? forcedChipset.isAga() : agaRequired(activeFiles);
         AutoDefaults d = aga ? AUTO_AGA : expanded ? AUTO_EXPANDED : AUTO_FLOPPY;
-        int fastRamKb = aga && !expanded ? 0 : d.fastRamKb(this);
+        int fastRamKb = exception != null && exception.fastRamKb() != null
+                ? HardwareRules.fastRamKb(exception.fastRamKb())
+                : aga && !expanded ? 0 : d.fastRamKb(this);
         String kickstart = autoKickstart(aga ? KickstartFolder.Role.KS31_A1200
                 : expanded ? KickstartFolder.Role.KS31 : KickstartFolder.Role.KS13);
-        // The profile's processor is a floor: a Kickstart built for the 68020 raises it, and so
-        // does a WHDLoad slave that declares it needs one.
+        // The processor is a floor: a Kickstart built for the 68020 raises it, and so does a
+        // WHDLoad slave that declares it needs one, unless the game database names the processor.
         CpuModel cpu = HardwareRules.satisfying(HardwareRules.romFacts(kickstart).cpu(),
-                d.cpuModel(this));
-        if (whdloadEnabled() && io.github.zolfrik.amija.whdload.WhdLoadManager
+                forcedCpu != null ? forcedCpu : d.cpuModel(this));
+        if (forcedCpu == null && whdloadEnabled() && io.github.zolfrik.amija.whdload.WhdLoadManager
                 .requires68020(whdloadFile())) {
             cpu = CpuModel.M68020;
         }
         return new AutoProfile(kickstart, expanded, aga,
-                d.chipRamKb(this), d.slowRamKb(this), fastRamKb, d.chipset(this),
+                d.chipRamKb(this), d.slowRamKb(this), fastRamKb,
+                forcedChipset != null ? forcedChipset : d.chipset(this),
                 cpu, autoVideoMode(activeFiles));
+    }
+
+    /**
+     * Whether WHDLoad is launched with {@code PRELOAD}: yes, unless the game database says
+     * otherwise for this game (Auto mode only).
+     */
+    public boolean whdloadPreload() {
+        GameDatabase.Entry e = gameException();
+        return e == null || e.preload() == null || e.preload();
+    }
+
+    /**
+     * The game database entry for the media in use, or {@code null}: what Auto mode must
+     * build differently for this game (see {@link GameDatabase}). A WHDLoad archive is looked
+     * up by the names of its slaves; with no hard disk or WHDLoad in use, the disks in the
+     * floppy drives by their titles.
+     */
+    public GameDatabase.Entry gameException() {
+        if (!autoEnabled()) return null;
+        if (whdloadEnabled() && whdloadFile() != null) {
+            return GameDatabase.builtIn().find(GameDatabase.Format.WHDLOAD,
+                    io.github.zolfrik.amija.whdload.WhdLoadManager.slaveNames(whdloadFile()));
+        }
+        if (expandedMediaActive()) return null;
+        java.util.List<String> keys = new java.util.ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            if (!driveEnabled(i) || driveDisk(i) == null) continue;
+            String key = GameDatabase.floppyKey(driveDisk(i));
+            if (key != null) keys.add(key);
+        }
+        return keys.isEmpty() ? null : GameDatabase.builtIn().find(GameDatabase.Format.FLOPPY, keys);
     }
 
     /**
@@ -868,18 +929,28 @@ public final class AmigaConfig {
     /**
      * {@code true} if one of the active files declares itself AGA in its <b>name</b>: the
      * word {@code AGA} standing on its own, as the collections write it ({@code (AGA)},
-     * {@code (OCS, AGA)}, {@code _AGA_}, {@code _AGA.lha}). Only the file name is looked at,
-     * not the folder: a collection kept in a folder called {@code #AGA} still says it per file.
+     * {@code (OCS, AGA)}, {@code _AGA_}, {@code _AGA.lha}), or the word {@code CD32}: a
+     * release made for the CD32 ({@code _CD32.lha}, {@code _CD32_NTSC.lha}) was written for
+     * its AGA chipset, whether or not its WHDLoad slave declares it. Only the file name is
+     * looked at, not the folder: a collection kept in a folder called {@code #AGA} still says
+     * it per file.
      */
     public static boolean impliesAga(java.util.List<String> files) {
         for (String f : files) {
             if (f == null) continue;
             String name = fileName(f).toUpperCase(java.util.Locale.ROOT);
-            for (int i = name.indexOf("AGA"); i >= 0; i = name.indexOf("AGA", i + 1)) {
-                boolean before = i == 0 || !Character.isLetterOrDigit(name.charAt(i - 1));
-                boolean after = i + 3 >= name.length() || !Character.isLetterOrDigit(name.charAt(i + 3));
-                if (before && after) return true;
-            }
+            if (hasWord(name, "AGA") || hasWord(name, "CD32")) return true;
+        }
+        return false;
+    }
+
+    /** {@code true} if {@code word} occurs in {@code name} not touching a letter or digit. */
+    private static boolean hasWord(String name, String word) {
+        int n = word.length();
+        for (int i = name.indexOf(word); i >= 0; i = name.indexOf(word, i + 1)) {
+            boolean before = i == 0 || !Character.isLetterOrDigit(name.charAt(i - 1));
+            boolean after = i + n >= name.length() || !Character.isLetterOrDigit(name.charAt(i + n));
+            if (before && after) return true;
         }
         return false;
     }
@@ -938,8 +1009,118 @@ public final class AmigaConfig {
      * ({@link #cdImage()}), with the CD32 ROMs found in the Kickstart folder.
      */
     public boolean cd32Machine() {
-        if (autoEnabled()) return cdImage() != null;
+        if (autoEnabled()) return cdImage() != null && discConsole(cdImage()) == CdImage.Console.CD32;
         return isCd32Kickstart(storedKickstartPath());
+    }
+
+    /**
+     * True when the machine to build is a CDTV. In Expert the extended ROM decides: a CDTV
+     * extended ROM in {@code cdtv.extrom.path} (and no CD32 Kickstart) builds a CDTV, with or
+     * without a disc. In Auto a disc made for the CDTV does ({@link CdImage#console}), with
+     * the Kickstart 1.3 and the CDTV extended ROM found in the Kickstart folder.
+     */
+    public boolean cdtvMachine() {
+        if (autoEnabled()) return cdImage() != null && discConsole(cdImage()) == CdImage.Console.CDTV;
+        return !isCd32Kickstart(storedKickstartPath()) && isCdtvExtRom(storedCdtvExtRomPath());
+    }
+
+    /** A CD32, a CDTV or an A500 with an A570: a machine with a CD drive. */
+    public boolean cdMachine() {
+        return cd32Machine() || cdtvMachine();
+    }
+
+    /** Last answer of {@link #discConsole}, valid while the file is unchanged. */
+    private String discCheckPath;
+    private long discCheckStamp;
+    private CdImage.Console discCheckResult;
+
+    /** The console a disc is made for; read once per path and file version. */
+    private synchronized CdImage.Console discConsole(String path) {
+        long stamp = fileStamp(path);
+        if (!path.equals(discCheckPath) || stamp != discCheckStamp) {
+            discCheckPath = path;
+            discCheckStamp = stamp;
+            discCheckResult = stamp == -1 ? CdImage.Console.CD32 : CdImage.console(Path.of(path));
+        }
+        return discCheckResult;
+    }
+
+    /** Last answer of {@link #isCdtvExtRom}, valid while the file is unchanged. */
+    private String cdtvCheckPath;
+    private long cdtvCheckStamp;
+    private boolean cdtvCheckResult;
+
+    private synchronized boolean isCdtvExtRom(String path) {
+        long stamp = fileStamp(path);
+        if (!path.equals(cdtvCheckPath) || stamp != cdtvCheckStamp) {
+            cdtvCheckPath = path;
+            cdtvCheckStamp = stamp;
+            cdtvCheckResult = stamp != -1 && KickstartImage.isCdtvExtendedRom(path);
+        }
+        return cdtvCheckResult;
+    }
+
+    /** Modification time and size of a file folded together; -1 when it is missing. */
+    private static long fileStamp(String path) {
+        try {
+            Path p = Path.of(path);
+            if (Files.isRegularFile(p)) return Files.getLastModifiedTime(p).toMillis() * 31 + Files.size(p);
+        } catch (IOException | RuntimeException e) {
+            return -1;
+        }
+        return -1;
+    }
+
+    /**
+     * The CDTV extended ROM the machine uses, mapped at {@code $F00000}: in Auto the one found
+     * in the Kickstart folder, in Expert {@code cdtv.extrom.path}.
+     */
+    public String cdtvExtRomPath() {
+        return autoEnabled() ? autoKickstart(KickstartFolder.Role.CDTV_EXT) : storedCdtvExtRomPath();
+    }
+
+    /** The CDTV extended ROM chosen by hand ({@code cdtv.extrom.path}), used in Expert. */
+    public String storedCdtvExtRomPath() {
+        return props.getProperty(K_CDTV_EXTROM, "").trim();
+    }
+
+    public void setCdtvExtRomPath(String path) {
+        props.setProperty(K_CDTV_EXTROM, path == null ? "" : path);
+    }
+
+    /**
+     * Whether a keyboard is plugged into the CDTV ({@code cdtv.keyboard}, default false: the
+     * CDTV was sold with its remote control, the keyboard apart).
+     */
+    public boolean cdtvKeyboard() {
+        return Boolean.parseBoolean(props.getProperty(K_CDTV_KEYBOARD, "false").trim());
+    }
+
+    public void setCdtvKeyboard(boolean connected) {
+        props.setProperty(K_CDTV_KEYBOARD, Boolean.toString(connected));
+    }
+
+    /**
+     * Whether the CDTV extended ROM of Expert builds an A500 with an A570 instead of a CDTV
+     * ({@code cdtv.a570}, default false).
+     */
+    public boolean cdtvA570() {
+        return Boolean.parseBoolean(props.getProperty(K_CDTV_A570, "false").trim());
+    }
+
+    public void setCdtvA570(boolean a570) {
+        props.setProperty(K_CDTV_A570, Boolean.toString(a570));
+    }
+
+    /**
+     * True when the machine to build is an A500 with the A570 CD drive on its expansion port:
+     * in Expert, the CDTV extended ROM with {@code cdtv.a570}. Auto never builds one: a CDTV
+     * disc makes a CDTV. {@link #cdtvMachine()} is true for it as well, since the CD drive and
+     * its DMAC are the CDTV's; what differs is the A500 around them: 1 MB of Chip RAM, the
+     * floppy drives, the keyboard, the Fast RAM chosen.
+     */
+    public boolean a570Machine() {
+        return !autoEnabled() && cdtvA570() && cdtvMachine();
     }
 
     /** Last answer of {@link #isCd32Kickstart(String)}, valid while the file is unchanged. */
@@ -1003,24 +1184,29 @@ public final class AmigaConfig {
 
     /** Whether the machine to build has an Amiga keyboard: always, except a CD32 without one. */
     public boolean keyboardConnected() {
-        return !cd32Machine() || cd32Keyboard();
+        if (cd32Machine()) return cd32Keyboard();
+        if (cdtvMachine()) return a570Machine() || cdtvKeyboard();
+        return true;
     }
 
     /** Absolute path of the Kickstart, or the empty string if not configured. */
     public String kickstartPath() {
         if (!autoEnabled()) return storedKickstartPath();
-        return cd32Machine() ? cd32KickstartPath() : autoProfile().kickstartPath();
+        if (cd32Machine()) return cd32KickstartPath();
+        if (cdtvMachine()) return autoKickstart13();
+        return autoProfile().kickstartPath();
     }
 
     /** Chip RAM in KB (default 512). */
     public int chipRamKb() {
         if (cd32Machine()) return 2048;
+        if (cdtvMachine()) return 1024;
         return autoEnabled() ? autoProfile().chipRamKb() : storedChipRamKb();
     }
 
     /** Slow RAM in KB (default 512); 0 = no Slow RAM. */
     public int slowRamKb() {
-        if (cd32Machine()) return 0;
+        if (cdMachine()) return 0;
         return autoEnabled() ? autoProfile().slowRamKb() : storedSlowRamKb();
     }
 
@@ -1030,7 +1216,8 @@ public final class AmigaConfig {
      * run from hard disk and WHDLoad.
      */
     public int fastRamKb() {
-        if (cd32Machine()) return 0;
+        if (a570Machine()) return storedFastRamKb();
+        if (cdMachine()) return 0;
         return autoEnabled() ? autoProfile().fastRamKb() : storedFastRamKb();
     }
 
@@ -1303,6 +1490,8 @@ public final class AmigaConfig {
      */
     public Chipset chipset() {
         if (cd32Machine()) return Chipset.AGA;
+        // The CDTV's Agnus is the ECS one (8372A); its Denise is the OCS one (see Amija).
+        if (cdtvMachine()) return Chipset.ECS;
         return autoEnabled() ? autoProfile().chipset() : storedChipset();
     }
 
@@ -1313,6 +1502,7 @@ public final class AmigaConfig {
      */
     public CpuModel cpuModel() {
         if (cd32Machine()) return CpuModel.M68020;
+        if (cdtvMachine()) return CpuModel.M68000E;
         return autoEnabled() ? autoProfile().cpuModel() : storedCpuModel();
     }
 
@@ -1638,7 +1828,10 @@ public final class AmigaConfig {
     // Remote play (docs/remote-play-plan.md section 10)
     // =========================================================================
 
-    /** TCP+UDP port the host listens on. */
+    /**
+     * Preferred TCP+UDP port of the host. When it is taken the host tries the next few, then
+     * any free one: the invitation carries the port, so nobody has to know the number.
+     */
     public int remotePlayPort() {
         int p = getInt(K_RP_PORT, 7788);
         return p < 0 || p > 65535 ? 7788 : p;
@@ -1648,13 +1841,55 @@ public final class AmigaConfig {
         props.setProperty(K_RP_PORT, Integer.toString(port));
     }
 
-    /** Whether to try opening the port on the router with UPnP. */
-    public boolean remotePlayUpnp() {
-        return getBool(K_RP_UPNP, true);
+    /**
+     * Description URL of the UPnP router that last opened the port, tried first next time:
+     * some routers answer no search and only announce themselves every few minutes. Written
+     * by the application; empty = none known.
+     */
+    public String remotePlayUpnpGateway() {
+        return props.getProperty(K_RP_UPNP_GATEWAY, "").trim();
     }
 
-    public void setRemotePlayUpnp(boolean enabled) {
-        props.setProperty(K_RP_UPNP, Boolean.toString(enabled));
+    public void setRemotePlayUpnpGateway(String url) {
+        props.setProperty(K_RP_UPNP_GATEWAY, url == null ? "" : url.trim());
+    }
+
+    /**
+     * Whether a host open to the Internet offers its global IPv6 addresses in the invitation:
+     * the way in when the operator puts IPv4 behind a carrier-grade NAT.
+     */
+    public boolean remotePlayIpv6() {
+        return getBool(K_RP_IPV6, true);
+    }
+
+    public void setRemotePlayIpv6(boolean enabled) {
+        props.setProperty(K_RP_IPV6, Boolean.toString(enabled));
+    }
+
+    /**
+     * Whether a host open to the Internet asks a public STUN server which address it is seen
+     * from. The server learns this machine's public address and nothing else. Off, or with an
+     * empty server list, nothing is asked.
+     */
+    public boolean remotePlayStun() {
+        return getBool(K_RP_STUN, true) && !remotePlayStunServers().isEmpty();
+    }
+
+    public void setRemotePlayStun(boolean enabled) {
+        props.setProperty(K_RP_STUN, Boolean.toString(enabled));
+    }
+
+    /** The STUN servers, {@code host:port}, in the order they are asked. */
+    public java.util.List<String> remotePlayStunServers() {
+        String v = props.getProperty(K_RP_STUN_SERVERS,
+                io.github.zolfrik.amija.net.nat.StunClient.DEFAULT_SERVERS);
+        java.util.List<String> list = new java.util.ArrayList<>();
+        for (String s : v.split(",")) {
+            if (!s.isBlank()) {
+                list.add(s.trim());
+            }
+        }
+        return list;
     }
 
     /** Interface to listen on; empty = all. */
@@ -1667,17 +1902,19 @@ public final class AmigaConfig {
     }
 
     /**
-     * Whether to refuse connections that do not come from the local network.
+     * Who may join: {@code false} for the local network only (the default), {@code true} for
+     * the Internet too, which also asks the router to open the port.
      *
-     * <p>On by default (section 8.5): a port listening on the Internet is opened <b>after</b>
-     * deciding to, not as a side effect of having tried remote play at home.
+     * <p>The local network is the default (remote-play-plan section 8.5): a port listening on
+     * the Internet is opened after deciding to, not as a side effect of having tried remote
+     * play at home.
      */
-    public boolean remotePlayLanOnly() {
-        return getBool(K_RP_LAN_ONLY, true);
+    public boolean remotePlayInternet() {
+        return "internet".equalsIgnoreCase(props.getProperty(K_RP_ACCESS, "lan").trim());
     }
 
-    public void setRemotePlayLanOnly(boolean lanOnly) {
-        props.setProperty(K_RP_LAN_ONLY, Boolean.toString(lanOnly));
+    public void setRemotePlayInternet(boolean internet) {
+        props.setProperty(K_RP_ACCESS, internet ? "internet" : "lan");
     }
 
     /** Game port driven by the guest: 0 or 1. */
@@ -1825,11 +2062,6 @@ public final class AmigaConfig {
         }
     }
 
-    /** Whether the listening end refuses peers outside the local network. */
-    public boolean serialLanOnly() {
-        return !"false".equalsIgnoreCase(String.valueOf(serialValue("link.lanonly")));
-    }
-
     public void setOverscanEnabled(boolean enabled) {
         props.setProperty(K_OVERSCAN, Boolean.toString(enabled));
     }
@@ -1957,7 +2189,8 @@ public final class AmigaConfig {
         sb.append("# picks from. The paths below are what AmiJa found there, rewritten whenever the\n");
         sb.append("# folder changes (index = its fingerprint): 1.3 for floppy games, 3.1 (40.63)\n");
         sb.append("# for hard disk and WHDLoad, 3.1 for the A1200 (40.68) for AGA software, the\n");
-        sb.append("# CD32 Kickstart (40.60) and its extended ROM for CD32 discs.\n");
+        sb.append("# CD32 Kickstart (40.60) and its extended ROM for CD32 discs, the CDTV extended\n");
+        sb.append("# ROM for CDTV discs.\n");
         line(sb, K_AUTO_KS_DIR, autoKickstartDir());
         line(sb, K_AUTO_KS_IDX, props.getProperty(K_AUTO_KS_IDX, "").trim());
         for (String k : AUTO_ROM_KEYS) line(sb, k, props.getProperty(k, "").trim());
@@ -2034,6 +2267,19 @@ public final class AmigaConfig {
         line(sb, K_CD32_EXTROM, storedCd32ExtRomPath());
         sb.append("# An Amiga keyboard plugged into the CD32 (the console comes without one).\n");
         line(sb, K_CD32_KEYBOARD, Boolean.toString(cd32Keyboard()));
+
+        sb.append("\n# CDTV (68000, ECS Agnus with an OCS Denise, 1 MB of Chip RAM, Kickstart 1.3). In\n");
+        sb.append("# Expert a CDTV extended ROM in cdtv.extrom.path makes the machine a CDTV, with or\n");
+        sb.append("# without a disc (cd.image); in Auto a disc made for the CDTV (CDTV.TM in its root)\n");
+        sb.append("# does, with the ROMs of the Kickstart folder. The battery-backed RAM is kept in\n");
+        sb.append("# nvram/cdtv.nvr.\n");
+        line(sb, K_CDTV_EXTROM, storedCdtvExtRomPath());
+        sb.append("# An Amiga keyboard plugged into the CDTV (sold apart from it).\n");
+        line(sb, K_CDTV_KEYBOARD, Boolean.toString(cdtvKeyboard()));
+        sb.append("# Expert only: the CDTV extended ROM builds an A500 with the A570 CD drive (1 MB\n");
+        sb.append("# of Chip RAM, floppy drives and keyboard connected, Fast RAM as chosen, the\n");
+        sb.append("# bookmarks kept in nvram/a570.nvr) instead of a CDTV.\n");
+        line(sb, K_CDTV_A570, Boolean.toString(cdtvA570()));
 
         sb.append("\n# Last directories used by the file browsers of the F12 popup. The \"media\"\n");
         sb.append("# one belongs to the single browser of the automatic configuration, which\n");
@@ -2183,17 +2429,26 @@ public final class AmigaConfig {
         sb.append("# sends video and audio; the other one (the guest) emulates nothing and sends\n");
         sb.append("# back only its controls. The guest needs no Kickstart and no disk.\n");
         sb.append("# Everything below is also editable from the F12 popup.\n");
-        sb.append("# TCP and UDP port the host listens on (the same number for both).\n");
+        sb.append("# Who may join: lan (the local network only, the default) or internet, which\n");
+        sb.append("# also asks the router to open the port (UPnP). Choose internet knowingly: it\n");
+        sb.append("# is what keeps a listening port off the open Internet until you want it there.\n");
+        line(sb, K_RP_ACCESS, remotePlayInternet() ? "internet" : "lan");
+        sb.append("# Preferred TCP and UDP port of the host (the same number for both). If it is\n");
+        sb.append("# taken, the next free one is used; the invitation always carries the right one.\n");
         line(sb, K_RP_PORT, Integer.toString(remotePlayPort()));
-        sb.append("# Ask the router to open that port automatically (UPnP). Nothing is asked\n");
-        sb.append("# while the setting below keeps the session on the local network: opening\n");
-        sb.append("# a port for connections that would then be refused makes no sense.\n");
-        line(sb, K_RP_UPNP, Boolean.toString(remotePlayUpnp()));
         sb.append("# Network interface to listen on; empty = all of them.\n");
         line(sb, K_RP_BIND, remotePlayBind());
-        sb.append("# Accept guests from the local network only. Turn this off knowingly: it is\n");
-        sb.append("# what keeps a listening port off the open Internet until you want it there.\n");
-        line(sb, K_RP_LAN_ONLY, Boolean.toString(remotePlayLanOnly()));
+        sb.append("# The UPnP router that last opened the port (its description URL), tried\n");
+        sb.append("# first next time. Written by AmiJa; empty it to search again from scratch.\n");
+        line(sb, K_RP_UPNP_GATEWAY, remotePlayUpnpGateway());
+        sb.append("# Offer this machine's global IPv6 addresses in the invitation when hosting\n");
+        sb.append("# for the Internet (the way in when IPv4 is behind the operator's NAT).\n");
+        line(sb, K_RP_IPV6, Boolean.toString(remotePlayIpv6()));
+        sb.append("# Ask a public STUN server which address this machine is seen from, when\n");
+        sb.append("# hosting for the Internet. The server learns the public address, nothing else.\n");
+        line(sb, K_RP_STUN, Boolean.toString(getBool(K_RP_STUN, true)));
+        sb.append("# The STUN servers asked, host:port separated by commas; empty = none.\n");
+        line(sb, K_RP_STUN_SERVERS, String.join(",", remotePlayStunServers()));
         sb.append("# Game port driven by the guest: 0 or 1 (1 = the joystick one).\n");
         line(sb, K_RP_GUEST_PORT, Integer.toString(remotePlayGuestPort()));
         sb.append("# Share the keyboard with the guest.\n");
@@ -2204,7 +2459,8 @@ public final class AmigaConfig {
         sb.append("# Audio sent to the guest: adpcm (default, a quarter of the bandwidth and\n");
         sb.append("# indistinguishable by ear), pcm16 (bit-exact), off.\n");
         line(sb, K_RP_AUDIO_MODE, remotePlayAudioMode());
-        sb.append("# Last host joined, so the popup can offer it again.\n");
+        sb.append("# Last host address typed by hand, so the popup can offer it again. An\n");
+        sb.append("# invitation is never stored: it contains the join code.\n");
         line(sb, K_RP_LAST_HOST, remotePlayLastHost());
         sb.append("# Spectators: people who watch and listen without playing, with a code of\n");
         sb.append("# their own. Each one costs as much upload as the guest, so 4 suits an\n");
@@ -2264,8 +2520,7 @@ public final class AmigaConfig {
         sb.append("# number. The larger of the two ends is used. Programs see it as latency.\n");
         sb.append("# Not in the F12 popup.\n");
         line(sb, K_SERIAL_DELAY, serialDelayMs() == 0 ? "auto" : Integer.toString(serialDelayMs()));
-        sb.append("# nullmodem-host: refuse connections from outside the local network.\n");
-        line(sb, K_SERIAL_LANONLY, Boolean.toString(serialLanOnly()));
+        sb.append("# Who may join a null modem host is remoteplay.access, as for the stream.\n");
 
         sb.append("\n# ===================== WHDLoad parameters (WHDLoad.prefs) ====================\n");
         sb.append("# These values generate the S:WHDLoad.prefs file of the WHDLoad hard disk built\n");
@@ -2335,6 +2590,9 @@ public final class AmigaConfig {
         keys.add(K_CD_IMAGE);
         keys.add(K_CD32_EXTROM);
         keys.add(K_CD32_KEYBOARD);
+        keys.add(K_CDTV_EXTROM);
+        keys.add(K_CDTV_KEYBOARD);
+        keys.add(K_CDTV_A570);
         return keys;
     }
 
@@ -2351,8 +2609,8 @@ public final class AmigaConfig {
         for (int i = 0; i < 4; i++) {
             String disk = driveDisk(i);
             if (driveEnabled(i) && disk != null) {
-                files.add(io.github.zolfrik.amija.custom.DiskImage.isZipDisk(disk)
-                        ? io.github.zolfrik.amija.custom.DiskImage.pathOf(disk).toString()
+                files.add(io.github.zolfrik.amija.media.DiskImage.isZipDisk(disk)
+                        ? io.github.zolfrik.amija.media.DiskImage.pathOf(disk).toString()
                         : disk);
             }
         }

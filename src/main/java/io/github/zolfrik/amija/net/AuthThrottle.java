@@ -27,7 +27,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * How fast the join code may be got wrong, per address ({@code docs/remote-play-plan.md}
- * section 8).
+ * section 8). Used by both listening ends that take a join code: the stream host and the null
+ * modem host.
  *
  * <h2>The code has ~40 bits, but attempts would otherwise be unlimited</h2>
  * The handshake is already expensive to guess (PBKDF2 with {@value SessionCrypto#PBKDF2_ROUNDS}
@@ -50,17 +51,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * anything to whoever suffers it. A successful handshake resets everything: whoever has the
  * code does not carry the earlier errors along.
  *
- * <p>The count is <b>per address</b>. It is not a barrier against someone with many (the code's
+ * <p>The count is <b>per address</b>, and for IPv6 per /64: a host there can take a new
+ * address of its /64 at every attempt. It is not a barrier against someone with many (the code's
  * length is that) but against the only attacker who always shows up from the same place, the
  * form in which the problem really exists on a home network.
  *
  * <p>The table is capped at {@value #MAX_TRACKED} addresses, cleared of expired entries before
  * growing: without that, it would be the memory an attacker can make it allocate.
  */
-final class AuthThrottle {
+public final class AuthThrottle {
 
     /** Errors that cost nothing: a code misread over the phone is fine. */
-    static final int FREE_ATTEMPTS = 5;
+    public static final int FREE_ATTEMPTS = 5;
 
     /** Wait after the first error past the threshold. Doubles at every further error. */
     static final long FIRST_BACKOFF_MS = 2_000;
@@ -85,7 +87,7 @@ final class AuthThrottle {
     /** Time source, replaceable in tests: {@link System#nanoTime} in production. */
     private final java.util.function.LongSupplier clock;
 
-    AuthThrottle() {
+    public AuthThrottle() {
         this(System::nanoTime);
     }
 
@@ -99,10 +101,11 @@ final class AuthThrottle {
      * <p>Must be called <b>before</b> the key derivation: that is where the cost lies that the
      * host must be spared.
      */
-    long retryAfterMillis(InetAddress peer) {
+    public long retryAfterMillis(InetAddress peer) {
         if (peer == null) {
             return 0;
         }
+        peer = io.github.zolfrik.amija.net.nat.LocalAddresses.throttleKey(peer);
         Entry e = entries.get(peer);
         if (e == null) {
             return 0;
@@ -114,10 +117,11 @@ final class AuthThrottle {
     }
 
     /** A handshake that did not complete: the next attempt may cost a wait. */
-    void recordFailure(InetAddress peer) {
+    public void recordFailure(InetAddress peer) {
         if (peer == null) {
             return;
         }
+        peer = io.github.zolfrik.amija.net.nat.LocalAddresses.throttleKey(peer);
         long now = clock.getAsLong();
         Entry e = entries.get(peer);
         if (e == null) {
@@ -146,9 +150,9 @@ final class AuthThrottle {
     }
 
     /** Successful handshake: whoever knows the code does not carry the earlier errors. */
-    void recordSuccess(InetAddress peer) {
+    public void recordSuccess(InetAddress peer) {
         if (peer != null) {
-            entries.remove(peer);
+            entries.remove(io.github.zolfrik.amija.net.nat.LocalAddresses.throttleKey(peer));
         }
     }
 

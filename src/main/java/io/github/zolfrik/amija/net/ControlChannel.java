@@ -58,6 +58,8 @@ public final class ControlChannel implements AutoCloseable {
 
     private final Socket socket;
     private final InputStream in;
+    /** Whether the peer has sent at least one byte. */
+    private volatile boolean receivedAny;
     private final OutputStream out;
     private final byte[] rxBuffer = new byte[RemotePlayProtocol.MAX_CONTROL_MESSAGE];
     private final byte[] txBuffer = new byte[LENGTH_PREFIX + RemotePlayProtocol.MAX_CONTROL_MESSAGE];
@@ -148,6 +150,11 @@ public final class ControlChannel implements AutoCloseable {
         return m;
     }
 
+    /** True once the peer has sent at least one byte. */
+    public boolean receivedAny() {
+        return receivedAny;
+    }
+
     @Override
     public void close() {
         try {
@@ -217,6 +224,7 @@ public final class ControlChannel implements AutoCloseable {
         if (b < 0) {
             throw new EOFException("control channel closed by the peer");
         }
+        receivedAny = true;
         return b;
     }
 

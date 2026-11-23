@@ -26,7 +26,7 @@ CONTENTS
         3.4   Floppy drives (expert mode)
         3.5   Hard disks (expert mode)
         3.6   WHDLoad (expert mode)
-        3.7   CD32 (expert mode)
+        3.7   CD32 and CDTV (expert mode)
         3.8   Saved state
         3.9   Rewind
         3.10   Game ports
@@ -60,6 +60,7 @@ CONTENTS
 
     *  OCS, ECS and AGA chipsets (AGA on an emulated A1200), PAL and NTSC
     *  CD32: discs as .cue, .iso or zip, CD audio, the CD32 pad
+    *  CDTV: its discs, front panel, battery-backed memory and keyboard
     *  68000, 68010 and 68020 processors
     *  Chip, Slow and Fast RAM; up to four floppy drives
     *  ADF (standard and extended), IPF and ZIP disk images
@@ -107,7 +108,8 @@ CONTENTS
     blurs/               blur passes used by some presets
     screenshots/         screenshots (PNG)
     savestate/           Slot1/ ... Slot5/, each with state.a5s and state.png
-    nvram/               cd32.nvr, the CD32's saved games and settings
+    nvram/               cd32.nvr, the CD32's saved games and settings;
+                         cdtv.nvr, the CDTV's battery-backed memory
     whdload-saves/       persistent WHDLoad saves (WHDSaves: volume)
     floppysounds/        drive sound samples; replaceable, empty to silence
     whdload/             WHDLoad system files and .RTB tables; shipped empty,
@@ -127,11 +129,20 @@ CONTENTS
     Middle mouse button     release the mouse (also released on focus loss)
     Right mouse button      Amiga right button
 
-    Drag and drop           insert a disk image. The window is split into four
-                            quadrants: top-left DF0, top-right DF1, bottom-left
-                            DF2, bottom-right DF3. A CD32 disc goes into the
-                            CD32's drive; dropped on another machine in
-                            automatic mode, it restarts it as a CD32 (3.3).
+    Drag and drop           change the removable media, never the machine.
+                            On a machine with floppy drives the window is
+                            split into four quadrants: top-left DF0, top-right
+                            DF1, bottom-left DF2, bottom-right DF3; only floppy
+                            images are taken. On a CD32 or CDTV the window
+                            shows one CD drive and takes only a disc made for
+                            that machine (an audio CD fits both); any other
+                            disc is refused. A disc taken restarts the machine
+                            from power-on with the new disc. To change machine,
+                            use the Drives list of the F12 popup (3.3).
+
+  On a CDTV four keys are the front panel buttons: Scroll Lock Stop, Pause
+  Play/Pause, Insert previous track, End next track. The remote control is
+  not emulated: the mouse and the joystick take its place.
 
   Keys held down are released automatically when the window loses focus.
 
@@ -146,7 +157,8 @@ CONTENTS
     System (3.2)
     Drives (3.3)                               automatic mode
     Floppy drives, Hard disks, WHDLoad         expert mode (3.4 - 3.6)
-    CD32 (3.7)                                 expert mode, CD32 Kickstart
+    CD32 / CDTV (3.7)                          expert mode, CD32 Kickstart
+                                               or CDTV extended ROM
     Saved state (3.8)
     Rewind (3.9)
     Game ports (3.10)
@@ -163,8 +175,8 @@ CONTENTS
   When joining or watching a remote session, System, the drive sections,
   Saved state, Rewind and MiSTer (Groovy) are hidden.
 
-  On a CD32 the processor, chipset, the three RAM rows, the floppy drives,
-  hard disks and WHDLoad are hidden: the machine is fixed (3.7).
+  On a CD32 or CDTV the processor, chipset, the three RAM rows, the floppy
+  drives, hard disks and WHDLoad are hidden: the machine is fixed (3.7).
 
   ---------------------------------------------------------------------------
   3.1   CONVENTIONS
@@ -193,18 +205,23 @@ CONTENTS
      Unticked (default): automatic mode. The machine is configured from the
      loaded media using one of three profiles (4.2):
 
-       Floppy            Kickstart 1.3, OCS, 68000, 512 KB Chip + 512 KB Slow
+       Floppy            Kickstart 1.3, ECS, 68000, 1 MB Chip + 512 KB Slow
        Hard disk/WHDLoad Kickstart 3.1, ECS, 68010, 2 MB Chip + 8 MB Fast
        AGA               Kickstart 3.1, A1200 (AGA, 68020, 2 MB Chip);
                          8 MB Fast with hard disk or WHDLoad
        CD32              CD32 Kickstart and extended ROM (40.60), AGA,
                          68020, 2 MB Chip; used when a CD32 disc is loaded
+       CDTV              Kickstart 1.3 and the CDTV extended ROM, ECS Agnus
+                         with an OCS Denise, 68000, 1 MB Chip; used when a
+                         CDTV disc (one holding CDTV.TM) is loaded
 
      The AGA profile is used when the WHDLoad slave requires AGA or a file
-     name contains the word "AGA" (e.g. "(AGA)", "_AGA.lha"). A WHDLoad slave
-     that requires a 68020 gets one in any profile. A file name containing
-     "NTSC" or "(USA)" selects NTSC; otherwise PAL. In automatic mode the
-     machine rows show the deduced values and are read-only.
+     name contains the word "AGA" or "CD32" (e.g. "(AGA)", "_AGA.lha"). A
+     WHDLoad slave that requires a 68020 gets one in any profile. A file name
+     containing "NTSC" or "(USA)" selects NTSC; otherwise PAL. A few games
+     known to need other settings get them from AmiJa's own game list (4.2).
+     In automatic mode the machine rows show the deduced values and are
+     read-only.
 
      Ticked: every setting is manual and the Drives list is replaced by
      sections 3.4 - 3.6. Manual settings are preserved while automatic mode
@@ -222,6 +239,8 @@ CONTENTS
        Hard disk/WHDLoad   Kickstart 3.1 (40.63)
        AGA                 Kickstart 3.1 for the A1200 (40.68)
        CD32                CD32 Kickstart and extended ROM (40.60)
+       CDTV                Kickstart 1.3 and the CDTV extended ROM (1.0
+                           preferred)
 
      Known good dumps are preferred; overdumps and Cloanto-encrypted copies
      count as the dump. Damaged ROMs and those of other models (A3000,
@@ -229,14 +248,14 @@ CONTENTS
      whose ROM is missing does not start: a message names the ROM and the
      folder. The folder is read again whenever its contents change. The
      choice is kept in auto.kickstart13.path, auto.kickstart31.path,
-     auto.kickstart31.a1200.path, auto.cd32.kickstart.path and
-     auto.cd32.extrom.path, maintained by AmiJa.
+     auto.kickstart31.a1200.path, auto.cd32.kickstart.path,
+     auto.cd32.extrom.path and auto.cdtv.extrom.path, maintained by AmiJa.
      Values: absolute path or empty                             Applies: BOOT
 
   Kickstart                                                   kickstart.path
      ROM used in expert mode. Any power-of-two image up to 512 KB. Headers,
-     appended data and duplicated halves are normalised; CDTV extended ROMs
-     and ReKick images are rejected with an explanation. The CD32 Kickstart
+     appended data and duplicated halves are normalised; extended ROMs and
+     ReKick images are rejected with an explanation. The CD32 Kickstart
      (40.60) makes the machine a CD32 (3.7).
      Values: absolute path                                      Applies: BOOT
 
@@ -244,6 +263,12 @@ CONTENTS
      Shown under the Kickstart when it is the CD32's: the second half of the
      CD32 ROM, with the CD drive software and the boot animation.
      Values: absolute path                                   Applies: RESTART
+
+  CDTV extended ROM                                         cdtv.extrom.path
+     The CDTV's own ROM (1.0, the one the CDTVs were sold with, or 2.30),
+     with the CD drive software and the start-up screen. With it the machine
+     is a CDTV (3.7); empty for an Amiga without a CD drive.
+     Values: absolute path or empty                          Applies: RESTART
 
   Processor                                                        cpu.model
      68000; 68010 (vector base register, loop mode, MOVEC/MOVES/RTD;
@@ -285,19 +310,20 @@ CONTENTS
     Hard drive master     first .hdf
     Hard drive slave      second .hdf
     WHDLoad               .lha or .lzh archive
-    CD32 disc             .cue, .iso, or a zip holding one
+    CD32 or CDTV disc     .cue, .iso, or a zip holding one
 
   Limits: four floppies, two hard disks, one WHDLoad archive; a hard disk and
-  a WHDLoad archive cannot be combined. A CD32 disc goes alone: it makes the
-  machine a CD32, with the two CD32 ROMs of the Kickstart folder, and is
-  refused with a message when the folder lacks them. Unsupported or excess
+  a WHDLoad archive cannot be combined. A disc goes alone: it makes the
+  machine a CDTV if it holds the file CDTV.TM, a CD32 otherwise, with that
+  machine's ROMs from the Kickstart folder, and is refused with a message
+  when the folder lacks them. Unsupported or excess
   files are rejected with the reason. Entries marked with an asterisk need
   hardware the running machine does not have and are mounted at the next
   start.
 
   The rows write the same keys as expert mode (drive.dfN.disk,
   hd.master.disk, whdload.file, cd.image, ...).
-  Applies: LIVE for floppies in existing drives, RESTART for a CD32 disc,
+  Applies: LIVE for floppies in existing drives, RESTART for a disc,
   BOOT otherwise
 
   ---------------------------------------------------------------------------
@@ -357,8 +383,10 @@ CONTENTS
      Values: true / false; absolute path to .lha or .lzh        Applies: BOOT
 
   ---------------------------------------------------------------------------
-  3.7   CD32 (EXPERT MODE)
+  3.7   CD32 AND CDTV (EXPERT MODE)
   ---------------------------------------------------------------------------
+
+  CD32
 
   The machine is a CD32 when the Kickstart of the System section is the
   CD32's (40.60), with or without a disc: AGA, 68020, 2 MB Chip RAM, no
@@ -369,8 +397,24 @@ CONTENTS
 
   CD32 disc                                                         cd.image
      .cue sheet (with its data and audio tracks), .iso, or a zip holding
-     them. A disc dropped on the window of a running CD32 goes into its
-     drive.
+     them. A disc made for the CD32 dropped on the window of a running CD32
+     goes into its drive (2.2).
+     Values: absolute path or empty                          Applies: RESTART
+
+  CDTV
+
+  The machine is a CDTV when a CDTV extended ROM is set in the System
+  section (3.2), with or without a disc: the CDTV as sold in 1991, with
+  Kickstart 1.3, ECS Agnus and OCS Denise, 68000, 1 MB Chip RAM, no floppy
+  drive and no keyboard. Without a disc it shows its start-up screen and
+  waits for one. The section is then titled CDTV. The battery-backed memory
+  (bookmarks, settings) is kept in nvram/cdtv.nvr. The front panel buttons
+  are four PC keys (2.2); after the boot the CDTV's audio player reads them
+  from the keyboard line, so it answers them only with the keyboard
+  connected (3.10).
+
+  CDTV disc                                                         cd.image
+     As for the CD32. Audio CDs play in the CDTV's own audio player.
      Values: absolute path or empty                          Applies: RESTART
 
   ---------------------------------------------------------------------------
@@ -434,6 +478,12 @@ CONTENTS
      pad.
      Values: true / false (default false)                    Applies: RESTART
 
+  CDTV keyboard connected                                      cdtv.keyboard
+     Shown only on a CDTV. The CD-1221 keyboard, sold apart from the CDTV.
+     Unticked, the PC keyboard reaches no Amiga keyboard; the four front
+     panel keys still work during the boot.
+     Values: true / false (default false)                    Applies: RESTART
+
   ---------------------------------------------------------------------------
   3.11   REMOTE PLAY
   ---------------------------------------------------------------------------
@@ -449,35 +499,60 @@ CONTENTS
   NULL MODEM below). The two kinds of session are independent and can run
   together.
 
+  Expert mode
+     First row, unticked by default: the section shows only what an
+     invitation needs. Ticked, it also shows the host options a casual host
+     never touches and what an invitation makes unnecessary (marked
+     "expert" below). The choice is remembered.
+
   Mode: Off / Stream: host / Stream: join / Stream: watch /
         Null modem: host / Null modem: join
      Not saved; AmiJa always starts with no session.
 
   HOSTING
 
-  Port                                                       remoteplay.port
-     TCP and UDP port.
-     Values: 1-65535 (default 7788)                  Applies: on start hosting
+  Who can join                                             remoteplay.access
+       Local network only   refuses anyone outside your own network before
+                            they can try the code; the router is left alone
+       Internet             also lets in players from outside and asks the
+                            router to open the port (UPnP, PCP or NAT-PMP,
+                            whichever answers first), closing it again when
+                            hosting stops
+     Opening to the Internet is a deliberate choice, never the default. The
+     same choice applies to the null modem.
+     Values: lan / internet (default lan)            Applies: on start hosting
 
-  Open the port on the router (UPnP)                         remoteplay.upnp
-     Requests port forwarding from the router and removes it when hosting
-     stops. Not used when "Local network only" is set.
-     Values: true / false (default true)             Applies: on start hosting
-
-  Local network only                                     remoteplay.lan.only
-     Rejects connections from outside the local network.
-     Values: true / false (default true)             Applies: on start hosting
-
-  Start hosting / Stop hosting
+  Session: Start hosting / Stop hosting
      Starts or ends the session. The local game is not affected.
 
-  Address / Internet / Join code / Spectator code
-     Information to give to the other players. "Internet" appears once the
-     router confirms the forwarding, or shows why it failed. The join code
-     is the session password: regenerated each time, never saved, never sent
-     in clear, and used to derive the encryption keys. The spectator code
-     allows watching only and can be shared freely. Codes are
-     case-insensitive; O/0 and I/1 are equivalent.
+  Invitation / Spectator invitation
+     Everything the other player needs in one text, starting with AMJ-: the
+     join code and every address this machine can be reached at (local
+     network, the router's public address, IPv6). Copy it into a chat; the
+     other player pastes it and presses Connect. It contains the code, so
+     give it only to who should play; it is regenerated at every start and
+     never saved. The spectator invitation lets its holder watch and listen
+     only, and is shown while spectators are accepted.
+
+  Reachable
+     Whether the invitation can work: the address on your network, then
+     either "local network only" or how far the router got in opening the
+     port; hover for the full explanation. Some routers do not answer a
+     search and only announce themselves every few minutes: AmiJa keeps
+     listening for up to a quarter of an hour, and remembers the router so
+     that the next time is immediate (remoteplay.upnp.gateway, 4.3).
+
+  Allow in the firewall
+     Windows only, shown when the Windows firewall would block AmiJa. Asks
+     Windows, through its own permission prompt, to let AmiJa receive
+     connections on the type of network in use, replacing any inbound rule
+     for AmiJa. Nothing changes unless you confirm there.
+
+  Spectators                                       remoteplay.spectators.max
+     Maximum number of spectators besides the guest. Each costs about as much
+     upload as the guest (0.5 - 2.5 Mbit/s, up to 5). Under load, spectators
+     receive fewer frames first.
+     Values: 0 - 16 (default 4; 0 = none)            Applies: next connection
 
   Guest uses                                           remoteplay.guest.port
      Game port assigned to the guest. The guest chooses the device.
@@ -486,55 +561,94 @@ CONTENTS
   Share the keyboard                               remoteplay.guest.keyboard
      Values: true / false (default true)             Applies: next connection
 
-  The guest may reset                            remoteplay.guest.allowreset
-     Allows Ctrl+Amiga+Amiga from the guest.
-     Values: true / false (default false)            Applies: next connection
-
-  Spectators                                       remoteplay.spectators.max
-     Maximum number of spectators besides the guest. Each costs about as much
-     upload as the guest (0.5 - 2.5 Mbit/s, up to 5). Under load, spectators
-     receive fewer frames first.
-     Values: 0 - 16 (default 4; 0 = none)            Applies: next connection
-
-  Audio                                                remoteplay.audio.mode
+  Audio (expert)                                       remoteplay.audio.mode
        Compressed (355 kbit/s)     IMA-ADPCM         adpcm
        Uncompressed (1.4 Mbit/s)   16-bit PCM        pcm16
        Off                         no audio          off
      The audio filter is applied by the host.
      Values: adpcm / pcm16 / off (default adpcm)     Applies: next connection
 
+  The guest may reset (expert)                   remoteplay.guest.allowreset
+     Allows Ctrl+Amiga+Amiga from the guest.
+     Values: true / false (default false)            Applies: next connection
+
+  Port (expert)                                              remoteplay.port
+     Preferred TCP and UDP port. If another program holds it, the next free
+     one is used; the invitation always carries the port really in use.
+     Values: 1-65535 (default 7788)                  Applies: on start hosting
+
+  Ask the public address (STUN) (expert)                     remoteplay.stun
+     With Internet, asks a public STUN server (remoteplay.stun.servers, 4.3)
+     from which address this machine is seen. It tells whether the router's
+     answer matches what the Internet sees, and gives the invitation a
+     public address even when the port was forwarded by hand. The server
+     learns your public address and nothing else.
+     Values: true / false (default true)             Applies: on start hosting
+
+  Interface (expert)                                         remoteplay.bind
+     Local IP address to listen on, when only one network card should accept
+     guests; empty = all of them.
+     Values: IP address or empty (default)           Applies: on start hosting
+
+  IPv6 (expert)                                              remoteplay.ipv6
+     With Internet, puts this machine's global IPv6 addresses in the
+     invitation. IPv6 needs no port opening, so it is often the way in when
+     the provider puts IPv4 behind a shared address (CGNAT). The router's
+     IPv6 firewall may still refuse incoming connections.
+     Values: true / false (default true)             Applies: on start hosting
+
+  Join code / Spectator code (expert)
+     The bare codes, already contained in the invitations: useful to read
+     out over the phone together with an address on a local network. Codes
+     are case-insensitive; O/0 and I/1 are equivalent. The join code is
+     never sent in clear and is used to derive the encryption keys.
+
   JOINING AND WATCHING
 
-  Host address / Join code                              remoteplay.last.host
-     The host's address:port and the join code (to play) or spectator code
-     (to watch). The address is remembered; the code is not.
+  Invitation
+     Paste the invitation the host sent you (it starts with AMJ-); line
+     breaks, spaces and case do not matter. The addresses in it are tried
+     all at once. A damaged invitation, one made by another version of
+     AmiJa or one for the null modem is reported on the Status line before
+     anything is tried.
 
-  Connect / Disconnect
+  Session: Connect / Disconnect
      Connects while the popup stays open; the Status line reports progress.
      On OK this computer stops emulating and becomes a remote display.
      Disconnect restores the local machine.
 
+  Host address / Join code (expert)                     remoteplay.last.host
+     Only without an invitation: the host's address:port and the join code
+     (to play) or spectator code (to watch). The address is remembered; the
+     code is not.
+
   Status
      Connection state, traffic counters and the reason for the last failure.
 
+  When a session starts, each player is shown a short summary of their own
+  controls: the port they drive, the device plugged into it and whether the
+  keyboard is shared. They can be changed in Game ports (3.10).
+
   TROUBLESHOOTING
 
-    "Your provider does not give you a public address (CGNAT)"
-        The host cannot be reached from the Internet. Swap host and guest.
-    "No router answered" / "The router refused to open the port"
-        Enable UPnP on the router or forward the port manually.
-    "port opened by the router. If nobody can get in, it is the firewall"
-        Allow AmiJa through the host's firewall.
+    "unreachable, shared address of the operator (CGNAT)"
+        The host cannot be reached over IPv4 from the Internet. Try IPv6
+        (on by default), or swap host and guest.
+    "no router answered, the port is not open" / "the router refused"
+        Enable UPnP (or PCP / NAT-PMP) on the router, or forward the port
+        manually and keep STUN on.
+    "the Windows firewall blocks AmiJa"
+        Press "Allow in the firewall", or allow AmiJa by hand.
     "nothing is listening on that port" / "that address does not exist"
-        Check the address and that hosting has started.
+        Check the invitation and that hosting has started.
     "no answer - address, port or firewall"
         Usually the host's firewall or a missing forwarding.
     "the host only accepts players on its own local network"
-        The host has "Local network only" enabled.
+        The host has "Who can join" set to Local network only.
     "every spectator place is taken" / "the host does not accept spectators"
         Spectator limit reached, or set to 0.
     "wrong join code"
-        Codes change at every start; ask for the current one.
+        Codes change at every start; ask for a new invitation.
     "the two machines run different versions of AmiJa"
         Both sides must run the same version.
 
@@ -545,25 +659,26 @@ CONTENTS
   Modem) and terminal programs. Each event on the wire reaches the other
   side after the same fixed delay of emulated time, so what the programs see
   does not depend on the network; a slow network only makes both machines
-  wait. One side hosts, the other joins with its address and code.
+  wait. One side hosts, the other joins with its invitation.
 
-  Security (host)                                       serial.link.lanonly
-     "Local network only" refuses connections from outside the local
-     network; untick it to play over the Internet.
-     Values: true / false (default true)             Applies: on start hosting
+  The host chooses "Who can join" as for the stream (remoteplay.access):
+  with Internet the router is asked to open the cable's port, TCP only.
+  Hosting shows an Invitation and a Reachable line as above; the joining
+  side pastes the invitation in "Null modem: join" and connects. A stream
+  invitation is refused there, with the reason.
 
-  Port                                                      serial.link.port
+  Port (expert)                                             serial.link.port
      TCP port of the cable, the same on both ends; not the port of the
-     stream, so the two can run together. No router is asked to open it:
-     over the Internet, forward it by hand.
+     stream, so the two can run together.
      Values: 1-65535 (default 7789)                  Applies: on start hosting
 
-  Session: Start hosting / Stop hosting
-     Listens for the other instance and shows its Address and a Join code,
-     generated afresh every time and never saved.
+  Address / Join code (expert)
+     The bare address and code of the listening end, generated afresh every
+     time and never saved.
 
-  Host address / Join code / Session: Connect          serial.link.address
-     The host's address:port and its code. The address is remembered.
+  Host address / Join code (expert)                      serial.link.address
+     Only without an invitation: the host's address:port and its code. The
+     address is remembered.
 
   The cable is plugged in once both machines run; while the popup is open on
   one side, the other waits. Loading a saved state, rewinding or restarting
@@ -679,14 +794,15 @@ CONTENTS
   Enable overscan                                     video.overscan.enabled
      Shows the full video area including borders.
        on     PAL 724x576     NTSC 724x480
-       off    PAL 640x512     NTSC 640x400
+       off    PAL 640x512     NTSC 640x400, the standard picture from
+              line 44 (PAL lines 44-299, NTSC 44-243)
      Values: true / false                                    Applies: RESTART
 
   Show power/drive LED panel                                    leds.visible
      Power (also audio filter state), floppy and hard disk LEDs, CD on a
-     CD32, plus NET during remote play, SER while a null modem cable is
-     plugged in or waiting, and MISTER while the MiSTer output runs.
-     Values: true / false                                       Applies: BOOT
+     CD32 or CDTV, plus NET during remote play, SER while a null modem cable
+     is plugged in or waiting, and MISTER while the MiSTer output runs.
+     Values: true / false                                       Applies: LIVE
 
   Floppy sound volume                                    floppy.sound.volume
      Mechanical drive sounds; about 6 dB per step. 0 = mute.
@@ -805,10 +921,10 @@ CONTENTS
 
     Property                 Floppy        Hard disk/WHDLoad    AGA
     ------------------------------------------------------------------------
-    auto.*.chipram.kb        512           2048                 2048
+    auto.*.chipram.kb        1024          2048                 2048
     auto.*.slowram.kb        512           512                  0
     auto.*.fastram.kb        0             8192                 8192 (1)
-    auto.*.chipset           OCS           ECS                  AGA
+    auto.*.chipset           ECS           ECS                  AGA
     auto.*.cpu               68000E        68010E               68020
 
     Prefixes: auto.floppy., auto.hd., auto.aga.
@@ -817,21 +933,34 @@ CONTENTS
   Values as in 3.2. Applies: BOOT
 
   Profile selection: AGA when the WHDLoad slave requires it or a file name
-  contains "AGA" as a word; hard disk when a hard disk or WHDLoad archive is
-  active; floppy otherwise. A slave requiring a 68020 always gets one. Video
-  mode: NTSC when an active file name contains "NTSC" or "(USA)" (file name
-  only, not folders), PAL otherwise.
+  contains "AGA" or "CD32" as a word; hard disk when a hard disk or WHDLoad
+  archive is active; floppy otherwise. A slave requiring a 68020 always gets
+  one. Video mode: NTSC when an active file name contains "NTSC" or "(USA)"
+  (file name only, not folders), PAL otherwise. The CD32 and CDTV are fixed
+  machines and take no profile.
+
+  Game list: a few games are known to need other settings than their profile
+  gives, and AmiJa carries a list of them. A WHDLoad game is recognised by
+  its slave's name, a floppy by the title of its image file (what comes
+  before the first "(" or "["). The entry wins over the profile in automatic
+  mode only; for example FIFA International Soccer gets 2 MB of Fast RAM,
+  without which it reports insufficient memory.
 
   ---------------------------------------------------------------------------
   4.3   REMOTE PLAY
   ---------------------------------------------------------------------------
 
-    remoteplay.bind
-        Local IP address to listen on when hosting; empty = all interfaces.
-        Applies: on start hosting
-
     remoteplay.last.host
         Last address joined. Maintained by AmiJa.
+
+    remoteplay.upnp.gateway
+        The router that last opened the port, tried first next time.
+        Maintained by AmiJa; empty it to search again from scratch.
+
+    remoteplay.stun.servers
+        STUN servers asked for the public address, host:port separated by
+        commas; empty = none. Default: Cloudflare, then Google.
+        Applies: on start hosting
 
   ---------------------------------------------------------------------------
   4.4   MISTER
@@ -934,6 +1063,7 @@ CONTENTS
   auto.aga.*                     4.2                          BOOT
   auto.cd32.extrom.path          System (3.2)                 -
   auto.cd32.kickstart.path       System (3.2)                 -
+  auto.cdtv.extrom.path          System (3.2)                 -
   auto.enabled                   System (3.2)                 BOOT
   auto.floppy.*                  4.2                          BOOT
   auto.hd.*                      4.2                          BOOT
@@ -942,9 +1072,11 @@ CONTENTS
   auto.kickstart31.a1200.path    System (3.2)                 -
   auto.kickstart31.path          System (3.2)                 -
   blitter.immediate              4.6                          BOOT
-  cd.image                       Drives (3.3) / CD32 (3.7)    RESTART
+  cd.image                       Drives (3.3) / CD (3.7)      RESTART
   cd32.extrom.path               System (3.2)                 RESTART
   cd32.keyboard                  Game ports (3.10)            RESTART
+  cdtv.extrom.path               System (3.2)                 RESTART
+  cdtv.keyboard                  Game ports (3.10)            RESTART
   chipram.kb                     System (3.2)                 BOOT
   chipset                        System (3.2)                 RESTART
   chooser.*.lastDirectory        4.1                          -
@@ -966,7 +1098,7 @@ CONTENTS
   input.port1.device             Game ports (3.10)            LIVE
   input.port1.joystick.*         Joystick keys (3.16.1)       LIVE
   kickstart.path                 System (3.2)                 BOOT
-  leds.visible                   Audio / Video (3.13)         BOOT
+  leds.visible                   Audio / Video (3.13)         LIVE
   mister.audio                   MiSTer (3.12)                on Start
   mister.audiolead               MiSTer (3.12)                on Start
   mister.bind                    4.4                          on Start
@@ -980,21 +1112,23 @@ CONTENTS
   mister.vshift                  MiSTer (3.12)                LIVE
   overlay.fps.enabled            4.5                          BOOT
   overlay.framecounter.enabled   4.5                          BOOT
+  remoteplay.access              Remote play (3.11)           on hosting
   remoteplay.audio.mode          Remote play (3.11)           next connection
-  remoteplay.bind                4.3                          on hosting
+  remoteplay.bind                Remote play (3.11)           on hosting
   remoteplay.guest.allowreset    Remote play (3.11)           next connection
   remoteplay.guest.keyboard      Remote play (3.11)           next connection
   remoteplay.guest.port          Remote play (3.11)           next connection
-  remoteplay.lan.only            Remote play (3.11)           on hosting
+  remoteplay.ipv6                Remote play (3.11)           on hosting
   remoteplay.last.host           Remote play (3.11)           -
   remoteplay.port                Remote play (3.11)           on hosting
   remoteplay.spectators.max      Remote play (3.11)           next connection
-  remoteplay.upnp                Remote play (3.11)           on hosting
+  remoteplay.stun                Remote play (3.11)           on hosting
+  remoteplay.stun.servers        4.3                          on hosting
+  remoteplay.upnp.gateway        4.3                          -
   rewind.seconds                 Rewind (3.9)                 LIVE
   savestate.slot                 Saved state (3.8)            LIVE
   serial.link.address            Remote play (3.11)           -
   serial.link.delay.ms           4.8                          next cable
-  serial.link.lanonly            Remote play (3.11)           on hosting
   serial.link.port               Remote play (3.11)           on hosting
   serial.mode                    4.8                          BOOT
   slowram.kb                     System (3.2)                 BOOT
@@ -1021,9 +1155,9 @@ CONTENTS
       java -jar AmiJa.jar [options] [file ...] [key=value ...]
 
   file              Media to load: floppy (.adf, .ipf, .zip), hard disk
-                    (.hdf), WHDLoad archive (.lha, .lzh) or CD32 disc (.cue,
-                    .iso, or a zip holding one), assigned as in the Drives
-                    list (3.3). When files are given, they replace
+                    (.hdf), WHDLoad archive (.lha, .lzh) or CD32/CDTV disc
+                    (.cue, .iso, or a zip holding one), assigned as in the
+                    Drives list (3.3). When files are given, they replace
                     all configured media. Same limits as 3.3. A missing file
                     aborts the launch.
 
@@ -1064,8 +1198,9 @@ LICENSE
 
     Third-party components (LWJGL, FlatLaf, the shaders in shaders/ and
     blurs/, the virtualhd.device boot ROM) keep their own licences; see
-    THIRD-PARTY-NOTICES.md. Kickstart ROMs, disk images and WHDLoad system
-    files are not included and must be supplied by the user.
+    THIRD-PARTY-NOTICES.md. Kickstart and extended ROMs, disk images, CD
+    images and WHDLoad system files are not included and must be supplied
+    by the user.
 
     AmiJa is not affiliated with or endorsed by Commodore, Amiga
     Corporation, Cloanto or Hyperion.

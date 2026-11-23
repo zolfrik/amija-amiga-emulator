@@ -79,6 +79,13 @@ public interface RemotePlayControl {
     int remoteGamePort();
 
     /**
+     * Whether the guest types on the host's Amiga keyboard too. Hosting it is the choice this
+     * host made when it started; as a guest it is what the host granted. {@code false} when no
+     * role is active.
+     */
+    boolean keyboardShared();
+
+    /**
      * True while a connection attempt is <b>in flight</b>.
      *
      * <p>The handshake can take seconds (TCP connection, PBKDF2 with 120k iterations, and up
@@ -90,6 +97,16 @@ public interface RemotePlayControl {
 
     /** The code to pass to the other player, or {@code null} if not hosting. */
     String joinCode();
+
+    /**
+     * The invitation to pass to the other player: the join code plus every address this host
+     * can be reached at ({@link InviteCode}). {@code null} if not hosting. A secret like the
+     * code it contains: shown and copied, never saved.
+     */
+    String invite();
+
+    /** The spectators' invitation, or {@code null} if not hosting or spectators are off. */
+    String spectatorInvite();
 
     /**
      * The code to pass to whoever only wants to watch, or {@code null} if not hosting or if
@@ -124,6 +141,29 @@ public interface RemotePlayControl {
      * moment a "Connect" on the other side times out.
      */
     String routerStatus();
+
+    /**
+     * Whether and how this host can be reached, in one line: the local address, and either
+     * "local network only" or how far the router got. {@code null} when not hosting. The
+     * long explanation is {@link #routerStatus()}.
+     */
+    String reachability();
+
+    /**
+     * True when Windows' firewall stands in the way (a blocking rule, or no rule yet) and
+     * this machine runs from AmiJa's own launcher, so a rule for it can be offered. Never
+     * for the Java runtime: a rule there would open every Java program.
+     */
+    boolean firewallFixOffered();
+
+    /** The commands the firewall button runs elevated, to show before it does; or null. */
+    String firewallCommand();
+
+    /**
+     * Asks Windows, through its elevation prompt, to let this executable in. Returns at once;
+     * the outcome shows in {@link #reachability()}.
+     */
+    void allowInFirewall();
 
     /** A readable status line: connected, RTT, bandwidth, losses. */
     String status();

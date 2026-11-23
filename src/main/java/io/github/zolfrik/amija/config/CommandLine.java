@@ -20,7 +20,7 @@
 
 package io.github.zolfrik.amija.config;
 
-import io.github.zolfrik.amija.custom.DiskImage;
+import io.github.zolfrik.amija.media.DiskImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;

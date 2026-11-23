@@ -20,7 +20,7 @@
 
 package io.github.zolfrik.amija.net.serial;
 
-import io.github.zolfrik.amija.custom.serial.SerialCable;
+import io.github.zolfrik.amija.hardware.common.serial.SerialCable;
 
 import java.util.function.LongSupplier;
 

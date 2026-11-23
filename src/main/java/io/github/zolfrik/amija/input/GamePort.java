@@ -20,7 +20,7 @@
 
 package io.github.zolfrik.amija.input;
 
-import io.github.zolfrik.amija.common.CIAPinSet;
+import io.github.zolfrik.amija.hardware.common.CIAPinSet;
 
 /**
  * Amiga game port (port 1 = mouse, port 2 = joystick).

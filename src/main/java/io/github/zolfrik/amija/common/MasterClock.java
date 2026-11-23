@@ -20,7 +20,9 @@
 
 package io.github.zolfrik.amija.common;
 
-import io.github.zolfrik.amija.custom.AbstractAgnus;
+import io.github.zolfrik.amija.hardware.common.VirtualCRT;
+import io.github.zolfrik.amija.hardware.custom.AbstractAgnus;
+import io.github.zolfrik.amija.hardware.custom.VideoMode;
 
 import java.util.Objects;
 

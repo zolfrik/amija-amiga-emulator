@@ -26,14 +26,11 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.net.InterfaceAddress;
-import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
-import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -58,10 +55,11 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>Besides the player, up to {@code maxSpectators} peers may <b>watch</b> (section 16). They
  * come in with a code of their own, receive one shared stream ({@link SpectatorBroadcast}) and
- * send nothing that reaches the machine. With spectators off the door works exactly as before:
- * the player's place is taken before the handshake, and a second connection is refused at once.
- * With spectators on the role is known only from the HELLO, so the place is taken there; the
- * immediate refusal stays for when the player's place and every spectator place are taken.
+ * send nothing that reaches the machine. Every place is taken at the HELLO, where the role is
+ * known: a guest dialling several addresses of an invitation at once opens connections it then
+ * drops, and one of those must not hold the place against the one it keeps. The immediate
+ * refusal, before any handshake, stays for when a live session holds the player's place and
+ * every spectator place is taken.
  *
  * <h2>One thread reads the UDP socket</h2>
  * Player and spectators share the media socket, so a single thread ({@link #mediaLoop}) reads
@@ -78,6 +76,14 @@ public final class RemotePlayHost implements AutoCloseable {
 
     /** Attempts to find a number free in <b>both</b> TCP and UDP, with port 0. */
     private static final int EPHEMERAL_ATTEMPTS = 16;
+
+    /**
+     * Connections the system may hold before they are accepted. A guest dialling an
+     * invitation opens several at once, and the first few accepted start handshake threads:
+     * a queue of four overflowed under a burst and the system refused the rest outright,
+     * without the reason a REJECT carries.
+     */
+    private static final int ACCEPT_BACKLOG = 32;
 
     /** How often the accepting thread wakes up to check whether it must stop. */
     private static final int ACCEPT_POLL_MS = 200;
@@ -176,9 +182,8 @@ public final class RemotePlayHost implements AutoCloseable {
     private final AuthThrottle throttle = new AuthThrottle();
 
     /**
-     * Where the handshake runs. A single thread: the guest's place is one, so more than one
-     * handshake at a time makes no sense, and whoever arrives while it is taken gets REJECT
-     * busy at once instead of queueing.
+     * Where the handshakes run, at most {@value #HANDSHAKE_THREADS} at once; whoever arrives
+     * beyond that gets REJECT busy at once instead of queueing.
      */
     private ExecutorService handshakeExecutor;
 
@@ -290,7 +295,7 @@ public final class RemotePlayHost implements AutoCloseable {
         List<ServerSocket> discarded = new ArrayList<>();
         try {
             for (int attempt = 0; ; attempt++) {
-                ServerSocket candidate = new ServerSocket(port, 4, address);
+                ServerSocket candidate = new ServerSocket(port, ACCEPT_BACKLOG, address);
                 try {
                     udp = new DatagramSocket(candidate.getLocalPort(), address);
                     tcp = candidate;
@@ -324,11 +329,45 @@ public final class RemotePlayHost implements AutoCloseable {
                 : new SpectatorBroadcast(width, height, audioFormat);
     }
 
+    /** Ports tried from the preferred one upward before taking any free one. */
+    public static final int PORT_ATTEMPTS = 10;
+
+    /** Builds a host on a given port; see {@link #openPreferred}. */
+    @FunctionalInterface
+    public interface Opener {
+        RemotePlayHost open(int port) throws IOException;
+    }
+
+    /**
+     * Opens a host on the preferred port, or on one of the next {@value #PORT_ATTEMPTS} - 1
+     * when it is taken, or on any free one as a last resort. The number no longer has to be
+     * passed on by hand: the invitation carries it. Port 0 asks for a free one at once.
+     */
+    public static RemotePlayHost openPreferred(int preferred, Opener opener) throws IOException {
+        if (preferred <= 0) {
+            return opener.open(0);
+        }
+        IOException first = null;
+        for (int i = 0; i < PORT_ATTEMPTS && preferred + i <= 65535; i++) {
+            try {
+                return opener.open(preferred + i);
+            } catch (IOException e) {
+                if (first == null) {
+                    first = e;
+                }
+            }
+        }
+        try {
+            return opener.open(0);
+        } catch (IOException e) {
+            e.addSuppressed(first);
+            throw e;
+        }
+    }
+
     /** Starts accepting. Returns at once: the wait lives on its own thread. */
     public void start() {
-        // No queue: a handshake either has a thread now or the peer is refused at once. With
-        // spectators off at most one handshake is ever in flight (the player's place is taken
-        // before it), so this changes nothing there.
+        // No queue: a handshake either has a thread now or the peer is refused at once.
         handshakeExecutor = new java.util.concurrent.ThreadPoolExecutor(
                 0, HANDSHAKE_THREADS, 30L, TimeUnit.SECONDS,
                 new java.util.concurrent.SynchronousQueue<>(),
@@ -637,7 +676,6 @@ public final class RemotePlayHost implements AutoCloseable {
                 return;
             }
             ControlChannel channel = null;
-            boolean slotTaken = false;
             try {
                 channel = new ControlChannel(socket);
                 if (lanOnly && !isLocalNetwork(socket.getInetAddress())) {
@@ -662,31 +700,25 @@ public final class RemotePlayHost implements AutoCloseable {
                             socket.getRemoteSocketAddress(), wait);
                     continue;
                 }
-                boolean reservePlayer = maxSpectators == 0;
-                if (reservePlayer ? !guestSlot.compareAndSet(false, true)
-                        : guestSlot.get() && spectatorSlots.get() >= maxSpectators) {
-                    // Spectators off: the player's place is taken right here, as it always was.
-                    // Spectators on: the role comes with the HELLO, but when every place is
-                    // taken there is no point in waiting for it.
+                if (hasGuest() && spectatorSlots.get() >= maxSpectators) {
+                    // The player's place belongs to a live session and there is no spectator
+                    // place left: no handshake could end well. A place held only by a
+                    // handshake in progress does not refuse here: that handshake may be a
+                    // connection the guest is about to drop (section 1.2 of the R1 plan),
+                    // and the role is known only from the HELLO anyway.
                     Handshake.reject(channel, RemotePlayProtocol.REJECT_BUSY);
                     closeAside(channel);
                     RemotePlaySettings.say("refused %s: a guest is already connected",
                             socket.getRemoteSocketAddress());
                     continue;
                 }
-                slotTaken = reservePlayer;
                 // From here on handshake() takes care of returning whatever place is taken.
                 final ControlChannel accepted = channel;
-                handshakeExecutor.execute(() -> handshake(accepted, reservePlayer));
-                slotTaken = false;   // delivered: the slot is now theirs
+                handshakeExecutor.execute(() -> handshake(accepted));
             } catch (java.util.concurrent.RejectedExecutionException e) {
                 // Every handshake thread is busy: refused at once, with the reason.
                 RemotePlaySettings.say("refused %s: too many connections in progress",
                         socket.getRemoteSocketAddress());
-                if (slotTaken) {
-                    guestSlot.set(false);
-                    slotTaken = false;
-                }
                 Handshake.reject(channel, RemotePlayProtocol.REJECT_BUSY);
                 closeAside(channel);
             } catch (IOException e) {
@@ -702,13 +734,6 @@ public final class RemotePlayHost implements AutoCloseable {
                     } catch (IOException ignored) {
                         // idem
                     }
-                }
-            } finally {
-                // The place taken and never handed over must be returned here, or it would
-                // stay taken by nobody. It happens if execute() is refused because the
-                // executor is closing: rare, but a lost place is never recovered.
-                if (slotTaken) {
-                    guestSlot.set(false);
                 }
             }
         }
@@ -748,16 +773,17 @@ public final class RemotePlayHost implements AutoCloseable {
      * <p>If the handshake does not complete, the guest's place must be returned: without it a
      * wrong code would close the listening to everyone forever.
      */
-    private void handshake(ControlChannel channel, boolean playerReserved) {
+    private void handshake(ControlChannel channel) {
         boolean established = false;
-        // Which place this handshake holds: taken by the accepting thread (spectators off) or
-        // by the admitter once the HELLO says the role. Returned below if nothing is established.
-        int[] held = { playerReserved ? RemotePlayProtocol.ROLE_PLAYER : -1 };
+        // Which place this handshake holds: taken by the admitter once the HELLO says the role.
+        // Returned below if nothing is established.
+        int[] held = { -1 };
         // The reason of the refusal, if any. The REJECT is sent by the finally, AFTER the
         // place has been returned: see Handshake.RejectingException. Sent from inside
         // Handshake.accept, the guest would receive it while the place was still taken, and
         // whoever retried at once would be told "there is already a guest".
         int rejectReason = 0;
+        boolean silent = false;
         java.net.InetAddress peer = channel.socket().getInetAddress();
         // Whichever of the handshake and its deadline arrives first: only one of the two
         // CLOSES the channel. Otherwise a deadline already fired and stalled an instant
@@ -774,6 +800,11 @@ public final class RemotePlayHost implements AutoCloseable {
             }
             established = true;
             throttle.recordSuccess(peer);
+        } catch (Handshake.ClosedBeforeHelloException e) {
+            // A connection the guest opened and did not use: no code was tried.
+            silent = true;
+            RemotePlaySettings.log("%s closed before the HELLO",
+                    channel.socket().getRemoteSocketAddress());
         } catch (Handshake.RejectingException e) {
             rejectReason = e.reason();
             RemotePlaySettings.say("handshake refused with %s: %s",
@@ -800,7 +831,9 @@ public final class RemotePlayHost implements AutoCloseable {
                 // is not told apart from a dropped socket, on purpose: only the other side
                 // knows the difference, and whoever is guessing could fabricate it at will by
                 // disconnecting at the right moment.
-                throttle.recordFailure(peer);
+                if (!silent) {
+                    throttle.recordFailure(peer);
+                }
                 release(held[0]);
                 // The place BEFORE saying anything to the guest, and the order is the
                 // guarantee: when the REJECT reaches the socket the place is already free, so
@@ -867,53 +900,7 @@ public final class RemotePlayHost implements AutoCloseable {
      * passes: it is this same machine.
      */
     static boolean isLocalNetwork(InetAddress peer) {
-        if (peer == null) {
-            return false;
-        }
-        if (peer.isLoopbackAddress() || peer.isAnyLocalAddress() || peer.isLinkLocalAddress()) {
-            return true;
-        }
-        try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-            while (interfaces.hasMoreElements()) {
-                NetworkInterface nic = interfaces.nextElement();
-                if (!nic.isUp()) {
-                    continue;
-                }
-                for (InterfaceAddress local : nic.getInterfaceAddresses()) {
-                    if (sameSubnet(local, peer)) {
-                        return true;
-                    }
-                }
-            }
-        } catch (IOException e) {
-            // Without the list of interfaces locality cannot be proved, and in doubt the peer
-            // is refused: it is a security option, not an optimisation.
-            RemotePlaySettings.log("interfaces cannot be listed: %s", e.getMessage());
-        }
-        return false;
-    }
-
-    /** Compares the first {@code prefixLength} bits of the two addresses. */
-    private static boolean sameSubnet(InterfaceAddress local, InetAddress peer) {
-        byte[] mine = local.getAddress().getAddress();
-        byte[] theirs = peer.getAddress();
-        int prefix = local.getNetworkPrefixLength();
-        if (mine.length != theirs.length || prefix <= 0 || prefix > mine.length * 8) {
-            return false;
-        }
-        int fullBytes = prefix / 8;
-        for (int i = 0; i < fullBytes; i++) {
-            if (mine[i] != theirs[i]) {
-                return false;
-            }
-        }
-        int spareBits = prefix % 8;
-        if (spareBits == 0) {
-            return true;
-        }
-        int mask = 0xFF << (8 - spareBits);
-        return (mine[fullBytes] & mask) == (theirs[fullBytes] & mask);
+        return io.github.zolfrik.amija.net.nat.LocalAddresses.isLocalNetwork(peer);
     }
 
     /**
