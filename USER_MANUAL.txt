@@ -215,10 +215,12 @@ CONTENTS
                          with an OCS Denise, 68000, 1 MB Chip; used when a
                          CDTV disc (one holding CDTV.TM) is loaded
 
-     The AGA profile is used when the WHDLoad slave requires AGA or a file
-     name contains the word "AGA" or "CD32" (e.g. "(AGA)", "_AGA.lha"). A
-     WHDLoad slave that requires a 68020 gets one in any profile. A file name
-     containing "NTSC" or "(USA)" selects NTSC; otherwise PAL. A few games
+     The AGA profile is used when the WHDLoad slave requires AGA, a file
+     name contains the word "AGA" or "CD32" (e.g. "(AGA)", "_AGA.lha"), or a
+     hard disk image is 1 GB or larger (a whole installed system, such as
+     AmigaVision or Amiga Game Selector). A WHDLoad slave that requires a
+     68020 gets one in any profile. A file name containing "NTSC" or "(USA)"
+     selects NTSC; otherwise PAL. A few games
      known to need other settings get them from AmiJa's own game list (4.2).
      In automatic mode the machine rows show the deduced values and are
      read-only.
@@ -357,8 +359,11 @@ CONTENTS
   3.5   HARD DISKS (EXPERT MODE)
   ---------------------------------------------------------------------------
 
-  Master and slave units on a Zorro II AutoConfig controller whose boot ROM
-  provides OFS/FFS.
+  Master and slave units on a Zorro II AutoConfig controller. Partitions use
+  the Kickstart's OFS/FFS, or the filesystem stored on the disk itself (e.g.
+  PFS3), which the controller loads at boot. Images of any size are
+  accepted; partitions beyond 4 GB are reached with the 64-bit commands
+  (TD64, NSD) that such filesystems use.
 
   Master / Slave                         hd.master.enabled / hd.slave.enabled
      Values: true / false                                       Applies: BOOT
@@ -367,7 +372,8 @@ CONTENTS
      Values: absolute path to .hdf or empty                     Applies: BOOT
 
   Padlock                              hd.master.readonly / hd.slave.readonly
-     Hard disks are writable by default.
+     Hard disks are writable by default. A read-only image is never written:
+     what the Amiga writes lasts until the machine is switched off.
      Values: true / false                                       Applies: BOOT
 
   ---------------------------------------------------------------------------
@@ -522,6 +528,14 @@ CONTENTS
      same choice applies to the null modem.
      Values: lan / internet (default lan)            Applies: on start hosting
 
+  IPv6                                                       remoteplay.ipv6
+     Shown next to "Who can join" with Internet only. Puts this machine's
+     global IPv6 addresses in the invitation. IPv6 needs no port opening, so
+     it is often the way in when the provider puts IPv4 behind a shared
+     address (CGNAT). The router's IPv6 firewall may still refuse incoming
+     connections.
+     Values: true / false (default true)             Applies: on start hosting
+
   Session: Start hosting / Stop hosting
      Starts or ends the session. The local game is not affected.
 
@@ -532,15 +546,24 @@ CONTENTS
      other player pastes it and presses Connect. It contains the code, so
      give it only to who should play; it is regenerated at every start and
      never saved. The spectator invitation lets its holder watch and listen
-     only, and is shown while spectators are accepted.
+     only, and is shown while spectators are accepted. With Internet, both
+     read "Please wait..." and cannot be copied for the few seconds the
+     router takes to answer, so that the invitation carries the public
+     address. With a router that only announces itself every few minutes
+     they appear without it and are updated once the port is open: copy
+     the invitation again then.
 
-  Reachable
-     Whether the invitation can work: the address on your network, then
-     either "local network only" or how far the router got in opening the
-     port; hover for the full explanation. Some routers do not answer a
+  Opened port
+     The address and port the router opened for players outside your
+     network ("Port N opened, public address unknown" if the router does
+     not tell it), or "Please wait..." while AmiJa looks for it; hover
+     for the address on your network, IPv6, the firewall and the router's
+     full answer. On Windows the router is also looked up in the system's
+     own list of devices heard on the network. Some routers do not answer a
      search and only announce themselves every few minutes: AmiJa keeps
-     listening for up to a quarter of an hour, and remembers the router so
-     that the next time is immediate (remoteplay.upnp.gateway, 4.3).
+     listening for up to a quarter of an hour, then shows "Router address
+     not found". The router is remembered, so that the next time is
+     immediate (remoteplay.upnp.gateway, 4.3).
 
   Allow in the firewall
      Windows only, shown when the Windows firewall would block AmiJa. Asks
@@ -548,7 +571,7 @@ CONTENTS
      connections on the type of network in use, replacing any inbound rule
      for AmiJa. Nothing changes unless you confirm there.
 
-  Spectators                                       remoteplay.spectators.max
+  Max spectators                                   remoteplay.spectators.max
      Maximum number of spectators besides the guest. Each costs about as much
      upload as the guest (0.5 - 2.5 Mbit/s, up to 5). Under load, spectators
      receive fewer frames first.
@@ -585,17 +608,10 @@ CONTENTS
      learns your public address and nothing else.
      Values: true / false (default true)             Applies: on start hosting
 
-  Interface (expert)                                         remoteplay.bind
+  remoteplay.bind (amiga.properties only, not in the popup)
      Local IP address to listen on, when only one network card should accept
      guests; empty = all of them.
      Values: IP address or empty (default)           Applies: on start hosting
-
-  IPv6 (expert)                                              remoteplay.ipv6
-     With Internet, puts this machine's global IPv6 addresses in the
-     invitation. IPv6 needs no port opening, so it is often the way in when
-     the provider puts IPv4 behind a shared address (CGNAT). The router's
-     IPv6 firewall may still refuse incoming connections.
-     Values: true / false (default true)             Applies: on start hosting
 
   Join code / Spectator code (expert)
      The bare codes, already contained in the invitations: useful to read
@@ -606,8 +622,9 @@ CONTENTS
   JOINING AND WATCHING
 
   Invitation
-     Paste the invitation the host sent you (it starts with AMJ-); line
-     breaks, spaces and case do not matter. The addresses in it are tried
+     Paste the invitation the host sent you (it starts with AMJ-), by hand
+     or with the Paste button next to the field; line breaks, spaces and
+     case do not matter. The addresses in it are tried
      all at once. A damaged invitation, one made by another version of
      AmiJa or one for the null modem is reported on the Status line before
      anything is tried.
@@ -663,7 +680,7 @@ CONTENTS
 
   The host chooses "Who can join" as for the stream (remoteplay.access):
   with Internet the router is asked to open the cable's port, TCP only.
-  Hosting shows an Invitation and a Reachable line as above; the joining
+  Hosting shows an Invitation and an Opened port line as above; the joining
   side pastes the invitation in "Null modem: join" and connects. A stream
   invitation is refused there, with the reason.
 
@@ -932,8 +949,9 @@ CONTENTS
 
   Values as in 3.2. Applies: BOOT
 
-  Profile selection: AGA when the WHDLoad slave requires it or a file name
-  contains "AGA" or "CD32" as a word; hard disk when a hard disk or WHDLoad
+  Profile selection: AGA when the WHDLoad slave requires it, a file name
+  contains "AGA" or "CD32" as a word, or a hard disk image is 1 GB or
+  larger; hard disk when a hard disk or WHDLoad
   archive is active; floppy otherwise. A slave requiring a 68020 always gets
   one. Video mode: NTSC when an active file name contains "NTSC" or "(USA)"
   (file name only, not folders), PAL otherwise. The CD32 and CDTV are fixed
@@ -941,10 +959,15 @@ CONTENTS
 
   Game list: a few games are known to need other settings than their profile
   gives, and AmiJa carries a list of them. A WHDLoad game is recognised by
-  its slave's name, a floppy by the title of its image file (what comes
-  before the first "(" or "["). The entry wins over the profile in automatic
-  mode only; for example FIFA International Soccer gets 2 MB of Fast RAM,
-  without which it reports insufficient memory.
+  its slave's name, a floppy or hard disk image by the title of its file
+  (what comes before the first "(" or "["). The entry wins over the profile
+  in automatic mode only; for example FIFA International Soccer gets 2 MB of
+  Fast RAM, without which it reports insufficient memory. The list also
+  knows two game collections on hard disk: AmigaVision (AmigaVision.hdf) and
+  Amiga Game Selector (AGS_Retroarch_*.hdf) run on the A1200 profile, and
+  AmigaVision's saves image, AmigaVision-Saves.hdf, is mounted next to it
+  when it sits in the same folder. Both need the A1200 Kickstart 3.1
+  (40.68) in the Kickstart folder.
 
   ---------------------------------------------------------------------------
   4.3   REMOTE PLAY

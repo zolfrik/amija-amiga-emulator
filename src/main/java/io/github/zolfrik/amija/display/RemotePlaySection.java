@@ -148,8 +148,11 @@ final class RemotePlaySection {
         // --- Host rows ---------------------------------------------------------------
         JComboBox<Access> accessCombo = widgets.combo(Access.values());
         accessCombo.setSelectedItem(config.remotePlayInternet() ? Access.INTERNET : Access.LAN);
+        // IPv6 only matters with Internet access, so it sits on the same row and shows with it.
+        JCheckBox ipv6Check = widgets.check(Messages.t("label.remoteplay.ipv6"),
+                config.remotePlayIpv6());
         JLabel accessLabel = widgets.addRow(panel, 2, "label.remoteplay.access",
-                accessCombo, null);
+                accessCombo, ipv6Check);
 
         JButton hostButton = widgets.button(Messages.t("button.remoteplay.start"));
         JLabel hostButtonLabel = widgets.addRow(panel, 3, "label.remoteplay.session",
@@ -167,7 +170,8 @@ final class RemotePlaySection {
         JLabel spectatorInviteLabel = widgets.addRow(panel, 5,
                 "label.remoteplay.spectatorinvite", spectatorInviteField, copySpectatorInvite);
 
-        // One line; the long explanation of the router's answer is its tooltip.
+        // The port the router opened, or why there is none yet; the full picture (local
+        // address, IPv6, firewall, the router's answer at length) is its tooltip.
         JTextField reachField = widgets.readOnlyText("");
         JButton firewallButton = widgets.button(Messages.t("button.remoteplay.firewall"));
         JLabel reachLabel = widgets.addRow(panel, 6, "label.remoteplay.reach", reachField,
@@ -192,8 +196,9 @@ final class RemotePlaySection {
 
         // --- Joiner rows -------------------------------------------------------------
         JTextField enterInviteField = widgets.text("");
+        JButton pasteInvite = widgets.button(Messages.t("button.remoteplay.paste"));
         JLabel enterInviteLabel = widgets.addRow(panel, 11, "label.remoteplay.enterinvite",
-                enterInviteField, null);
+                enterInviteField, pasteInvite);
 
         JButton joinButton = widgets.button(Messages.t("button.remoteplay.connect"));
         JLabel joinButtonLabel = widgets.addRow(panel, 12, "label.remoteplay.session2",
@@ -213,11 +218,8 @@ final class RemotePlaySection {
         JLabel portLabel = widgets.addRow(panel, 41, "label.remoteplay.port", portField,
                 stunCheck);
 
+        // Not shown: the interface is kept as configured (remoteplay.bind) and passed on as is.
         JTextField bindField = widgets.text(config.remotePlayBind());
-        JCheckBox ipv6Check = widgets.check(Messages.t("label.remoteplay.ipv6"),
-                config.remotePlayIpv6());
-        JLabel bindLabel = widgets.addRow(panel, 42, "label.remoteplay.bind", bindField,
-                ipv6Check);
 
         JTextField codeField = widgets.readOnlyText("");
         JButton copyCode = widgets.button(Messages.t("button.remoteplay.copy"));
@@ -255,8 +257,9 @@ final class RemotePlaySection {
                 serialReachField, null);
 
         JTextField serialEnterInviteField = widgets.text("");
+        JButton pasteSerialInvite = widgets.button(Messages.t("button.remoteplay.paste"));
         JLabel serialEnterInviteLabel = widgets.addRow(panel, 26, "label.serial.enterinvite",
-                serialEnterInviteField, null);
+                serialEnterInviteField, pasteSerialInvite);
 
         JButton serialJoinButton = widgets.button(Messages.t("button.remoteplay.connect"));
         JLabel serialJoinButtonLabel = widgets.addRow(panel, 27, "label.serial.session2",
@@ -297,10 +300,10 @@ final class RemotePlaySection {
                 spectatorInviteField, copySpectatorInvite);
         List<JComponent> hostOptionRows = List.of(spectatorsLabel, spectatorsCombo,
                 guestPortLabel, guestPortCombo, shareKeyboard);
-        List<JComponent> joinRows = List.of(enterInviteLabel, enterInviteField,
+        List<JComponent> joinRows = List.of(enterInviteLabel, enterInviteField, pasteInvite,
                 joinButtonLabel, joinButton);
         List<JComponent> expertHostRows = List.of(audioLabel, audioCombo, allowReset,
-                portLabel, portField, stunCheck, bindLabel, bindField, ipv6Check);
+                portLabel, portField, stunCheck);
         List<JComponent> expertCodeRows = List.of(codeLabel, codeField, copyCode);
         List<JComponent> expertSpectatorRows = List.of(spectatorCodeLabel,
                 spectatorCodeField, copySpectatorCode);
@@ -314,7 +317,8 @@ final class RemotePlaySection {
                 serialAddressField, copySerialAddress, serialCodeLabel, serialCodeField,
                 copySerialCode);
         List<JComponent> serialJoinRows = List.of(serialEnterInviteLabel,
-                serialEnterInviteField, serialJoinButtonLabel, serialJoinButton);
+                serialEnterInviteField, pasteSerialInvite, serialJoinButtonLabel,
+                serialJoinButton);
         List<JComponent> serialExpertJoinRows = List.of(serialHostAddressLabel,
                 serialHostAddressField, serialJoinCodeLabel, serialJoinCodeField);
 
@@ -341,6 +345,8 @@ final class RemotePlaySection {
             boolean spectatorsOn = hosting && control.spectatorCode() != null;
 
             widgets.setRowVisible(mode == Mode.HOST || mode == Mode.SERIAL_HOST, accessRows);
+            widgets.setRowVisible((mode == Mode.HOST || mode == Mode.SERIAL_HOST)
+                    && accessCombo.getSelectedItem() == Access.INTERNET, List.of(ipv6Check));
             widgets.setRowVisible(mode == Mode.HOST, hostRows);
             widgets.setRowVisible(mode == Mode.HOST && hosting, hostLiveRows);
             widgets.setRowVisible(mode == Mode.HOST && hosting && control.firewallFixOffered(),
@@ -378,11 +384,17 @@ final class RemotePlaySection {
                 boolean serialIdle = !serialHosting && !serialJoining && !serialJoined;
                 serialPortField.setEnabled(serialIdle);
                 serialEnterInviteField.setEnabled(serialIdle);
+                pasteSerialInvite.setEnabled(serialIdle);
                 serialHostAddressField.setEnabled(serialIdle);
                 serialJoinCodeField.setEnabled(serialIdle);
                 if (serialHosting) {
-                    serialInviteField.setText(nullToEmpty(serial.serialInvite()));
-                    serialReachField.setText(nullToEmpty(serial.serialReachability()));
+                    // Until the router has answered, the invitation would lack the public address.
+                    boolean serialPending = serial.serialInvitePending();
+                    serialInviteField.setText(serialPending ? Messages.t("msg.remoteplay.port.wait")
+                            : nullToEmpty(serial.serialInvite()));
+                    copySerialInvite.setEnabled(!serialPending);
+                    serialReachField.setText(nullToEmpty(serial.serialOpenedPort()));
+                    serialReachField.setToolTipText(reachTooltip(serial.serialReachability(), null));
                     serialAddressField.setText(nullToEmpty(serial.serialLanAddress()));
                     serialCodeField.setText(nullToEmpty(serial.serialJoinCode()));
                 }
@@ -405,6 +417,7 @@ final class RemotePlaySection {
             // change: the address and code of that attempt have already left.
             joinButton.setEnabled(!connecting && inviteProblem == null);
             enterInviteField.setEnabled(!connecting && !guest);
+            pasteInvite.setEnabled(!connecting && !guest);
             hostAddressField.setEnabled(!connecting && !guest);
             joinCodeField.setEnabled(!connecting && !guest);
             // The outcome to apply at closing is not a separate choice: it is simply "this
@@ -430,7 +443,8 @@ final class RemotePlaySection {
                     && !(serial != null && serial.isSerialHosting()));
             portField.setEnabled(!hosting);
             bindField.setEnabled(!hosting);
-            ipv6Check.setEnabled(!hosting);
+            ipv6Check.setEnabled(!hosting
+                    && !(serial != null && serial.isSerialHosting()));
             stunCheck.setEnabled(!hosting);
             guestPortCombo.setEnabled(!hosting);
             shareKeyboard.setEnabled(!hosting);
@@ -439,13 +453,19 @@ final class RemotePlaySection {
             spectatorsCombo.setEnabled(!hosting);
 
             if (hosting) {
-                inviteField.setText(nullToEmpty(control.invite()));
-                spectatorInviteField.setText(nullToEmpty(control.spectatorInvite()));
+                // Until the router has answered, an invitation would lack the public address.
+                boolean pending = control.invitePending();
+                String wait = Messages.t("msg.remoteplay.port.wait");
+                inviteField.setText(pending ? wait : nullToEmpty(control.invite()));
+                spectatorInviteField.setText(pending ? wait
+                        : nullToEmpty(control.spectatorInvite()));
+                copyInvite.setEnabled(!pending);
+                copySpectatorInvite.setEnabled(!pending);
                 codeField.setText(nullToEmpty(control.joinCode()));
                 spectatorCodeField.setText(nullToEmpty(control.spectatorCode()));
-                reachField.setText(nullToEmpty(control.reachability()));
-                String detail = control.routerStatus();
-                reachField.setToolTipText(detail == null || detail.isBlank() ? null : detail);
+                reachField.setText(nullToEmpty(control.openedPort()));
+                reachField.setToolTipText(reachTooltip(control.reachability(),
+                        control.routerStatus()));
                 String command = control.firewallCommand();
                 if (command != null) {
                     firewallButton.setToolTipText(Messages.t("button.remoteplay.firewall.tip")
@@ -462,6 +482,7 @@ final class RemotePlaySection {
         };
 
         modeCombo.addActionListener(e -> sync.run());
+        accessCombo.addActionListener(e -> sync.run());
         expertCheck.addActionListener(e -> {
             // The look of the popup, like a collapsible section: remembered at once.
             config.setPopupSectionExpanded(EXPERT_ID, expertCheck.isSelected());
@@ -530,6 +551,7 @@ final class RemotePlaySection {
             } else {
                 applySerialFields(config, serialPortField, serialHostAddressField);
                 config.setRemotePlayInternet(accessCombo.getSelectedItem() == Access.INTERNET);
+                config.setRemotePlayIpv6(ipv6Check.isSelected());
                 String error = serial.startSerialHost(config.serialPort(),
                         config.remotePlayInternet());
                 if (error != null) {
@@ -569,6 +591,8 @@ final class RemotePlaySection {
         });
         copySerialCode.addActionListener(e -> copy(serialCodeField.getText()));
         copyInvite.addActionListener(e -> copy(inviteField.getText()));
+        pasteInvite.addActionListener(e -> paste(enterInviteField));
+        pasteSerialInvite.addActionListener(e -> paste(serialEnterInviteField));
         firewallButton.addActionListener(e -> control.allowInFirewall());
         copySpectatorInvite.addActionListener(e -> copy(spectatorInviteField.getText()));
         copyCode.addActionListener(e -> copy(codeField.getText()));
@@ -583,6 +607,7 @@ final class RemotePlaySection {
         widgets.tip("label.remoteplay.guestreset", allowReset);
         widgets.tip("button.remoteplay.copy", copyInvite, copySpectatorInvite, copyCode,
                 copySpectatorCode, copySerialAddress, copySerialCode, copySerialInvite);
+        widgets.tip("button.remoteplay.paste", pasteInvite, pasteSerialInvite);
         widgets.tip("label.serial.session", serialHostButton);
         widgets.tip("label.serial.session2", serialJoinButton);
         widgets.tip("label.remoteplay.session", hostButton);
@@ -761,8 +786,37 @@ final class RemotePlaySection {
                 .setContents(new StringSelection(text), null);
     }
 
+    /** Replaces the field with the clipboard's text; nothing happens if it holds no text. */
+    private static void paste(JTextField field) {
+        try {
+            Object text = Toolkit.getDefaultToolkit().getSystemClipboard()
+                    .getData(java.awt.datatransfer.DataFlavor.stringFlavor);
+            if (text instanceof String s && !s.isBlank()) {
+                field.setText(s.strip());
+            }
+        } catch (java.awt.datatransfer.UnsupportedFlavorException | java.io.IOException
+                 | IllegalStateException e) {
+            // No text on the clipboard, or the clipboard is busy: leave the field as it is.
+        }
+    }
+
     private static String nullToEmpty(String s) {
         return s == null ? "" : s;
+    }
+
+    /** The full reachability line and the router's answer, one per tooltip line. */
+    static String reachTooltip(String reach, String router) {
+        StringBuilder sb = new StringBuilder();
+        for (String part : new String[] { reach, router }) {
+            if (part == null || part.isBlank()) {
+                continue;
+            }
+            if (!sb.isEmpty()) {
+                sb.append("<br>");
+            }
+            sb.append(part.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"));
+        }
+        return sb.isEmpty() ? null : "<html>" + sb + "</html>";
     }
 
     /** The pieces of {@code ConfigDialog} needed here, passed rather than duplicated. */

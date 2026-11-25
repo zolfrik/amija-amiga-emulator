@@ -24,6 +24,11 @@ import io.github.zolfrik.amija.memory.HardFile;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -37,8 +42,10 @@ import java.util.function.BooleanSupplier;
  * bytes between the {@code .hdf} file and Amiga RAM ({@link Bus}).
  *
  * <p>The approach is deliberately <b>minimal and fast</b>: no SCSI/IDE bus emulation, the I/O
- * operations are {@code memcpy}. Enough to boot games installed on {@code .hdf} with a file
- * system in ROM (OFS/FFS), and WHDLoad.
+ * operations are {@code memcpy}. The driver answers the trackdisk commands, their TD64 and
+ * NSD 64-bit variants (so a partition may lie anywhere on a disk of any size), and the NSD
+ * device query. Filesystems stored in the disk's RDB are handed to the ROM, which loads them
+ * before mounting the partitions.
  *
  * <p>Port protocol (offsets relative to {@code baseAddr + initDiagVec}, where
  * {@code EXPROM_SIZE} is the size of the ROM):
@@ -47,7 +54,9 @@ import java.util.function.BooleanSupplier;
  *       autoboot" flag / shared folders (0);</li>
  *   <li>write {@code EXPROM_SIZE+0/+2}: high/low word of the pointer to a structure in Amiga
  *       RAM;</li>
- *   <li>write {@code EXPROM_SIZE+4}: command (0xFEDE=I/O, 0xFEDF=init partition, ...).</li>
+ *   <li>write {@code EXPROM_SIZE+4}: command (0xFEDE=I/O, 0xFEDF=init partition,
+ *       0xFEE0=FileSystem.resource, 0xFEE1=filesystem info, 0xFEE2=filesystem segments);</li>
+ *   <li>read {@code EXPROM_SIZE+0x10..}: the NSD supported-command list, zero-terminated.</li>
  * </ul>
  */
 public final class HdController implements AutoConfigDevice {
@@ -69,8 +78,36 @@ public final class HdController implements AutoConfigDevice {
     private static final int CMD_READ   = 2;
     private static final int CMD_WRITE  = 3;
     private static final int TD_FORMAT  = 11;
+    private static final int TD_READ64   = 24;
+    private static final int TD_WRITE64  = 25;
+    private static final int TD_SEEK64   = 26;
+    private static final int TD_FORMAT64 = 27;
+    private static final int NSCMD_DEVICEQUERY  = 0x4000;
+    private static final int NSCMD_TD_READ64    = 0xC000;
+    private static final int NSCMD_TD_WRITE64   = 0xC001;
+    private static final int NSCMD_TD_SEEK64    = 0xC002;
+    private static final int NSCMD_TD_FORMAT64  = 0xC003;
+    private static final int NSDEVTYPE_TRACKDISK = 5;
     private static final int IOERR_NOCMD     = 0xFD; // -3
+    private static final int IOERR_BADLENGTH = 0xFC; // -4
     private static final int IOERR_BADADDRESS = 0xFB; // -5
+    private static final int TDERR_NOTSPECIFIED = 20;
+
+    /** Commands reported by the NSD device query, zero-terminated. */
+    private static final int[] SUPPORTED_COMMANDS = {
+        1, CMD_READ, CMD_WRITE, 4, 5, 6, 7, 8, 9, 10, TD_FORMAT, 12, 13, 14, 15,
+        TD_READ64, TD_WRITE64, TD_SEEK64, TD_FORMAT64,
+        NSCMD_DEVICEQUERY, NSCMD_TD_READ64, NSCMD_TD_WRITE64, NSCMD_TD_SEEK64,
+        NSCMD_TD_FORMAT64, 0
+    };
+    /** Offset of the command list after the ROM (past the magic ports). */
+    private static final int CMDLIST_OFF = 0x10;
+
+    /** The ROM's stack frame for a filesystem's segments holds three hunks. */
+    private static final int MAX_FS_HUNKS = 3;
+
+    /** Transfer buffer for images accessed in place. */
+    private static final int IO_CHUNK = 64 * 1024;
 
     // --- ROM ---
     private static final byte[] EXPROM = loadExprom();
@@ -110,6 +147,13 @@ public final class HdController implements AutoConfigDevice {
     private int   baseAddr;
     private int   pointer;                     // pointer passed by the driver
 
+    // Filesystems from the RDB still to be loaded by the ROM, and the seglist (BPTR) to give
+    // the partitions of each DosType. Rebuilt at every reset: the ROM installs them anew
+    // at every boot.
+    private final transient List<HardFile.FileSystem> pendingFs = new ArrayList<>();
+    private final transient Map<Integer, Integer> segListByDosType = new HashMap<>();
+    private transient byte[] ioBuffer;
+
     // Activity LED: instant (nanoTime) of the last disk read/write. Updated by the emulation
     // thread at every I/O command (rare events, no cost) and read once per frame by the
     // display thread: a simple time window keeps the LED lit long enough for a single burst
@@ -131,6 +175,7 @@ public final class HdController implements AutoConfigDevice {
         this.rom = EXPROM.clone();
         patchDeviceName(this.rom, objid);
         this.state = pluggedIn() ? State.UNCONFIGURED : State.SHUTUP;
+        resetFileSystems();
     }
 
     public void setBus(Bus bus) { this.bus = bus; }
@@ -164,6 +209,23 @@ public final class HdController implements AutoConfigDevice {
         this.baseAddr = 0;
         this.pointer = 0;
         this.lastActivityNanos = Long.MIN_VALUE;
+        resetFileSystems();
+    }
+
+    /** Every loadable filesystem of the RDB becomes pending again. */
+    private void resetFileSystems() {
+        pendingFs.clear();
+        segListByDosType.clear();
+        if (hdf == null) return;
+        for (HardFile.FileSystem fs : hdf.fileSystems()) {
+            if (fs.code.numHunks() > MAX_FS_HUNKS) {
+                System.err.println("[HDF] Filesystem " + HardFile.dosTypeString(fs.dosType)
+                        + " has " + fs.code.numHunks() + " hunks (at most " + MAX_FS_HUNKS
+                        + " can be loaded): not installed");
+                continue;
+            }
+            pendingFs.add(fs);
+        }
     }
 
     /** Byte of the AutoConfig descriptor (same scheme as {@link FastRam}). */
@@ -229,10 +291,14 @@ public final class HdController implements AutoConfigDevice {
         int off = pageOffset - 0x40; // initDiagVec
         switch (off - EXPROM_SIZE) {
             case 0: return hdf != null ? hdf.numPartitions() : 0;
-            case 2: return 0;                 // number of filesystem drivers (ROM FS only)
+            case 2: return pendingFs.size();  // number of filesystems still to install
             case 4: return disableAutoboot() ? 1 : 0;
             case 6: return 0;                 // shared folders (not supported)
             default:
+                int cl = off - EXPROM_SIZE - CMDLIST_OFF;
+                if (cl >= 0 && (cl & 1) == 0 && cl / 2 < SUPPORTED_COMMANDS.length) {
+                    return SUPPORTED_COMMANDS[cl / 2];
+                }
                 if (off >= 0 && off + 1 < rom.length) {
                     return ((rom[off] & 0xFF) << 8) | (rom[off + 1] & 0xFF);
                 }
@@ -261,9 +327,9 @@ public final class HdController implements AutoConfigDevice {
             switch (value) {
                 case 0xFEDE: processCmd(pointer);  break;
                 case 0xFEDF: processInit(pointer); break;
-                case 0xFEE0: /* processResource */ break;
-                case 0xFEE1: /* processInfoReq  */ break;
-                case 0xFEE2: /* processInitSeg   */ break;
+                case 0xFEE0: processResource(pointer); break;
+                case 0xFEE1: processInfoReq(pointer);  break;
+                case 0xFEE2: processInitSeg(pointer);  break;
                 default: break;
             }
         }
@@ -280,28 +346,44 @@ public final class HdController implements AutoConfigDevice {
     private void processCmd(int ptr) {
         if (bus == null || hdf == null) return;
         int cmd    = busReadWord(ptr + IO_COMMAND);
-        long offset = busReadLong(ptr + IO_OFFSET) & 0xFFFFFFFFL;
+        long low   = busReadLong(ptr + IO_OFFSET) & 0xFFFFFFFFL;
+        long high  = busReadLong(ptr + IO_ACTUAL) & 0xFFFFFFFFL;
         long length = busReadLong(ptr + IO_LENGTH) & 0xFFFFFFFFL;
         int addr   = busReadLong(ptr + IO_DATA);
+        long offset64 = (high << 32) | low; // TD64/NSD: io_Actual holds the high half
 
         int error = 0;
         int actual = 0;
         switch (cmd) {
-            case CMD_READ:
+            case CMD_READ, TD_READ64, NSCMD_TD_READ64 -> {
                 lastActivityNanos = System.nanoTime(); // LED on before the transfer
-                error = doRead(offset, length, addr);
+                error = doRead(cmd == CMD_READ ? low : offset64, length, addr);
                 actual = (int) length;
-                break;
-            case CMD_WRITE:
-            case TD_FORMAT:
+            }
+            case CMD_WRITE, TD_FORMAT, TD_WRITE64, TD_FORMAT64,
+                 NSCMD_TD_WRITE64, NSCMD_TD_FORMAT64 -> {
                 lastActivityNanos = System.nanoTime(); // LED on before the transfer
-                error = doWrite(offset, length, addr);
+                boolean wide = cmd != CMD_WRITE && cmd != TD_FORMAT;
+                error = doWrite(wide ? offset64 : low, length, addr);
                 actual = (int) length;
-                break;
-            default:
+            }
+            case TD_SEEK64, NSCMD_TD_SEEK64 -> { }
+            case NSCMD_DEVICEQUERY -> {
+                if (length < 16) {
+                    error = IOERR_BADLENGTH;
+                } else {
+                    busWriteLong(addr, 0);                       // DevQueryFormat
+                    busWriteLong(addr + 4, 16);                  // SizeAvailable
+                    busWriteWord(addr + 8, NSDEVTYPE_TRACKDISK); // DeviceType
+                    busWriteWord(addr + 10, 0);                  // DeviceSubType
+                    busWriteLong(addr + 12, baseAddr + 0x40 + EXPROM_SIZE + CMDLIST_OFF);
+                    actual = 16;
+                }
+            }
+            default -> {
                 // CMD_RESET/UPDATE/CLEAR/STOP/START/FLUSH/TD_* status commands: no-op, success.
                 if (cmd < 1 || cmd > 18) error = IOERR_NOCMD;
-                break;
+            }
         }
 
         busWriteByte(ptr + IO_ERROR, error & 0xFF);
@@ -309,19 +391,127 @@ public final class HdController implements AutoConfigDevice {
     }
 
     private int doRead(long offset, long length, int addr) {
-        if (!hdf.inRange(offset, length)) return IOERR_BADADDRESS;
-        // Block transfer (memcpy) disk -> RAM.
-        bus.writeBlock(addr, hdf.rawData(), (int) offset, (int) length);
-        return 0;
+        if (!hdf.inRange(offset, length) || length > Integer.MAX_VALUE) return IOERR_BADADDRESS;
+        try {
+            if (hdf.inMemory()) {
+                // Block transfer (memcpy) disk -> RAM.
+                bus.writeBlock(addr, hdf.rawData(), (int) offset, (int) length);
+                return 0;
+            }
+            byte[] buf = ioBuffer();
+            for (long done = 0; done < length; ) {
+                int n = (int) Math.min(buf.length, length - done);
+                hdf.read(offset + done, buf, 0, n);
+                bus.writeBlock(addr + (int) done, buf, 0, n);
+                done += n;
+            }
+            return 0;
+        } catch (UncheckedIOException e) {
+            System.err.println("[HDF] Read failed: " + e.getMessage());
+            return TDERR_NOTSPECIFIED;
+        }
     }
 
     private int doWrite(long offset, long length, int addr) {
-        if (!hdf.inRange(offset, length)) return IOERR_BADADDRESS;
-        if (hdf.readOnly()) return 0; // write silently ignored on a protected disk
-        // Block transfer (memcpy) RAM -> disk, straight into the image's array.
-        bus.readBlock(addr, hdf.rawData(), (int) offset, (int) length);
-        hdf.markModified();
-        return 0;
+        if (!hdf.inRange(offset, length) || length > Integer.MAX_VALUE) return IOERR_BADADDRESS;
+        try {
+            if (hdf.inMemory()) {
+                // Block transfer (memcpy) RAM -> disk, straight into the image's array (a
+                // read-only image keeps it for the session: it is never saved).
+                bus.readBlock(addr, hdf.rawData(), (int) offset, (int) length);
+                hdf.markModified();
+                return 0;
+            }
+            byte[] buf = ioBuffer();
+            for (long done = 0; done < length; ) {
+                int n = (int) Math.min(buf.length, length - done);
+                bus.readBlock(addr + (int) done, buf, 0, n);
+                hdf.write(offset + done, buf, 0, n);
+                done += n;
+            }
+            return 0;
+        } catch (UncheckedIOException e) {
+            System.err.println("[HDF] Write failed: " + e.getMessage());
+            return TDERR_NOTSPECIFIED;
+        }
+    }
+
+    private byte[] ioBuffer() {
+        if (ioBuffer == null) ioBuffer = new byte[IO_CHUNK];
+        return ioBuffer;
+    }
+
+    // =========================================================================
+    // Filesystems from the RDB
+    // =========================================================================
+
+    /**
+     * The ROM hands over FileSystem.resource: every pending filesystem the resource already
+     * holds at the same or a newer version is dropped, and the partitions of its DosType get
+     * the seglist of the resource's entry.
+     */
+    private void processResource(int ptr) {
+        if (bus == null) return;
+        int node = busReadLong(ptr + 0x12); // fsr_FileSysEntries.lh_Head
+        for (int guard = 0; node != 0 && guard < 256; guard++) {
+            int succ = busReadLong(node);   // ln_Succ
+            if (succ == 0) break;           // the list's tail node
+            int dosType = busReadLong(node + 0x0E); // fse_DosType
+            int version = busReadLong(node + 0x12); // fse_Version
+            int segList = busReadLong(node + 0x36); // fse_SegList
+            boolean dropped = pendingFs.removeIf(fs -> fs.dosType == dosType
+                    && Integer.compareUnsigned(version, fs.version) >= 0);
+            if (dropped && segList != 0) segListByDosType.put(dosType, segList);
+            node = succ;
+        }
+    }
+
+    /** Fills the ROM's fsinfo structure for pending filesystem number {@code fsinfo_num}. */
+    private void processInfoReq(int ptr) {
+        if (bus == null) return;
+        int num = busReadWord(ptr);
+        if (num >= pendingFs.size()) return;
+        HardFile.FileSystem fs = pendingFs.get(num);
+        busWriteLong(ptr + 0x02, fs.dosType);
+        busWriteLong(ptr + 0x06, fs.version);
+        busWriteLong(ptr + 0x0A, fs.code.numHunks());
+        for (int i = 0; i < fs.code.numHunks(); i++) {
+            busWriteLong(ptr + 0x0E + 4 * i, fs.code.memRaw(i));
+        }
+    }
+
+    /**
+     * Loads a filesystem into the hunk blocks the ROM allocated (their addresses at
+     * {@code ptr+0/4/8}, the filesystem number at {@code ptr+12}): each block gets its size,
+     * the BPTR of the next block and the relocated hunk.
+     */
+    private void processInitSeg(int ptr) {
+        if (bus == null) return;
+        int num = busReadLong(ptr + 12);
+        if (num < 0 || num >= pendingFs.size()) return;
+        HardFile.FileSystem fs = pendingFs.get(num);
+        int n = fs.code.numHunks();
+        int[] seg = new int[n];
+        int[] dataAddr = new int[n];
+        for (int i = 0; i < n; i++) {
+            seg[i] = busReadLong(ptr + 4 * i);
+            if (seg[i] == 0) {
+                System.err.println("[HDF] No memory for filesystem "
+                        + HardFile.dosTypeString(fs.dosType));
+                return;
+            }
+            dataAddr[i] = seg[i] + 8;
+        }
+        for (int i = 0; i < n; i++) {
+            busWriteLong(seg[i], fs.code.memSize(i) + 8);
+            busWriteLong(seg[i] + 4, i == n - 1 ? 0 : (seg[i + 1] + 4) >>> 2);
+            byte[] img = fs.code.image(i, dataAddr);
+            bus.writeBlock(dataAddr[i], img, 0, img.length);
+        }
+        segListByDosType.put(fs.dosType, (seg[0] + 4) >>> 2);
+        System.out.println("[HDF] Filesystem " + HardFile.dosTypeString(fs.dosType)
+                + " " + (fs.version >>> 16) + "." + (fs.version & 0xFFFF) + " loaded at $"
+                + Integer.toHexString(seg[0]));
     }
 
     /** Fills the DOS environment of a partition (the exprom's "devn" structure). */
@@ -348,21 +538,22 @@ public final class HdController implements AutoConfigDevice {
         busWriteLong(ptr + 0x0C, part.flags);       // devn_flags
         busWriteLong(ptr + 0x14, part.sizeBlock);   // devn_sizeBlock
         busWriteLong(ptr + 0x18, 0);                // devn_secOrg
-        busWriteLong(ptr + 0x1C, hdf.heads());      // devn_numHeads
+        busWriteLong(ptr + 0x1C, part.surfaces);    // devn_numHeads
         busWriteLong(ptr + 0x20, 1);                // devn_secsPerBlk
-        busWriteLong(ptr + 0x24, hdf.sectors());    // devn_blkTrack
+        busWriteLong(ptr + 0x24, part.blocksPerTrack); // devn_blkTrack
         busWriteLong(ptr + 0x28, part.reserved);    // devn_resBlks
         busWriteLong(ptr + 0x30, 0);                // devn_interleave
         busWriteLong(ptr + 0x34, part.lowCyl);      // devn_lowCyl
         busWriteLong(ptr + 0x38, part.highCyl);     // devn_upperCyl
-        busWriteLong(ptr + 0x3C, 30);               // devn_numBuffers
-        busWriteLong(ptr + 0x40, 0);                // devn_memBufType
-        busWriteLong(ptr + 0x44, 0x7FFFFFFF);       // devn_transferSize
-        busWriteLong(ptr + 0x48, 0xFFFFFFFE);       // devn_addMask
-        busWriteLong(ptr + 0x4C, 0);                // devn_bootPrio
+        busWriteLong(ptr + 0x3C, part.numBuffers);  // devn_numBuffers
+        busWriteLong(ptr + 0x40, part.bufMemType);  // devn_memBufType
+        busWriteLong(ptr + 0x44, part.maxTransfer); // devn_transferSize
+        busWriteLong(ptr + 0x48, part.mask);        // devn_addMask
+        busWriteLong(ptr + 0x4C, part.bootPri);     // devn_bootPrio
         busWriteLong(ptr + 0x50, part.dosType);     // devn_dName
         busWriteLong(ptr + 0x54, bootFlag);         // devn_bootflags
-        busWriteLong(ptr + 0x58, 0);                // devn_segList (0 = filesystem in ROM)
+        // devn_segList: the filesystem loaded from the RDB for this DosType, 0 = in ROM.
+        busWriteLong(ptr + 0x58, segListByDosType.getOrDefault(part.dosType, 0));
     }
 
     // =========================================================================
@@ -380,6 +571,11 @@ public final class HdController implements AutoConfigDevice {
 
     private void busWriteByte(int addr, int value) {
         bus.writeByte(addr, value & 0xFF);
+    }
+
+    private void busWriteWord(int addr, int value) {
+        bus.writeByte(addr,     (value >>> 8) & 0xFF);
+        bus.writeByte(addr + 1,  value        & 0xFF);
     }
 
     private void busWriteLong(int addr, int value) {

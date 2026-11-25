@@ -894,8 +894,8 @@ public final class AmigaConfig {
     /**
      * The game database entry for the media in use, or {@code null}: what Auto mode must
      * build differently for this game (see {@link GameDatabase}). A WHDLoad archive is looked
-     * up by the names of its slaves; with no hard disk or WHDLoad in use, the disks in the
-     * floppy drives by their titles.
+     * up by the names of its slaves, hard disk images by their titles; with no hard disk or
+     * WHDLoad in use, the disks in the floppy drives by their titles.
      */
     public GameDatabase.Entry gameException() {
         if (!autoEnabled()) return null;
@@ -903,7 +903,15 @@ public final class AmigaConfig {
             return GameDatabase.builtIn().find(GameDatabase.Format.WHDLOAD,
                     io.github.zolfrik.amija.whdload.WhdLoadManager.slaveNames(whdloadFile()));
         }
-        if (expandedMediaActive()) return null;
+        if (expandedMediaActive()) {
+            java.util.List<String> keys = new java.util.ArrayList<>();
+            for (int unit = 0; unit < HD_UNITS.length; unit++) {
+                if (!hdEnabled(unit) || hdDisk(unit) == null) continue;
+                String key = GameDatabase.floppyKey(hdDisk(unit));
+                if (key != null) keys.add(key);
+            }
+            return keys.isEmpty() ? null : GameDatabase.builtIn().find(GameDatabase.Format.HDF, keys);
+        }
         java.util.List<String> keys = new java.util.ArrayList<>();
         for (int i = 0; i < 4; i++) {
             if (!driveEnabled(i) || driveDisk(i) == null) continue;
@@ -915,15 +923,66 @@ public final class AmigaConfig {
 
     /**
      * {@code true} if the active media need the AGA chipset: the WHDLoad slave says so in its
-     * header ({@link io.github.zolfrik.amija.whdload.WhdLoadManager#requiresAga}), or a file
-     * says so in its name ({@link #impliesAga}).
+     * header ({@link io.github.zolfrik.amija.whdload.WhdLoadManager#requiresAga}), a file
+     * says so in its name ({@link #impliesAga}), or a hard disk image is a large one
+     * ({@link #LARGE_HARD_DISK_BYTES}).
      */
     private boolean agaRequired(java.util.List<String> activeFiles) {
         if (whdloadEnabled() && io.github.zolfrik.amija.whdload.WhdLoadManager
                 .requiresAga(whdloadFile())) {
             return true;
         }
-        return impliesAga(activeFiles);
+        return impliesAga(activeFiles) || largeHardDiskActive();
+    }
+
+    /**
+     * Size from which a hard disk image is taken for a whole installed system rather than one
+     * game: the game collections and launchers (AmigaVision, Amiga Game Selector) that fill
+     * gigabytes are built for an A1200, while the image of a single game stays far below.
+     */
+    public static final long LARGE_HARD_DISK_BYTES = 1L << 30;
+
+    /** {@code true} if a mounted hard disk image is at least {@link #LARGE_HARD_DISK_BYTES}. */
+    public boolean largeHardDiskActive() {
+        for (int unit = 0; unit < HD_UNITS.length; unit++) {
+            if (!hdEnabled(unit) || hdDisk(unit) == null) continue;
+            try {
+                if (Files.size(Path.of(hdDisk(unit))) >= LARGE_HARD_DISK_BYTES) return true;
+            } catch (IOException | RuntimeException e) {
+                // A missing or unreadable image says nothing about the machine.
+            }
+        }
+        return false;
+    }
+
+    /**
+     * In Auto mode, the image the game database names as companion of a mounted hard disk
+     * (its saves, for one), found in that disk's folder and not mounted already; {@code null}
+     * otherwise. It is mounted after the configured units.
+     */
+    public String autoCompanionHardDisk() {
+        GameDatabase.Entry e = gameException();
+        if (e == null || e.format() != GameDatabase.Format.HDF || e.companion() == null) return null;
+        java.util.List<Path> mounted = new java.util.ArrayList<>();
+        for (int unit = 0; unit < HD_UNITS.length; unit++) {
+            if (hdEnabled(unit) && hdDisk(unit) != null) mounted.add(Path.of(hdDisk(unit)));
+        }
+        for (Path disk : mounted) {
+            if (!e.matches(GameDatabase.floppyKey(disk.toString()))) continue;
+            Path dir = disk.toAbsolutePath().getParent();
+            if (dir == null) continue;
+            Path companion = dir.resolve(e.companion());
+            if (!Files.isRegularFile(companion)) continue;
+            for (Path m : mounted) {
+                try {
+                    if (Files.isSameFile(m, companion)) return null;
+                } catch (IOException ex) {
+                    // Not the same file as far as we can tell.
+                }
+            }
+            return companion.toString();
+        }
+        return null;
     }
 
     /**

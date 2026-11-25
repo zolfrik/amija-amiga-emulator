@@ -296,6 +296,48 @@ public final class HostExposure {
         };
     }
 
+    /**
+     * The port the router opened, as the address a player outside reaches, or the one short
+     * reason there is none: what the hosting row shows. The full picture is
+     * {@link #reachability()}.
+     */
+    public String openedPort() {
+        if (!options.internet()) {
+            return Messages.t("msg.remoteplay.port.lanonly");
+        }
+        PortMapping m = mapping;
+        if (m == null) {
+            return Messages.t("msg.remoteplay.port.wait");
+        }
+        return switch (m.state()) {
+            case SEARCHING, OFF -> Messages.t("msg.remoteplay.port.wait");
+            case MAPPED -> m.externalAddress() != null ? m.externalAddress()
+                    : Messages.t("msg.remoteplay.port.noaddress",
+                            String.valueOf(m.externalTcpPort() > 0 ? m.externalTcpPort() : port));
+            case NO_GATEWAY -> Messages.t("msg.remoteplay.port.notfound");
+            case REFUSED -> Messages.t("msg.remoteplay.port.refused");
+            case CARRIER_NAT -> Messages.t("msg.remoteplay.port.cgnat");
+        };
+    }
+
+    /**
+     * True while the first answer about the port is awaited: the search, the system's SSDP
+     * cache, PCP and NAT-PMP, a matter of seconds. An invitation handed out then would lack
+     * the public address, so it is held back. Once only a router announcing itself is awaited,
+     * which can take minutes, the invitation is offered with the addresses known so far.
+     */
+    public boolean portPending() {
+        if (!options.internet() || closed) {
+            return false;
+        }
+        PortMapping m = mapping;
+        if (m == null) {
+            return true;   // start() has not run yet
+        }
+        return (m.state() == PortMapping.State.SEARCHING || m.state() == PortMapping.State.OFF)
+                && !m.awaitingAnnouncement();
+    }
+
     /** Whether and how the port can be reached, in one line. */
     public String reachability() {
         StringBuilder sb = new StringBuilder(Messages.t("msg.remoteplay.reach.lan",

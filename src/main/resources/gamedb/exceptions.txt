@@ -5,7 +5,10 @@
 #   format   whdload   key = slave file name without ".slave", any case
 #            floppy    key = title of the disk image file: what comes before the first
 #                      "(" or "[", lower case, letters and digits only
+#            hdf       key = title of the image file, as for floppy; a final "*"
+#                      matches every title starting with the rest
 #   setting  cpu=68000|68010|68020   chipset=OCS|ECS|AGA   fastram=<KB>
+#            companion=<file>  (hdf: a second image of the package, same folder)
 #
 # An entry applies only in Auto mode and wins over everything Auto derives, the
 # slave's own flags included. Every entry is backed by a bot in the private test
@@ -13,3 +16,8 @@
 
 # Floppies
 floppy fifainternationalsoccer fastram=2048   # "insufficient FAST memory" without it
+
+# Hard disk packages: whole game collections with their own launcher. Their size already
+# builds the A1200 (AmigaConfig.LARGE_HARD_DISK_BYTES); the entries name it for any edition.
+hdf amigavision   chipset=AGA companion=AmigaVision-Saves.hdf   # saves volume next to the system disk
+hdf agsretroarch* chipset=AGA                                   # Amiga Game Selector, RetroArch edition

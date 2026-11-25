@@ -67,6 +67,9 @@ public final class PortMapper implements AutoCloseable {
      */
     static final long ANNOUNCE_WAIT_MS = 16 * 60_000L;
 
+    /** How often a wait on the SSDP cache checks whether the mapper was closed. */
+    private static final long CLOSE_POLL_MS = 250;
+
     /** How long the withdrawal of the mapping is given before giving up. */
     private static final int TEARDOWN_TIMEOUT_MS = 8000;
 
@@ -377,6 +380,22 @@ public final class PortMapper implements AutoCloseable {
                 return igd;
             }
         }
+        // Nobody answered: the system's SSDP cache may still hold a router that only announces
+        // itself. Reading it takes seconds, so it is done only now.
+        for (SsdpDiscovery.Gateway candidate : cachedGateways()) {
+            if (closed) {
+                return null;
+            }
+            IgdClient igd = tryGateway(candidate);
+            if (igd != null) {
+                RemotePlaySettings.say("UPnP: router found in the system's SSDP cache at %s",
+                        candidate.descriptionUrl());
+                return igd;
+            }
+        }
+        if (closed) {
+            return null;
+        }
         awaitingAnnouncement = true;
         try {
             long deadline = System.nanoTime() + ANNOUNCE_WAIT_MS * 1_000_000L;
@@ -400,6 +419,37 @@ public final class PortMapper implements AutoCloseable {
         } finally {
             awaitingAnnouncement = false;
         }
+    }
+
+    /**
+     * What the system's SSDP cache holds, read on a thread of its own and waited for while
+     * checking {@link #close()}: closing does not wait for it.
+     */
+    private List<SsdpDiscovery.Gateway> cachedGateways() {
+        if (!WindowsSsdpCache.applies() || closed) {
+            return List.of();
+        }
+        java.util.concurrent.CompletableFuture<List<SsdpDiscovery.Gateway>> cached =
+                new java.util.concurrent.CompletableFuture<>();
+        Thread reader = new Thread(() -> cached.complete(WindowsSsdpCache.gateways()),
+                "amija-remoteplay-ssdpcache");
+        reader.setDaemon(true);
+        reader.start();
+        long deadline = System.nanoTime() + (WindowsSsdpCache.TIMEOUT_SECONDS + 5) * 1_000_000_000L;
+        while (!closed && System.nanoTime() - deadline < 0) {
+            try {
+                return cached.get(CLOSE_POLL_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException e) {
+                // still reading: check closed and wait again
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (java.util.concurrent.ExecutionException e) {
+                break;
+            }
+        }
+        reader.interrupt();   // its PowerShell is ended with it
+        return List.of();
     }
 
     /**

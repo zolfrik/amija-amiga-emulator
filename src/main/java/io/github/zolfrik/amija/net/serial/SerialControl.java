@@ -53,6 +53,18 @@ public interface SerialControl {
     /** The invitation to give to the other end, while hosting; null otherwise. */
     String serialInvite();
 
+    /**
+     * True while the router is still being asked to open the cable's port: the invitation is
+     * not offered meanwhile, since it would carry no public address.
+     */
+    boolean serialInvitePending();
+
+    /**
+     * The port the router opened for the cable, as {@code address:port}, or the short reason
+     * there is none yet; null when not hosting.
+     */
+    String serialOpenedPort();
+
     /** Whether and how the listening end can be reached, in one line; null if not hosting. */
     String serialReachability();
 

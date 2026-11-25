@@ -109,6 +109,12 @@ public interface RemotePlayControl {
     String spectatorInvite();
 
     /**
+     * True while the router is still being asked to open the port. The invitations are not
+     * offered meanwhile: one copied now would carry no public address.
+     */
+    boolean invitePending();
+
+    /**
      * The code to pass to whoever only wants to watch, or {@code null} if not hosting or if
      * spectators are off. It admits nobody to play, so it can be shared freely.
      */
@@ -148,6 +154,13 @@ public interface RemotePlayControl {
      * long explanation is {@link #routerStatus()}.
      */
     String reachability();
+
+    /**
+     * The port the router opened for this host, as {@code address:port}, or the short reason
+     * there is none yet ("please wait", "router address not found"). {@code null} when not
+     * hosting. The full picture is {@link #reachability()}.
+     */
+    String openedPort();
 
     /**
      * True when Windows' firewall stands in the way (a blocking rule, or no rule yet) and

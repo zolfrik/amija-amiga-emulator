@@ -1248,6 +1248,18 @@ public class Amija implements RemotePlayControl, MisterControl {
     }
 
     @Override
+    public boolean invitePending() {
+        HostExposure e = hostExposure;
+        return remotePlayHost != null && e != null && e.portPending();
+    }
+
+    @Override
+    public String openedPort() {
+        HostExposure e = hostExposure;
+        return remotePlayHost == null || e == null ? null : e.openedPort();
+    }
+
+    @Override
     public String status() {
         if (joining) {
             return Messages.t("msg.remoteplay.connecting", joiningAddress);
@@ -3144,6 +3156,24 @@ public class Amija implements RemotePlayControl, MisterControl {
                         + " (" + diskPath + "): " + ioe.getMessage());
             }
         }
+        // The second image of a package (Auto mode, game database), mounted as the master is.
+        String companion = config.autoCompanionHardDisk();
+        if (companion != null) {
+            try {
+                HardFile hf = HardFile.load(companion, config.hdReadOnly(0));
+                hardFiles.add(hf);
+                HdController hd = new HdController(controllers.size(), hf, partitionBase,
+                        () -> { FloppyDrive d = agnus.getDf0(); return d != null && d.isDiskInserted(); });
+                controllers.add(hd);
+                hdLedSources.add(hd::ledActive);
+                partitionBase += hf.numPartitions();
+                System.out.println("[HDF] companion: mounted " + companion
+                        + " (" + hf.numPartitions() + " part.)");
+            } catch (IOException ioe) {
+                System.err.println("[HDF] Cannot mount companion hard disk (" + companion + "): "
+                        + ioe.getMessage());
+            }
+        }
         agnus.setHdControllers(controllers);
     }
 
@@ -3271,9 +3301,9 @@ public class Amija implements RemotePlayControl, MisterControl {
             agnus.getDf3().ejectDisk();
         }
         closeFloppySounds();
-        // Save to disk any writes to the mounted hard disks.
+        // Save to disk any writes to the mounted hard disks and release their files.
         for (HardFile hf : hardFiles) {
-            hf.flush();
+            hf.close();
         }
         hardFiles.clear();
         // The LED sources point at the controllers of this machine. A machine built without

@@ -251,6 +251,9 @@ public final class ConfigDialog {
         JDialog dialog = new JDialog(parent, Messages.t("dialog.title"), true);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
 
+        // The Optional files section, built further down; null when it is not shown.
+        JPanel[] assetsRef = { null };
+
         // -------------------------------------------------------------------
         // Section: System
         // -------------------------------------------------------------------
@@ -316,6 +319,9 @@ public final class ConfigDialog {
         // the folder again.
         KickstartFolder.Result[] ksScan = { null };
         String[] ksScanDir = { null };
+        // Run whenever an analysis is over (or the field is emptied); set once the drive
+        // list exists.
+        Runnable[] ksScanned = { null };
         Runnable ksRescan = new Runnable() {
             private javax.swing.SwingWorker<KickstartFolder.Result, Void> running;
 
@@ -328,6 +334,7 @@ public final class ConfigDialog {
                 ksScan[0] = null;
                 if (dir.isEmpty()) {
                     ksDirField.setToolTipText(foundSummary(null, Messages.t("kickstartdir.none")));
+                    if (ksScanned[0] != null) ksScanned[0].run();
                     return;
                 }
                 ksDirField.setToolTipText(foundSummary(null, Messages.t("kickstartdir.scanning")));
@@ -350,6 +357,7 @@ public final class ConfigDialog {
                             return;
                         }
                         ksDirField.setToolTipText(foundSummary(ksScan[0], null));
+                        if (ksScanned[0] != null) ksScanned[0].run();
                     }
                 };
                 running = w;
@@ -647,6 +655,7 @@ public final class ConfigDialog {
                         JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE);
                 if (answer == JOptionPane.YES_OPTION) {
                     AssetDownloadDialog.show(dialog, config);
+                    hideAssetsIfInstalled(assetsRef[0], config);
                 }
             }
         });
@@ -701,6 +710,17 @@ public final class ConfigDialog {
         JPanel media = section(Messages.t("section.media"));
         DriveList driveList = new DriveList(dialog, config, media, hardware);
         driveList.seed(MediaSet.fromConfig(config));
+
+        // A machine running on the built-in ROM is a stand-in until a Kickstart is found: once
+        // the folder holds one, the stand-in's drives are no longer listed as present, and
+        // the list starts from its generic empty entry.
+        String runningKs = config.kickstartPath();
+        boolean runningBuiltin = hardware != null
+                && (runningKs.isEmpty() || !new File(runningKs).isFile());
+        ksScanned[0] = () -> driveList.setLiveDrivesReplaced(
+                runningBuiltin && !ksDirField.getText().trim().isEmpty()
+                && hasSocketKickstart(ksScan[0]));
+        ksScanned[0].run();
 
         // The media as the three classic sections see them, and how to put them back: the
         // two directions of the exchange with the single list.
@@ -877,14 +897,18 @@ public final class ConfigDialog {
         //
         // If they are all installed already, the section has nothing left to offer: it is
         // omitted entirely (assets == null) instead of offering an assistant that would only
-        // show "Already installed". The state is read at every opening of the popup, so the
-        // section disappears by itself after a successful download.
+        // show "Already installed". The state is read again when the assistant closes, so
+        // the section disappears as soon as every package is installed.
         // -------------------------------------------------------------------
         JPanel assets = null;
-        if (!AssetCatalog.packages(config).stream().allMatch(AssetPackage::installed)) {
+        if (!allAssetsInstalled(config)) {
             assets = section(Messages.t("section.assets"));
+            assetsRef[0] = assets;
             JButton assetsOpen = button(Messages.t("assets.open"), false);
-            assetsOpen.addActionListener(e -> AssetDownloadDialog.show(dialog, config));
+            assetsOpen.addActionListener(e -> {
+                AssetDownloadDialog.show(dialog, config);
+                hideAssetsIfInstalled(assetsRef[0], config);
+            });
             addRow(assets, 0, "assets.label", null, assetsOpen);
             tip("assets.label", assetsOpen);
         }
@@ -1139,6 +1163,10 @@ public final class ConfigDialog {
         // container at all: the local ones remain (video, audio, interface), which do matter
         // to the guest, because crop, scaling, shaders and fullscreen are its own choice.
         boolean guestMode = remotePlay != null && remotePlay.isGuest();
+        // Optional files come first: while something is missing, it is the first thing to see.
+        if (assets != null && !guestMode) {
+            content.add(assets);
+        }
         if (!guestMode) {
             content.add(system);
             content.add(media);   // Auto mode: replaces the three sections below
@@ -1169,9 +1197,6 @@ public final class ConfigDialog {
         }
         content.add(av);
         content.add(gui);
-        if (assets != null && !guestMode) {
-            content.add(assets);
-        }
         content.add(Box.createVerticalGlue());
 
         // Only now that the sections are in the container: the first pass decides which ones
@@ -2233,6 +2258,28 @@ public final class ConfigDialog {
         return l;
     }
 
+    /** True if the analysis found a Kickstart for the socket of at least one machine. */
+    private static boolean hasSocketKickstart(KickstartFolder.Result scan) {
+        return scan != null && (scan.get(KickstartFolder.Role.KS13) != null
+                || scan.get(KickstartFolder.Role.KS31) != null
+                || scan.get(KickstartFolder.Role.KS31_A1200) != null);
+    }
+
+    private static boolean allAssetsInstalled(AmigaConfig config) {
+        return AssetCatalog.packages(config).stream().allMatch(AssetPackage::installed);
+    }
+
+    /** Hides the Optional files section once every package it offers is installed. */
+    private static void hideAssetsIfInstalled(JPanel assets, AmigaConfig config) {
+        if (assets == null || !assets.isVisible() || !allAssetsInstalled(config)) return;
+        assets.setVisible(false);
+        Container parent = assets.getParent();
+        if (parent != null) {
+            parent.revalidate();
+            parent.repaint();
+        }
+    }
+
     /**
      * Shows or hides a whole row of a section. With GridBagLayout the row disappears
      * entirely (zero height) when all its components are invisible, so no hole is left:
@@ -2522,6 +2569,8 @@ public final class ConfigDialog {
         private final java.util.List<Item> items = new java.util.ArrayList<>();
         /** Called after every change of the list; null until set. */
         private Runnable onChange;
+        /** See {@link #setLiveDrivesReplaced}. */
+        private boolean liveDrivesReplaced;
 
         DriveList(JDialog owner, AmigaConfig config, JPanel panel, DriveHardware hardware) {
             this.owner = owner;
@@ -2582,7 +2631,33 @@ public final class ConfigDialog {
 
         /** How many floppy drives the running machine has (0 if there is none). */
         private int liveFloppyDrives() {
-            return hardware == null ? 0 : hardware.floppyDrives();
+            return hardware == null || liveDrivesReplaced ? 0 : hardware.floppyDrives();
+        }
+
+        /**
+         * Whether the running machine's drives stop being listed as present: true when that
+         * machine is a stand-in about to be replaced. Its empty drives leave the list, and come
+         * back when the flag is cleared.
+         */
+        void setLiveDrivesReplaced(boolean replaced) {
+            if (replaced == liveDrivesReplaced) return;
+            liveDrivesReplaced = replaced;
+            if (replaced) {
+                items.removeIf(DriveList::isEmptyDrive);
+            } else if (!hasCd()) {
+                int floppies = 0;
+                int insertAt = 0;
+                for (int i = 0; i < items.size(); i++) {
+                    if (items.get(i).kind == Kind.FLOPPY) {
+                        floppies++;
+                        insertAt = i + 1;
+                    }
+                }
+                for (; floppies < liveFloppyDrives(); floppies++) {
+                    items.add(insertAt++, emptyFloppy());
+                }
+            }
+            rebuild();
         }
 
         void setOnChange(Runnable onChange) {

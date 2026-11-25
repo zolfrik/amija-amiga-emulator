@@ -60,6 +60,11 @@ import java.util.Set;
  *       digits only ({@code FIFA International Soccer (Europe) (En,Fr,De).zip} and
  *       {@code FIFA International Soccer (1994)(Electronic Arts)(Disk 1 of 3).adf} are both
  *       {@code fifainternationalsoccer}). Every disk in the drives is tried.</li>
+ *   <li>{@code hdf}: the title of a hard disk image, made from its file name as for
+ *       {@code floppy} ({@code AmigaVision.hdf} is {@code amigavision}). A key ending in
+ *       {@code *} matches every title that starts with it ({@code agsretroarch*} takes
+ *       {@code AGS_Retroarch_v26.hdf} and the next versions). Every mounted image is
+ *       tried.</li>
  * </ul>
  * Settings:
  * <ul>
@@ -68,7 +73,10 @@ import java.util.Set;
  *       A1200 profile, as a slave declaring {@code WHDLF_ReqAGA} does;</li>
  *   <li>{@code preload}: {@code on} or {@code off}, WHDLoad only: whether WHDLoad is launched
  *       with {@code PRELOAD}, which copies the game's files from memory at once;</li>
- *   <li>{@code fastram}: Fast RAM in KB, e.g. {@code 2048}.</li>
+ *   <li>{@code fastram}: Fast RAM in KB, e.g. {@code 2048};</li>
+ *   <li>{@code companion}: {@code hdf} only, the file name of a second image that belongs
+ *       to the package (its saves, for one) and is mounted next to it when found in the
+ *       same folder and not mounted already.</li>
  * </ul>
  * An entry wins over everything Auto derives, the slave's own flags included: it is a measured
  * fact about that game. A malformed line is reported once and skipped.
@@ -81,7 +89,8 @@ public final class GameDatabase {
     /** The media formats an entry can name. */
     public enum Format {
         WHDLOAD("whdload"),
-        FLOPPY("floppy");
+        FLOPPY("floppy"),
+        HDF("hdf");
 
         final String token;
 
@@ -106,9 +115,18 @@ public final class GameDatabase {
      * @param chipset chipset to build, or {@code null}
      * @param preload WHDLoad's {@code PRELOAD}, or {@code null}
      * @param fastRamKb Fast RAM in KB, or {@code null}
+     * @param companion file name of the image to mount next to this one, or {@code null}
      */
     public record Entry(Format format, String key, CpuModel cpu, Chipset chipset, Boolean preload,
-                        Integer fastRamKb) {
+                        Integer fastRamKb, String companion) {
+
+        /** Whether this entry names {@code key}: the same key, or a {@code *} prefix of it. */
+        public boolean matches(String key) {
+            if (key == null) return false;
+            if (!this.key.endsWith("*")) return this.key.equalsIgnoreCase(key);
+            String prefix = this.key.substring(0, this.key.length() - 1).toLowerCase(Locale.ROOT);
+            return key.toLowerCase(Locale.ROOT).startsWith(prefix);
+        }
 
         /** The entry in the database's own syntax, e.g. {@code whdload Speedball2 cpu=68000}. */
         public String describe() {
@@ -119,6 +137,7 @@ public final class GameDatabase {
             if (chipset != null) parts.add("chipset=" + chipset.name());
             if (preload != null) parts.add("preload=" + (preload ? "on" : "off"));
             if (fastRamKb != null) parts.add("fastram=" + fastRamKb);
+            if (companion != null) parts.add("companion=" + companion);
             return String.join(" ", parts);
         }
     }
@@ -126,12 +145,20 @@ public final class GameDatabase {
     private static volatile GameDatabase builtIn;
 
     private final Map<String, Entry> entries;
+    /** Entries whose key ends in {@code *}, by format, longest prefix first. */
+    private final List<Entry> prefixEntries;
 
     /** Matches already announced on the console, so each is printed once per run. */
     private final Set<String> announced = Collections.synchronizedSet(new HashSet<>());
 
     private GameDatabase(Map<String, Entry> entries) {
         this.entries = entries;
+        List<Entry> prefixes = new ArrayList<>();
+        for (Entry e : entries.values()) {
+            if (e.key().endsWith("*")) prefixes.add(e);
+        }
+        prefixes.sort((a, b) -> Integer.compare(b.key().length(), a.key().length()));
+        this.prefixEntries = List.copyOf(prefixes);
     }
 
     /** The database shipped with AmiJa, read once. */
@@ -189,11 +216,14 @@ public final class GameDatabase {
         Chipset chipset = null;
         Boolean preload = null;
         Integer fastRamKb = null;
+        String companion = null;
+        if (f[1].endsWith("*") && (format != Format.HDF || f[1].length() < 2)) return null;
         for (int i = 2; i < f.length; i++) {
             int eq = f[i].indexOf('=');
             if (eq <= 0) return null;
             String name = f[i].substring(0, eq).toLowerCase(Locale.ROOT);
-            String value = f[i].substring(eq + 1).toUpperCase(Locale.ROOT);
+            String raw = f[i].substring(eq + 1);
+            String value = raw.toUpperCase(Locale.ROOT);
             switch (name) {
                 case "cpu" -> {
                     cpu = switch (value) {
@@ -225,12 +255,19 @@ public final class GameDatabase {
                     }
                     if (fastRamKb < 0) return null;
                 }
+                case "companion" -> {
+                    if (format != Format.HDF || raw.isEmpty()
+                            || raw.contains("/") || raw.contains("\\")) {
+                        return null;
+                    }
+                    companion = raw;
+                }
                 default -> {
                     return null;
                 }
             }
         }
-        return new Entry(format, f[1], cpu, chipset, preload, fastRamKb);
+        return new Entry(format, f[1], cpu, chipset, preload, fastRamKb, companion);
     }
 
     /**
@@ -266,10 +303,18 @@ public final class GameDatabase {
         return entries.values();
     }
 
-    /** The entry for {@code key} in {@code format}, or {@code null}. */
+    /**
+     * The entry for {@code key} in {@code format}, or {@code null}: the entry with exactly that
+     * key, else the one with the longest {@code *} prefix of it.
+     */
     public Entry find(Format format, String key) {
         if (key == null) return null;
-        return entries.get(mapKey(format, key));
+        Entry exact = entries.get(mapKey(format, key));
+        if (exact != null) return exact;
+        for (Entry e : prefixEntries) {
+            if (e.format() == format && e.matches(key)) return e;
+        }
+        return null;
     }
 
     /**

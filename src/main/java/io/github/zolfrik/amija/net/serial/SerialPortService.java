@@ -358,6 +358,18 @@ public final class SerialPortService implements SerialControl, MasterClock.Limit
     }
 
     @Override
+    public boolean serialInvitePending() {
+        HostExposure e = exposure;
+        return server != null && e != null && e.portPending();
+    }
+
+    @Override
+    public String serialOpenedPort() {
+        HostExposure e = exposure;
+        return server == null || e == null ? null : e.openedPort();
+    }
+
+    @Override
     public String serialReachability() {
         HostExposure e = exposure;
         return server == null || e == null ? null : e.reachability();

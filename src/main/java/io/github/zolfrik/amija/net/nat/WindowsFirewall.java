@@ -21,17 +21,11 @@
 package io.github.zolfrik.amija.net.nat;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * The Windows firewall and the host's executable ({@code docs/remote-play-r1-plan.md} section 6).
@@ -118,7 +112,7 @@ public final class WindowsFirewall {
     /** Reads the rules of {@code exe} (no privileges needed). Blocks for a few seconds. */
     public static Status detect(Path exe) {
         try {
-            String out = runPowerShell(detectScript(exe), TIMEOUT_SECONDS);
+            String out = WindowsPowerShell.run(detectScript(exe), TIMEOUT_SECONDS);
             return parse(out);
         } catch (IOException e) {
             return Status.UNKNOWN;
@@ -137,7 +131,7 @@ public final class WindowsFirewall {
      */
     public static boolean allow(Path exe) {
         try {
-            String out = runPowerShell(allowScript(exe), ALLOW_TIMEOUT_SECONDS);
+            String out = WindowsPowerShell.run(allowScript(exe), ALLOW_TIMEOUT_SECONDS);
             return out.contains("DONE");
         } catch (IOException e) {
             return false;
@@ -206,7 +200,7 @@ public final class WindowsFirewall {
                 + "try { Start-Process -FilePath " + psLiteral(powershell().toString())
                 + " -Verb RunAs -Wait "
                 + "-WindowStyle Hidden -ArgumentList @('-NoProfile','-EncodedCommand',"
-                + psLiteral(encode(inner)) + "); 'DONE' } catch { 'CANCELLED' }";
+                + psLiteral(WindowsPowerShell.encode(inner)) + "); 'DONE' } catch { 'CANCELLED' }";
     }
 
     /** Reads the output of {@link #detectScript}. */
@@ -243,41 +237,5 @@ public final class WindowsFirewall {
             }
         }
         return allowed ? Status.ALLOWED : Status.NO_RULE;
-    }
-
-    private static String encode(String script) {
-        return Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
-    }
-
-    private static String runPowerShell(String script, long timeoutSeconds)
-            throws IOException, InterruptedException {
-        // -EncodedCommand: the script reaches PowerShell as is, with no command-line parsing.
-        Process p = new ProcessBuilder(powershell().toString(), "-NoProfile", "-NonInteractive",
-                "-EncodedCommand", encode(script))
-                .redirectErrorStream(true)
-                .start();
-        p.getOutputStream().close();
-        // The output is drained on its own thread, so a process that never ends cannot hold
-        // this one past the timeout.
-        CompletableFuture<byte[]> out = new CompletableFuture<>();
-        Thread reader = new Thread(() -> {
-            try {
-                out.complete(p.getInputStream().readAllBytes());
-            } catch (IOException e) {
-                out.completeExceptionally(e);
-            }
-        }, "amija-net-powershell-out");
-        reader.setDaemon(true);
-        reader.start();
-        if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
-            p.destroyForcibly();
-            throw new IOException("PowerShell did not finish");
-        }
-        try {
-            return new String(out.get(TIMEOUT_SECONDS, TimeUnit.SECONDS),
-                    java.nio.charset.Charset.defaultCharset());
-        } catch (ExecutionException | TimeoutException e) {
-            throw new IOException("PowerShell output not read", e);
-        }
     }
 }

@@ -20,35 +20,48 @@
 
 package io.github.zolfrik.amija.memory;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Amiga hard disk image ({@code .hdf} file) mounted as a "hardfile".
  *
- * <p>Purpose: launching games installed on .hdf (and WHDLoad) at minimal implementation cost,
- * favouring performance. The file is loaded entirely into a {@code byte[]}; the driver's
- * reads/writes are plain memory copies (no cycle-exact emulation of the SCSI/IDE bus). The
- * AmigaOS driver is provided by {@link io.github.zolfrik.amija.hardware.custom.HdController}.
+ * <p>The driver's reads and writes are plain copies (no cycle-exact emulation of the
+ * SCSI/IDE bus); the AmigaOS driver is provided by
+ * {@link io.github.zolfrik.amija.hardware.custom.HdController}. Images up to
+ * {@link #IN_MEMORY_LIMIT} are loaded into a {@code byte[]} and saved back by
+ * {@link #flush()}; larger ones are read and written in place through a {@link FileChannel},
+ * so their size is limited only by the 64-bit offsets of the driver's commands.
+ *
+ * <p>A read-only image is never written back, but the disk still behaves as one: what the
+ * Amiga writes is kept for the session (in the array, or in a block overlay for an image
+ * accessed in place) and read back, so a filesystem always sees its own writes.
  *
  * <p>Two formats are recognised:
  * <ul>
  *   <li><b>RDB</b> (Rigid Disk Block): the image contains an {@code RDSK} block among the
- *       first 16 sectors, with the geometry and the partition table;</li>
+ *       first 16 sectors, with the geometry, the partition table and the filesystems
+ *       (FSHD blocks with their LSEG load files) that the partitions need;</li>
  *   <li><b>headerless</b> (single partition): the whole file is a single AmigaDOS file
  *       system (block 0 starts with {@code DOS}). The geometry is synthesised from the file
- *       size and the {@code DosType} is read from the boot block. That is the case of
- *       "Castle Master v2.0.hdf" (DOS\1 = FFS).</li>
+ *       size and the {@code DosType} is read from the boot block.</li>
  * </ul>
- *
- * <p>Custom file systems referenced in the RDB (LSEG) are not supported: the partitions are
- * assumed to use the file system in ROM (OFS/FFS), present from Kickstart 2.0 on.
  */
-public final class HardFile {
+public final class HardFile implements AutoCloseable {
+
+    /** Images larger than this are not loaded into memory but accessed in place. */
+    public static final long IN_MEMORY_LIMIT = 256L << 20;
 
     private static final int BSIZE = 512;
 
@@ -62,30 +75,56 @@ public final class HardFile {
         public String name = "DH";
         public int flags;        // bit0 = bootable
         public int sizeBlock;    // longwords per block (512/4 = 128)
+        public int surfaces;
+        public int blocksPerTrack;
         public int reserved;     // reserved boot blocks (normally 2)
         public int lowCyl;
         public int highCyl;
+        public int numBuffers = 30;
+        public int bufMemType;
+        public int maxTransfer = 0x7FFFFFFF;
+        public int mask = 0xFFFFFFFE;
         public int dosType;      // es. 0x444F5301 = "DOS\1" (FFS)
         public int bootPri;
     }
 
+    /** A filesystem stored in the RDB: its DosType, version and load file. */
+    public static final class FileSystem {
+        public final int dosType;
+        public final int version;
+        public final HunkFile code;
+
+        FileSystem(int dosType, int version, HunkFile code) {
+            this.dosType = dosType;
+            this.version = version;
+            this.code = code;
+        }
+    }
+
     private final Path path;
-    private final byte[] data;
+    private final long size;
+    private final byte[] data;          // the whole image, or null when accessed in place
+    private final FileChannel channel;  // the open image, or null when in memory
     private boolean readOnly;
     private boolean modified;
+    // Session writes to a read-only image accessed in place, by block number.
+    private final Map<Long, byte[]> overlay = new HashMap<>();
 
-    // Geometria.
+    // Geometry.
     private int cylinders, heads, sectors, bsize = BSIZE;
 
     private final List<Partition> partitions = new ArrayList<>();
+    private final List<FileSystem> fileSystems = new ArrayList<>();
 
     // =========================================================================
     // Construction
     // =========================================================================
 
-    private HardFile(Path path, byte[] data, boolean readOnly) {
+    private HardFile(Path path, long size, byte[] data, FileChannel channel, boolean readOnly) {
         this.path = path;
+        this.size = size;
         this.data = data;
+        this.channel = channel;
         this.readOnly = readOnly;
     }
 
@@ -97,22 +136,42 @@ public final class HardFile {
      * @throws IOException if the file cannot be read or is too small
      */
     public static HardFile load(String filePath, boolean readOnly) throws IOException {
-        Path p = Paths.get(filePath);
-        byte[] bytes = Files.readAllBytes(p);
-        if (bytes.length < 2 * BSIZE) {
-            throw new IOException(".hdf file too small: " + bytes.length + " bytes");
+        return load(Paths.get(filePath), readOnly, IN_MEMORY_LIMIT);
+    }
+
+    /**
+     * Loads and parses an {@code .hdf} file, holding it in memory only up to
+     * {@code inMemoryLimit} bytes and accessing it in place beyond that.
+     */
+    public static HardFile load(Path p, boolean readOnly, long inMemoryLimit) throws IOException {
+        long size = Files.size(p);
+        if (size < 2 * BSIZE) {
+            throw new IOException(".hdf file too small: " + size + " bytes");
         }
-        HardFile hf = new HardFile(p, bytes, readOnly);
-        hf.parse();
+        HardFile hf;
+        if (size <= inMemoryLimit && size <= Integer.MAX_VALUE - 8) {
+            hf = new HardFile(p, size, Files.readAllBytes(p), null, readOnly);
+        } else {
+            FileChannel ch = readOnly
+                    ? FileChannel.open(p, StandardOpenOption.READ)
+                    : FileChannel.open(p, StandardOpenOption.READ, StandardOpenOption.WRITE);
+            hf = new HardFile(p, size, null, ch, readOnly);
+        }
+        try {
+            hf.parse();
+        } catch (RuntimeException e) {
+            hf.close();
+            throw new IOException("Cannot parse " + p + ": " + e.getMessage(), e);
+        }
         return hf;
     }
 
     // =========================================================================
-    // Parsing geometria / partizioni
+    // Geometry / partition parsing
     // =========================================================================
 
     private void parse() {
-        int rdb = seekRDB();
+        long rdb = seekRDB();
         if (rdb >= 0) {
             parseRDB(rdb);
         } else {
@@ -125,41 +184,104 @@ public final class HardFile {
     }
 
     /** Looks for the {@code RDSK} block among the first 16 sectors; -1 if absent. */
-    private int seekRDB() {
-        int blocks = Math.min(16, data.length / BSIZE);
-        for (int i = 0; i < blocks; i++) {
-            if (id4(i * BSIZE).equals("RDSK")) return i * BSIZE;
+    private long seekRDB() {
+        long blocks = Math.min(16, size / BSIZE);
+        for (long i = 0; i < blocks; i++) {
+            if (id4(block(i), 0).equals("RDSK")) return i;
         }
         return -1;
     }
 
-    private void parseRDB(int rdb) {
-        cylinders = r32(rdb + 64);
-        sectors   = r32(rdb + 68);
-        heads     = r32(rdb + 72);
-        int bs    = r32(rdb + 16);
+    private void parseRDB(long rdbBlock) {
+        byte[] rdb = block(rdbBlock);
+        cylinders = r32(rdb, 64);
+        sectors   = r32(rdb, 68);
+        heads     = r32(rdb, 72);
+        int bs    = r32(rdb, 16);
         if (bs == 512) bsize = bs;
 
         // List of partitions: PartitionList in the RDB -> chain of PART blocks.
-        int partRef = r32(rdb + 28); // rdb_PartitionList
+        int partRef = r32(rdb, 28); // rdb_PartitionList
         int guard = 0;
-        while (partRef != -1 && partRef >= 0 && (long) (partRef + 1) * BSIZE <= data.length && guard++ < 64) {
-            int pb = partRef * BSIZE;
-            if (!id4(pb).equals("PART")) break;
+        while (validBlock(partRef) && guard++ < 64) {
+            byte[] pb = block(partRef);
+            if (!id4(pb, 0).equals("PART")) break;
+            int next = r32(pb, 16); // pb_Next
+            int flags = r32(pb, 20);
+            if ((flags & 2) != 0) { // PBFF_NOMOUNT
+                partRef = next;
+                continue;
+            }
+            // DOS environment: starts at offset 128 in the PART block; de_TableSize says
+            // how many of the longwords after it are present.
+            int table = r32(pb, 128);
             Partition part = new Partition();
-            part.name      = readBStr(pb + 36, 31);
-            part.flags     = r32(pb + 20);
-            // DOS environment: starts at offset 128 in the PART block.
-            part.sizeBlock = r32(pb + 132);
-            part.reserved  = r32(pb + 152);
-            part.lowCyl    = r32(pb + 164);
-            part.highCyl   = r32(pb + 168);
-            part.bootPri   = r32(pb + 188);
-            part.dosType   = r32(pb + 192);
+            part.name           = readBStr(pb, 36, 31);
+            part.flags          = flags;
+            part.sizeBlock      = r32(pb, 132);
+            part.surfaces       = r32(pb, 140);
+            part.blocksPerTrack = r32(pb, 148);
+            part.reserved       = r32(pb, 152);
+            part.lowCyl         = r32(pb, 164);
+            part.highCyl        = r32(pb, 168);
+            if (table >= 11) part.numBuffers  = r32(pb, 172);
+            if (table >= 12) part.bufMemType  = r32(pb, 176);
+            if (table >= 13) part.maxTransfer = r32(pb, 180);
+            if (table >= 14) part.mask        = r32(pb, 184);
+            if (table >= 15) part.bootPri     = r32(pb, 188);
+            part.dosType = table >= 16 ? r32(pb, 192) : 0x444F5300;
+            if (part.sizeBlock <= 0) part.sizeBlock = BSIZE / 4;
+            if (part.surfaces <= 0) part.surfaces = heads;
+            if (part.blocksPerTrack <= 0) part.blocksPerTrack = sectors;
             if (part.reserved <= 0) part.reserved = 2;
+            if (part.numBuffers <= 0) part.numBuffers = 30;
+            if (part.maxTransfer == 0) part.maxTransfer = 0x7FFFFFFF;
+            if (part.mask == 0) part.mask = 0xFFFFFFFE;
             partitions.add(part);
-            partRef = r32(pb + 16); // pb_Next
+            partRef = next;
         }
+        parseFileSystems(r32(rdb, 32)); // rdb_FileSysHeaderList
+    }
+
+    /** Reads the FSHD chain and the LSEG load file of each filesystem. */
+    private void parseFileSystems(int fshdRef) {
+        int guard = 0;
+        while (validBlock(fshdRef) && guard++ < 32) {
+            byte[] fh = block(fshdRef);
+            if (!id4(fh, 0).equals("FSHD")) break;
+            int dosType = r32(fh, 32);
+            int version = r32(fh, 36);
+            byte[] file = readLoadFile(r32(fh, 72)); // fhb_SegListBlocks
+            if (file != null) {
+                try {
+                    fileSystems.add(new FileSystem(dosType, version, HunkFile.parse(file)));
+                } catch (IOException e) {
+                    System.err.println("[HDF] Filesystem " + dosTypeString(dosType)
+                            + " in " + path + " not loadable: " + e.getMessage());
+                }
+            }
+            fshdRef = r32(fh, 16); // fhb_Next
+        }
+    }
+
+    /** Joins the data of an LSEG chain; null if the chain is broken. */
+    private byte[] readLoadFile(int lsegRef) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int guard = 0;
+        while (validBlock(lsegRef)) {
+            if (guard++ > 16384) return null;
+            byte[] lb = block(lsegRef);
+            if (!id4(lb, 0).equals("LSEG")) return null;
+            int longs = r32(lb, 4); // lsb_SummedLongs
+            if (longs < 5 || longs > BSIZE / 4) return null;
+            out.write(lb, 20, longs * 4 - 20);
+            lsegRef = r32(lb, 16); // lsb_Next
+        }
+        return out.size() > 0 ? out.toByteArray() : null;
+    }
+
+    private boolean validBlock(int ref) {
+        return ref >= 0 && ((long) ref + 1) * BSIZE <= size;
     }
 
     private void parseHeaderless() {
@@ -170,17 +292,19 @@ public final class HardFile {
         sectors   = geo[2];
 
         Partition part = new Partition();
-        part.name      = "DH0";
-        part.sizeBlock = bsize / 4;          // 128
-        part.reserved  = 2;
-        part.lowCyl    = 0;
-        part.highCyl   = cylinders - 1;
-        part.bootPri   = 0;
-        part.flags     = 1;                   // bootable
+        part.name           = "DH0";
+        part.sizeBlock      = bsize / 4;          // 128
+        part.surfaces       = heads;
+        part.blocksPerTrack = sectors;
+        part.reserved       = 2;
+        part.lowCyl         = 0;
+        part.highCyl        = cylinders - 1;
+        part.bootPri        = 0;
+        part.flags          = 1;                   // bootable
         // The DosType is the boot block identifier (e.g. "DOS\1"); if the image is not
         // formatted it falls back on OFS ("DOS\0").
-        int boot = r32(0);
-        part.dosType = id4(0).equals("DOS") ? boot : 0x444F5300;
+        byte[] b0 = block(0);
+        part.dosType = id4(b0, 0).equals("DOS") ? r32(b0, 0) : 0x444F5300;
         partitions.add(part);
     }
 
@@ -194,21 +318,21 @@ public final class HardFile {
      * accepted.
      */
     private int predictNumBlocks() {
-        int fileBlocks = data.length / BSIZE;
+        int fileBlocks = (int) Math.min(Integer.MAX_VALUE, size / BSIZE);
         // Candidate 1: the whole file. Candidate 2: rounded to a multiple of 32 (standard
         // geometry of 32 sectors/track, used by most headerless installers).
         int rounded32 = 32 * (fileBlocks / 32);
         for (int nb : new int[] { fileBlocks, rounded32 }) {
-            if (nb > 0 && isRootBlock((2 + nb - 1) / 2)) return nb;
+            if (nb > 0 && isRootBlock((2L + nb - 1) / 2)) return nb;
         }
         return fileBlocks;
     }
 
     /** {@code true} if block {@code n} is an FFS/OFS root block (type=2, sec=ST_ROOT=1). */
-    private boolean isRootBlock(int n) {
-        long off = (long) n * BSIZE;
-        if (n < 0 || off + BSIZE > data.length) return false;
-        return r32((int) off) == 2 && r32((int) off + BSIZE - 4) == 1;
+    private boolean isRootBlock(long n) {
+        if (n < 0 || (n + 1) * BSIZE > size) return false;
+        byte[] b = block(n);
+        return r32(b, 0) == 2 && r32(b, BSIZE - 4) == 1;
     }
 
     /**
@@ -252,36 +376,107 @@ public final class HardFile {
 
     /** {@code true} if the offset/length fall entirely inside the image. */
     public boolean inRange(long offset, long length) {
-        return offset >= 0 && length >= 0 && offset + length <= data.length;
+        return offset >= 0 && length >= 0 && offset + length <= size;
     }
 
-    /** Byte at the absolute offset in the image (for the copy to Amiga RAM). */
-    public int readByte(int offset) {
-        return data[offset] & 0xFF;
-    }
-
-    /** Writes a byte at the absolute offset (no-op if the image is read-only). */
-    public void writeByte(int offset, int value) {
-        if (readOnly) return;
-        data[offset] = (byte) value;
-        modified = true;
-    }
+    /** {@code true} if the image is held in memory ({@link #rawData()} is available). */
+    public boolean inMemory() { return data != null; }
 
     /**
-     * Raw byte array of the image, for the host driver's block transfers
-     * ({@code System.arraycopy} instead of a byte-by-byte copy). Used as the source of
-     * disk -> RAM reads and as the destination of RAM -> disk writes; the caller
-     * ({@link io.github.zolfrik.amija.hardware.custom.HdController}) has already checked the range and
-     * the read-only flag.
+     * Raw byte array of an image held in memory, for the host driver's block transfers
+     * ({@code System.arraycopy} instead of a copy through a buffer); {@code null} for an
+     * image accessed in place.
      */
     public byte[] rawData() { return data; }
 
     /** Marks the image as modified after a block write to {@link #rawData()}. */
     public void markModified() { if (!readOnly) modified = true; }
 
+    /**
+     * Reads {@code len} bytes at {@code offset}; the caller has checked the range.
+     *
+     * @throws UncheckedIOException if the file cannot be read
+     */
+    public void read(long offset, byte[] dst, int dstOff, int len) {
+        if (data != null) {
+            System.arraycopy(data, (int) offset, dst, dstOff, len);
+            return;
+        }
+        readFile(offset, dst, dstOff, len);
+        if (overlay.isEmpty()) return;
+        for (long b = offset / BSIZE; b * BSIZE < offset + len; b++) {
+            byte[] blk = overlay.get(b);
+            if (blk == null) continue;
+            long from = Math.max(offset, b * BSIZE);
+            long to = Math.min(offset + len, (b + 1) * BSIZE);
+            System.arraycopy(blk, (int) (from - b * BSIZE), dst, dstOff + (int) (from - offset),
+                    (int) (to - from));
+        }
+    }
+
+    private void readFile(long offset, byte[] dst, int dstOff, int len) {
+        try {
+            ByteBuffer bb = ByteBuffer.wrap(dst, dstOff, len);
+            long pos = offset;
+            while (bb.hasRemaining()) {
+                int n = channel.read(bb, pos);
+                if (n < 0) throw new IOException("unexpected end of file");
+                pos += n;
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Writes {@code len} bytes at {@code offset}; on a read-only image only for the session.
+     * The caller has checked the range.
+     *
+     * @throws UncheckedIOException if the file cannot be written
+     */
+    public void write(long offset, byte[] src, int srcOff, int len) {
+        if (data != null) {
+            System.arraycopy(src, srcOff, data, (int) offset, len);
+            if (!readOnly) modified = true;
+            return;
+        }
+        if (readOnly) {
+            for (long b = offset / BSIZE; b * BSIZE < offset + len; b++) {
+                byte[] blk = overlay.get(b);
+                if (blk == null) {
+                    blk = new byte[BSIZE];
+                    long end = Math.min(size, (b + 1) * BSIZE);
+                    readFile(b * BSIZE, blk, 0, (int) (end - b * BSIZE));
+                    overlay.put(b, blk);
+                }
+                long from = Math.max(offset, b * BSIZE);
+                long to = Math.min(offset + len, (b + 1) * BSIZE);
+                System.arraycopy(src, srcOff + (int) (from - offset), blk, (int) (from - b * BSIZE),
+                        (int) (to - from));
+            }
+            return;
+        }
+        try {
+            ByteBuffer bb = ByteBuffer.wrap(src, srcOff, len);
+            long pos = offset;
+            while (bb.hasRemaining()) pos += channel.write(bb, pos);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     /** Saves any changes to disk (no-op if read-only or unchanged). */
     public void flush() {
-        if (readOnly || !modified) return;
+        if (readOnly) return;
+        if (channel != null) {
+            try {
+                if (channel.isOpen()) channel.force(false);
+            } catch (IOException e) {
+                System.err.println("[HDF] Save failed for " + path + ": " + e.getMessage());
+            }
+            return;
+        }
+        if (!modified) return;
         try {
             Files.write(path, data);
             modified = false;
@@ -290,8 +485,21 @@ public final class HardFile {
         }
     }
 
+    /** Saves any changes and releases the file of an image accessed in place. */
+    @Override
+    public void close() {
+        flush();
+        if (channel != null) {
+            try {
+                channel.close();
+            } catch (IOException e) {
+                System.err.println("[HDF] Closing " + path + " failed: " + e.getMessage());
+            }
+        }
+    }
+
     // =========================================================================
-    // Accessori
+    // Accessors
     // =========================================================================
 
     public int cylinders()       { return cylinders; }
@@ -301,8 +509,9 @@ public final class HardFile {
     public int numPartitions()   { return partitions.size(); }
     public Partition partition(int i) { return partitions.get(i); }
     public List<Partition> partitions() { return partitions; }
+    public List<FileSystem> fileSystems() { return fileSystems; }
     public boolean readOnly()    { return readOnly; }
-    public long sizeBytes()      { return data.length; }
+    public long sizeBytes()      { return size; }
     public Path path()           { return path; }
 
     /**
@@ -324,31 +533,49 @@ public final class HardFile {
         return false;
     }
 
-    // =========================================================================
-    // Helper
-    // =========================================================================
-
-    private int r32(int off) {
-        return ((data[off] & 0xFF) << 24) | ((data[off + 1] & 0xFF) << 16)
-             | ((data[off + 2] & 0xFF) << 8) | (data[off + 3] & 0xFF);
+    /** A DosType as text, e.g. {@code PDS\3}. */
+    public static String dosTypeString(int dosType) {
+        StringBuilder sb = new StringBuilder(8);
+        for (int shift = 24; shift >= 8; shift -= 8) {
+            int c = (dosType >>> shift) & 0xFF;
+            sb.append(c >= 0x20 && c < 0x7F ? (char) c : '?');
+        }
+        return sb.append('\\').append(dosType & 0xFF).toString();
     }
 
-    private String id4(int off) {
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    /** Block {@code n} of the image; zeros past its end. */
+    private byte[] block(long n) {
+        byte[] b = new byte[BSIZE];
+        long off = n * BSIZE;
+        if (n >= 0 && off < size) read(off, b, 0, (int) Math.min(BSIZE, size - off));
+        return b;
+    }
+
+    private static int r32(byte[] b, int off) {
+        return ((b[off] & 0xFF) << 24) | ((b[off + 1] & 0xFF) << 16)
+             | ((b[off + 2] & 0xFF) << 8) | (b[off + 3] & 0xFF);
+    }
+
+    private static String id4(byte[] b, int off) {
         // 4-byte identifier, truncated at the first NUL (e.g. "DOS\1" -> "DOS").
         StringBuilder sb = new StringBuilder(4);
         for (int i = 0; i < 4; i++) {
-            int c = data[off + i] & 0xFF;
+            int c = b[off + i] & 0xFF;
             if (c < 0x20 || c > 0x7E) break;
             sb.append((char) c);
         }
         return sb.toString();
     }
 
-    private String readBStr(int off, int max) {
+    private static String readBStr(byte[] b, int off, int max) {
         // BCPL string: length in the first byte, then the characters.
-        int len = Math.min(data[off] & 0xFF, max);
+        int len = Math.min(b[off] & 0xFF, max);
         StringBuilder sb = new StringBuilder(len);
-        for (int i = 0; i < len; i++) sb.append((char) (data[off + 1 + i] & 0xFF));
+        for (int i = 0; i < len; i++) sb.append((char) (b[off + 1 + i] & 0xFF));
         return sb.toString();
     }
 }

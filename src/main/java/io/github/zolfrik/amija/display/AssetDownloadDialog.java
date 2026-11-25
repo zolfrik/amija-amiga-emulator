@@ -315,8 +315,8 @@ public final class AssetDownloadDialog {
                 status.setText(Messages.t("assets.status.ok"));
                 status.setForeground(OK);
             }
-            // The windows showing the files' state (e.g. the config) must be reopened to re-read
-            // it: here refreshing the label is enough.
+            // The caller re-reads the files' state when this window closes: here refreshing
+            // the label is enough.
             SwingUtilities.invokeLater(() -> status.getParent().revalidate());
         }
     }
