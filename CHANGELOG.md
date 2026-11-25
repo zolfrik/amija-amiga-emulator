@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.9.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.8.0...v0.9.0) - 2026-11-23
+## [0.9.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.8.0...v0.9.0) - 2026-?-?
 
 ### Added
 
