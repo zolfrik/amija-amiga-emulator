@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+* Hard disk images with their own filesystem (e.g. PFS3) and larger than 2 GB.
+* Ready-made hard disk packages (AmigaVision, Amiga Game Selector) in automatic mode.
+
+### Changed
+
+* Remote play: the popup shows the port the router opened.
+
+### Fixed
+
+* Minor bugfixing.
+
 ## [0.9.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.8.0...v0.9.0) - 2026-11-23
 
 ### Added
