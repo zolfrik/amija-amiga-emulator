@@ -1,18 +1,17 @@
 # Changelog
 
-## [0.9.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.8.0...v0.9.0) - 2026-?-?
+## [0.9.0](https://github.com/zolfrik/amija-amiga-emulator/compare/v0.8.0...v0.9.0) - 2026-11-26
 
 ### Added
 
 * **CDTV**: discs as .cue, .iso or zip, CD audio, the front panel and battery-backed memory.
-* A built-in list of games that need settings other than their automatic profile.
 * Hard disk images with their own filesystem (e.g. PFS3) and larger than 2 GB.
 * Ready-made hard disk packages (AmigaVision, Amiga Game Selector) in automatic mode.
 
 ### Changed
 
 * Remote play: invitations, play over the Internet and a simpler setup.
-* Drag and drop changes the media, never the machine.
+* Drag and drop changes the media, not the machine.
 * Automatic floppy profile: ECS with 1 MB of Chip RAM plus 512 KB of Slow RAM.
 
 ### Fixed
