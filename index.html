@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AmiJa - Amiga emulator in Java</title>
-<meta name="description" content="AmiJa is a cycle-exact Amiga emulator written in Java: OCS, ECS and AGA chipsets, CD32, 68000/68010/68020, floppy, hard disk and WHDLoad. Free software under the GPL.">
+<meta name="description" content="AmiJa is a cycle-exact Amiga emulator written in Java: OCS, ECS and AGA chipsets, CD32, CDTV, 68000/68010/68020, floppy, hard disk and WHDLoad. Free software under the GPL.">
 <meta name="theme-color" content="#0055AA">
 <meta property="og:title" content="AmiJa - Amiga emulator in Java">
 <meta property="og:description" content="A cycle-exact Amiga emulator in Java. OCS, ECS and AGA, 68000 to 68020, floppy, hard disk and WHDLoad.">
@@ -45,19 +45,19 @@
     <li>OCS, ECS and AGA chipsets, PAL and NTSC - AGA on an emulated A1200 board</li>
     <li>CD32: discs as <code>.cue</code>, <code>.iso</code> or <code>.zip</code>, CD audio,
       the CD32 pad, saved games in NVRAM</li>
+    <li>CDTV: its discs, front panel, battery-backed memory and optional keyboard</li>
     <li>68000, 68010 and 68020 processors</li>
-    <li>an automatic mode that builds the right machine around whatever you load,
-      taking its Kickstart ROMs from a single folder recognised by their contents</li>
+    <li>an automatic mode that builds the right machine around whatever you load</li>
     <li>floppy drives DF0-DF3, ADF (also extended and up to 83 cylinders) and IPF images,
       and multi-disk sets in a <code>.zip</code></li>
-    <li>hard disk support (<code>.hdf</code>, Zorro II autoconfig) and WHDLoad
-      <code>.lha</code> auto-run</li>
+    <li>hard disk support (<code>.hdf</code>, Zorro II autoconfig), also images with their
+      own filesystem (e.g. PFS3) and larger than 2 GB, and WHDLoad <code>.lha</code> auto-run</li>
     <li>save / load state</li>
     <li>audio, real joysticks, mouse, and full keyboard mapping</li>
     <li>software renderer or an OpenGL backend with RetroArch CRT shaders</li>
     <li>full serial port, and a null modem cable between two AmiJa over the network</li>
-    <li>remote play: a second player joins over the network without needing a 
-       Kickstart or a copy of the game</li>
+    <li>remote play: a second player joins with an invitation, on the local network or
+       over the Internet, without needing a Kickstart or a copy of the game</li>
     <li>integration with the <a href="https://github.com/psakhis/Groovy_MiSTer" target="_blank" rel="noopener">Groovy_MiSTer</a>
       project, to send video and audio to a real CRT</li>
   </ul>
